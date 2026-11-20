@@ -149,14 +149,18 @@ let retryStats = null;
 export function setRetryStats(stats) {
 	retryStats = stats || null;
 }
+// #483：结果目录的唯一规则（同时给「首次 incomplete 的现场取证」找同一个目录：
+// 它必须落在 `.e2e-bin/results` 下，CI 的 e2e artifact 已经整目录上传）。
+export function resultsDir() {
+	return process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");
+}
 export function stopTimer() {
 	return timerStart ? Date.now() - timerStart : 0;
 }
 export function writeResults(suiteName, durationMs) {
 	resultsWritten = true;
 	if (suiteName) suiteNameHint = suiteName;
-	const dir = process.env.E2E_RESULTS_DIR ||
-		path.join(ROOT, ".e2e-bin", "results");
+	const dir = resultsDir();
 	mkdirSync(dir, { recursive: true });
 	const result = {
 		suite: suiteName,

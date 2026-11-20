@@ -604,12 +604,40 @@ function retryTotals(suiteSummary) {
 }
 
 // 逐套件后缀：只在真的重试过时出现（没重试的套件行保持原样，不刷噪声）。
+// #483 追加：首次 incomplete 的**现场取证**目录必须跟在这一行里（不许静默）。
 function retryNote(retries) {
 	if (!retries || !retries.retried) return "";
 	const bits = [`其中 ${retries.retried} 条首次 incomplete`];
 	if (retries.recovered) bits.push(`${retries.recovered} 条重试通过`);
 	if (retries.exhausted) bits.push(`${retries.exhausted} 条重试仍 incomplete`);
-	return `（${bits.join("、")}）`;
+	const dir = forensicsLabelOf(retries);
+	return `（${bits.join("、")}${dir ? `；现场取证: ${dir}` : ""}）`;
+}
+
+function forensicsLabelOf(retries) {
+	const first = retries?.forensics?.[0];
+	if (!first) return "";
+	return first.dir.endsWith("/") ? first.dir : `${first.dir}/`;
+}
+
+// 全局那行也要带上取证目录（只在真的有取证时）。
+function suiteSummaryForensicsLabel(suiteSummary) {
+	for (const s of suiteSummary) {
+		const label = forensicsLabelOf(s.retries);
+		if (label) return label;
+	}
+	return "";
+}
+
+// 逐条取证摘要（与套件 stdout 的 forensicsLine() 同形）：判断是否「越跑越死」（case 序号）。
+function forensicsDetailLines(retries) {
+	return (retries?.forensics || []).map(
+		(f, i) =>
+			`      ${i + 1}) ${String(f.caseId).padEnd(22)} #${f.caseIndex}   ` +
+			`exit=${f.exitCode ?? "?"} signal=${f.signal || "none"}  ` +
+			`chrom=${f.chromProcs} procs/${f.chromMb}MB  dmesg: (${f.dmesg})  oom_kill=${f.oomKill ?? "?"}  ` +
+			`取证: ${f.file}`,
+	);
 }
 
 // authority 清单校验（#338）：清单是「这次到底验了什么」的证据文件。
@@ -740,10 +768,11 @@ async function main() {
 	console.log(`  断言失败: ${agg.totalFail}`);
 	// #483 重试计数（永远打印：正常全绿也要能证明「没有 case 被无条件重跑」）。
 	const rt = agg.retries;
+	const rtDir = suiteSummaryForensicsLabel(agg.suiteSummary);
 	console.log(
 		`  重试（incomplete → 自动重试 1 次；断言失败永不重试）: 首次 incomplete ${rt.incompleteFirst} 条` +
 			` · 重试通过 ${rt.recovered} · 重试仍 incomplete ${rt.exhausted}` +
-			`（${rt.suites} 个套件上报了重试账本）`,
+			`（${rt.suites} 个套件上报了重试账本${rtDir ? `；现场取证: ${rtDir}` : ""}）`,
 	);
 	// authority 清单（#338）：先落盘再打印，红了也能在 results/ 里查本轮 authority。
 	const manifestFile = writeAuthorityManifest(agg, suitesToRun);
@@ -773,6 +802,7 @@ async function main() {
 		console.log(
 			`  ${statusIcon} ${s.suite.padEnd(18)} ${s.passed}通过/${s.failed}失败${retryNote(s.retries)}  ${durStr}  mode=${s.mode}`,
 		);
+		for (const line of forensicsDetailLines(s.retries)) console.log(line);
 		// 红套件把**第一条失败原因**直接打出来（#210）。
 		// 为什么：并行模式不透传套件 stdout，红了只剩一个计数 —— 曾经「0通过/0失败」
 		// 让人误判成超时/环境问题，实际是造数时把 undefined 绑进了 sqlite。

@@ -768,9 +768,13 @@ export async function openDriver(id, options = {}) {
               for(const n of snapshot.nodes||[]) delete n.identityToken;
               sessionStorage.setItem('f3-facts',JSON.stringify(snapshot));
             }
+            // #483 顺手修的执行层竞态：`httpStatus` 先落下、`result` 后解析，
+            // 只等状态码的调用方会读到「有状态、没有 body」的半条记录（yaml-create
+            // 的 brokenPost.result 曾因此变 undefined）。settled 只在 body 处理完之后方为 true。
+            call.settled=true;
             window.__f3TraceResponse?.(call,'return');
             return response;
-          } catch(error) {call.error=String(error);window.__f3TraceResponse?.(call,'throw');throw error;}
+          } catch(error) {call.error=String(error);call.settled=true;window.__f3TraceResponse?.(call,'throw');throw error;}
         };
         exported=value;
         window.__f3TraceAttach?.(value);

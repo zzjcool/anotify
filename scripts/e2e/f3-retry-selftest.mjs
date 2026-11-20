@@ -27,6 +27,8 @@ import {
 	executeWithRetry,
 	createRetryLedger,
 	retrySummaryLine,
+	forensicsLines,
+	forensicsDir,
 	classifyCaseEvidence,
 	readRetryRecord,
 	PASS,
@@ -37,6 +39,8 @@ import {
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 // 固定工作目录（不引临时目录 helper：scripts/e2e 里只有 lib/harness.mjs 能建临时目录）。
 const WORK = path.join(ROOT, '.e2e-bin/f3-retry-selftest');
+// 取证文件落到自测自己的 results 下：别污染真实运行的 `.e2e-bin/results`。
+process.env.E2E_RESULTS_DIR = path.join(WORK, 'results');
 const CHILD = path.join(WORK, 'fake-case-child.mjs');
 
 /* 假 case 子进程：把 #483 的几种现场写成**最朴素的形态** ——
@@ -109,7 +113,10 @@ async function runCase(name, mode, { maxAttempts } = {}) {
 	const ledger = createRetryLedger();
 	const spawned = [];
 	const run = await executeWithRetry({
+		suite: 'selftest',
 		id: name,
+		index: 1,
+		total: 1,
 		dir,
 		maxAttempts,
 		spawnAttempt: (attempt) => {
@@ -156,6 +163,29 @@ async function main() {
 		assert.match(line, /重试: 1 条首次 incomplete/);
 		assert.match(line, /1 条重试通过/);
 	});
+	// #483 追加要求：首次 incomplete 必须先取证（让下一次失败自带根因线索）。
+	check('首次 incomplete 已现场取证（dmesg / free / df / chromium / case 输出）', () => {
+		const f = dieOnce.run.outcome.forensics;
+		assert.equal(f.length, 1, '取证条数');
+		const txt = readFileSync(path.join(ROOT, f[0].file), 'utf8');
+		for (const section of ['--- dmesg ---', '--- free -m ---', '--- df -h /tmp ---', '--- chromium 进程样本', '--- /proc/vmstat (oom_kill', '--- case stdout/stderr（head） ---'])
+			assert.ok(txt.includes(section), `取证文件缺 ${section}`);
+		// die-once 的首次尝试没有任何输出：这个「为空」事实也要留下。
+		assert.match(txt, /case 输出: 为空/);
+		assert.equal(f[0].outputEmpty, true);
+		assert.ok(existsSync(forensicsDir()), '取证目录不存在');
+		assert.ok(Number.isInteger(f[0].chromProcs), 'chromium 进程数缺失');
+	});
+	check('汇总行带取证目录与逐条摘要（case 序号 / chrom / dmesg）', () => {
+		const stats = dieOnce.ledger.stats();
+		assert.match(retrySummaryLine('selftest', stats), /现场取证: /);
+		const lines = forensicsLines(stats);
+		assert.equal(lines.length, 1);
+		assert.match(lines[0], /1\) die-once\s+#1/);
+		assert.match(lines[0], /chrom=\d+ procs\/\d+MB/);
+		assert.match(lines[0], /dmesg: \(/);
+		assert.match(lines[0], /oom_kill=(\d+|\?)/);
+	});
 
 	console.log('▶ ② 注入断言失败：永不重试（该 case 只跑一次）');
 	const assertion = await runCase('assertion', 'assertion');
@@ -183,6 +213,12 @@ async function main() {
 		const reason = 'incomplete ×' + dieAlways.run.outcome.attempts.length + '：' + dieAlways.run.outcome.why;
 		assert.match(reason, /^incomplete ×2：/);
 		assert.match(retrySummaryLine('selftest', dieAlways.ledger.stats()), /重试仍 incomplete/);
+	});
+	check('两次 incomplete 各有自己的取证文件', () => {
+		const f = dieAlways.run.outcome.forensics;
+		assert.equal(f.length, 2, '两次死亡都应留证');
+		assert.deepEqual(f.map((x) => x.attempt), [1, 2]);
+		assert.notEqual(f[0].file, f[1].file);
 	});
 
 	console.log('▶ ④ 正常通过：重试计数 = 0（证明不是无条件重跑）');

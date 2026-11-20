@@ -12,7 +12,7 @@ import { ROOT, TEAM, isMock } from './f3-driver.mjs';
 import { casesFor, registeredViews, runUiCase } from './f3-ui-cases.mjs';
 import { evidenceDirectory } from './f3-driver.mjs';
 // #483：incomplete（子进程死亡/结果缺失）自动重试 1 次，断言失败永不重试。
-import { executeWithRetry, createRetryLedger, readRetryRecord, retrySummaryLine, INCOMPLETE } from './f3-retry.mjs';
+import { executeWithRetry, createRetryLedger, readRetryRecord, retrySummaryLine, forensicsLines, INCOMPLETE } from './f3-retry.mjs';
 
 const retryLedger = createRetryLedger();
 
@@ -127,12 +127,12 @@ export async function uiMain(suite, self) {
       });
     });
   }
-  async function execute(id, sourceHash) {
+  async function execute(id, sourceHash, index) {
     const identity = meta(id, sourceHash, plan.attempts.find(x=>x.id===id).attemptId);
     const dir = directory(identity);
     await mkdir(dir, { recursive: true });
     await enroll(identity);
-    const run = await executeWithRetry({ id, dir, spawnAttempt: () => spawnCase(identity, sourceHash, id) });
+    const run = await executeWithRetry({ suite, id, index, total: cases.length, dir, spawnAttempt: () => spawnCase(identity, sourceHash, id) });
     retryLedger.record(run.outcome);
     return run.exit;
   }
@@ -231,7 +231,7 @@ export async function uiMain(suite, self) {
       let next = 0;
       const exits = [];
       await Promise.all(Array.from({ length: concurrency }, async () => {
-        while (!interrupted && next < cases.length) exits.push(await execute(cases[next++].id, sourceHash));
+        while (!interrupted && next < cases.length) { const index = next + 1; const id = cases[next++].id; exits.push(await execute(id, sourceHash, index)); }
       }));
       await aggregate(sourceHash, exits);
     }
@@ -243,6 +243,7 @@ export async function uiMain(suite, self) {
     if (interrupted) H.bad(suite + ' interrupted', 'Unattempted/aborted groups fail the aggregate, no skip');
     const retryStats = retryLedger.stats();
     console.log(retrySummaryLine(suite, retryStats));
+    for (const line of forensicsLines(retryStats)) console.log(line);
     H.setRetryStats(retryStats);
     process.exitCode = H.summary(suite) ? 0 : 1;
   }

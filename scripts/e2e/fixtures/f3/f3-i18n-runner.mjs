@@ -10,7 +10,7 @@ import * as H from '../../lib/harness.mjs';
 import { ROOT, TEAM, isMock, evidenceDirectory } from './f3-driver.mjs';
 import { LOCALE_OUT, casesFor, runLocaleCase } from './f3-i18n-cases.mjs';
 // #483：incomplete（子进程死亡/结果缺失）自动重试 1 次，断言失败永不重试。
-import { executeWithRetry, createRetryLedger, readRetryRecord, retrySummaryLine, INCOMPLETE } from './f3-retry.mjs';
+import { executeWithRetry, createRetryLedger, readRetryRecord, retrySummaryLine, forensicsLines, INCOMPLETE } from './f3-retry.mjs';
 const retryLedger = createRetryLedger();
 export async function localeFingerprint(suite) { return (await captureEpoch(ROOT)).fullSourceArtifactSHA; }
 export function validateLocaleEvidence(selected,result,exit,expected) {
@@ -57,9 +57,9 @@ export async function localeMain(suite,self) {
       });
     });
   }
-  async function execute(id,sourceHash) {
+  async function execute(id,sourceHash,index) {
     const identity=meta(id,sourceHash,plan.attempts.find(x=>x.id===id).attemptId),dir=directory(identity);await mkdir(dir,{recursive:true});await enroll(identity);
-    const run=await executeWithRetry({id,dir,spawnAttempt:()=>spawnLocaleAttempt(identity,dir,id,sourceHash)});
+    const run=await executeWithRetry({suite,id,index,total:cases.length,dir,spawnAttempt:()=>spawnLocaleAttempt(identity,dir,id,sourceHash)});
     retryLedger.record(run.outcome);
     return run.exit;
   }
@@ -119,7 +119,7 @@ export async function localeMain(suite,self) {
     }else if(process.argv.includes('--aggregate'))await aggregate(sourceHash);
     else{
       const concurrency=Number(process.env.F3_CONCURRENCY||2);assert.ok(Number.isInteger(concurrency)&&concurrency>=1&&concurrency<=6,'Concurrency 1..6');
-      let next=0;const exits=[];await Promise.all(Array.from({length:concurrency},async()=>{while(!interrupted&&next<cases.length)exits.push(await execute(cases[next++].id,sourceHash));}));
+      let next=0;const exits=[];await Promise.all(Array.from({length:concurrency},async()=>{while(!interrupted&&next<cases.length){const index=next+1,id=cases[next++].id;exits.push(await execute(id,sourceHash,index));}}));
       await aggregate(sourceHash,exits);
     }
     assertFrozen(frozen, await captureEpoch(ROOT));
@@ -130,6 +130,7 @@ export async function localeMain(suite,self) {
     if(interrupted)H.bad(suite+' interrupted','Unattempted/aborted groups fail aggregate, no skip');
     const retryStats=retryLedger.stats();
     console.log(retrySummaryLine(suite,retryStats));
+    for(const line of forensicsLines(retryStats))console.log(line);
     H.setRetryStats(retryStats);
     process.exitCode=H.summary(suite)?0:1;
   }

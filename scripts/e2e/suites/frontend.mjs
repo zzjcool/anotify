@@ -13,7 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CASES, runCase } from '../fixtures/f3/f3-cases.mjs';
 import { ROOT, OUT, isMock, evidenceDirectory } from '../fixtures/f3/f3-driver.mjs';
-import { executeWithRetry, createRetryLedger, readRetryRecord, retrySummaryLine, INCOMPLETE } from '../fixtures/f3/f3-retry.mjs';
+import { executeWithRetry, createRetryLedger, readRetryRecord, retrySummaryLine, forensicsLines, INCOMPLETE } from '../fixtures/f3/f3-retry.mjs';
 const SELF=fileURLToPath(import.meta.url),cwd=process.cwd();
 // #483：incomplete（子进程死亡/结果缺失）自动重试 1 次，断言失败永不重试；
 // 计数进结果 JSON（`retries`）供 parallel_runner 汇总打印，不许静默。
@@ -67,10 +67,10 @@ async function spawnAttempt(meta,dir,id,sourceHash){
     });
   });
 }
-async function execute(id,sourceHash){
+async function execute(id,sourceHash,index){
   const meta=identity(id,sourceHash,plan.attempts.find(x=>x.id===id).attemptId),dir=evidenceDirectory(meta);await mkdir(dir,{recursive:true});
   await enrollAttempt(runDir,meta,plan);
-  const run=await executeWithRetry({id,dir,spawnAttempt:()=>spawnAttempt(meta,dir,id,sourceHash)});
+  const run=await executeWithRetry({suite:'frontend',id,index,total:CASES.length,dir,spawnAttempt:()=>spawnAttempt(meta,dir,id,sourceHash)});
   retryLedger.record(run.outcome);
   return run.exit;
 }
@@ -141,7 +141,7 @@ try{
     const concurrency=Number(process.env.F3_CONCURRENCY||2);
     if(!Number.isInteger(concurrency)||concurrency<1||concurrency>6)throw new Error('F3_CONCURRENCY must be 1..6');
     let next=0;const exits=[];
-    await Promise.all(Array.from({length:concurrency},async()=>{while(!interrupted&&next<CASES.length){const id=CASES[next++].id;exits.push(await execute(id,sourceHash));}}));
+    await Promise.all(Array.from({length:concurrency},async()=>{while(!interrupted&&next<CASES.length){const index=next+1,id=CASES[next++].id;exits.push(await execute(id,sourceHash,index));}}));
     await aggregate(sourceHash,exits);
   }
   assertFrozen(frozen,await captureEpoch(ROOT));
@@ -151,6 +151,7 @@ finally{
   if(interrupted)H.bad('frontend interrupted','Collected signal/remaining missing cases fail, never skip');
   const retryStats=retryLedger.stats();
   console.log(retrySummaryLine('frontend',retryStats));
+  for(const line of forensicsLines(retryStats))console.log(line);
   H.setRetryStats(retryStats);
   process.exitCode=H.summary('frontend')?0:1;
 }
