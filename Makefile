@@ -39,7 +39,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-doc-links check-doc-endpoints check-examples check-secrets check-config-writes check-affected-map hooks lint-go tools test-affected e2e-affected plan-affected test-frontend
+.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-comment-density check-guard-selftest check-annotations check-doc-links check-doc-endpoints check-examples check-secrets check-config-writes check-affected-map hooks lint-go tools test-affected e2e-affected plan-affected test-frontend
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -104,6 +104,10 @@ check-dist-fresh: ## dist 新鲜度：dist 必须与 web-src/api/web 的源指�
 check-test-discipline: ## 测试纪律棘轮：waitForTimeout/吞异常/t.Skip/time.Sleep/裸标签+.first()（超基线红，降基线也红）
 	node scripts/check-test-discipline.mjs --self-test
 	node scripts/check-test-discipline.mjs
+
+check-comment-density: ## 注释/文档棘轮：目录与总量注释行冻结、单文件密度阈值、docs 面只许收缩（docs/lint-guards.md L12）
+	node scripts/check-comment-density.mjs --self-test
+	node scripts/check-comment-density.mjs
 
 check-guard-selftest: ## 守卫自测：拦"守卫自己静默不查了"（恒绿的门禁等于没有门禁）
 	node scripts/check-classes.mjs --self-test
@@ -319,6 +323,9 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	@# 让"检查本身坏了"和"测试纪律倒退"在 PR 里第一批就红。
 	$(MAKE) check-guard-selftest
 	$(MAKE) check-test-discipline
+	@# 注释密度棘轮（#495）：`check-annotations` 只管「注释不许说谎」，这里管「注释不该存在」——
+	@# 两者不打架：前者管极少数留下者的可追溯性，后者管总量只许降。
+	$(MAKE) check-comment-density
 	$(MAKE) check-annotations
 	@# 协调者工作区引用：`.pi-orchestrator/` 自 2026-11-19 起不入库，所以 docs/ 里指向它的
 	@# 「唯一事实源」链接会在 fresh clone 里直接扑空。检查面是 git ls-files（不是工作区），
