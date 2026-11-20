@@ -18,6 +18,20 @@ import { acceptDialog } from './f3-dialogs.mjs';
 export async function observability(d, mode) {
  const {page,goto,calls,req,check,shot,clean,archive:archiveCalls}=d;
  const count=sel=>page.locator(sel).count();
+ /* 事件面板的「查询已落下」锚点 —— 用真实条件而不是时长。
+  *
+  * 病根（#493）：events 页的查询是**事件驱动**的（change / submit / refresh 各发一轮），
+  * 每一轮先把 `#ev-list` 换成骨架行（reset() → skeletonRows()），再等 fetch 回来才画行。
+  * 骨架行没有文本 ⇒ 这个窗口里 `innerText`/`textContent` 都是空串。断言如果在窗口里读，
+  * 拿到的是空气，红成 `did not match /Ingested/. Input: ''`（= CI 上 observe-events 的偶发红）。
+  *
+  * 所以读面板内容前必须等「这一轮真的画完」：没有 aria-busy、也没有骨架行。
+  * 注意不能靠 `#ev-list article` 计数当锚点：上一轮的旧行在被顶掉之前也满足计数，
+  * 而骨架窗口里计数是 0 —— 计数只说明「某一刻」，不说明「当前这一轮」。 */
+ const settledList = () => page.waitForFunction(() => {
+   const list = document.getElementById('ev-list');
+   return !!list && !list.hasAttribute('aria-busy') && !list.querySelector('.ev-skel-row');
+ }, null, { timeout: 15000 });
  if(mode==='errors') { await page.goto(d.base+'/en/index.html?namespace=default',{waitUntil:'domcontentloaded'}); await page.waitForFunction(()=>!!window.Anotify); await page.evaluate(()=>window.__f3Fault='/console/events'); }
   if (mode === 'events') {
     await goto('events', 'namespace=default');
@@ -57,6 +71,9 @@ export async function observability(d, mode) {
     assert.equal(foreign.status, 400);
     assert.match(String(foreign.body.message), /continue token/);
     await page.locator('#ev-list details').first().locator('summary').click();
+    /* 点击本身可能刚触发一轮查询（点走焦点 ⇒ 文本框补 change ⇒ 页面 change 即查询）：
+     * 等这一轮画完再读面板，否则读到骨架行（空串）。 */
+    await settledList();
     /* 严重度字段 `spec.type` 在 v4 **不存在**（events.yaml 刻意不带 Normal/Warning）。
      * 之前 mock 硬塞了它，把「真实数据里第三个 chip 是空药丸」这个 bug 藏住了；
      * mock 已对齐真实 wire，这里两种模式都断言**真实字段** reason。 */
