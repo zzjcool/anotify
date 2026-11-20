@@ -149,6 +149,8 @@ M1/M2 的失败原文与 CI 现场**逐字一致**（`Input:` 后面是空行 + 
   `frontend 43/0` · `i18n 33/0` · `i18n_coverage 44/0` · `ui_shift 87/0` · `ux_regression_19_23 8/0`
   （清单内 0 / 清单外 0 —— 失败数为 0，`known-env-failures.json` 一条都没命中）；
 - `scripts/e2e/known-env-failures.json` **未改**（本报告与本次提交都没有为这条登记任何 entries）。
+- 两种权威都过：除上面的 real 权威外，`E2E_MOCK_ONLY=1` 单跑一次 `✅ observe-events`（mock 预览
+  走同一份 events 页与同一套骨架行逻辑，没有只修 real 分支）。
 
 **一条实验教训**（写下来防止下次再踩）：同一个 case 用 `-P4` 并发跑**不是**有效的复现方法 ——
 ① harness 的端口段（`5900 + rand(400)`）是给「不同 case」并发用的，同一个 case 堆 8 个进程会
