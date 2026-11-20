@@ -13,6 +13,9 @@
  *      偶发失败本来就会时有时无，按"消失即红"会把闸门变成噪音）
  *   ④ 某个套件连 results 都没产出（崩溃/超预算）    → 视为「整套失败」，必须显式登记
  *      `{"suite": X, "case": "*"}` 才容忍（`"*"` **只**覆盖这一种情况，不覆盖具体 case）
+ *   ⑤ 超预算但有现场（`timedOut:true` 的部分结果，见 #488） → 归 `timeout`（可诊断）：
+ *      已跑多少条、停在哪条、重试后是不是同一条都在文件里；**不可**用清单容忍——
+ *      那是「预算/卡点」的问题，登记成白名单只会把它重新藏起来。
  *
  * 为什么清单要区分粒度：同一个环境性故障可能按 case 死，也可能整批死（Chrome 渲染进程
  * 整批被关 → 套件进程没跑到 summary → 一条 case 名都拿不到）。后者在只看 case 的清单里
@@ -33,11 +36,53 @@ import { pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
 
-/** 从 `"<case> — <detail>"` 里取 case 名（harness 的 bad() 拼法）。 */
+/**
+ * 从 `"<case> — <detail>"` 里取 case 名（harness 的 bad() 拼法）。
+ */
 export function caseOf(failure) {
 	const s = String(failure);
 	const at = s.indexOf(" — ");
 	return (at < 0 ? s : s.slice(0, at)).trim();
+}
+
+/**
+ * #488：套件级的 timeout 现场（执行器超预算时落的结果）。它们**不能**被当成断言失败
+ * 逐条列出来（那会把一次超时变成几十条噪声），也**不能**靠 `"*"` 条目容忍
+ * （`"*"` 只覆盖「整套没有 results」= incomplete）。
+ */
+export function timeoutOf(data) {
+	if (!data || data.timedOut !== true) return null;
+	return {
+		budgetMs: data.budgetMs ?? null,
+		elapsedMs: data.elapsedMs ?? null,
+		completedCases: data.completedCases ?? null,
+		totalCases: data.totalCases ?? null,
+		lastCase: data.lastCase ?? null,
+		lastCaseKind: data.lastCaseKind ?? null,
+		attempts: Array.isArray(data.attempts) ? data.attempts : [],
+		retried: data.retried === true,
+		stuckSameCase: data.stuckSameCase ?? null,
+		skippedRetryReason: data.skippedRetryReason ?? null,
+	};
+}
+
+/** 人读的一行：「已完成 N/M 条，停在 <case>；重试 1 次后仍 timeout，两次都停在同一条」。 */
+export function describeTimeout(t) {
+	const done =
+		t.completedCases === null
+			? "已完成条数不可得"
+			: `已完成 ${t.completedCases}${t.totalCases === null ? "" : `/${t.totalCases}`} 条`;
+	const where = t.lastCase ? `，停在「${t.lastCase}」` : "";
+	const budget = t.budgetMs ? `超出 ${Math.round(t.budgetMs / 1000)}s 预算` : "超出套件预算";
+	const retry = t.retried
+		? t.stuckSameCase === true
+			? `；重试 1 次后仍 timeout，两次都停在同一条「${t.lastCase}」（= 确定性挂点）`
+			: t.stuckSameCase === false
+				? `；重试 1 次后仍 timeout，两次停在不同条（${t.attempts.map((a) => a.lastCase ?? "?").join(" / ")}）`
+				: "；重试 1 次后仍 timeout"
+		: "";
+	const skipped = t.skippedRetryReason ? `；未重试：${t.skippedRetryReason}` : "";
+	return `timeout：${budget}；${done}${where}${retry}${skipped}`;
 }
 
 /**
@@ -87,6 +132,7 @@ export function verdict({ results, known }) {
 	const entries = known.entries || [];
 	const tolerated = []; // 命中清单的失败
 	const blocking = []; // 清单之外（或清单里没登记整套失败）
+	const timeouts = []; // #488：超预算但有现场的套件（独立一档，不可用清单容忍）
 	const stale = []; // 清单里这次没失败 → 建议删
 
 	// caseName === null 表示「整套没有 results」：只有 `"*"` / `null` 条目能覆盖它。
@@ -101,6 +147,14 @@ export function verdict({ results, known }) {
 		);
 
 	for (const r of results) {
+		if (r.timeout) {
+			// #488：timeout 有现场、可诊断 ⇒ 它是 `timeout`，不是 `incomplete`（后者才是
+			// 「整套没有 results」）。已知清单只登记环境性失败，而超预算只能由「预算/卡点」
+			// 修掉——把它登记成白名单就又回到了 issue 描述的掩盖路径，所以一律拦。
+			timeouts.push({ suite: r.suite, timeout: r.timeout });
+			blocking.push({ suite: r.suite, case: null, timeout: r.timeout });
+			continue;
+		}
 		if (r.missing) {
 			// 连 results/<suite>.json 都没有：崩溃/被 SIGKILL。只有登记了整套（case: "*" / null）才容忍。
 			const hit = match(r.suite, null);
@@ -130,7 +184,7 @@ export function verdict({ results, known }) {
 		if (!present) stale.push(e);
 	}
 
-	return { ok: blocking.length === 0, tolerated, blocking, stale };
+	return { ok: blocking.length === 0, tolerated, blocking, stale, timeouts };
 }
 
 /** 读 `.e2e-bin/results` 下每个套件的结果；`selected` 给了就只看这些套件。 */
@@ -152,7 +206,12 @@ export function readResults(resultsDir, selected = null) {
 			out.push({ suite, missing: `results 解析失败：${err.message}` });
 			continue;
 		}
-		out.push({ suite, failures: data.failures || [], failed: data.failed || 0 });
+		out.push({
+			suite,
+			timeout: timeoutOf(data),
+			failures: data.failures || [],
+			failed: data.failed || 0,
+		});
 	}
 	if (want) {
 		for (const s of want) {
@@ -307,6 +366,45 @@ function selfTest() {
 			expectTolerated: 0,
 			expectBlocking: 1,
 		},
+		// ── #488：timeout（有现场）是独立一档，不可被白名单容忍 ──────────────
+		{
+			name: "【#488】★ timeout（有现场）+ 只有 `*` 条目 → 仍然拦（`*` 只覆盖 incomplete）",
+			known: knownStarOnly,
+			results: [
+				{
+					suite: "ui_shift",
+					timeout: { budgetMs: 900000, elapsedMs: 900000, completedCases: 12, totalCases: 87, lastCase: "interact-dialogs", attempts: [], retried: false },
+				},
+			],
+			expectOk: false,
+			expectTolerated: 0,
+			expectBlocking: 1,
+			expectTimeout: 1,
+			expectStale: 1,
+		},
+		{
+			name: "【#488】★ timeout + 同名具体 case 条目 → 仍然拦（timeout 不是「断言不符」）",
+			known: knownBoth,
+			results: [
+				{
+					suite: "ui_shift",
+					timeout: { budgetMs: 900000, elapsedMs: 900000, completedCases: 12, totalCases: 87, lastCase: "interact-dialogs", attempts: [], retried: true, stuckSameCase: true },
+				},
+			],
+			expectOk: false,
+			expectTolerated: 0,
+			expectBlocking: 1,
+			expectTimeout: 1,
+		},
+		{
+			name: "【#488】timeout 与 incomplete 分开计数（incomplete 仍可被 `*` 容忍，timeout 不占名额）",
+			known: knownSuite,
+			results: [{ suite: "frontend", missing: "没有 results" }],
+			expectOk: true,
+			expectTolerated: 1,
+			expectBlocking: 0,
+			expectTimeout: 0,
+		},
 	];
 	for (const c of cases) {
 		const v = verdict({ results: c.results, known: c.known ?? knownCase });
@@ -315,6 +413,8 @@ function selfTest() {
 		if (v.tolerated.length !== c.expectTolerated) problems.push(`tolerated=${v.tolerated.length}（期望 ${c.expectTolerated}）`);
 		if (v.blocking.length !== c.expectBlocking) problems.push(`blocking=${v.blocking.length}（期望 ${c.expectBlocking}）`);
 		if (c.expectStale !== undefined && v.stale.length !== c.expectStale) problems.push(`stale=${v.stale.length}（期望 ${c.expectStale}）`);
+		if (c.expectTimeout !== undefined && v.timeouts.length !== c.expectTimeout)
+			problems.push(`timeouts=${v.timeouts.length}（期望 ${c.expectTimeout}）`);
 		if (c.expectToleratedCase !== undefined && v.tolerated[0]?.case !== c.expectToleratedCase)
 			problems.push(`tolerated[0].case=${v.tolerated[0]?.case}（期望 ${c.expectToleratedCase}）`);
 		if (c.expectToleratedTracking !== undefined && v.tolerated[0]?.entry?.tracking !== c.expectToleratedTracking)
@@ -352,11 +452,12 @@ function selfTest() {
 	const runCli = ({ suites = {}, selected }) => {
 		rmSync(resultsDir, { recursive: true, force: true });
 		mkdirSync(resultsDir, { recursive: true });
-		for (const [suite, failures] of Object.entries(suites)) {
-			writeFileSync(
-				path.join(resultsDir, `${suite}.json`),
-				JSON.stringify({ suite, passed: 1, failed: failures.length, failures }),
-			);
+		for (const [suite, payload] of Object.entries(suites)) {
+			// 数组 = 断言失败列表；对象 = 原样落盘（#488 需要用带 timedOut 的部分结果做用例）
+			const data = Array.isArray(payload)
+				? { suite, passed: 1, failed: payload.length, failures: payload }
+				: { suite, ...payload };
+			writeFileSync(path.join(resultsDir, `${suite}.json`), JSON.stringify(data));
 		}
 		return spawnSync(
 			process.execPath,
@@ -391,10 +492,40 @@ function selfTest() {
 			run: runCli({ suites: { ui_shift: ["interact-dialogs — boom"] }, selected: "ui_shift" }),
 			want: 1,
 		},
+		// #488：timeout 现场的口径必须在**真的 CLI** 上成立（不能只靠纯函数）
+		{
+			name: "【#488】★ CLI：timeout 现场 + `*` 条目 → exit 1，输出带「已完成 N/M」「停在」",
+			run: runCli({
+				suites: {
+					ui_shift: {
+						timedOut: true,
+						budgetMs: 900000,
+						elapsedMs: 900000,
+						completedCases: 12,
+						totalCases: 87,
+						lastCase: "interact-dialogs",
+						retried: true,
+						stuckSameCase: true,
+						failed: 75,
+						failures: ["interact-dialogs — 不该被逐条列出来"],
+					},
+				},
+				selected: "ui_shift",
+			}),
+			want: 1,
+			stderrHas: ["timeout", "已完成 12/87 条", "停在「interact-dialogs」", "两次都停在同一条"],
+		},
+		{
+			name: "【#488】CLI：incomplete（整套没有 results）仍走 `*` 容忍 → exit 0",
+			run: runCli({ selected: "ui_shift" }),
+			want: 0,
+			stdoutHas: ["ui_shift / 整套"],
+		},
 	];
 	for (const c of cliCases) {
 		const missing = (c.stdoutHas || []).filter((s) => !(c.run.stdout || "").includes(s));
-		if (c.run.status === c.want && missing.length === 0) {
+		const missingErr = (c.stderrHas || []).filter((s) => !(c.run.stderr || "").includes(s));
+		if (c.run.status === c.want && missing.length === 0 && missingErr.length === 0) {
 			console.log(`  ✅ ${c.name}`);
 			continue;
 		}
@@ -402,10 +533,26 @@ function selfTest() {
 		const why =
 			c.run.status !== c.want
 				? `exit=${c.run.status}（期望 ${c.want}）`
-				: `stdout 缺 ${missing.join("、")}`;
+				: `输出缺 ${[...missing, ...missingErr].join("、")}`;
 		console.log(`  ❌ ${c.name}：${why}\n${(c.run.stderr || "").trim()}`);
 	}
 	rmSync(dir, { recursive: true, force: true });
+	// #488：套件级 timeout/重试的自测（真起子进程、秒级）。和上面的判定自测放在一起：
+	// 「有现场的 timeout 不许被白名单容忍」与「现场真的先落盘再发信号」是同一个结论的两面。
+	const suiteSelftest = spawnSync(
+		process.execPath,
+		[path.join(ROOT, "scripts/e2e/suite-budget-selftest.mjs")],
+		{ encoding: "utf8" },
+	);
+	if (suiteSelftest.status === 0) {
+		console.log("  ✅ #488 套件级自测：超预算先落现场 / timeout 与 incomplete 分开 / 重试 1 次 / 两次停同一条可判");
+	} else {
+		failed++;
+		console.log(
+			`  ❌ #488 套件级自测失败（exit=${suiteSelftest.status}）\n` +
+				`${suiteSelftest.stdout || ""}${suiteSelftest.stderr || ""}`,
+		);
+	}
 
 	if (failed > 0) {
 		console.error(`\n❌ e2e 判定自测失败 ${failed} 条`);
@@ -413,7 +560,7 @@ function selfTest() {
 	}
 	console.log(
 		"\n✅ e2e 判定自测通过（清单内容忍 / 清单外拦 / 清单过期只提示；" +
-			"`*` 只覆盖整套、不放行具体 case；CLI 端到端同样成立）",
+			"`*` 只覆盖整套、不放行具体 case；timeout 是独立一档、不可被白名单容忍；CLI 端到端同样成立）",
 	);
 	return 0;
 }
@@ -444,20 +591,41 @@ function main() {
 		const what = isWholeSuite(s) ? "整套" : s.case;
 		console.log(`::warning title=已知失败清单可以缩小::${s.suite} / ${what} 这次没失败 —— 删掉 known-env-failures.json 里那一行（棘轮只许变小）`);
 	}
+	// #488：timeout 是独立一档（有现场、可诊断）。它不属于「已知环境性失败」：
+	// 超预算只能靠「预算/卡点」修，登记成白名单就又回到了 issue 描述的掩盖路径。
+	if (v.timeouts.length > 0) {
+		console.error(`\n⏱️ e2e 有 ${v.timeouts.length} 个套件超出墙钟预算（timeout，现场已落盘）：`);
+		for (const t of v.timeouts) console.error(`  - ${t.suite} / ${describeTimeout(t.timeout)}`);
+		console.error(
+			"    ↳ 现场：results/<suite>.json（timedOut/completedCases/lastCase）+ results/_suite-retries/；" +
+				"先看「停在」是不是固定同一条：固定 = 真卡点，不同 = 预算太紧或环境抖动。",
+		);
+	}
 	if (v.blocking.length > 0) {
-		console.error(`\n❌ e2e 出现 ${v.blocking.length} 条**清单之外**的失败（必须修，或显式登记到 scripts/e2e/known-env-failures.json 并写理由）：`);
+		const nonTimeout = v.blocking.length - v.timeouts.length;
+		console.error(
+			`\n❌ e2e 出现 ${v.blocking.length} 条**清单之外**的失败` +
+				(nonTimeout > 0 ? `（必须修，或显式登记到 scripts/e2e/known-env-failures.json 并写理由）：` : "（timeout 不可用清单容忍）："),
+		);
 		for (const b of v.blocking) {
-			const what = b.case === null ? "整套（没有 results）" : b.case;
+			if (b.timeout) {
+				console.error(`  - ${b.suite} / ${describeTimeout(b.timeout)}`);
+				continue;
+			}
+			const what = b.case === null ? "整套（incomplete：没有 results）" : b.case;
 			console.error(`  - ${b.suite} / ${what}${b.detail && b.case ? `：${b.detail}` : ""}`);
 			if (b.case === null) {
 				console.error(
-					`    ↳ 若这是已知环境问题：加 {"suite": "${b.suite}", "case": "*"}（只覆盖「整套没有 results」，不覆盖具体 case）`,
+					`    ↳ 若这是已知环境问题：加 {"suite": "${b.suite}", "case": "*"}（只覆盖「整套没有 results」，不覆盖具体 case；timeout 不适用）`,
 				);
 			}
 		}
 		return 1;
 	}
-	console.log(`\n✅ e2e 判定：清单内 ${v.tolerated.length} 条（已容忍），清单外 0 条`);
+	console.log(
+		`\n✅ e2e 判定：清单内 ${v.tolerated.length} 条（已容忍），清单外 0 条` +
+			(v.timeouts.length > 0 ? `，timeout ${v.timeouts.length} 个` : ""),
+	);
 	return 0;
 }
 

@@ -4,9 +4,9 @@
     "  · 失败集 ⊆ 本清单      → 容忍（job 绿），逐条打 warning；",
     "  · 出现清单之外的失败   → exit 1，job 红，拦合并；",
     "  · 清单项这次没失败     → 只打 warning 提示删掉（不计红，因为它可能只是时好时坏）。",
-    "粒度（本次补的缺口）：条目的 case 字段有三种写法 ——",
+    "粒度：条目的 case 字段有三种写法 ——",
     "  · \"case\": \"<case 名>\"  → 只容忍该 case 的失败；",
-    "  · \"case\": \"*\"          → 只容忍「整套没有 results」（崩溃 / 被 SIGKILL，一条 case 名都拿不到），",
+    "  · \"case\": \"*\"          → 只容忍「整套没有 results」（崩溃 / incomplete，一条 case 名都拿不到），",
     "                           **不**容忍任何具体 case 的失败（否则整套登记就成了万能豁免）；",
     "  · \"case\": null          → 与 \"*\" 等价（历史写法，保留兼容；新条目请用 \"*\"）。",
     "同一个环境故障按 case 死跟按整套死，只登记**实际观测到的那一档**：两条并存 = 同一条故障占两行，",
@@ -15,24 +15,34 @@
     "没有这张清单，就只能整块 continue-on-error —— 那等于永久红着没人看；有了它，",
     "「新失败」仍然是硬的。收敛方式：每次真跑看到「清单项没失败」就删掉那一行，",
     "最终目标是本文件的 entries 为空数组（= 完全的硬门禁）。",
-    "每个条目的 tracking 指向 #431（本清单的收敛追踪 issue）：entries 清空即可关掉它。",
-    "（历史上这两条都指向 #428 —— 那是引入本清单的 PR 自身，自指、追踪不到可收敛的东西，已改。）"
+    "",
+    "── 2026-11-20 状态（#488）：套件级 timeout 已不再是「可登记」的东西 ──",
+    "本批**只保留两条 case 级**登记（frontend/source-actions、ui_shift/interact-dialogs）：",
+    "它们都是「case 子进程在 runner 上执行层死亡」，由 #483/#484 的 case 级重试吸收",
+    "（PR #484 未合入，它会在同一批里删掉这两条）。",
+    "",
+    "ui_shift 原条目是 [\"*\", \"interact-dialogs\"]，这里**删掉了 `*` 档**：",
+    "  整套超预算（#488 的 300s 那类）现在会先落带现场的部分结果（timedOut/",
+    "  completedCases/lastCase），判定层单列 `timeout` —— 它**不可**被本清单容忍，",
+    "  也不再混进「整套没有 results」（incomplete）。白名单曾经让这条慢性病藏了 5 次 run，",
+    "  所以这一档只许删、不许加。",
+    "",
+    "口径：删掉之后若仍偶发 incomplete，应由那次重试吸收；连续两次才是硬红",
+    "（汇总写 `incomplete ×2` / `timeout ×2`），这时该修真正的死因，而不是再往表里加一行。",
+    "断言失败永不重试；timeout 也不可用本清单容忍（预算/卡点只能修，不能登记）。"
   ],
   "entries": [
     {
       "suite": "frontend",
       "case": "source-actions",
-      "reason": "runner 上 case 子进程偶发死亡（case.json 未落盘 / locator 4500ms 撞线），本地同代码 3–5s 通过",
-      "tracking": "#431"
+      "reason": "runner 上 case 子进程执行层死亡（case.json 未落盘 = incomplete）；本地同代码 3–5s 通过。本 PR 之前 main 就登记着这条，去掉它会让 CI 红在这条 pre-existing 死亡上（#488 的套件级范围吸收不了单条 case 死）。等 #484 的 case 级重试合入后删除；它不覆盖套件超时。",
+      "tracking": "#484"
     },
     {
       "suite": "ui_shift",
-      "case": [
-        "*",
-        "interact-dialogs"
-      ],
-      "reason": "runner 上这套以两种形态死：① 整套没有 results（Chrome 渲染进程整批死亡）② 单个 case 死（page.evaluate: Target page, context or browser has been closed，f3-ui-helper.mjs:126 authFlag → gotoPage）。同一条环境故障的两种观测形态，用一个条目同时登记；本地同代码 3-5s 通过",
-      "tracking": "#431"
+      "case": "interact-dialogs",
+      "reason": "runner 上系统 Chrome 在 case 开头死亡（page.evaluate: Target page, context or browser has been closed，f3-ui-helper.mjs authFlag → gotoPage；实测 PR #490 两轮 CI 都停在这一条）。原条目是 [\"*\", \"interact-dialogs\"]，本批**删掉 `*` 档**：套件超时（#488）有现场且不可被白名单容忍。等 #484 的 case 级重试合入后删除。",
+      "tracking": "#484"
     }
   ]
 }
