@@ -43,7 +43,9 @@ export function withDeadline(label, promise, ms = WAIT_DEADLINE_MS) {
   });
 }
 export const LANGS = ['zh-CN', 'en', 'ja', 'es'];
-export const PAGES = ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','namespace','namespaces','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source','source-detail','sources','trace'];
+// 旧的 source 页已删除（黑盒审计 B-4：两个源详情页重复，只留 source-detail 这一页）；
+// 无参/带参访问 `/source.html` 一律 404（internal/server/static.go 的未知文件路径）。
+export const PAGES = ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','namespace','namespaces','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source-detail','sources','trace'];
 // 401 → 登录页那条用例覆盖的页面。capability.html 是**受保护的深层链接页**：
 // 它自己的布局挂载就会打 /v1/auth/me，游客必得 401，且它在 partials.js 的
 // loginHref 白名单里（next=capability.html 必须保住 ?namespace=&name=），
@@ -597,13 +599,35 @@ SCENARIOS.set('node-config', async (server, fixtures) => {
 // （空态和错误态看起来都“不是报错”，断言会假绿）。部署判据要 declared ∩ authorized
 // 覆盖该 ns，所以这里起一台真夹具节点（hello + config.applied），再用真入口、真版本、
 // 真 digest 跑一次部署，等到行推进到 applied。
+//
+// C-3 的另一半（超过默认行数时要有「查看全部」）也在这里造：投多条真事件 → 中枢真派发到
+// 这台节点（派发会写下 node_name，这正是节点页过滤最近任务的条件）。不造这些任务，
+// 「默认只铺前几行」的截断就是不可观测的 —— 行数不足时截不截断都长一个样。
+// slots 给足是因为派发要过容量：槽位不够时其余任务会停在未派发，node_name 为空。
 SCENARIOS.set('node-deployments', async (server, fixtures) => {
   const s = fixtures.adminSession;
   const cap = await rawReq(server.base, `/v1/namespaces/${DEFAULT_NS}/capabilities/${MOCK_FIXTURES.capability}`, { headers: sessionCookie(s) });
   assert.equal(cap.status, 200, 'T1 seam: GET fixture capability must be 200');
-  const node = await bringUpFixtureNode({ base: server.base, session: s, name: MOCK_FIXTURES.node, namespaces: [DEFAULT_NS] });
+  const node = await bringUpFixtureNode({ base: server.base, session: s, name: MOCK_FIXTURES.node, namespaces: [DEFAULT_NS], slots: 8 });
   const applied = await deployApplied(server.base, s, node, capRef(cap.body), DEFAULT_NS);
-  return { __holdNodes: [node], deployedDigest: applied.digest, deployedNodeID: applied.nodeId };
+  const recent = await fireMany(server, fixtures.sendKey, DEFAULT_NS, MOCK_FIXTURES.source, 6);
+  /* 每一条都必须真的落到这台节点上（否则节点页的最近任务列表是空的，C-3 就验了个寂寞）。
+     坑：派发是**异步**的 —— POST …/fire 返回时 `status.nodeName` 还是空的，调度器随后
+     才写指派并发 task.dispatch。所以这里等的是「指派事实出现」，不是「请求返回」。
+     （不再往下走 accept/lease：节点页的「最近任务」读的就是 status.nodeName，而授租还会
+     撞上「单节点 pinned 并发预算默认 1」——那是另一条事实，与本用例要证的截断无关。） */
+  const assignDeadline = Date.now() + 20000;
+  for (const receipt of recent) {
+    let task;
+    for (;;) {
+      task = await rawReq(server.base, `/v1/namespaces/${DEFAULT_NS}/tasks/${receipt.taskId}`, { headers: sessionCookie(s) });
+      assert.equal(task.status, 200, 'T1 seam: 真投递必须建出任务行');
+      if (task.body.status?.nodeName === node.name) break;
+      assert.ok(Date.now() < assignDeadline, 'T1 seam: 真派发必须把任务落到夹具节点上（nodeName），实际 ' + JSON.stringify(task.body.status));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  return { __holdNodes: [node], deployedDigest: applied.digest, deployedNodeID: applied.nodeId, nodeTaskCount: recent.length };
 });
 
 async function preview() {

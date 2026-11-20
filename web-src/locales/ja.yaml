@@ -57,7 +57,7 @@ common:
     failed: 取り消しに失敗しました
     hint: 5 秒以内なら取り消せます
     action: 取り消す
-  resource_version_required: 'resourceVersion がありません。再読み込みしてからやり直してください'
+  resource_version_required: 'ページが古くなっています。再読み込みしてからやり直してください'
   brand:
     name: Anotify
     tagline: エージェント完了通知
@@ -274,7 +274,7 @@ index:
     title: イベントストリーム
     subtitle: 最新のイベント · クリックでチェーンを表示
     open: すべてのイベント →
-    refresh: 更新 →
+    refresh: '更新'
     count: '最新 {n} 件'
     loading: イベントを読み込み中…
     empty: 'イベントはまだありません。webhook や cron ソースを繋ぐと、ここに流れが表示されます。'
@@ -344,7 +344,7 @@ message:
     failed: 失敗
     canceled: キャンセル済み
     abandoned: 放棄
-    lease_expired: リース期限切れ
+    lease_expired: '実行権限の期限切れ'
   node:
     central: ハブが実行
   chain:
@@ -354,8 +354,6 @@ message:
   v4:
     diagnostics: "実行診断"
     attempt: "試行 / 上限"
-    wait_hint: "待機中は実行試行を消費しません。非冪等タスクは自動再試行せず、受理不明は再実行の根拠になりません。"
-    lease_hint: "リースは実行権限の境界であり、副作用の一度だけの実行を保証しません。古い試行や期限切れリースは結果を送信できません。"
     cancel: "タスクを取消"
     abandon: "タスクを放棄"
     confirm_cancel: "タスクを取り消しますか？実行権限を失効し、現在の実行を停止します。"
@@ -363,12 +361,10 @@ message:
     params: "タスク入力パラメータ"
     env: "環境診断（名前と取得元のみ）"
     env_hint: "このタスクが使用した変数の名前と取得元のみ。ホスト値や透過の許可リスト全体は読み取りません。"
-    env_empty: "保持されている環境診断はありません。"
     result: "結果概要 / エラー / 成果物"
     error_message: 'メッセージ'
     error_reason: '理由'
     attempts: "保持されている実行試行記録"
-    attempts_empty: "保持されている実行試行記録はありません。"
     logs: "タスクログ"
     current: "最新ログ記録"
     previous: "前の実行試行"
@@ -376,7 +372,6 @@ message:
     complete: "切り詰めなし"
     logs_empty: "この試行のログがない、または前の試行がありません。"
     emissions: "受理された emit 記録"
-    emissions_empty: "保持されている emit 記録はありません。"
     missing: "URL にタスク id がありません。"
     not_found: "タスクがない、削除済み、または別の名前空間です。"
     artifact_download: "保管成果物をダウンロード"
@@ -500,9 +495,8 @@ login:
     signup_success_short: 登録成功！ワークスペースに移動中…
     need_username_short: まずユーザー名を決めてください。
 receivers:
-  back_home: "ダッシュボードに戻る"
+  back_home: '概要に戻る'
   docs_link: "連携手順を見る"
-  unavailable_next: "公開後はここに受信デバイスと配信率が表示されます。"
   unavailable: 'プッシュ通知は未公開です。公開後にここへ受信デバイスが表示されます。'
   title: 通知先
   channel:
@@ -759,17 +753,6 @@ security:
     nudge_action: この端末で Passkey を追加
     nudge_dismiss: 了解
   concept:
-    title: 2つの独立した軸
-    auth_label: 認証軸
-    auth_axis: 「あなたは誰か」を決定（このページ）
-    auth_p1: · ログイン方法：Passkey またはパスワード（最低1つを保持）
-    auth_p2: · ログインセッション：複数端末で並存、個別失効可
-    auth_p3: · リカバリーコード：全デバイス紛失時のフォールバック
-    delivery_label: 配信軸
-    delivery_axis: 「どこへ送るか」を決定
-    delivery_p1: · 通知先ページで管理、このページとは無関係
-    delivery_p2: · ブラウザプッシュ購読 + WebSocket 接続
-    delivery_p3: · ログアウト後も購読を解除するまで受信
   unnamed_passkey: 名前なし Passkey
   unknown_device: 不明なデバイス
   credential: 資格情報
@@ -832,9 +815,9 @@ docs:
   design:
     title: "動作と境界：誤解しやすいところ"
     lede: "以下は製品の動作のうち誤解しやすい点です。おかしいと感じたらここで突き合わせてください。"
-    sources: "ソースはイベントを生成し、対象の能力にパラメータを渡します。ソース詳細の下流構成図は spec.targets の参照関係を示すだけで、実行成功の証明ではありません。受信されたかはイベント一覧、実行されたかはタスク詳細で確認します。deliveryId は既定で 30 日間重複排除され、同じ id は「受信済み」だけを意味します。"
+    sources: 'ソースはイベントを生成し、対象の能力にパラメータを渡します。ソース詳細の下流構成図は参照関係を示すだけで、実行成功の証明ではありません。受信されたかはイベント一覧、実行されたかはタスク詳細で確認します。deliveryId は既定で 30 日間重複排除され、同じ id は「受信済み」だけを意味します。'
     playbooks: "playbook.yaml が唯一のルートマニフェストで、参照する能力・ソースのファイルはすべてパッケージ内に必要です。プリセット（Playbook）ページはパッケージを保存するだけで、インストールもデプロイもしません。インストールは POST …/install、デプロイは能力の POST …/deploy です。"
-    nodes: "ノード設定はノードごとに編集できます。一括 API はノード単位で原子的で、部分成功を許します。保持期間の単位は秒で 0 は永久です。既定値はログ・成果物が 604800 秒、イベントと終端タスクが 2592000 秒で、活動中のタスクと参照保護は有効なまま、ユーザーの workDir は削除しません。設定バージョンと適用済みバージョンはサーバーの現在値を表示し、読めないときは「不明」と表示して既定値を入れません。"
+    nodes: 'ノード設定はノードごとに編集できます。一括 API はノード単位で原子的で、部分成功を許します。保持期間の単位は秒で 0 は永久です。既定値はログ・成果物が 604800 秒、イベントと終端タスクが 2592000 秒で、活動中のタスクと参照保護は有効なまま、ユーザーの workDir は削除しません。設定バージョンと適用済みバージョンはサーバーの現在値を表示し、読めないときは「不明」と表示して既定値を入れません。'
   endpoints:
     title: 全エンドポイント
   openapi:
@@ -861,6 +844,10 @@ docs:
       ingress: "イベント入力"
       traces: "トレース"
       system: "システム設定"
+      source-actions: 'ソース操作'
+      hooks: 'フック'
+      aggregates: '集計'
+      console: 'コンソール'
 
   events:
     core: 中核
@@ -872,7 +859,7 @@ docs:
       source: イベントの発生元。起点能力名を兼ねます（github、cron、http）。
       type: イベント種別。その発生元にとって意味のある名前（例：pull_request.opened）。
       payload: イベントのペイロード。下流タスクの params としてそのまま渡されます。
-      idem: 冪等キー。同じ source + idemKey は 1 つのイベントだけを生みます。
+      idem: '重複排除キー。同じ source + idemKey の再送は 1 つのイベントだけを生みます。'
       trace: trace を明示。省略すると新規作成されます。
     note: イベントを保存した時点で 200 を返します。派発に失敗しても 200 です — 下流の失敗でイベントが失われることはなく、後から再送できます。
     curl:
@@ -908,7 +895,7 @@ docs:
     base_url: Base URL
     base_url_desc: セルフホスト時はあなたのドメインまたは Tunnel ドメイン
     version: API バージョン
-    version_desc: すべての動的 API にバージョンプレフィックス付き。静的アセットは /static/*
+    version_desc: '動的 API にはバージョンプレフィックスが付きます。静的アセットはルートパスに内容ハッシュ付きで配信されます（例：/ui.<hash>.css）。'
     map:
       title: エンドポイントマップ
       notify: Agent による通知上報（中核）
@@ -1015,17 +1002,17 @@ docs:
       title: 再接続とレジュム
       desc: 再接続時に <code class="doc-code">Last-Event-Id</code> ヘッダ（または最初のフレームで <code class="doc-code">resume</code>）を送信すると、サーバーは直近 24h の未確認通知（リプレイウィンドウ）を再送し、その後リアルタイムストリームに移行します。保持期間を超えると <code class="doc-code">resume_expired</code> エラーを返します。クライアントは全履歴を再取得してください。
   v4:
-    five_specs: "エンドポイントは resource / events / agent / ingress / auth の5つの spec 由来です。"
+    five_specs: 'エンドポイント一覧：リソースごとにメソッドとパスを並べています。'
     missing: "エンドポイント一覧を利用できません"
     ingress: "名前空間イベント入力（リソース作成ではありません）"
     node: "anode: 本機実行と設定"
     node_note: "Node を登録し長期識別トークンを発行します。申告と認可は積集合、install は自動登録しません。"
-    resource: "名前空間リソースと書込 CAS"
-    resource_note: "KindList.items を読みます。作成は apiVersion/kind/metadata/spec。編集は書込可能項目と metadata.resourceVersion のみ。欠落400、古い値409では下書きを保持。DELETE は query resourceVersion を使用します。"
+    resource: 'ネームスペースのリソース（保存時の競合保護）'
+    resource_note: 'リソース一覧を読み取ります。作成時は apiVersion・kind・metadata と定義フィールドを送ります。編集は書き込み可能なフィールドとバージョントークンだけを送ります。トークンが無いと 400、古いと 409 で下書きは保持されます。削除はクエリのバージョントークンを使います。'
 
 cliauth:
   title: CLI デバイス認証
-  back_home: ダッシュボードに戻る
+  back_home: '概要に戻る'
   entry:
     heading: 認証コードを入力
     sub: ターミナルでログインスクリプトを実行後、表示された 8 文字のコードを入力して承認してください
@@ -1176,7 +1163,7 @@ admin:
     group_retention: "保持期間（変更可）"
     group_retention_note: "3 つの値はすべて秒単位です。0 は永久保持を意味します。保存すると次のクリーンアップから有効になります。"
     group_yaml: "System YAML（読み取り専用）"
-    group_yaml_note: "現在の事実からサーバーが再構築した正規化ドキュメント。読み取り専用：保持期間の書き込み経路は下の CAS 保存だけです。2 本目の経路はありません。"
+    group_yaml_note: '現在の事実からサーバーが再構築した正規化ドキュメント。読み取り専用です。'
     group_danger: "危険な操作"
     group_danger_note: "保持期間を保存するとデータのライフサイクルが実際に変わります。新しい期間を超えたイベント / タスク / 成果物は削除され、復元できません。0 は永久保持です（ディスクは増える一方）。期間と影響を確認してから保存してください。"
     yaml_view: "現在のドキュメント"
@@ -1305,7 +1292,6 @@ events:
     namespace: "名前空間"
     source: "関連オブジェクト / ソース"
     limit: "ページ件数"
-    filter: "絞り込み"
     filters: "絞り込み条件"
     filters_active: "{n} 件有効"
     loading: "データ読み込み中…"
@@ -1360,22 +1346,21 @@ caps:
     Implemented: '実装'
     NodesAvailable: 'ノード可用'
     none: 'サーバーが条件を返していません'
-    title: '4 つの条件（読み取り時に派生）'
+    title: '実行できるか'
   conflict:
-    body: 'サーバー側の resourceVersion は {rv} です。入力内容は保持されています。最新を読み込むとローカルの変更は破棄されます。'
+    body: 'サーバー側のバージョントークンは {rv} です。入力内容は保持されています。最新を読み込むとローカルの変更は破棄されます。'
     reload: '最新を読み込む（ローカル変更を破棄）'
     reloaded: '最新を読み込みました'
     title: '他の人により変更されています（409 resource_version_conflict）'
   delete:
     body: '「{name}」を削除しますか？削除はこの能力だけを対象とし、参照側は変更しません。参照している能力やソースは解決できなくなり、status で欠落として報告されます。'
-    conflict: 'この能力は直前に他の人により変更されました（409）。最新の resourceVersion {rv} を読み込みました。確認してからもう一度削除を押してください（自動再試行はしません）。'
+    conflict: 'この能力は直前に他の人により変更されました（409）。最新のバージョントークン {rv} を読み込みました。確認してからもう一度削除を押してください（自動再試行はしません）。'
     deleting: '削除中…'
-    rv: '現在の resourceVersion：{rv}'
+    rv: '現在のバージョントークン：{rv}'
     submit: '削除'
     title: '能力を削除'
   deploy:
     col: 'デプロイ'
-    hint: 'インストールパッケージの保存や install では自動デプロイされません。デプロイはこのボタンでのみ行われます。'
     nodes: '対象ノード'
     nodes_hint: '未選択 = サーバーが既存の配備方針で候補ノードを選びます。'
     nodes_empty: '配備可能なノードがありません（この名前空間に認可されたノードがありません）。'
@@ -1397,12 +1382,12 @@ caps:
     gone_hint: '必要なら下部の取り消しバーで復元できます。一覧に戻って他の能力を見ることもできます。'
     hide: '閉じる'
     loading: '能力を読み込み中…'
+    more: 'その他の操作'
     no_name: '能力名がありません（URL に ?name=… が必要です）'
     no_name_hint: '能力一覧から開くか、URL に ?namespace=<ns>&name=<name> を付けてください。'
     outputs: '出口（何を出せるか）'
-    page_sub: '識別情報・健全性・定義・スクリプト。編集・デプロイ・削除もこのページで行います'
     page_title: '能力の詳細'
-    rv: 'resourceVersion'
+    rv: 'バージョントークン'
     script: 'スクリプト（run.files）'
     script_empty: 'この能力にはスクリプトファイルがありません'
     script_entry: 'エントリファイル'
@@ -1425,7 +1410,7 @@ caps:
     batch_created: '{caps} 個の能力を作成 · {m} 本の下流'
     cancel: 'キャンセル'
     concurrency: 'ノードあたり同時実行上限'
-    concurrency_hint: 'spec.concurrency.maxPerNode（既定 1）。'
+    concurrency_hint: '既定値は 1。1 台のノードで同時に実行するタスク数です。'
     create_title: '能力を作成'
     current_version: '現在のバージョン：v{v}'
     display_name: '表示名'
@@ -1467,8 +1452,8 @@ caps:
     file_path: '相対パス（例：run.sh）'
     files: 'ファイル'
     files_hint: 'エントリの 1 行目は #! shebang 必須。すべてのファイルが能力の一部です。'
-    idempotent: '自動再試行を許可（冪等）'
-    idempotent_hint: '明確に冪等な場合のみ有効化。それ以外は失敗で終了。'
+    idempotent: '自動リトライを許可（再実行可能）'
+    idempotent_hint: '明確に再実行可能な場合だけオンにします。それ以外は失敗で終了です。'
     lifecycle: 'ライフサイクル（lifecycle）'
     max_attempts: '最大試行回数'
     name: '能力名'
@@ -1519,22 +1504,20 @@ caps:
     next: '下流'
     nodes: 'ノード {total}（現行 {deployed} · 旧 {stale} · 未配備 {missing}）'
   nodes:
-    deployed: '現行 digest'
+    deployed: '同期済み'
     held_empty: 'この能力を保持するノードはまだありません（「配備」で送信）'
     missing: '未配備'
-    stale: '旧 digest'
+    stale: 'バージョンが古い'
     title: 'ノード上の状態'
   observed:
     emits: '送出記録'
-    emits_empty: 'この実行では送出していません'
     empty: '保持された履歴はありません（整理後は observed が空です。日時は推測しません）'
     fields: 'フィールド：{f}'
     no_fields: 'フィールドなし'
     pruned: '剪定の痕跡'
-    pruned_empty: 'この実行では剪定していません'
     task: '直近のタスク'
-    tasks: 'タスク総数'
-    tasks_failed: '失敗'
+    tasks: '直近 24 時間のタスク'
+    tasks_failed: '直近 24 時間の失敗'
     title: '直近の実行痕跡（observed）'
     truncated: '直近 {n} 件のみ表示しています（それ以前は表示していません）'
     unavailable: 'この能力にはまだ実行記録がありません（一度実行すると表示されます）'
@@ -1554,14 +1537,14 @@ caps:
     entrypoint: 'エントリ'
     env: '環境変数（env）'
     files: 'ファイル'
-    idempotent: '冪等'
+    idempotent: '再実行可能'
     installed_from: '導入元'
     max_attempts: '最大試行'
     next: '下流（next）'
     params: 'パラメータ契約（JSON Schema）'
     result_ttl: '結果保持（秒）'
     timeout: '実行タイムアウト（秒）'
-    title: '定義（spec）'
+    title: '定義'
     valuefrom: '取得元'
     values: '値'
     version: 'バージョン'
@@ -1577,15 +1560,15 @@ caps:
     hint: 'テスト実行は実際にタスクを作成して配信します（プレビューではありません）。イベントには origin=test が付き、統計には含まれません。'
     version: 'バージョン'
     version_hint: '既定は現在の live バージョン。明示する場合は既存のバージョンである必要があります。'
-    params: 'パラメータ（spec.params から描画）'
+    params: 'パラメータ（定義から描画）'
     params_json: 'params JSON を直接入力'
     params_json_hint: 'params オブジェクト全体を入力すると上のフォームを上書きします。空ならフォームの値を使います。'
     params_degraded: 'このパラメータ契約（oneOf / allOf / $ref など）はフォームにできないため、JSON を直接入力してください。'
     params_empty: 'この能力はパラメータを取りません。'
     params_invalid: 'params は JSON オブジェクトである必要があります'
     nodes: 'ノードを限定'
-    nodes_hint: '空 = 必要な digest を持つオンラインの全ノード。候補はデプロイ候補から取得します。'
-    nodes_none: 'デプロイ候補のノードがありません（空のままにするとサーバーが digest で選びます）。'
+    nodes_hint: '空 = このバージョンを持つオンラインの全ノード。候補はデプロイ候補から取得します。'
+    nodes_none: 'デプロイ候補のノードがありません（空のままにするとサーバーが選びます）。'
     submit: 'テスト実行'
     submitting: '送信中…'
     trace: 'traceId: '
@@ -1613,7 +1596,7 @@ caps:
   yaml:
     open: 'YAML から作成'
     title: 'YAML からケイパビリティを作成'
-    hint: 'Capability ドキュメントを貼り付けてください（apiVersion/kind/metadata/spec）。status と metadata.resourceVersion はサーバーが管理します。'
+    hint: 'ケーパビリティ文書を貼り付けてください。status とバージョントークンはサーバーが管理するので書かないでください。'
     submit: '作成'
     cancel: 'キャンセル'
     created: 'YAML からケイパビリティを作成しました'
@@ -1741,18 +1724,19 @@ nodes:
     name: "クラスタ内で一意の名前"
     create: "登録して識別トークンを発行"
     cancel: "閉じて平文を消去"
-    refresh: "状態を更新"
+    refresh: '更新'
     loading: "読み込み中…"
     empty: "ノードがありません。登録、トークン発行後に本機へインストールしてください。"
     token: "ノード識別トークン"
     token_warning: "平文は今回のみ返されます。長期識別用で一回限りの bootstrap ではなく、expiresAt はありません。再発行で旧トークンとセッションは無効になります。URL、ログ、vars に記載しないでください。"
     rotate: "識別トークンを再発行"
+    more: 'その他の操作'
     rotate_confirm: "{name} の識別トークンを再発行しますか？旧トークンとセッションの新規認可は直ちに無効になります。本機の設定を更新してください。"
     bootstrap_title: "コマンド 1 本でインストール（ノードのホストで実行）"
     bootstrap_hint: "このコマンドはノードのバイナリをダウンロードして検証し、ハブに対して身元を事前確認し、設定とサービスユニットを書き込んでからサービスを起動します。特権が必要なときはスクリプト自身がパスワードを尋ねるので、コマンドの前に sudo を付けないでください。平文トークンはこのパネルでのみ表示され、閉じると再取得できません。"
     copy_bootstrap: "インストールコマンドをコピー"
     local_setup: "本機の設定と3つの公開コマンド"
-    setup_hint: "anode.yaml を保存して install または serve を実行します。発行済みトークンを使用し、自動登録しません。vars は秘密ではありません。envPassthrough の一覧と値は本機のみ。PATH、HOME、ANOTIFY_ は禁止です。ANOTIFY_ARTIFACT_DIR の診断は名前と出所のみで絶対パスは表示しません。"
+    setup_hint: 'anode.yaml を保存してから install または serve を実行します。発行済みトークンを使い、自動登録はしません。ANOTIFY_ARTIFACT_DIR はノードが提供し、診断は名前と出所のみで絶対パスは表示しません。'
     copy_emit: "emit コマンドをコピー"
     emit_hint: "この行はこのインスタンスに実在する「{cap}」を使っています。emit はノード上のエージェントがタスク内で実行するもの（タスクトークンは自動で付与されます）で、ご自身のターミナルでは実行しないでください。"
     emit_none: "このインスタンスにはまだ能力がありません。まず 1 つ作成してください。"
@@ -1765,25 +1749,26 @@ nodes:
     slots: "物理スロットの状態"
     slot_note: "有効な slot の busy=false のみ空きです。slot 0 は有効です。Task の終端状態はプロセス回収の証拠ではなく、busy/instances の欠落は空きとみなしません。"
     effective_namespaces: "有効な名前空間（申告 ∩ 許可）"
-    authorized: "許可された namespaces"
+    authorized: '中枢が許可した名前空間'
+    authorized_note: 'このノードが申告した名前空間だけが有効になります。'
     none: "なし"
     config: "ノードの既定設定"
     vars: "vars（非秘密の JSON 名前→文字列）"
     limits: "limits（本機とノードの2層のみ）"
-    save: "現在の CAS で保存"
+    save: '保存'
     reload: "最新設定を明示的に再読込"
     reload_confirm: "再読込で現在の下書きを置き換えます。続行しますか？"
     saved: "保存しました。ノードの既定値は apply を待ち、名前空間の値は次のタスクのみへ反映します。"
-    stale: "409: CAS が古いため下書きをそのまま保持しました。明示的に再読込して再試行してください。"
+    stale: 'ほかの場所で更新されています。下書きはそのまま残ります。再読み込みしてからやり直してください（自動では上書きしません）。'
     error: "リクエスト失敗"
     loaded: "現在の設定を読み込みました。"
-    pending: "ConfigPending: ノードの設定は未適用"
-    applied: "ノード revision は一致（名前空間入力の版とは別）"
-    revision: "設定と適用の状態"
+    pending: 'ConfigPending: ノードの設定は未適用'
+    applied: 'ノード設定は中枢と一致しています'
+    revision: '設定と適用の状態'
     override_stale: "overrideStale: 下位の既定値は更新されましたが本機の値が優先です"
-    context: "有効な値の名前空間"
-    effective_vars: "有効な vars（local > node > namespace、キー別出所）"
-    machine_vars: "ノードに適用済みの vars（名前空間既定値なし）"
+    context: '有効値の名前空間コンテキスト'
+    effective_vars: '有効な vars（本機の上書き > ノード既定、キーごとに出所）'
+    machine_vars: 'このノードで実際に有効な vars（名前空間の既定を除く）'
     vars_table_title: "変数の一覧（値 / 出所 / 必要とする能力）"
     vars_table_hint: "値は local > node > namespace の順にキー単位で解決され、出所はサーバーが返します。能力が要求しているのに有効値が無い名前は赤で示します — タスクが解決できない値です。"
     vars_col_name: "名前"
@@ -1828,7 +1813,7 @@ nodes:
     key: "名前 / リーフフィールド"
     value: "値"
     ns_config: "名前空間 vars 設定（limits なし）"
-    ns_hint: "この名前空間の次のタスク用に解決し、ノードの applied には保存しません。"
+    ns_hint: 'その名前空間の次のタスクだけに影響し、ノードの既定値には書き込まれません。'
     retention: "システム保持期間（管理者）"
     retention_hint: "単位は秒です。0 は永久保存を意味します。"
     admin_only: "管理者のみシステム保持期間を閲覧・編集できます。"
@@ -1838,26 +1823,26 @@ nodes:
     upgrade_confirm: "{name} の更新を要求しますか？バイナリの置換・再起動があり得ます。実際の結果のみ表示します。"
     action_done: "中枢が操作を受け付けました："
     not_found: "ノードがありません。クラスタ一覧へ戻ってください。"
+    load_failed: 'このノードを読み込めませんでした。再試行するか、ノード一覧に戻ってください。'
     back: "ノード一覧へ"
-    tasks: "この名前空間の最近のタスク"
+    tasks: '現在の名前空間の最近のタスク'
+    tasks_all: '{n} 件をすべて表示'
     artifacts: "能力デプロイの実際の状態"
     batch_hint: "設定は各ノードで編集できます。バッチ API はノード単位で原子的で、部分成功を許します。"
 
-    node_subtitle: "ノード単位：識別と接続 · 許可ネームスペース · 設定（YAML）· 物理スロット"
+    node_subtitle: 'このノード：接続状態・稼働中の能力・設定'
     yaml_title: "ノード YAML（apiVersion anotify/v1 · kind Node）"
-    yaml_hint: "サーバーが現在の事実から再構築した正規化ドキュメントです：spec のフィールド集合のみで、status とマシン固有のフィールド（token / server / listen / envPassthrough はハブに届きません）は含みません。丸ごと貼り戻せば保存できます。フォームの変更は同じテキストに同期します。"
     yaml_view: "現在のドキュメント"
-    yaml_edit: "YAML を編集"
-    yaml_edit_hint: "厳格に解析：未知のフィールド、型の誤り、resourceVersion の欠落は行番号とフィールドパス付きで拒否されます"
-    yaml_input: "YAML 全文"
-    yaml_save: "この YAML を保存"
-    yaml_reset: "現在のフォームから書き直す"
-    yaml_saved: "保存しました：YAML を適用し、ドキュメントを再正規化しました。"
-    yaml_invalid: "検証に通りませんでした：下の行番号とフィールドパスを直してから保存してください。"
-    yaml_dirty: "下書きが変更されています。保存時にサーバーが正規化します。"
-    yaml_reset_done: "現在のフォームから書き直しました（未保存）。"
+    yaml_edit: 'YAML を編集'
+    yaml_edit_hint: '保存時にドキュメント全体を検査し、問題は行番号とフィールド名で示します'
+    yaml_input: 'YAML 全文'
+    yaml_save: 'この YAML を保存'
+    yaml_reset: '現在の設定から書き直す'
+    yaml_saved: '保存しました：ドキュメントを更新し、ノードは次回の同期で新しい設定を反映します。'
+    yaml_invalid: '検証に通りませんでした：下の行番号とフィールド名を直してから保存してください。'
+    yaml_dirty: '下書きが変更されています。保存時にサーバーが正規化します。'
+    yaml_reset_done: '現在の設定から書き直しました（未保存）。'
     authorized_title: "許可ネームスペース（このノードを使える範囲）"
-    authorized_hint: "これは許可リストであり複製ではありません：有効 = 許可 ∩ マシンの申告。締める方向にだけ変更できます。"
     effective_title: "有効ネームスペース（読み取り専用）"
     effective_hint: "ノードの申告 ∩ ハブの許可。すべて取り消すには許可リストを空にします。"
     open_namespace: "ネームスペースページを開く"
@@ -1869,7 +1854,7 @@ sources:
     close: "閉じる"
     save: "保存"
     save_failed: "保存に失敗しました"
-    reload: "最新のリソースを再読込"
+    reload: '更新'
     detail: "ソース詳細"
     back: "ソース一覧へ"
     intro: "ソースはイベントを生成し、対象の能力にパラメータを渡します。"
@@ -1877,7 +1862,7 @@ sources:
     empty: "ソースがありません。対象のない入口も作成できます。"
     name: "リソース名 · metadata.name"
     display: "表示名（任意）"
-    kind: "ソース種別 · spec.kind"
+    kind: 'ソース種別'
     immutable: "作成後は名前と種別を変更できません。削除して再作成してください。"
     expr: "Cron 式（5項目）"
     tz: "IANA タイムゾーン（既定 Local）"
@@ -1894,7 +1879,7 @@ sources:
     remove_target: "対象の行を削除"
     capability: "能力の参照（名前または名前@版）"
     params: "パラメータ · targets[].params"
-    params_hint: "定数、$(payload.x)、$(payload.items.0.x)、文字列連結を使用できます。単独参照は型を保持し、欠落パスは枝刈りします。既定値は能力の schema に属し、対象が空でも有効です。"
+    params_hint: '定数、$(payload.x)、$(payload.items.0.x)、文字列連結を使用できます。単独参照は型を保持し、欠落パスは枝刈りします。既定値は能力に属し、対象が空でも有効です。'
     enabled: "有効"
     disabled: "無効"
     enable: "有効にする"
@@ -1919,20 +1904,20 @@ sources:
     more: "その他の操作"
     saved_dry_hint: "プレビューのみ（イベントを作成しません）。「今すぐ実行」はイベントを作成して配送します"
     yaml: "元の YAML"
-    yaml_hint: "保存済みの定義から再構築。認証情報は書き込み専用のため hookUrl / secretSet のみ表示"
+    yaml_hint: '保存された定義から再構築。認証情報は書き込み専用。マスク済み config を含みます'
     yaml_loading: "YAML を生成中…"
     yaml_error: "元の YAML を読み込めませんでした"
     yaml_create:
       open: "YAML から作成"
       title: "YAML からソースを作成"
-      hint: "Source ドキュメントを貼り付けてください。`spec.config.token` / `secret` は書き込み専用で、保存後は hookUrl のみ表示されます。"
+      hint: 'Source ドキュメントを貼り付けてください。<code>spec.config.token</code> / <code>secret</code> は書き込み専用で、保存後は hookUrl のみ表示されます。'
       submit: "作成"
       cancel: "キャンセル"
       created: "YAML からソースを作成しました"
       empty: "先に YAML ドキュメントを貼り付けてください"
     draft_dry: "下書きをプレビュー（保存不要）"
     namespace: "名前空間"
-    rv: "resourceVersion（CAS トークン）"
+    rv: 'バージョントークン'
     health: "健全性"
     resolved: "targetsResolved（真偽値）"
     last_fire: "最終実行"
@@ -1955,7 +1940,7 @@ sources:
     delete_confirm: "ソース「{name}」を削除しますか？イベントとタスクは保持されます。"
     confirm_again: "再読込しました。最新状態を確認してください。削除は再確認が必要です。"
     reload_draft: "下書きを破棄して最新を再読込"
-    draft_preserved: "CAS 競合：下書きは保持し、新トークンで自動再試行しません。明示的に最新を再読込してください。"
+    draft_preserved: 'バージョン競合：下書きは保持し、新トークンで自動再試行しません。明示的に最新を再読込してください。'
     reload_confirm: "現在の入力を破棄して最新を読み込みますか？"
   empty_title: ソースがまだありません
   detail: "詳細"
@@ -2034,7 +2019,7 @@ sources:
     result_schema: "イベント payload 契約（resultSchema、任意）"
     result_schema_hint: "任意。JSON Schema（例: {\"type\":\"object\",\"required\":[\"action\"]}）を入れると、配信のたびに検証します：契約に合わないイベントは保存されますが配信されず、trace に event_schema の剪枝が残ります。空 = 検証しない。"
     bad_schema: "payload 契約が正しい JSON ではありません: {e}"
-    schema_not_object: "payload 契約は JSON オブジェクトである必要があります（配列/スカラーは schema ではありません）"
+    schema_not_object: 'payload 契約は JSON オブジェクトである必要があります（配列/スカラーはオブジェクトではありません）'
     no_caps: '利用可能な能力がありません。先に「能力」ページで作成してください。'
     no_params: この能力はパラメータを取りません
     bad_json: パラメータ {k} が正しい JSON ではありません
@@ -2129,7 +2114,7 @@ trace:
   copy_failed: コピーに失敗
   triggered_by: 起点
   nolib: 描画スクリプトを読み込めませんでした。
-  empty: 'このトレースにはタスクがありません。最初のステップで剪定された可能性があります（一致するターゲット能力がない、パラメータが schema に合わない、対象能力を宣言したノードがない）。'
+  empty: 'このトレースにはタスクがありません。最初のステップで剪定された可能性があります（一致するターゲット能力がない、パラメータが定義に合わない、対象能力を宣言したノードがない）。'
   empty_title: タスクがありません
   emits:
     title: 产出（emits）
@@ -2240,7 +2225,7 @@ pb:
   subtitle: '能力・下流・ソースを、点検して補完できるひとつのプレイブックにまとめる'
   detail_subtitle: '点検：能力 → 下流 → ノード → ソース'
   detail_title: プレイブックの詳細
-  rescan: 再点検
+  rescan: '更新'
   rescanned: 再点検しました
   back: プレイブック一覧へ
   install: 補完
@@ -2323,12 +2308,12 @@ pb:
     upload_directory: "自己完結パッケージのディレクトリを選択"
     upload_hint: "複数ファイルはディレクトリで相対パスを保持するか、完全なファイルマップ JSON を貼り付けます。"
     file_map: "完全なファイルマップ JSON（パス → 未展開の原文）"
-    oci_hint: "中枢が一度だけ取得して digest を保存します。OCI とファイルは択一。認証情報は中枢に置きます。"
+    oci_hint: '中枢が一度だけ取得して内容指紋を保存します。OCI とファイルは択一。認証情報は中枢に置きます。'
     store: "パッケージを保存"
     saving: "保存中…"
     open: "パッケージを開く"
     stored: "テンプレートを保存しました。リソースは未インストールです。"
-    slug_taken: "同名パッケージがあります。詳細で PUT 更新してください（入力は保持）。"
+    slug_taken: '同名パッケージがあります。詳細でテンプレート全体を保存すると置き換わります（入力は保持）。'
     namespace: "名前空間"
     loading: "読み込み中…"
     load_failed: "読み込みに失敗しました"
@@ -2337,10 +2322,9 @@ pb:
     unapplied_count: "未適用の差分 {n} 件"
     last_install: "最新インストール記録"
     duplicate_files: "パスが重複しています。相対パスを保持するディレクトリを選択してください。"
-    detail_hint: "追加のみ：既存ルート・ソースの変更や削除はしません。ノードへのデプロイは手動です。"
+    detail_hint: 'インストールは追加のみで、既存の能力・ソースを上書きしません。'
     checkup: "点検：conditions / items"
     values: "インストール値（values）"
-    values_hint: "フォームは playbook.yaml の JSON Schema に基づきます。既定値はサーバーが補完し、writeOnly は今回のみ入力します。"
     values_json: "完全な values JSON 入力"
     values_json_hint: "フォームと同じ values オブジェクトです（別プロトコルではありません）。採用後のみ使用します。"
     use_json: "JSON 値を採用"
@@ -2351,7 +2335,6 @@ pb:
     instances: "valuesDigest ごとのインストール記録"
     instances_hint: "読み取り専用ビュー：attempts は試行回数。由来は初回作成の記録であり、所有権ではありません。"
     template: "元パッケージの編集／エクスポート"
-    template_hint: "原文は GET includeBody=true の spec.files。CAS 付き PUT で全体を置換し、インストールはしません。"
     file_path: "パッケージ内の相対パス"
     raw_content: "未展開の元の内容"
     new_path: "新規ファイルの相対パス"
@@ -2359,16 +2342,17 @@ pb:
     remove_file: "テンプレートからファイルを削除"
     export: "元ファイルマップ全体をエクスポート"
     import_map: "完全なファイルマップ JSON をインポート（下書きのみ）"
-    save_template: "テンプレート全体を保存"
+    save_template: 'テンプレートを保存'
     reload_template: "テンプレートを再読込（下書きを破棄）"
     delete_manifest: "マニフェストのみ削除"
-    delete_hint: "アンインストールではありません。能力・ソース・記録は残ります。最新 resourceVersion と確認が必要です。"
+    delete_section: 'このプレイブックを削除'
+    delete_hint: 'アンインストールではありません。能力・ソース・記録は残ります。削除には最新の版トークンと確認が必要です。'
     unapplied: "未適用の差分 — 未準備"
     unapplied_hint: "既存定義を再利用し、next / targets.params は変更しません。宣言と実際を比較して手動編集してください。"
     declared: "パッケージの宣言（declared）"
     actual: "保存された実際の値（actual）"
-    omitted: "省略（schema の既定値）"
-    schema_loaded: "元ルートマニフェストから値 schema を読み込みました。"
+    omitted: '省略（既定値）'
+    schema_loaded: '元ルートマニフェストから値定義を読み込みました。'
     dry_receipt: "試行記録（未保存）"
     receipt: "単一インストール記録"
     created: "作成（created）"
@@ -2389,7 +2373,7 @@ pb:
     group_count: "valuesDigest {n} グループ"
     single_receipt: "完全な単一記録を読む"
     no_installs: "通常インストール記録なし（試行は記録しません）。"
-    raw_missing: "元の spec.files / playbook.yaml がありません。要約をテンプレートとして保存できません。"
+    raw_missing: '元の <code>spec.files</code> / <code>playbook.yaml</code> がありません。要約をテンプレートとして保存できません。'
     missing_id: "パッケージ slug がありません。"
     invalid_path: "無効または重複したパス。パッケージ内の相対パスを使用してください。"
     entry_required: "playbook.yaml は必須入口で削除できません。"
@@ -2398,12 +2382,12 @@ pb:
     template_saved: "テンプレート全体を保存。既存リソースは未変更、インストールも未実行です。"
     draft_kept: "400 / 409：下書きを保持。エラー確認または明示的再読込をしてください。自動上書き再試行はしません。"
     reload_confirm: "再読込で未保存ファイルと値入力を破棄します。続行しますか？"
-    reloaded: "最新元パッケージと CAS トークンを読み込みました。"
+    reloaded: '最新元パッケージと版トークンを読み込みました。'
     values_object: "values は JSON オブジェクトである必要があります。"
     json_selected: "次の操作ではこの完全な values JSON を使用します。"
     delete_confirm: "マニフェストのみ削除しますか？能力・ソース・記録・由来は残ります。アンインストールではありません。"
     deleted: "マニフェストを削除。以下の内容は保持。"
-    delete_stale: "CAS が古いです。再診断で最新を取得し、再削除時も確認が必要です。"
+    delete_stale: '版が古いです。再読み込みで最新を取得し、再削除時も確認が必要です。'
 
 node:
   artifacts:
@@ -2466,7 +2450,6 @@ uxaudit:
     common:
       cancel: 'キャンセル'
     nodes:
-      note_summary: 'スロット判定と一括書き込みの規則'
       unknown: '—（不明）'
       ns_label: '有効な認可'
       config_rev: '設定リビジョン'
@@ -2503,7 +2486,7 @@ uxaudit:
       group_basic_hint: '名前と種類は作成後に変更できません'
       group_credentials: '受信の資格情報'
       group_payload: 'ペイロード'
-      group_payload_hint: '静的ペイロード / ペイロードスキーマ'
+      group_payload_hint: '静的 payload / 値の契約'
       group_targets: 'ターゲット'
       group_targets_hint: 'ターゲットが空でも有効です'
       group_other: 'その他'
@@ -2519,12 +2502,6 @@ uxaudit:
       role_admin: 'スーパー管理者'
       role_member: 'メンバー'
       active_sessions: '{n} 件の有効セッション'
-      scope_note: '集計範囲：全ネームスペース（上部のネームスペースに追従しません）'
-      notes_title: 'このコンソールでできること'
-      notes_sub: 'ここはシステム全体の操作です。変更は即時に反映され、イベントストリームに記録されます。'
-      note_role: 'ロールは 2 種類のみ：スーパー管理者はユーザーとセッションを管理でき、メンバーはワークスペースのリソースのみ使えます。'
-      note_disable: 'アカウントの無効化は即時反映され、次のリクエストは 401 で拒否されます。'
-      note_session: 'セッションは個別に失効できます。失効するのはその端末のみです。'
   security:
     passkey_empty_title: 'Passkey がまだありません'
     session_empty_title: '有効なセッションがありません'
@@ -2578,7 +2555,7 @@ uxaudit:
     copy: 'コピー'
     raw: '元の JSON を表示'
     event_id: 'イベント ID'
-    drift: '設定が未反映です：設定 {config}、ノード適用済み {applied}'
+    drift: '設定が未反映です：設定リビジョン {config}、ノードの現在 {rev}'
     drift_short: 'ノードの適用待ち'
     field: 'フィールド'
     type: '型'
@@ -2591,7 +2568,7 @@ uxaudit:
     total: '合計'
     per_cap: '能力ごと'
     edit_raw: '元の JSON を編集'
-    edit_raw_hint: '現在の CAS トークンで保存'
+    edit_raw_hint: '現在のバージョントークンで保存'
 
 paging:
   search_ph: '名前 / 表示名で検索'
@@ -2611,13 +2588,10 @@ source_detail:
   resolved_no: 'targets 未解決'
   created: '作成日時'
   updated: '更新日時'
-  updated_hint: '独立した更新日時の項目はありません：書き込みごとに resourceVersion が増えて表されます。'
   hook_url: 'Hook URL'
   secret_set_yes: 'HMAC 署名は設定済み（書き込み専用）'
   secret_set_no: 'HMAC 署名なし'
   schema_none: 'ペイロード契約にフィールドの宣言はありません'
-  config_json: '生の JSON を見る'
-  config_json_hint: '読み取り投影はマスク済み'
   params_none: 'パラメータは未設定'
   recent: '最近の受信'
   recent_hint: '直近 20 件のイベント（source で絞り込み）。受信成功はタスク成功を意味しません。'
@@ -2638,8 +2612,6 @@ namespaces:
     col_sources: "ソース"
     col_tasks: "タスク"
     col_created: "作成日時"
-    note_summary: "ネームスペースで設定できること"
-    note_body: "ネームスペース単位で設定できるのは既定 vars（namespace_configs）と設定リビジョンだけです。schema にネームスペース単位の割当はありません — limits は「マシン + ノード」の二層のみで、どのネームスペースがマシンを使えるかはノードの許可で決まります。"
 namespace:
   v4:
     title: "ネームスペース"
@@ -2647,8 +2619,6 @@ namespace:
     back: "ネームスペース一覧へ"
     scope: "現在のネームスペース"
     scope_label: "ネームスペース"
-    scope_hint: "切り替えると URL の name パラメータが変わります（ブックマーク・共有可）。同じ CAS 判定により、A の下書きが B に書き込まれることはありません。"
-    vars_hint: "このネームスペースで次に解決されるタスクにのみ影響します。ノードの applied には書き込みません。"
     counts: "件数（派生）"
     count_capabilities: "能力"
     count_nodes: "ノード"
@@ -2656,20 +2626,20 @@ namespace:
     count_tasks: "タスク"
     effective: "あるノードの有効変数"
     node: "ノード"
-    effective_hint: "local > node > namespace の順にキー単位で解決します。ソースはサーバーが返し、ページは推測しません。"
+    effective_hint: 'ローカル > ノード > ネームスペースの順に、変数ごとに解決します。各値の出所はサーバーが示します。'
     col_node: "ノード"
     col_status: "状態"
     node_online: "オンライン"
     node_offline: "オフライン"
     node_draining: "ドレイン中"
     node_online_draining: "オンライン（ドレイン中）"
-    effective_source_hint: "ソースはサーバーがキー単位で解決します：local（マシンのスナップショット）> node（ノード既定）> namespace（ここの既定値）。vars に「能力レベル」はありません — perCapability は limits だけです。"
+    effective_source_hint: '各値の出所はサーバーが示します：ローカルスナップショット > ノード既定 > ネームスペース既定。ここで設定する既定値に「能力ごと」の層はなく、その層はノード側の limits にだけあります。'
     vars_table_title: "名前空間変数（この表は名前空間の既定値を書きます）"
     vars_table_hint: "値と出所は選択中のノードで解決されます。ここでの増減・変更は名前空間の既定値で、保存時に同じ YAML 文書へ直列化されます（唯一の書き込み口）。"
     vars_raw_title: "生 JSON（上級）"
     vars_raw_hint: "保存も同じ YAML 文書に書き込みます。表は同じ事実の構造化された入力口です。"
-    yaml_title: "ネームスペース YAML（文書）"
-    yaml_hint: "サーバーが現在の事実から再構築した正規化文書（apiVersion / kind / metadata / spec.vars）。上の表の増減・変更はこの文書へ直列化され、唯一の書き込み口 PUT /v1/namespaces/{name}/yaml（CAS = metadata.resourceVersion）で保存されます。"
+    yaml_title: "ネームスペース YAML（読み取り専用）"
+    yaml_hint: '現在の設定からサーバーが生成する読み取り専用のドキュメントです。'
     yaml_view: "現在のドキュメント"
     context_namespace: "ネームスペースのコンテキスト"
     links: "このネームスペースの他のもの"

@@ -15,8 +15,9 @@
  *      不是 v3 的 ?before= 翻页）：行序与 API 游标序列逐条相等、无重复，
  *      到底后按钮禁用、计数等于总数；刷新回到确定的第一窗口。
  *  V5  events / index 不多加载图脚本；trace 页只加载它需要的 flograph+graphs
- *      （#335 重写后的真实依赖，dagre/traceview 已不在 trace 页）；source 页
- *      仍然四个都在（顺序 dagre→flograph→graphs→traceview）且能画图。
+ *      （#335 重写后的真实依赖，dagre/traceview 已不在 trace 页）；旧 source.html
+ *      **已删除**（黑盒审计 B-4：它与 source-detail 页重复），带参访问也必须 404
+ *      — 这里直接断言 HTTP 状态（不是「页面里没有某个元素」那种否定句）。
  *
  * 套件结构：
  *   A. 造数：1 条走真 POST（派发出任务，trace 页才有内容）+ 999 条直插库的合成事件
@@ -28,7 +29,8 @@
  *      逐条相等；另有 limit=37 的短页扫描（1000 条 / 37 → 最后一页 1 行）钉住
  *      「不足整页 ⇒ nextCursor 为空」这条收敛边界。
  *   C. events 页 UI：连点「加载更多」19 次累积到 1000 行，顺序/去重/到底状态全查。
- *   D. 资源分层（同一 Chrome 会话，events/index/trace 三页的 resource 清单）。
+ *   D. 资源分层（同一 Chrome 会话，events/index/trace 三页的 resource 清单）
+ *      + 旧 source.html 的 404 探针（带参 / 无参都得 404）。
  *   E. #236 的 limit 硬顶（库里 1000 条 > 500，limit=501 刚好能看到钳位到 500）。
  *   F. #377 列表规模化：sources/nodes 的 limit/continue 翻页（与一次性全量逐条相等、
  *      末页无游标、非法 limit/跨命名空间游标 400）+ sources 页「首屏 20 行 + 加载更多 + 本地搜索」。
@@ -175,7 +177,9 @@ function streamRows(dbPath, namespaceId) {
 // 且不出现重复 uid」——比原来按首行 trace 猜测更硬。
 const FIRST_UID_SEL = "#ev-list .card[data-uid]";
 
-// listInfo 读列表状态：行数、首/末 uid、计数文案、更多按钮可用性。
+// listInfo 读列表状态：行数、首/末 uid、计数文案、更多按钮的可用性与**可见性**。
+// 2026-11-19（审计 D-2）：没有下一页时「加载更多」不再只置灰 —— 它整块 hidden。
+// 两个量都要读：只看 disabled 会把「一个点不动的按钮还占着位」当成合格。
 async function listInfo(page) {
 	return page.evaluate(() => {
 		const cards = [...document.querySelectorAll("#ev-list .card[data-uid]")];
@@ -187,6 +191,9 @@ async function listInfo(page) {
 			uids: cards.map((c) => c.getAttribute("data-uid")),
 			countText: (document.getElementById("ev-count") || {}).textContent?.trim() || "",
 			moreDisabled: more ? !!more.disabled : null,
+			// hidden 属性 = 页面的显式决定（不是被 CSS 盖住）。再乘一次真实可见性。
+			moreHidden: more ? !!more.hidden : null,
+			moreVisible: !!more && more.getBoundingClientRect().width > 0 && more.getBoundingClientRect().height > 0,
 		};
 	});
 }
@@ -291,8 +298,11 @@ async function main() {
 	);
 	V.expectStatus("建入口源 e2e.paging.src（targets=[e2e.paging]）→ 201", srcIngress, 201);
 
-	// V5 的 source 半边：source.html 也是「图页面」，需要一个**真源**才打得开详情页。
-	// v4 的源详情按 metadata.name 取（`source.html?name=`），所以这里断言拿得到名字。
+	// 造数据：两个真实源。第一个是**事件入口**（targets=[e2e.paging]），第二个
+	// （cron 源）**只为旧页面 404 探针存在**：D2 段用 /source.html?name=<它> 断言
+	// 旧页面已删除（带参也不复活）。保留它而不是删掉这半段造数据，是因为 404 探针
+	// 需要**一个真实存在的源名**：拿一个根本不存在的名字去请求，404 既可能来自
+	// “页面没了”也可能来自“资源没了”，那就什么都没证。
 	const srcCreate = await V.createSource(
 		base,
 		s.session,
@@ -305,12 +315,12 @@ async function main() {
 		}),
 	);
 	V.expectStatus(
-		"建 cron 源 e2e.paging.cron（出口 e2e.paging）→ 201（source.html 的 V5 半边需要真源）",
+		"建 cron 源 e2e.paging.cron（出口 e2e.paging）→ 201（旧页面 404 探针需要真实源名）",
 		srcCreate,
 		201,
 	);
 	const srcName = srcCreate.json?.metadata?.name;
-	H.eq("cron 源名可用于 source.html?name=", srcName, "e2e.paging.cron");
+	H.eq("探针用的真实源名", srcName, "e2e.paging.cron");
 
 	const realEv = await V.ingestEvent(base, s.sendKey, NS, {
 		source: "e2e.paging.src",
@@ -496,9 +506,9 @@ async function main() {
 
 	await page.goto(base + "/events.html", { waitUntil: "load", timeout: 20000 });
 	await H.waitForAppReady(page, "workspace");
-	// 默认每页 20；显式选 50，让 UI 与 API 的窗口大小可比。
+	// 默认每页 20；显式选 50（B-3：筛选栏全即时 —— select 的 change 就是查询，
+	// 不再有点「应用筛选」那一步）。
 	await page.selectOption("#ev-limit", String(UI_PAGE_SIZE));
-	await page.click("#ev-filter");
 	await waitForList(page, UI_PAGE_SIZE);
 
 	let info = await listInfo(page);
@@ -510,6 +520,24 @@ async function main() {
 		info.countText,
 	);
 	H.check("首屏「加载更多」可用（还有 continuation）", info.moreDisabled === false, JSON.stringify(info));
+	/* B-3（结构性）：筛选栏**全即时** —— 没有「应用筛选」按钮，改完控件就是一次查询。
+	   前半：那个按钮在 DOM 里根本不存在（删掉而不是藏起来）；
+	   后半：`#ev-limit` 的 change 直接带新值打请求（真实资源计时里 limit=50 出现，
+	   而不是等某次按钮点击后才出现）。 */
+	H.eq("events 页不再有「应用筛选」按钮（#ev-filter）", await page.locator("#ev-filter").count(), 0);
+	const consoleUrls = (await resourceNames(page)).filter((u) => u.includes("/console/events"));
+	H.check(
+		`#ev-limit 的 change 直接带新值查询（真实请求 URL 含 limit=${UI_PAGE_SIZE}）`,
+		consoleUrls.some((u) => new RegExp("[?&]limit=" + UI_PAGE_SIZE + "(&|$)").test(u)),
+		JSON.stringify({ urls: consoleUrls.map((u) => u.split("?")[1] || "").slice(-4) }),
+	);
+	// D-2 的反面：还有下一页时它必须**看得见**（hidden 未设、盒子非零），否则下面的
+	// 连点「加载更多」会在一个不可点元素上跑。
+	H.check(
+		"首屏「加载更多」可见（没有 hidden、有真实尺寸）",
+		info.moreHidden === false && info.moreVisible === true,
+		JSON.stringify({ moreHidden: info.moreHidden, moreVisible: info.moreVisible }),
+	);
 
 	// V5（events 页）：非图页面不加载四个图脚本。
 	const eventsResources = await resourceNames(page);
@@ -561,6 +589,12 @@ async function main() {
 		JSON.stringify({ rows: all.uids.length, unique: new Set(all.uids).size }),
 	);
 	H.check("到底后「加载更多」被禁用（continuation 为空）", all.moreDisabled === true, JSON.stringify({ moreDisabled: all.moreDisabled }));
+	// D-2：到底之后不是「置灰但还占位」，而是整块 hidden（一个点不动的按钮只会让人以为还能翻）。
+	H.check(
+		"到底后「加载更多」整块 hidden（不是只置灰）",
+		all.moreHidden === true && all.moreVisible === false,
+		JSON.stringify({ moreHidden: all.moreHidden, moreVisible: all.moreVisible }),
+	);
 	H.check(
 		`到底后计数文案等于 ${TOTAL_EVENTS}`,
 		all.countText.includes(String(TOTAL_EVENTS)),
@@ -577,12 +611,16 @@ async function main() {
 	await page.goto(base + "/events.html", { waitUntil: "load", timeout: 20000 });
 	await H.waitForAppReady(page, "workspace");
 	await page.selectOption("#ev-limit", String(UI_PAGE_SIZE));
-	await page.click("#ev-filter");
 	await waitForList(page, UI_PAGE_SIZE);
 	info = await listInfo(page);
 	H.eq(`刷新后回到 ${UI_PAGE_SIZE} 行的第一窗口`, info.count, UI_PAGE_SIZE);
 	H.eq("刷新后首行仍是最新一条（同一事件流顺序）", info.firstUid, expectedIds[0]);
 	H.check("刷新后「加载更多」重新可用", info.moreDisabled === false, JSON.stringify({ moreDisabled: info.moreDisabled }));
+	H.check(
+		"刷新后「加载更多」重新可见（上一份文档的 hidden 不得带过来）",
+		info.moreHidden === false && info.moreVisible === true,
+		JSON.stringify({ moreHidden: info.moreHidden, moreVisible: info.moreVisible }),
+	);
 
 	const layout = await page.evaluate(() => ({
 		overflow: document.documentElement.scrollWidth <= window.innerWidth + 1,
@@ -675,54 +713,25 @@ async function main() {
 	H.check("trace 页渲染出该 traceUID", traceSub.includes(traceId), traceSub.slice(0, 160));
 	H.check("trace 页无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 200));
 
-	// V5 的另一半：#234 改的是两页（trace + source）。source.html 也必须在图脚本上齐全。
+	// V5 的另一半：**source.html 已删除**（黑盒审计 B-4）。
+	//
+	// 它曾经与 source-detail 页是同一件事的两页（内容/副标题/目标能力/原始 YAML
+	// 全部重复，且没有任何页面链到它的带参形式）。产品侧删掉了前者，`/source.html`
+	// 由 `internal/server/static.go` 的未知文件路径兜成 **404** —— 刻意不是重定向：
+	// 301 到 source-detail 会让旧书签「看起来还在」，用户察觉不到这一页已经并进详情页。
+	//
+	// 断言的是 **HTTP 状态本身**：只断「页面里没有 #src-name」那种否定句在这里没有
+	// 意义（一个 200 的白页同样满足它）。
+	// 404 探针走宿主侧 HTTP，不打开任何文档；errs 在此清一次，后续页面各自判。
 	errs.length = 0;
-	await page.goto(base + "/source.html?name=" + encodeURIComponent(srcName), {
-		waitUntil: "load",
-		timeout: 20000,
-	});
-	await H.waitForAppReady(page, "workspace");
-	await page
-		.waitForFunction(() => (document.getElementById("src-name") || {}).textContent?.trim(), null, {
-			timeout: 10000,
-		})
-		.catch(() => {});
-	const sourceResources = await resourceNames(page);
-	H.check(
-		"source.html resource 清单非空（否定/正向断言的前置守卫）",
-		sourceResources.length > 5,
-		JSON.stringify({ n: sourceResources.length }),
+	const goneParam = await H.req(
+		base,
+		"/source.html?namespace=" + encodeURIComponent(NS) + "&name=" + encodeURIComponent(srcName),
 	);
-	const sourceLoaded = loadedGraphLibs(sourceResources);
-	H.check(
-		"source.html 四个图脚本都被请求了",
-		sourceLoaded.length === GRAPH_LIBS.length,
-		JSON.stringify({ loaded: sourceLoaded, resources: sourceResources.map(libBaseName) }),
-	);
-	const sourceLibOrder = (
-		await page.evaluate(() =>
-			[...document.querySelectorAll("script[src]")].map((s) => s.getAttribute("src")),
-		)
-	)
-		.map((src) => libBaseName(src || ""))
-		.filter((b) => b.includes("dagre") || b === "flograph.js" || b === "graphs.js" || b === "traceview.js");
-	H.check(
-		"source.html 图脚本顺序 dagre→flograph→graphs→traceview",
-		JSON.stringify(sourceLibOrder) === JSON.stringify(GRAPH_LIBS),
-		JSON.stringify({ sourceLibOrder }),
-	);
-	const sourceGlobals = await page.evaluate(() => ({
-		graphs: typeof window.AnotifyGraphs,
-		flow: typeof window.FlowGraph,
-		name: (document.getElementById("src-name") || {}).textContent?.trim() || "",
-	}));
-	H.check(
-		"source 页图脚本真的执行了（AnotifyGraphs / FlowGraph 就绪）",
-		sourceGlobals.graphs === "object" && sourceGlobals.flow === "object",
-		JSON.stringify(sourceGlobals),
-	);
-	H.check("source 页渲染出该源名称", sourceGlobals.name.includes("e2e.paging.cron"), JSON.stringify(sourceGlobals));
-	H.check("source 页无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 200));
+	H.eq("旧 source.html 已删除：GET /source.html?name=<源> → 404", goneParam.status, 404);
+	const goneBare = await H.req(base, "/source.html");
+	H.eq("旧 source.html 无参同样 404（不与带参行为分叉成重定向）", goneBare.status, 404);
+
 
 	// ---------- E. #236 limit 硬顶（库里 1000 条 > 500，天然满足） ----------
 	//

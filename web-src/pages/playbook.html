@@ -19,37 +19,6 @@
     font-size: 11.5px;
     line-height: 1.6;
   }
-  /* PB-4：卡片里成段的灰字说明收进 <details>（默认收起），summary 只有一枚
-     小三角 + 「说明」，不再让开发者旁白抢占卡片的主视觉。 */
-  .pb-note {
-    margin: 4px 0 0;
-  }
-  .pb-note > summary {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    list-style: none;
-    font-size: 11.5px;
-    color: var(--faint);
-    cursor: pointer;
-  }
-  .pb-note > summary::-webkit-details-marker {
-    display: none;
-  }
-  .pb-note > summary::before {
-    content: "▸";
-    font-size: 9px;
-    line-height: 1;
-  }
-  .pb-note[open] > summary::before {
-    content: "▾";
-  }
-  .pb-note > summary:hover {
-    color: var(--muted);
-  }
-  .pb-note > .card-sub {
-    margin: 6px 0 0;
-  }
   /* PB-5 / CP-6：原生 <input type=file>（英文「Choose File / No file chosen」、
      与全站 .input 尺寸不一致）换成自建选择框；input 透明铺满，仍然可聚焦、
      仍然接收文件。 */
@@ -149,10 +118,6 @@
 
       <section id="pb-values-section" class="card card-pad">
         <h3 class="card-title">{{t "pb.v4.values"}}</h3>
-        <details class="pb-note">
-          <summary>{{t "uxaudit.work.note"}}</summary>
-          <p class="card-sub">{{t "pb.v4.values_hint"}}</p>
-        </details>
         <div id="pb-schema-state" aria-live="polite"></div>
         <div id="pb-values" class="pb-values pb-section"></div>
         <details class="pb-section">
@@ -180,22 +145,15 @@
 
       <section class="card card-pad">
         <div class="card-head">
-          <h3 class="card-title">{{t "pb.v4.instances"}}</h3>
-          <button id="pb-refresh-installs" type="button" class="btn btn-ghost btn-sm">{{t "pb.rescan"}}</button>
+          {{/* C-5：这里曾经还有一个「重新体检」，与页头那个重复；安装记录跟着页头的
+               刷新一起重拉。卡片的说明改成标题上的 tooltip，不再白占一行。 */}}
+          <h3 class="card-title" title="{{t "pb.v4.instances_hint"}}">{{t "pb.v4.instances"}}</h3>
         </div>
-        <details class="pb-note">
-          <summary>{{t "uxaudit.work.note"}}</summary>
-          <p class="card-sub">{{t "pb.v4.instances_hint"}}</p>
-        </details>
         <div id="pb-installs" aria-live="polite"></div>
       </section>
 
       <section id="pb-template-section" class="card card-pad">
         <h3 class="card-title">{{t "pb.v4.template"}}</h3>
-        <details class="pb-note">
-          <summary>{{t "uxaudit.work.note"}}</summary>
-          <p class="card-sub">{{t "pb.v4.template_hint"}}</p>
-        </details>
         <div class="pb-template">
           <div class="field">
             <label for="pb-file-path" class="field-label">{{t "pb.v4.file_path"}}</label>
@@ -239,7 +197,7 @@
       </section>
 
       <section class="card card-pad">
-        <h3 class="card-title">{{t "pb.v4.delete_manifest"}}</h3>
+        <h3 class="card-title">{{t "pb.v4.delete_section"}}</h3>
         <p class="card-sub">{{t "pb.v4.delete_hint"}}</p>
         <button id="pb-delete" type="button" class="btn btn-danger pb-section">{{t "pb.v4.delete_manifest"}}</button>
         <div id="pb-delete-state" class="pb-section" aria-live="polite"></div>
@@ -287,7 +245,7 @@
       const identifier = kind === "source" ? ref : ref.split("@")[0];
       if (identifier === "***") return el("span", "btn btn-ghost btn-sm", ref);
       const a = el("a", "btn btn-ghost btn-sm", ref);
-      a.href = kind === "source" ? scoped("source", "name", identifier) : scoped("capabilities", "name", identifier);
+      a.href = kind === "source" ? scoped("source-detail", "name", identifier) : scoped("capabilities", "name", identifier);
       return a;
     }
     function showUnapplied(host, rows) {
@@ -306,7 +264,7 @@
     function checkup() {
       const pb = model.playbook(resource), status = pb.status;
       $("pb-name").textContent = pb.displayName || pb.slug;
-      $("pb-slug").textContent = pb.namespace + " / " + pb.slug + " · resourceVersion " + pb.resourceVersion;
+      $("pb-slug").textContent = pb.namespace + " / " + pb.slug + " · " + t("sources.v4.rv") + " " + pb.resourceVersion;
       $("pb-badge").textContent = t(status.ready ? "pb.status.ready" : "pb.v4.not_ready");
       $("pb-badge").className = "badge " + (status.ready ? "badge-success" : "badge-warn");
       $("pb-summary").replaceChildren(el("p", "card-title", t(status.ready ? "pb.status.ready" : "pb.v4.not_ready")));
@@ -464,7 +422,7 @@
       for (const key of Object.keys(draft).sort()) $("pb-file-path").append(new Option(key, key));
       filePath = nextPath && nextPath in draft ? nextPath : Object.keys(draft).sort()[0];
       $("pb-file-path").value = filePath || ""; $("pb-file-content").value = draft[filePath] || "";
-      $("pb-template-rv").textContent = "resourceVersion " + templateRV;
+      $("pb-template-rv").textContent = t("sources.v4.rv") + " " + templateRV;
     }
     async function rawTemplate(resetValues) {
       const raw = await api(path("?includeBody=true"));
@@ -600,7 +558,6 @@
     $("btn-dry-run").addEventListener("click", () => action("dry"));
     $("btn-install").addEventListener("click", () => action("install"));
     $("btn-rescan").addEventListener("click", load);
-    $("pb-refresh-installs").addEventListener("click", installs);
     document.addEventListener("DOMContentLoaded", load);
   })();
 </script>

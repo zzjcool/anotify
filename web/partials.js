@@ -159,13 +159,17 @@
 		],
 	};
 
-	/* ---------- 侧栏导航结构（IA：工作台 / 资源） ----------
+	/* ---------- 侧栏导航结构（IA：工作台 / 资源 / 账户） ----------
 	 * labelKey / groupLabelKey 指向 i18n key；渲染时用 t() 取值。
 	 * 无 i18n.js 时 fallback 到中文原文，保持向后兼容。
 	 *
-	 * v2 分组只有两个：工作台 = 日常在看的（总览/事件流/源/能力/出口/预案/节点），
-	 * 资源 = 配置与凭据（API Keys / API 文档 / 安全与登录）。退出登录不再是导航项，
-	 * 收进底部的用户块（.side-user 里的图标按钮）——它不是页面，是账号动作。 */
+	 * 三个分组：工作台 = 日常在看的（总览/事件流/源/能力/预案/节点/命名空间），
+	 * 资源 = 凭据与集成（API Keys / API 文档），账户 = 账号与登录（安全与登录）。
+	 * E-5：「安全与登录」原在「资源」组里 —— 登录与 Passkey 不是资源。单开一组的
+	 * 代价是多一行 12px 小标题，换来分组名与内容对得上；分组标签复用
+	 * common.nav.account（账户 / Account / アカウント / Cuenta）。
+	 * 退出登录不再是导航项，收进底部的用户块（.side-user 里的图标按钮）——
+	 * 它不是页面，是账号动作。 */
 	const NAV = [
 		{
 			groupLabelKey: "ui.nav.group_workspace",
@@ -250,6 +254,12 @@
 					href: "docs.html",
 					icon: "api",
 				},
+			],
+		},
+		{
+			groupLabelKey: "common.nav.account",
+			groupFallback: "账户",
+			items: [
 				{
 					id: "security",
 					labelKey: "common.nav.security",
@@ -1655,19 +1665,19 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 				el(
 					"div",
 					{ class: "min-w-0" },
-					/* 全站唯一的 h1。SH-4：它不再重复页面标题（.page-title 已经 28px 写了
-					 * 一遍，16 页里有 15 页两份同文字叠在一屏），改成「上下文」：
+					/* 全站唯一的 h1 = **页面名**（E-4）：o.title 由各页 mountLayout 传入，
+					 * 与内容区 .page-title 是同一句，所以「我在哪一页」由标题本身回答。
+					 * 上下文（分组 · 命名空间徽标）降级成紧跟其后的一行 div：
 					 *   工作台 · #default    /    资源 · 全部署通用
 					 * 分组来自侧栏 IA（NAV 的 groupLabelKey），命名空间来自当前 scope。
-					 * 页面名一个都没丢：完整标题挂在 h1 的 title 与 <title> 上。 */
+					 * 内容区 28px 的 .page-title 仍是主标题；顶栏这份字号刻意更小（15px），
+					 * 同一句文字不抢读者注意力。 */
+					el("h1", { class: "app-topbar-title", text: o.title || "" }),
 					(() => {
-						const h = el("h1", {
-							class: "app-topbar-title",
-							title: o.title || "",
-						});
+						const ctx = el("div", { class: "app-topbar-context" });
 						const grp = NAV_GROUP_OF[o.active] || null;
 						if (grp) {
-							h.append(
+							ctx.append(
 								el("span", {
 									class: "app-topbar-group",
 									text: t(grp.labelKey, grp.fallback),
@@ -1675,8 +1685,8 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 							);
 						}
 						if (o.scopeLevel === "deployment") {
-							if (grp) h.append(el("span", { class: "app-topbar-sep", text: "·" }));
-							h.append(
+							if (grp) ctx.append(el("span", { class: "app-topbar-sep", text: "·" }));
+							ctx.append(
 								el("span", {
 									class: "scope-badge",
 									title: t(
@@ -1693,12 +1703,12 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 								id: "scope-crumb",
 								class: "app-topbar-scope",
 							});
-							if (grp) h.append(el("span", { class: "app-topbar-sep", text: "·" }));
-							h.append(scopeEl);
+							if (grp) ctx.append(el("span", { class: "app-topbar-sep", text: "·" }));
+							ctx.append(scopeEl);
 							scopeCrumbEl = scopeEl;
 							paintScopeCrumb();
 						}
-						return h;
+						return ctx;
 					})(),
 					/* 副标题去重：页面自己渲染了 .page-sub（hero 副标题）时，
 					   顶栏不再渲染同向的 subtitle —— 否则 events / sources 这类页会在
@@ -2305,11 +2315,9 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			// trace 页 (#107)：同样是带查询串的深层链接
 			"trace.html",
 			"sources.html",
-			// 源详情页 (#112)：页面私有的深层链接，必须留在白名单里，
-			// 否则 401 后 next= 会回落到 index.html，把 ?id= 丢掉。
-			"source.html",
-			// 源只读详情页：同样是页面私有的深层链接（?namespace=&name=），
-			// 名称链接从列表页整页导航到这里。
+			// 源只读详情页：页面私有的深层链接（?namespace=&name=），名称链接从列表页
+			// 整页导航到这里 —— 必须留在白名单里，否则 401 后 next= 会回落到
+			// index.html，把参数丢掉。
 			"source-detail.html",
 			"capabilities.html",
 			// 能力详情页：同样是页面私有的深层链接（?namespace=&name=）。
@@ -3014,7 +3022,6 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	/* 详情页 → 它的列表页（404/410 的「返回列表」落点）。
 	 * 只收「有真实列表」的详情页；其余回落到首页。 */
 	const LIST_OF = {
-		"source.html": "sources.html",
 		// 源只读详情 → 源列表（404/410 的「返回列表」落点，见 loadErrorNode）。
 		"source-detail.html": "sources.html",
 		// 能力详情 → 能力列表（404/410 的「返回列表」落点，见 loadErrorNode）。

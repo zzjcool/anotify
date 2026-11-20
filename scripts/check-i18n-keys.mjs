@@ -28,10 +28,9 @@
  *     sharedT("a.b")      ← `const { t: sharedT } = Anotify` 的别名
  *     tt("a.b")           ← web/flograph.js 里 `const tt = (k, d) => …` 的本地包装
  *     section("a.b")      ← capabilities.html 的 `function section(titleKey, …)`，首参就是 key
- *   「前缀包装器」页（node/nodes/source/sources 四页，实测 11 处定义）：
+ *   「前缀包装器」页（如 node/nodes/sources 等页，实测 11 处定义）：
  *     const t = key => A.t("nodes.v4." + key);   ← 这种页里 t("config") 的真实 key 是
  *                                                    nodes.v4.config；脚本按文件级 wrapper 推断还原
- *     source.html 的 section(key) 也转发到该 t，所以 section("recent") → sources.v4.recent
  *   预防性形态：`data-i18n="a.b"`（当前仓库 0 处；支持它是为了将来有人这么写时不被静默漏检）
  *
  * 静态不可判的形态 → 只计数、不判红（打印数量，避免「以为查了其实没查」的错觉）
@@ -353,8 +352,8 @@ function wrapperPrefixes(source) {
 }
 
 /**
- * 本文件的 `section(key)` 是不是转发到本文件的 `t()`（source.html 实测如此）。
- * 决定了 `section("recent")` 的 key 要不要跟着 `t` 的前缀包装器走。
+ * 本文件的 `section(key)` 是不是转发到本文件的 `t()`（capability.html 实测如此）。
+ * 决定了 `section("k")` 的 key 要不要跟着 `t` 的前缀包装器走。
  */
 function helperForwardsToT(source) {
 	return /function\s+section\s*\([^)]*\)\s*\{[\s\S]{0,600}?\bt\(/.test(source);

@@ -1819,7 +1819,7 @@ html.flograph-fullscreen-open body {
         padding: 0.5rem 0;
       }
 
-/* ---------- 源与出口（sources.html / source.html 共用）---------- */
+/* ---------- 源与出口（sources.html / source-detail.html 共用）---------- */
 /* 节点在线状态点。
    节点页和能力页（"谁声明了它"）都要用，所以放共享样式里。
    颜色是状态语义，不走 token（和语义色一致：绿=在线、灰=离线、黄=排空中）。 */
@@ -2431,23 +2431,38 @@ a.side-link svg {
 	line-height: 1.4;
 	color: var(--muted);
 }
-/* ---------- 顶栏上下文（SH-4）----------
- * 顶栏 h1 不再重复页面标题，改成「分组 · 命名空间」这对**上下文**：
- *   .app-topbar-group  工作台 / 资源 / 管理  ← 11px uppercase 弱化
- *   .app-topbar-scope  #default              ← 12px mono，与侧栏切换器同一个 #
- * 页面标题仍只出现一次（内容区 28px 的 .page-title）；完整页名留在 h1 的
- * title 属性上，鼠标悬停可读。行高固定 20px，比旧 16px 标题少 0px → 顶栏高度不变。 */
+/* ---------- 顶栏标题与上下文（E-4）----------
+ * 顶栏 h1 就是**页面名**（o.title，与内容区 .page-title 同一句），
+ * 「分组 · 命名空间」降级成它下面的一行 div：
+ *   .app-topbar-title    通知接收 / 总览        ← 15px / 600，单行，超长省略
+ *   .app-topbar-context  工作台 · #default     ← 12px 弱化的一行上下文
+ *   .app-topbar-group    工作台 / 资源 / 账户  ← 11px uppercase 弱化
+ *   .app-topbar-scope    #default              ← 12px / 600，与侧栏切换器同一个 #
+ * 内容区 28px 的 .page-title 仍是主标题；顶栏这份字号刻意更小（15px），同一句
+ * 文字不抢注意力。标题 20px + 上下文 16px 仍在 --topbar-h 以内，高度不变。 */
 .app-topbar-title {
+	display: block;
+	min-width: 0;
+	max-width: 100%;
+	font-size: 15px;
+	font-weight: 600;
+	line-height: 20px;
+	letter-spacing: -0.01em;
+	color: var(--text);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.app-topbar-context {
 	display: flex;
 	align-items: center;
 	flex-wrap: wrap;
-	gap: 6px;	min-width: 0;
-	min-height: 20px;
-	font-size: 15px;
-	font-weight: 600;
-	line-height: 1.33;
-	letter-spacing: -0.01em;
-	color: var(--text);
+	gap: 6px;
+	min-width: 0;
+	margin-top: 1px;
+	font-size: 12px;
+	line-height: 16px;
+	color: var(--muted);
 }
 .app-topbar-group {
 	font-size: 11px;
@@ -2464,9 +2479,9 @@ a.side-link svg {
 	user-select: none;
 }
 .app-topbar-scope {
-	/* 命名空间是这一行里真正要看的「我在哪」：14px / 600 / 主文字色。
-	 * 分组名退到 11px faint，两层信息有明确的主次（否则整行读起来像占位符）。 */
-	font-size: 14px;
+	/* 上下文行里的命名空间：12px / 600 / 主文字色。分组名是 11px faint，
+	 * 两层信息有明确主次（否则整行读起来像占位符）。 */
+	font-size: 12px;
 	font-weight: 600;
 	letter-spacing: -0.01em;
 	color: var(--text);
@@ -2476,12 +2491,15 @@ a.side-link svg {
 	max-width: 22ch;
 }
 /* 徽章在 flex 里不再叠加 margin-left（gap 已给间距） */
-.app-topbar-title .scope-badge {
+.app-topbar-context .scope-badge {
 	margin-left: 0;
 }
 /* 窄屏：分组名先退（命名空间比“这页属于哪个分组”更关键），
  * 否则 390 宽下 汉堡 + 分组 + 命名空间 + 三个图标会互相挤（SH-5）。 */
 @media (max-width: 479px) {
+	.app-topbar-title {
+		font-size: 14px;
+	}
 	.app-topbar-group,
 	.app-topbar-sep {
 		display: none;
@@ -2974,7 +2992,7 @@ a.side-link svg {
    往左长 —— 390/360 下停用行（编辑 + ⋯）会把左缘推出视口，再被 body 的
    overflow-x:hidden 裁掉（实测左溢出 63/77px，菜单中点命中不到）。
    所以菜单改 fixed 定位：包含块变成视口，祖先的 overflow 不再裁剪它；
-   left/top 由页面 JS 按触发器矩形夹进视口（见 sources.html / source.html
+   left/top 由页面 JS 按触发器矩形夹进视口（见 nodes.html / sources.html
    的 placeMenu）。max-width 兜住面板本身，任何一档都不宽过视口。 */
 .act-menu > .menu {
 	position: fixed;

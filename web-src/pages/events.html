@@ -177,14 +177,7 @@
     flex: none;
     transition: transform var(--dur) var(--ease);
   }
-  .ev-filters-actions {
-    display: flex;
-    align-items: end;
-  }
-  .ev-filters-actions > .btn {
-    width: 100%;
-  }
-  /* 收起态（手机档）：第一列是开关，第二列是「应用筛选」。
+  /* 收起态（手机档）：只剩「筛选条件」开关一行。
      开关本身是一行：筛icon/文字 + 生效计数药丸 + chevron（收起时朝下）。 */
   @media (max-width: 899px) {
     .ev-filters-toggle {
@@ -206,24 +199,17 @@
       transform: rotate(180deg);
     }
     .ev-filters[data-collapsed="1"] {
-      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-columns: minmax(0, 1fr);
       align-items: center;
     }
     .ev-filters[data-collapsed="1"] .ev-filters-fields {
       display: none;
     }
-    .ev-filters[data-collapsed="1"] .ev-filters-actions > .btn {
-      width: auto;
-      min-height: 44px;
-    }
   }
   @media (min-width: 900px) {
-    /* 宽屏一行排满：4 个控件等分 + 按钮吃自身宽度，右侧不留大片空白 */
+    /* 宽屏一行排满：4 个控件等分，右侧不留大片空白 */
     .ev-filters {
-      grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
-    }
-    .ev-filters-actions > .btn {
-      width: auto;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
     }
   }
 
@@ -281,7 +267,8 @@
          桌面（>=900）默认展开 —— 那里本来就是一行，收起只会多一次点击。
          展开/收起状态记在 localStorage（anotify.ev-filters.open）：用户点开过一次，
          下次进页面不再重新收起。
-         #ev-filter 是本行里的提交按钮，收起时仍可点（e2e events_paging 直接点它）。 -->
+         每个控件改完就生效（change 即查询）；保留 <form> 只为「在输入框里按回车」
+         也能提交一次查询。 -->
     <form id="ev-filters" class="card card-pad ev-filters" data-collapsed="0">
       <button
         type="button"
@@ -328,9 +315,6 @@
           </select>
         </div>
       </div>
-      <div class="ev-filters-actions">
-        <button id="ev-filter" class="btn btn-primary" type="submit">{{t "events.v4.filter"}}</button>
-      </div>
     </form>
     <div id="ev-error" role="status"></div>
     <div id="ev-list" class="card ev-list" aria-live="polite" aria-busy="true">
@@ -350,7 +334,7 @@
     </div>
     <div class="ev-pager">
       <span id="ev-count" class="card-sub"></span>
-      <button id="ev-more" class="btn btn-ghost" type="button" disabled>{{t "events.v4.more"}}</button>
+      <button id="ev-more" class="btn btn-ghost" type="button" disabled hidden>{{t "events.v4.more"}}</button>
     </div>
   </div>
 </div>
@@ -378,6 +362,19 @@
       if (filters.traceId) params.set("traceId", filters.traceId);
       if (token) params.set("continue", token);
       return "/v1/console/events?" + params;
+    }
+
+    /* 时间一律给本地时间（与 source-detail.html 同一个 formatter）：
+       事件流的「接收时间」是给人对时的，ISO 字符串留给下面的原始明细。 */
+    function fmtTime(iso) {
+      if (!iso) return "—";
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return String(iso);
+      try {
+        return d.toLocaleString();
+      } catch (e) {
+        return String(iso);
+      }
     }
 
     /* 一个字段 = label + value，两者同一种盒模型；所有字段（含「已派发任务数」）
@@ -432,7 +429,7 @@
       const facts = el("dl", { class: "ev-facts" },
         fact(t("uxaudit.dev.event_id"), event.uid),
         fact("Trace UID", event.traceUID), fact(t("events.v4.source"), event.involvedObject?.name),
-        fact(t("events.v4.received"), event.creationTimestamp));
+        fact(t("events.v4.received"), fmtTime(event.creationTimestamp)));
       const details = el("details", { class: "ev-details" },
         el("summary", null, t("events.v4.details")));
       const dispatched = el("div", { class: "ev-details-body" },
@@ -453,7 +450,11 @@
       list.classList.toggle("anim-stagger", ordered.length > 0);
       if (!ordered.length) list.append(el("div", { class: "empty", text: t("events.v4.empty") }));
       node("ev-count").textContent = t("events.v4.count").replace("{n}", ordered.length);
-      node("ev-more").disabled = busy || !continuation;
+      /* 没有下一页就把「加载更多」整块藏起来（不是只置灰：一个点不动的按钮
+         只会让用户以为还能翻）。 */
+      const more = node("ev-more");
+      more.hidden = !continuation;
+      more.disabled = busy || !continuation;
     }
 
     async function load(mode = "refresh") {
@@ -488,7 +489,9 @@
           busy = false;
           list.removeAttribute("aria-busy");
           node("ev-refresh").disabled = false;
-          node("ev-more").disabled = !continuation;
+          const more = node("ev-more");
+          more.hidden = !continuation;
+          more.disabled = !continuation;
         }
       }
     }
@@ -509,8 +512,7 @@
      * 一条 chip）；收起成一行后第一行事件上提到 ~330px。
      * 默认值：桌面（>=900）展开、手机收起 —— 桌面本来就只有一行，收起只会多一次点击。
      * 用户的手动选择记在 localStorage：点开过一次，下次进页面不再重新收起。
-     * 注意：这里只改 DOM 属性，不碰请求参数；收起状态下 #ev-filter（应用筛选）
-     * 仍在一行里可点 —— e2e events_paging 直接点它，不需要先展开。 */
+     * 注意：这里只改 DOM 属性，不碰请求参数 —— 查询一律由各控件的 change 触发。 */
     const FILTERS_OPEN_KEY = "anotify.ev-filters.open";
     function filtersNarrow() {
       try { return !!matchMedia("(max-width: 899px)").matches; } catch { return false; }
@@ -549,12 +551,11 @@
       badge.textContent = t("events.v4.filters_active", "{n} 个生效").replace("{n}", n);
     }
 
+    /* 筛选区只有一个生效方式：控件一改就查（不再有「应用筛选」按钮）。
+       保留 form 的 submit 只为了支持在输入框里按回车；它走的也是同一个 reset()。 */
     node("ev-filters").addEventListener("submit", event => {
       event.preventDefault();
       reset();
-      paintFilterCount();
-      /* 手机上「应用筛选」= 想看结果，顺手收起面板（桌面不动）。 */
-      if (filtersNarrow()) applyFiltersCollapse(false, false);
     });
     node("ev-filters-toggle").addEventListener("click", () => {
       const open = node("ev-filters").getAttribute("data-collapsed") !== "1";
@@ -565,6 +566,10 @@
       saveScope({ namespace: node("ev-namespace").value });
       reset();
     });
+    /* 其余三个控件：change 即生效（select 选完就查，输入框是回车/失焦后查）。 */
+    for (const id of ["ev-source", "ev-trace", "ev-limit"]) {
+      node(id).addEventListener("change", () => reset());
+    }
     node("ev-more").addEventListener("click", () => { if (!busy) load("more"); });
     node("ev-refresh").addEventListener("click", () => { if (!busy) load(); });
     A.mountPullRefresh(() => load());
