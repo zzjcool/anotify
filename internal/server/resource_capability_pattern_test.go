@@ -1,23 +1,11 @@
 package server
 
-// #475：`pattern` 的 HTTP 验收。
-//
-// 两个写入面各钉一条：
-//   - 能力写入（POST …/capabilities）里 pattern 编不过 → 400，details.causes[].field
-//     指向 schema 里的精确位置（spec.params.properties.<name>.pattern）；
-//   - 人工试跑（POST …/{name}/test）里值不匹配 → 400，field 指向参数路径
-//     （params.<name>，嵌套是 params.meta.dir），message 同时给期望 pattern 与实际值。
-//
-// 非 string 值的语义也在这里钉死：pattern 只作用于字符串（JSON Schema 语义），
-// 所以 `{"count": 7}` 通过、`{"count": "x"}` 被 pattern 拒绝。
-
 import (
 	"net/http"
 	"strings"
 	"testing"
 )
 
-// TestCapabilityWriteRejectsBadParamPattern 坏正则必须在保存能力时就 400（不能存进库等执行期）。
 func TestCapabilityWriteRejectsBadParamPattern(t *testing.T) {
 	env := newCapTestEnv(t)
 	cases := []struct {
@@ -79,7 +67,6 @@ func TestCapabilityWriteRejectsBadParamPattern(t *testing.T) {
 	}
 }
 
-// TestCapabilityTestParamPatternIs400WithExactField 值不匹配 pattern → 400 + 精确字段路径。
 func TestCapabilityTestParamPatternIs400WithExactField(t *testing.T) {
 	env := newCapTestEnv(t)
 	schema := map[string]any{
@@ -103,7 +90,6 @@ func TestCapabilityTestParamPatternIs400WithExactField(t *testing.T) {
 					},
 				},
 			},
-			// 非 string 值不受 pattern 约束（JSON Schema 语义），但仍受 type 约束。
 			"count": map[string]any{"type": []string{"integer", "string"}, "pattern": "^n-[0-9]+$"},
 		},
 	}
@@ -150,7 +136,6 @@ func TestCapabilityTestParamPatternIs400WithExactField(t *testing.T) {
 		})
 	}
 
-	// 参数被拒时不该建任务（400 = 什么都没发生）。
 	var rejected int
 	if err := env.db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE namespace_id = ?`, env.nsA).Scan(&rejected); err != nil {
 		t.Fatalf("count tasks: %v", err)

@@ -127,8 +127,7 @@ const (
 	// CodeConcurrencyInvalid 是 concurrency.maxPerNode < 1 或不是整数。
 	CodeConcurrencyInvalid = "concurrency_invalid"
 	// CodeParamEnvCollision 是两个参数名归一后撞同一个 ANOTIFY_PARAM_*。
-	CodeParamEnvCollision = "param_env_collision"
-	// CodeParamPatternInvalid 是 spec.params 里的 pattern 不是字符串 / 编不过 / 超长。
+	CodeParamEnvCollision   = "param_env_collision"
 	CodeParamPatternInvalid = "param_pattern_invalid"
 	// CodeRequiresInvalid 是 requires 不是对象 / 元素不合格 / 超上限 / 未知子键。
 	CodeRequiresInvalid = "requires_invalid"
@@ -411,10 +410,7 @@ func (e *fieldError) Error() string { return e.code + ": " + e.msg }
 // 而不是修一条、再跑一次、再发现下一条。
 type Error struct {
 	Problems []string
-	// Fields 与 Problems 平行：带字段定位的问题在这里放 JSON 路径（如
-	// `spec.params.properties.project.pattern`），其余位置是空串。
-	// 没有 Fields 的构造点（解码/模板路径）按空处理。
-	Fields []string
+	Fields   []string
 }
 
 func (e *Error) Error() string { return strings.Join(e.Problems, "; ") }
@@ -697,22 +693,11 @@ func validateParams(params json.RawMessage) (paramInfo, []string) {
 // normalization has exactly one implementation, in shared protocol.
 func paramEnvName(name string) string { return protocol.ParamEnvName(name) }
 
-// locatedProblem 是一条带字段路径的写入期问题（field 直接进 Status.details.causes[].field）。
 type locatedProblem struct {
 	problem string
 	field   string
 }
 
-// validateParamPatterns 编译 spec.params 里声明的每一条 pattern。
-//
-// 为什么在写入期跑：pattern 编不过的话，派发期只能记 param_schema 剪枝——事件已经
-// 收下、任务不建，用户看到的是一个永远不执行的下游。坏正则属于 schema 自身的错误，
-// 应当保存时就 400，而不是先存坏契约、执行期才炸。
-//
-// 只走 schema 承载位置（pattern / properties / additionalProperties / items /
-// prefixItems），不递归 default / enum 里的数据：那里出现的 "pattern" 是用户数据，
-// 不是关键字。字段路径按 JSON 结构拼（如 spec.params.properties.meta.properties.dir.pattern），
-// 与前端表单和 YAML 行号定位用的是同一份路径。
 func validateParamPatterns(params json.RawMessage) []locatedProblem {
 	trimmed := bytes.TrimSpace(params)
 	if len(trimmed) == 0 || string(trimmed) == "null" {
@@ -772,17 +757,8 @@ func validateParamPatterns(params json.RawMessage) []locatedProblem {
 	return out
 }
 
-// maxParamPatternLen 与 internal/schema.MaxPatternLen 同值。
-//
-// 为什么这里单独定义而不 import internal/schema：cmd/anode 只允许依赖
-// protocol + artifact（scripts/check_anode_skill.py 的 A5）。artifact 是节点侧依赖，
-// 再链一个中枢包会把节点二进制的依赖面撑大。写入路径每条 pattern 只编译一次，
-// 不需要缓存；两边同值由 params_pattern_test.go 的断言钉住。
 const maxParamPatternLen = 1024
 
-// compileParamPattern 编译一条 RE2 pattern（长度上限与 internal/schema 一致）。
-//
-// 写入期只需要「编得过 / 不超长」这一件事；缓存留给派发期（internal/schema）。
 func compileParamPattern(pattern string) (*regexp.Regexp, error) {
 	if len(pattern) > maxParamPatternLen {
 		return nil, fmt.Errorf("pattern 长度 %d 字节，超过上限 %d", len(pattern), maxParamPatternLen)
@@ -790,7 +766,6 @@ func compileParamPattern(pattern string) (*regexp.Regexp, error) {
 	return regexp.Compile(pattern)
 }
 
-// sortedMapKeys 返回排序后的键（错误顺序稳定，同一个坏输入总报同一处）。
 func sortedMapKeys(m map[string]any) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {

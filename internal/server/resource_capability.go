@@ -1609,9 +1609,6 @@ func normalizeCapabilitySpec(name string, version int, displayName string, spec 
 func capabilitySpecError(err error) error {
 	var artifactErr *artifact.Error
 	if errors.As(err, &artifactErr) && len(artifactErr.Problems) > 0 {
-		// 带字段路径的问题（目前是 spec.params 里的 pattern）必须能让客户端定位：
-		// 把 artifact.Error.Fields 平行地翻成 details.causes[].field。没有定位信息时
-		// 不输出 details，保持既有错误的响应体逐字节不变。
 		causes := make([]statusCause, 0, len(artifactErr.Problems))
 		located := false
 		for i, problem := range artifactErr.Problems {

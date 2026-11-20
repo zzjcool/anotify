@@ -26,9 +26,8 @@ import (
 //
 // 实现的 JSON Schema 子集是**显式**的（只支持 type / properties / required / default /
 // pattern；嵌套对象同样按子集校验，数组元素不递归）：剩下的关键字（oneOf / minimum …）
-// 被忽略而不是被当成失败。pattern 是 RE2（Go regexp，线性时间），只约束字符串值；
-// 正则本身编不过或超长时按 param_schema 处理——写入期会拒绝这种 schema
-//（internal/artifact 的 validateParamPatterns），这里只是旧数据的防御。把子集写进
+// 被忽略而不是被当成失败。pattern 是 RE2（Go regexp，线性时间），只约束字符串值。
+// 把子集写进
 // 接口文档比假装支持全部关键字安全。
 
 // Prune 是一次「事件/emit 已接收、下游没有建 task」的观察原因（capability.md §8.3）。
@@ -50,18 +49,14 @@ type Prune struct {
 
 // paramProperty 是 JSON Schema 子集里的一个属性声明。
 type paramProperty struct {
-	types      []string
-	def        any
-	hasDefault bool
-	nested     *paramSchema
-	// pattern / patternText：只约束字符串值（JSON Schema 语义）。编译后的正则与
-	// 原文都留着——原文进错误消息，编译结果用来匹配。
+	types       []string
+	def         any
+	hasDefault  bool
+	nested      *paramSchema
 	pattern     *regexp.Regexp
 	patternText string
 }
 
-// paramIssue 是一条字段级校验失败。field 是相对 params 根的路径（如 meta.dir），
-// 调用方把它拼成 `params.meta.dir` 后进 400 的 details.causes[].field。
 type paramIssue struct {
 	field  string
 	detail string
@@ -306,9 +301,6 @@ func ValidatePayload(schema json.RawMessage, payload map[string]any) *Prune {
 }
 
 // check 校验一个值是否符合属性声明；nil 表示通过。
-//
-// pattern 只约束字符串（JSON Schema 语义）：非 string 值不判 pattern，类型约束由
-// type 关键字负责。这条边界在 docs/contracts/cap-lifecycle/WIRE.md 里写死。
 func (p paramProperty) check(path string, value any) *paramIssue {
 	if len(p.types) > 0 {
 		matched := false

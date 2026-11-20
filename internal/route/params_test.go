@@ -138,10 +138,6 @@ var _ = func() bool {
 	return true
 }
 
-// ---------- pattern（#475） ----------
-
-// patternParamsSchema 覆盖三个不同位置（顶层 / 嵌套 / 深嵌套）与两条边界：
-// pattern 只约束字符串（integer 不受约束）、pattern 只对字符串检查。
 const patternParamsSchema = `{
 	"type":"object",
 	"properties":{

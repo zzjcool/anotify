@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-// TestCompilePatternCacheAndLimits 钉住编译入口的两条边界：同一个 pattern 第二次走缓存
-// （返回同一个 *regexp.Regexp），坏正则与超长 pattern 都在编译期拒绝。
 func TestCompilePatternCacheAndLimits(t *testing.T) {
 	first, err := CompilePattern("^[a-z][a-z0-9-]*$")
 	if err != nil {
@@ -29,8 +27,6 @@ func TestCompilePatternCacheAndLimits(t *testing.T) {
 	}
 }
 
-// TestValuePatternOnlyConstrainsStrings 钉住 JSON Schema 语义：pattern 只作用于字符串；
-// 非字符串值由 type 负责，pattern 不越权。
 func TestValuePatternOnlyConstrainsStrings(t *testing.T) {
 	sch := map[string]any{
 		"type": "object",

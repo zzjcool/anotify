@@ -415,17 +415,8 @@ func matchPattern(pattern, s, path string) string {
 	return ""
 }
 
-// MaxPatternLen 是一条 pattern 的字节长度上限。
-//
-// RE2 天然没有灾难性回溯，但「编译用户提供的正则」仍有成本：长度是编译代价与
-// 缓存键大小的上界。超长按 schema 不可用拒绝，不截断（截断会静默改变语义）。
 const MaxPatternLen = 1024
 
-// patternCacheEntries 是编译缓存的上限。
-//
-// 缓存键是用户写的 pattern；不设上限时，不停更换 pattern 的调用方可以把进程内存
-// 变成无界映射。满了不再写入（已缓存的命中仍然有效）：真实 schema 的 pattern 集合
-// 是稳定的，淘汰只会让热路径反复编译。
 const patternCacheEntries = 256
 
 var (
@@ -433,10 +424,6 @@ var (
 	patternCache = make(map[string]*regexp.Regexp, patternCacheEntries)
 )
 
-// CompilePattern 编译一条 RE2 pattern（带长度上限与进程内缓存）。
-//
-// 这是全仓编译用户 pattern 的唯一入口：这里 Value 的 pattern 校验与 route 的
-// 派发期参数对齐共用它，长度上限与 RE2 语义才不会分叉。
 func CompilePattern(pattern string) (*regexp.Regexp, error) {
 	if len(pattern) > MaxPatternLen {
 		return nil, fmt.Errorf("pattern 长度 %d 字节，超过上限 %d", len(pattern), MaxPatternLen)

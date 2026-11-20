@@ -10,7 +10,6 @@ import (
 	"github.com/zzjcool/anotify/internal/schema"
 )
 
-// artifactWithParams 造一份只关心 spec.params 的最小合法能力（run 只要 entrypoint + 文件）。
 func artifactWithParams(params string) *Artifact {
 	return &Artifact{
 		APIVersion: APIVersion,
@@ -26,8 +25,6 @@ func artifactWithParams(params string) *Artifact {
 	}
 }
 
-// TestValidateRejectsInvalidParamPattern 钉住「坏正则写入期就拒绝，不存进库等执行期炸」：
-// 短码固定为 param_pattern_invalid，Fields 给出精确的 JSON 路径（前端/YAML 定位用）。
 func TestValidateRejectsInvalidParamPattern(t *testing.T) {
 	long := strings.Repeat("a", schema.MaxPatternLen+1)
 	longJSON, err := json.Marshal(long)
@@ -95,8 +92,6 @@ func TestValidateAcceptsValidParamPattern(t *testing.T) {
 	}
 }
 
-// TestValidateDoesNotTreatDataPatternAsKeyword 钉住遍历边界：default 里的 "pattern"
-// 是用户数据，不是 schema 关键字；递归它会把合法能力误拒。
 func TestValidateDoesNotTreatDataPatternAsKeyword(t *testing.T) {
 	params := `{"type":"object","properties":{"cfg":{"type":"object","default":{"pattern":"["}}}}`
 	if err := Validate(artifactWithParams(params)); err != nil {
@@ -104,9 +99,6 @@ func TestValidateDoesNotTreatDataPatternAsKeyword(t *testing.T) {
 	}
 }
 
-// TestParamPatternLenMatchesSharedSchemaLimit 钉住写入期与派发期/值校验的长度上限不漂移。
-// 测试文件可以 import internal/schema（A5 只检查非测试依赖）：产品代码不能 import，
-// 否则 cmd/anode 会间接依赖中枢包。
 func TestParamPatternLenMatchesSharedSchemaLimit(t *testing.T) {
 	if maxParamPatternLen != schema.MaxPatternLen {
 		t.Fatalf("写入期上限 %d != internal/schema 上限 %d", maxParamPatternLen, schema.MaxPatternLen)

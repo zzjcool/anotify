@@ -23,14 +23,14 @@
 
 | 维度 | 语义 | 依据 |
 |---|---|---|
-| 正则方言 | RE2（Go `regexp`）：线性时间，不存在灾难性回溯 | `internal/schema/schema.go:440` `CompilePattern` |
+| 正则方言 | RE2（Go `regexp`）：线性时间，不存在灾难性回溯 | `internal/schema/schema.go:427` `CompilePattern` |
 | 作用类型 | **只约束字符串值**；非 string 值不判 pattern（JSON Schema 标准），类型由 `type` 管 | `internal/schema/schema_test.go`、`internal/route/params_test.go` |
 | 匹配方式 | 子串匹配（`MatchString`）；整串匹配要在 pattern 里自己写 `^...$` | 同上 |
 | 长度上限 | 1024 字节；超长按 schema 不可用拒绝（不截断） | `schema.MaxPatternLen` / `artifact.maxParamPatternLen` |
-| 编译缓存 | 派发期缓存 256 条（写入期每条只编一次，不缓存） | `internal/schema/schema.go:422-456` |
+| 编译缓存 | 派发期缓存 256 条（写入期每条只编一次，不缓存） | `internal/schema/schema.go:418-447` |
 | `pattern` 不是字符串 | 写入期 400 | `validateParamPatterns` |
-| 坏正则 | **能力保存时就 400**，不写进库；旧数据派发期记 `param_schema` 剪枝 | `internal/artifact/artifact.go:716` |
-| 值不匹配 | 试跑 → 400；派发（源事件 / emit）→ `pruned[]` reason=`param_type`，不建任务 | `internal/route/params.go:312` |
+| 坏正则 | **能力保存时就 400**，不写进库；旧数据派发期记 `param_schema` 剪枝 | `internal/artifact/artifact.go:701` |
+| 值不匹配 | 试跑 → 400；派发（源事件 / emit）→ `pruned[]` reason=`param_type`，不建任务 | `internal/route/params.go:304` |
 | 数组元素 | **不递归**：`items` / `prefixItems` 里的 pattern 只在写入期编译，不在派发期执行 | route 参数子集原有边界 |
 | reason 词表 | 不新增剪枝码：值不匹配复用 `param_type`；坏正则用写入期短码 `param_pattern_invalid` | 封闭词表不动 |
 
@@ -38,12 +38,12 @@
 
 | 位置 | 职责 |
 |---|---|
-| `internal/schema/schema.go:440` | `CompilePattern`：RE2 + 长度上限 + 进程内缓存 |
-| `internal/route/params.go:143` | `parseParamProperty` 解析并编译 `pattern`；坏 pattern → `param_schema` |
-| `internal/route/params.go:312` | `paramProperty.check`：pattern 只对 string 执行，错误带精确字段路径 |
-| `internal/route/params.go:343` | `checkObject` 递归嵌套对象，字段路径逐级拼接 |
-| `internal/artifact/artifact.go:417` | `Error.Fields`：与 `Problems` 平行的机器可读字段定位 |
-| `internal/artifact/artifact.go:716` | `validateParamPatterns`：写入期遍历 schema 并编译每条 pattern |
+| `internal/schema/schema.go:427` | `CompilePattern`：RE2 + 长度上限 + 进程内缓存 |
+| `internal/route/params.go:119` | `parseParamProperty` 解析并编译 `pattern`；坏 pattern → `param_schema` |
+| `internal/route/params.go:304` | `paramProperty.check`：pattern 只对 string 执行，错误带精确字段路径 |
+| `internal/route/params.go:335` | `checkObject` 递归嵌套对象，字段路径逐级拼接 |
+| `internal/artifact/artifact.go:413` | `Error.Fields`：与 `Problems` 平行的机器可读字段定位 |
+| `internal/artifact/artifact.go:701` | `validateParamPatterns`：写入期遍历 schema 并编译每条 pattern |
 | `internal/server/resource_capability.go:1609` | `capabilitySpecError`：把 `Fields` 翻成 `details.causes[].field` |
 
 ## 400 的字段路径样式
