@@ -20,6 +20,9 @@ const location_pathname_is_detail = (page) => new URL(page.url()).pathname.endsW
 
 export async function source(d){
  const {page,base,req,check,shot}=d;const state=d.snapshot;
+ // #485：每次等待都打 WAIT 标记。卡住时硬杀留的 timeout fragment 里，
+ // 最后一条没有 `WAIT OK` 的行就是「正在等什么」——不再只有「最后一条 PASS」。
+ const wait=async(label,fn)=>{console.log('WAIT '+d.id+' :: '+label);const value=await fn();console.log('WAIT OK '+d.id+' :: '+label);return value;};
  const visible=sel=>page.locator(sel).waitFor({state:'visible'});const hidden=sel=>page.locator(sel).waitFor({state:'hidden'});
  const row=name=>page.locator('#src-list > div[data-name="'+name+'"]');
  // #376：行内动作收敛成「1 主 + 1 次 + ⋯」——停用/启用/删除在 ⋯ 菜单里，
@@ -81,13 +84,14 @@ export async function source(d){
   await hidden('#src-modal');
   assert.equal((await req('/v1/namespaces/default/sources/ui-webhook')).spec.config.secretSet, true);
   check('Explicit reload -> next edit succeeds, omitted credentials preserve secret/hookUrl');
-  await pickMenu('ui-webhook', 'Disable');
-  await openMenu('ui-webhook');
-  await visible('#src-list > div[data-name="ui-webhook"] button:text-is("Enable")');
-  assert.equal((await req('/v1/namespaces/default/sources/ui-webhook')).spec.enabled, false);
-  await row('ui-webhook').locator('.menu-item', { hasText: 'Enable' }).click();
-  await openMenu('ui-webhook');
-  await visible('#src-list > div[data-name="ui-webhook"] button:text-is("Disable")');
+  await wait('row menu: click Disable',()=>pickMenu('ui-webhook', 'Disable'));
+  await wait('row menu: reopen after disable write',()=>openMenu('ui-webhook'));
+  await wait('row shows Enable after disable roundtrip',()=>visible('#src-list > div[data-name="ui-webhook"] button:text-is("Enable")'));
+  const afterDisable=await wait('GET source after disable (enabled=false)',()=>req('/v1/namespaces/default/sources/ui-webhook'));
+  assert.equal(afterDisable.spec.enabled, false);
+  await wait('row menu: click Enable',()=>row('ui-webhook').locator('.menu-item', { hasText: 'Enable' }).click());
+  await wait('row menu: reopen after enable write',()=>openMenu('ui-webhook'));
+  await wait('row shows Disable after enable roundtrip',()=>visible('#src-list > div[data-name="ui-webhook"] button:text-is("Disable")'));
   check('CAS toggle disable/enable actual state changes (via the row action menu)');
   // Make list DELETE stale through a concurrent real PATCH, then require two
   // separate user confirmations: failed delete and explicit retry after reload.

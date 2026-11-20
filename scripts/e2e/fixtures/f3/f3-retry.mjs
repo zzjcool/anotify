@@ -31,6 +31,14 @@
  * 重试计数必须出现在两处（#483 验收口径，静默重试等于掩盖）：
  *   · 套件 stdout：`retrySummaryLine()`（含零重试的情形）；
  *   · 结果 JSON：`retries` 字段（`H.setRetryStats`）→ `parallel_runner.mjs` 汇总逐套件打印。
+ *
+ * #485 —— 硬预算触发的第三种层：`timeout`（可诊断），不是 `incomplete`（无证据）
+ *   52s 硬杀旧实现是 SIGTERM → 子进程 exit(1) → `case.json` 从未落盘，于是「卡住 52s」
+ *   与「进程死了」长得一模一样，永远只能看到 incomplete。现在父进程在发信号**之前**
+ *   写一份 timeout fragment（`{timedOut:true,lastStep,elapsedMs,caseOutputTail}`），
+ *   判定层据此归为 `timeout`，并把两次 attempt 的 lastStep 放在一起比较：
+ *   「两次都停在同一步」= 确定性挂点；不同步 = 抖动/环境压力。
+ *   timeout 仍然只重试 1 次（与 incomplete 同一档预算），断言失败照旧永不重试。
  */
 import { spawnSync } from 'node:child_process';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
@@ -44,8 +52,12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 export const PASS = 'pass';
 export const INCOMPLETE = 'incomplete';
 export const ASSERTION = 'assertion';
-// 首次 + 重试 1 次。#483 的验收写死这一档：不重试断言、最多两次 incomplete。
+// #485：硬预算触发 = 有 fragment 的「卡住」，与「无证据的 incomplete」分开判定。
+export const TIMEOUT = 'timeout';
+// 首次 + 重试 1 次。#483 的验收写死这一档：不重试断言、最多两次 incomplete/timeout。
 export const MAX_ATTEMPTS = 2;
+// 父进程写 timeout fragment 时最多留多少字符的 case 输出尾巴（人要看得见卡点上下文）。
+const CASE_OUTPUT_TAIL_MAX = 4096;
 
 /* 执行层死亡签名：浏览器 / 页面 / 传输 / 子进程层没了，不是「页面行为不对」。
  * 只放**基础设施**措辞；产品断言文案不进这张表（进了就等于给断言开了重试口子）。 */
@@ -61,6 +73,37 @@ const DEATH_SIGNATURES = Object.freeze([
 
 const oneLine = (text, max = 300) =>
 	String(text == null ? '' : text).replace(/\s+/g, ' ').trim().slice(0, max);
+
+/**
+ * 从 case 自己的 stdout/stderr 里取「最后一个已完成的步骤」与完整 PASS 计数。
+ * 步骤行的形状是执行器 `check()` 的 `PASS <case> :: <step>`（f3 三个执行器同款），
+ * 不猜别的日志格式 —— 拿不到就明说「没有 PASS 步骤」，不编一个步骤名。
+ */
+export function lastCompletedStep(output) {
+	const lines = String(output == null ? '' : output).split(/\r?\n/);
+	let lastStep = null;
+	let passes = 0;
+	let pendingStep = null;
+	for (const line of lines) {
+		const hit = /^\s*PASS\s+(\S+)\s+::\s+(.*\S)\s*$/.exec(line);
+		if (hit) {
+			passes++;
+			lastStep = hit[2];
+			continue;
+		}
+		// #485：执行器在每次有界等待前后打 `WAIT <id> :: <label>` / `WAIT OK <id> :: <label>`。
+		// 有 OK 的算「已完成步骤」；最后一条没有 OK 的就是「正在等什么」（pendingStep）。
+		const done = /^\s*WAIT\s+OK\s+\S+\s+::\s+(.*\S)\s*$/.exec(line);
+		if (done) {
+			lastStep = done[1];
+			pendingStep = null;
+			continue;
+		}
+		const begin = /^\s*WAIT\s+(\S+)\s+::\s+(.*\S)\s*$/.exec(line);
+		if (begin) pendingStep = begin[2];
+	}
+	return { lastStep, passes, pendingStep };
+}
 
 /** 子进程是否「正常收尾」：exit 0、没被信号终止、没撞预算。 */
 function settledCleanly(exit) {
@@ -89,6 +132,26 @@ function deathSignature(fragment) {
  */
 export function classifyCaseEvidence(evidence = {}) {
 	const { fragment, fragmentError, exit, output } = evidence;
+	// #485：硬预算触发优先于一切 —— 这是「卡住了，而且我们留下了卡点」，
+	// 不能落进 incomplete（那会把可诊断的证据说成「没有证据」）。
+	// fragment 可能由父进程在发信号前落下，也可能是子进程刚好在预算边界写完；
+	// 两种情况都以 exit.timedOut 为准，lastStep 有就带上。
+	if (exit?.timedOut === true) {
+		const scanned = lastCompletedStep(output);
+		const lastStep = fragment?.lastStep ?? scanned.lastStep;
+		const pendingStep = fragment?.pendingStep ?? scanned.pendingStep;
+		const elapsedMs = Number.isFinite(fragment?.elapsedMs) ? fragment.elapsedMs : null;
+		const why = [
+			`超出 ${fragment?.budgetMs ?? '?'}ms 硬预算` +
+				(elapsedMs == null ? '' : `（已运行 ${elapsedMs}ms）`),
+			lastStep ? `最后完成的步骤：${lastStep}` : '没有任何 PASS 步骤',
+			pendingStep ? `卡在等待：${pendingStep}` : '',
+			fragment ? '' : '（timeout fragment 未落盘）',
+		]
+			.filter(Boolean)
+			.join('；');
+		return { kind: TIMEOUT, why, lastStep, pendingStep, elapsedMs };
+	}
 	if (!fragment) {
 		const why = [];
 		if (fragmentError && fragmentError !== 'ENOENT')
@@ -117,6 +180,54 @@ export function classifyCaseEvidence(evidence = {}) {
 	const death = deathSignature(fragment);
 	if (death) return { kind: INCOMPLETE, why: `执行层死亡（${death.source}）` };
 	return { kind: ASSERTION, why: oneLine(fragment.error || 'case 断言失败') };
+}
+
+/**
+ * #485：硬预算触发时由**父进程在发信号之前**写下的 fragment。
+ *
+ * 为什么必须是父进程写：SIGTERM 会走到 `harness.mjs` 的信号钩子（`process.exit(1)`），
+ * 子进程里正在 await 的 case 没有任何机会落盘 —— 旧实现因此 100% 丢现场。
+ * 形状与正常 fragment 对齐（identity + ok/checks），判定层与聚合层不用另开一条路。
+ * 用 `wx` 独占：子进程若已写完自己的结论，就以子进程的证据为准，不覆盖。
+ */
+export async function writeTimeoutFragment({
+	dir,
+	identity,
+	output = '',
+	budgetMs = null,
+	elapsedMs = null,
+}) {
+	const text = String(output == null ? '' : output);
+	const { lastStep, passes, pendingStep } = lastCompletedStep(text);
+	const tail = text.length > CASE_OUTPUT_TAIL_MAX ? text.slice(-CASE_OUTPUT_TAIL_MAX) : text;
+	const message =
+		`timeout: 超出 ${budgetMs ?? '?'}ms 硬预算` +
+		`（已运行 ${elapsedMs ?? '?'}ms），最后完成步骤：${lastStep || '(无 PASS 步骤)'}` +
+		(pendingStep ? `；卡在等待：${pendingStep}` : '');
+	const fragment = {
+		...identity,
+		ok: false,
+		checks: passes,
+		timedOut: true,
+		lastStep,
+		pendingStep,
+		lastStepIndex: passes,
+		elapsedMs,
+		budgetMs,
+		caseOutputBytes: text.length,
+		caseOutputTail: tail,
+		error: message,
+		reportPath: path.join(dir, 'report.json'),
+	};
+	try {
+		await writeFile(path.join(dir, 'case.json'), JSON.stringify(fragment, null, 2) + '\n', {
+			flag: 'wx',
+		});
+		return { written: true, fragment };
+	} catch (error) {
+		if (error?.code === 'EEXIST') return { written: false, fragment: null };
+		throw error;
+	}
 }
 
 async function readJson(file) {
@@ -381,10 +492,11 @@ async function writeRetryRecord(dir, outcome) {
 }
 
 /**
- * 执行一条 case，incomplete 时先取证、再自动重试（最多 maxAttempts 次，默认 2）。
+ * 执行一条 case：incomplete（无证据）先取证再重试；timeout（有 fragment 的硬预算）
+ * 直接重试；两者都最多 maxAttempts 次（默认 2）。assertion 永不重试。
  *
- * spawnAttempt(attempt) 负责真的起子进程 + 写 full.log/exit.json，返回
- * `{ exit, childOutput }`；重试身份、预算、判定口径都不变。
+ * spawnAttempt(attempt) 负责真的起子进程 + 写 full.log/exit.json（超时时还要在
+ * 发信号前写 timeout fragment），返回 `{ exit, childOutput }`；重试身份、预算、判定口径都不变。
  */
 export async function executeWithRetry({
 	suite = '',
@@ -412,6 +524,14 @@ export async function executeWithRetry({
 			outputEmpty: !String(childOutput || '').trim(),
 			at: new Date().toISOString(),
 		};
+		// #485：timeout 的卡点事实必须进判定记录（两次 attempt 各自一份，用于比较是否同一步）。
+		if (verdict.kind === TIMEOUT || exit?.timedOut === true) {
+			record.lastStep = verdict.lastStep ?? evidence.fragment?.lastStep ?? null;
+			record.pendingStep = verdict.pendingStep ?? evidence.fragment?.pendingStep ?? null;
+			record.elapsedMs = verdict.elapsedMs ?? evidence.fragment?.elapsedMs ?? null;
+			record.budgetMs = evidence.fragment?.budgetMs ?? null;
+			record.caseOutputTail = evidence.fragment?.caseOutputTail ?? null;
+		}
 		if (verdict.kind === INCOMPLETE) {
 			// 治标之前先留根因线索：没有这层取证，incomplete 永远只是「进程死了」的同义词。
 			record.forensics = collectIncompleteForensics({
@@ -427,7 +547,16 @@ export async function executeWithRetry({
 		attempts.push(record);
 		if (typeof onAttempt === 'function') onAttempt(record);
 		const retried = attempts.length > 1;
-		if (verdict.kind !== INCOMPLETE || attempt === maxAttempts) {
+		// 重试档：#483 的 incomplete + #485 的 timeout（都是「没有结论」，但后者有卡点证据）。
+		const retryable = verdict.kind === INCOMPLETE || verdict.kind === TIMEOUT;
+		if (!retryable || attempt === maxAttempts) {
+			const steps = attempts.map((a) => a.lastStep ?? null);
+			// 两次都停在**同一个已命名步骤** = 确定性挂点；没步骤名时不下这个结论。
+			const stuckSameStep =
+				retried &&
+				steps.length > 1 &&
+				steps.every((s) => typeof s === 'string' && s.length > 0) &&
+				new Set(steps).size === 1;
 			const outcome = {
 				id,
 				kind: verdict.kind,
@@ -435,13 +564,16 @@ export async function executeWithRetry({
 				attempts,
 				retried,
 				recovered: retried && verdict.kind === PASS,
-				exhausted: retried && verdict.kind === INCOMPLETE,
+				exhausted: retried && (verdict.kind === INCOMPLETE || verdict.kind === TIMEOUT),
+				stuckSameStep,
+				steps,
 				forensics: attempts.map((a) => a.forensics).filter(Boolean),
 			};
 			await writeRetryRecord(dir, outcome);
 			return { exit, evidence, verdict, outcome, retried };
 		}
-		// 首次 incomplete（已取证）：归档证据后重试一次（同一个 attempt 身份，epoch 清单不变）。
+		// 首次没有结论（incomplete 已取证 / timeout 已留 fragment）：归档证据后重试一次
+		// （同一个 attempt 身份，epoch 清单不变）。
 		await archiveAttempt(dir, attempt, record);
 	}
 	throw new Error('executeWithRetry: unreachable (no attempt executed)');
@@ -457,12 +589,31 @@ export function createRetryLedger() {
 		},
 		stats() {
 			const retried = outcomes.filter((o) => o.retried);
+			const retriedTimeouts = retried.filter(
+				(o) => o.attempts?.some((a) => a.kind === TIMEOUT),
+			);
 			return {
 				retried: retried.length,
 				recovered: retried.filter((o) => o.recovered).length,
 				exhausted: retried.filter((o) => o.exhausted).length,
 				incompleteFirst: outcomes.filter((o) => o.attempts?.[0]?.kind === INCOMPLETE).length,
+				timeoutFirst: outcomes.filter((o) => o.attempts?.[0]?.kind === TIMEOUT).length,
 				assertionFirst: outcomes.filter((o) => o.attempts?.[0]?.kind === ASSERTION).length,
+				// #485：两次都停在同一步的 case（确定性挂点）与它停在哪一步。
+				timeouts: retriedTimeouts.map((o) => ({
+					id: o.id,
+					kind: o.kind,
+					stuckSameStep: Boolean(o.stuckSameStep),
+					steps: o.steps || [],
+					attempts: o.attempts.map((a) => ({
+						kind: a.kind,
+						lastStep: a.lastStep ?? null,
+						pendingStep: a.pendingStep ?? null,
+						elapsedMs: a.elapsedMs ?? null,
+						budgetMs: a.budgetMs ?? null,
+					})),
+				})),
+				timeoutsStuckSameStep: retriedTimeouts.filter((o) => o.stuckSameStep).length,
 				cases: retried.map((o) => ({
 					id: o.id,
 					attempts: o.attempts.map((a) => a.kind),
@@ -477,13 +628,40 @@ export function createRetryLedger() {
 /** 套件 stdout 的重试行：永远打印（零重试也露出来，证明不是无条件重跑）。 */
 export function retrySummaryLine(label, stats) {
 	if (!stats || !stats.retried) {
-		return `[${label}] 重试: 0 条（没有 case 需要重试：incomplete 才重试 1 次，断言失败不重试）`;
+		return `[${label}] 重试: 0 条（没有 case 需要重试：incomplete/timeout 才重试 1 次，断言失败不重试）`;
 	}
-	const parts = [`[${label}] 重试: ${stats.retried} 条首次 incomplete`];
+	const first = [];
+	if (stats.incompleteFirst) first.push(`${stats.incompleteFirst} 条首次 incomplete`);
+	if (stats.timeoutFirst) first.push(`${stats.timeoutFirst} 条首次 timeout`);
+	const parts = [
+		`[${label}] 重试: ${stats.retried} 条首次无结论（${first.join(' + ') || '见明细'}）`,
+	];
 	if (stats.recovered) parts.push(`${stats.recovered} 条重试通过`);
-	if (stats.exhausted) parts.push(`${stats.exhausted} 条重试仍 incomplete（判红）`);
+	if (stats.exhausted) parts.push(`${stats.exhausted} 条重试仍无结论（判红）`);
+	if (stats.timeoutsStuckSameStep) parts.push(`${stats.timeoutsStuckSameStep} 条两次都停在同一步`);
 	if (stats.forensics?.length) parts.push(`现场取证: ${stats.forensics[0].dir}/`);
 	return parts.join('，');
+}
+
+/**
+ * #485：逐条 timeout 的卡点事实（套件 stdout 用）。
+ * 两次 attempt 的 lastStep 并排：相同 ⇒ 确定性挂点；不同 ⇒ 抖动/环境压力。
+ */
+export function timeoutLines(stats) {
+	return (stats?.timeouts || []).map((t, i) => {
+		const attempts = t.attempts
+			.map(
+				(a, n) =>
+					`a${n + 1} ${a.kind}(${a.elapsedMs ?? '?'}ms/${a.budgetMs ?? '?'}ms) ` +
+					`停在「${a.lastStep ?? '(无 PASS 步骤)'}」` +
+					(a.pendingStep ? `，正在等「${a.pendingStep}」` : ''),
+			)
+			.join(' · ');
+		const judgement = t.stuckSameStep
+			? `两次都停在同一步「${t.steps[0]}」`
+			: `两次停在不同步（${t.steps.map((s) => s || '(无)').join(' / ')}）`;
+		return `  ${i + 1}) ${String(t.id).padEnd(22)} ${attempts} ⇒ ${judgement}`;
+	});
 }
 
 /** 逐条取证摘要（套件 stdout 用；并行汇总在 parallel_runner 里按同一形状打印）。 */

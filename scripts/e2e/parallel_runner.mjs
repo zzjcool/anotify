@@ -591,15 +591,19 @@ function aggregateResults(rawResults, requested, resultsDir = RESULTS_DIR) {
 }
 
 // #483：重试计数必须能在汇总里一眼看到（0 也要打），否则重试会变成静默掩盖。
+// #485：timeout（硬预算 + 已落 fragment）与 incomplete 分开计数，并暴露「两次都停在同一步」。
 function retryTotals(suiteSummary) {
 	const withRetry = suiteSummary.filter((s) => s.retries);
+	const sum = (get) => withRetry.reduce((n, s) => n + (get(s.retries) || 0), 0);
 	return {
 		suites: withRetry.length,
-		retried: withRetry.reduce((n, s) => n + (s.retries.retried || 0), 0),
-		recovered: withRetry.reduce((n, s) => n + (s.retries.recovered || 0), 0),
-		exhausted: withRetry.reduce((n, s) => n + (s.retries.exhausted || 0), 0),
-		incompleteFirst: withRetry.reduce((n, s) => n + (s.retries.incompleteFirst || 0), 0),
-		assertionFirst: withRetry.reduce((n, s) => n + (s.retries.assertionFirst || 0), 0),
+		retried: sum((r) => r.retried),
+		recovered: sum((r) => r.recovered),
+		exhausted: sum((r) => r.exhausted),
+		incompleteFirst: sum((r) => r.incompleteFirst),
+		timeoutFirst: sum((r) => r.timeoutFirst),
+		assertionFirst: sum((r) => r.assertionFirst),
+		timeoutsStuckSameStep: sum((r) => r.timeoutsStuckSameStep),
 	};
 }
 
@@ -607,9 +611,13 @@ function retryTotals(suiteSummary) {
 // #483 追加：首次 incomplete 的**现场取证**目录必须跟在这一行里（不许静默）。
 function retryNote(retries) {
 	if (!retries || !retries.retried) return "";
-	const bits = [`其中 ${retries.retried} 条首次 incomplete`];
+	const first = [];
+	if (retries.incompleteFirst) first.push(`${retries.incompleteFirst} 条首次 incomplete`);
+	if (retries.timeoutFirst) first.push(`${retries.timeoutFirst} 条首次 timeout`);
+	const bits = [`其中 ${retries.retried} 条首次无结论（${first.join(" + ") || "见明细"}）`];
 	if (retries.recovered) bits.push(`${retries.recovered} 条重试通过`);
-	if (retries.exhausted) bits.push(`${retries.exhausted} 条重试仍 incomplete`);
+	if (retries.exhausted) bits.push(`${retries.exhausted} 条重试仍无结论`);
+	if (retries.timeoutsStuckSameStep) bits.push(`${retries.timeoutsStuckSameStep} 条两次都停在同一步`);
 	const dir = forensicsLabelOf(retries);
 	return `（${bits.join("、")}${dir ? `；现场取证: ${dir}` : ""}）`;
 }
@@ -638,6 +646,25 @@ function forensicsDetailLines(retries) {
 			`chrom=${f.chromProcs} procs/${f.chromMb}MB  dmesg: (${f.dmesg})  oom_kill=${f.oomKill ?? "?"}  ` +
 			`取证: ${f.file}`,
 	);
+}
+
+// #485：timeout 的卡点摘要（与套件 stdout 的 timeoutLines() 同形）：
+// 两次 attempt 的 lastStep 并排 —— 相同就是确定性挂点，不同就是抖动/环境压力。
+function timeoutDetailLines(retries) {
+	return (retries?.timeouts || []).map((t, i) => {
+		const attempts = t.attempts
+			.map(
+				(a, n) =>
+					`a${n + 1} ${a.kind}(${a.elapsedMs ?? "?"}ms/${a.budgetMs ?? "?"}ms) ` +
+					`停在「${a.lastStep ?? "(无 PASS 步骤)"}」` +
+					(a.pendingStep ? `，正在等「${a.pendingStep}」` : ""),
+			)
+			.join(" · ");
+		const judgement = t.stuckSameStep
+			? `两次都停在同一步「${t.steps[0]}」`
+			: `两次停在不同步（${t.steps.map((s) => s || "(无)").join(" / ")}）`;
+		return `      ${i + 1}) ${String(t.id).padEnd(22)} ${attempts} ⇒ ${judgement}`;
+	});
 }
 
 // authority 清单校验（#338）：清单是「这次到底验了什么」的证据文件。
@@ -770,8 +797,9 @@ async function main() {
 	const rt = agg.retries;
 	const rtDir = suiteSummaryForensicsLabel(agg.suiteSummary);
 	console.log(
-		`  重试（incomplete → 自动重试 1 次；断言失败永不重试）: 首次 incomplete ${rt.incompleteFirst} 条` +
-			` · 重试通过 ${rt.recovered} · 重试仍 incomplete ${rt.exhausted}` +
+		`  重试（incomplete/timeout → 自动重试 1 次；断言失败永不重试）: 首次 incomplete ${rt.incompleteFirst} 条` +
+			` · 首次 timeout ${rt.timeoutFirst} 条（两次都停在同一步 ${rt.timeoutsStuckSameStep} 条）` +
+			` · 重试通过 ${rt.recovered} · 重试仍无结论 ${rt.exhausted}` +
 			`（${rt.suites} 个套件上报了重试账本${rtDir ? `；现场取证: ${rtDir}` : ""}）`,
 	);
 	// authority 清单（#338）：先落盘再打印，红了也能在 results/ 里查本轮 authority。
@@ -802,6 +830,7 @@ async function main() {
 		console.log(
 			`  ${statusIcon} ${s.suite.padEnd(18)} ${s.passed}通过/${s.failed}失败${retryNote(s.retries)}  ${durStr}  mode=${s.mode}`,
 		);
+		for (const line of timeoutDetailLines(s.retries)) console.log(line);
 		for (const line of forensicsDetailLines(s.retries)) console.log(line);
 		// 红套件把**第一条失败原因**直接打出来（#210）。
 		// 为什么：并行模式不透传套件 stdout，红了只剩一个计数 —— 曾经「0通过/0失败」

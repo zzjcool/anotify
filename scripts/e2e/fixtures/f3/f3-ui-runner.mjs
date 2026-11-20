@@ -12,7 +12,7 @@ import { ROOT, TEAM, isMock } from './f3-driver.mjs';
 import { casesFor, registeredViews, runUiCase } from './f3-ui-cases.mjs';
 import { evidenceDirectory } from './f3-driver.mjs';
 // #483：incomplete（子进程死亡/结果缺失）自动重试 1 次，断言失败永不重试。
-import { executeWithRetry, createRetryLedger, readRetryRecord, retrySummaryLine, forensicsLines, INCOMPLETE } from './f3-retry.mjs';
+import { executeWithRetry, createRetryLedger, readRetryRecord, retrySummaryLine, forensicsLines, timeoutLines, writeTimeoutFragment, TIMEOUT, INCOMPLETE } from './f3-retry.mjs';
 
 const retryLedger = createRetryLedger();
 
@@ -23,6 +23,16 @@ export async function uiFingerprint(suite) { return (await captureEpoch(ROOT)).f
 
 // Complete is NOT pass: exact mode/epoch/cwd/attempt plus real child exit and
 // every registered view/page attempted in fixed order.
+// #485：timeout 的两次 attempt 卡点比较（同一步 = 确定性挂点）。
+export function timeoutJudgement(retry) {
+  if (!retry?.attempts?.length) return '';
+  const steps = retry.attempts.map(a => a.lastStep ?? '(无 PASS 步骤)');
+  const pending = retry.attempts.map(a => a.pendingStep).filter(Boolean);
+  const waiting = pending.length ? '（正在等「' + pending[0] + '」）' : '';
+  if (retry.stuckSameStep) return '；两次都停在同一步「' + steps[0] + '」' + waiting;
+  if (retry.attempts.length > 1) return '；两次停在不同步（' + steps.join(' / ') + '）' + waiting;
+  return '；停在「' + steps[0] + '」' + waiting;
+}
 export function validateUiEvidence(selected, result, exit, expected) {
   for (const record of [selected, result, exit])
     for (const key of ['suite', 'id', 'runId', 'attemptId', 'cwd', 'sourceHash', 'mode', 'authority'])
@@ -105,12 +115,23 @@ export async function uiMain(suite, self) {
       let output = 'COMMAND ' + JSON.stringify({ cwd: ROOT, argv: [process.execPath, self, '--fragment', id], ...identity }) + '\n';
       let childOutput = '';
       let timedOut = false;
+      const startedAt = Date.now();
       const kill = sig => { try { process.kill(-child.pid, sig); } catch { /* group settled */ } };
       // 每个 case 的外层预算：默认 52s/54s（本地实测口径）。慢机（CI runner 比开发机慢
       // 2–3 倍）用 F3_CASE_BUDGET_MS 抬高 —— 这**不是**放宽断言：超预算仍然 timedOut=true
       // 判红，只是把「多久算超时」变成可配置，跟 parallel_runner 的 per-suite 预算同款。
       const budgetMs = Number(process.env.F3_CASE_BUDGET_MS || 52000);
-      const soft = setTimeout(() => { timedOut = true; kill('SIGTERM'); }, budgetMs);
+      // #485：发信号前先落 timeout fragment（SIGTERM 会走 harness 的 process.exit(1)，
+      // 子进程没有机会写 case.json）。判定层据此把「卡住」与「没证据」分开。
+      const soft = setTimeout(async () => {
+        timedOut = true;
+        try {
+          await writeTimeoutFragment({ dir, identity, output: childOutput, budgetMs, elapsedMs: Date.now() - startedAt });
+        } catch (error) {
+          output += '\nTIMEOUT_FRAGMENT_ERROR=' + String((error && error.stack) || error) + '\n';
+        }
+        kill('SIGTERM');
+      }, budgetMs);
       const hard = setTimeout(() => { if (timedOut || interrupted) kill('SIGKILL'); }, budgetMs + 2000);
       child.stdout.on('data', chunk => { output += chunk; childOutput += chunk; });
       child.stderr.on('data', chunk => { output += chunk; childOutput += chunk; });
@@ -170,8 +191,9 @@ export async function uiMain(suite, self) {
       } catch (error) {
         failed++;
         if (!outcome || !exit) missing.push(item.id);
-        // 重试后仍 incomplete：红，原因写清次数（#483：`incomplete ×2`）。
+        // 重试后仍无结论：红，原因写清次数（#483：`incomplete ×2`；#485：`timeout ×2`）。
         if (retry?.kind === INCOMPLETE) H.bad(item.id, 'incomplete ×' + retry.attempts.length + '：' + retry.why);
+        else if (retry?.kind === TIMEOUT) H.bad(item.id, 'timeout ×' + retry.attempts.length + '：' + retry.why + timeoutJudgement(retry));
         else H.bad(item.id, outcome?.error || String(error));
       }
       collected.push({ id: item.id, kind: item.kind, views: item.views, dir, attemptId: selected?.attemptId, exitCode: exit?.exitCode, signal: exit?.signal, timedOut: exit?.timedOut, ok: outcome?.ok ?? false, checks: outcome?.checks ?? 0, error: outcome?.error ?? null, retried: Boolean(retry?.retried), retryKind: retry?.kind ?? null });
@@ -243,6 +265,7 @@ export async function uiMain(suite, self) {
     if (interrupted) H.bad(suite + ' interrupted', 'Unattempted/aborted groups fail the aggregate, no skip');
     const retryStats = retryLedger.stats();
     console.log(retrySummaryLine(suite, retryStats));
+    for (const line of timeoutLines(retryStats)) console.log(line);
     for (const line of forensicsLines(retryStats)) console.log(line);
     H.setRetryStats(retryStats);
     process.exitCode = H.summary(suite) ? 0 : 1;

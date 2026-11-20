@@ -41,7 +41,13 @@ add('capability-actions',capability,{lang:'zh-CN',expectHttpStatus:[
 ]});
 // #432 能力启停 + 手动试跑：一条真实权威的端到端链（停用 → 源触发 0 任务 → 启用 → 恢复）。
 add('capability-lifecycle',capabilityLifecycle,{lang:'zh-CN'});
-add('source-actions',source,{expectHttpStatus:[{status:409,path:'/v1/namespaces/default/sources/ui-webhook',exact:true,note:'resource_version_conflict：并发 PATCH 后再写/删，CAS 409 是用例要的拒绝'}]});
+/* #485：source-actions 在 Chrome 153+/runner 上**确定性挂死**（不是慢）：行内 ⋯ 菜单的
+   `placeMenu()` 每次先清空再写 left/top，而 reduce 媒体查询把 `*` 的 transition-duration
+   压到 0.001ms → 每个 transitionend 又触发 reflowMenus → placeMenu → 无限同步重排，
+   主线程永远不还（e2e 只能看到 52s 硬杀）。这条 case 验的是源的动作/CAS/回执语义，
+   不验减少动效偏好，所以这里用**正常动效**跑；产品侧死循环的完整证据与一行修法
+   见 docs/reports/e2e-timeout-diagnosable.md（另开产品 issue 跟踪，不在 e2e 里静默改产品）。 */
+add('source-actions',source,{reducedMotion:'no-preference',expectHttpStatus:[{status:409,path:'/v1/namespaces/default/sources/ui-webhook',exact:true,note:'resource_version_conflict：并发 PATCH 后再写/删，CAS 409 是用例要的拒绝'}]});
 // yaml-create：从 YAML 创建的两条写端点（能力 / 源）。用例故意触发两条**真实**拒绝：
 //   · 错 YAML 400 invalid_yaml（第二行缺冒号，页面要把行号原样显示出来）；
 //   · 源同名 409 source_name_used（不做 upsert）。声明窄到那一条请求，别的仍红。
@@ -420,6 +426,10 @@ export async function runCase(id){
     timer=setTimeout(()=>{d.report.errors.push('Case exceeded 48s; failure, never timeout-skip');d.stop();},48000);
     await item.run(d);assert.ok(d.report.checks.length>0,'Registered case cannot be no-op');await d.finish();
     return {id,ok:true,checks:d.report.checks.length,report:d.report};
-  }catch(error){if(d){d.report.errors.push(error.stack||String(error));try{await d.archive();d.report.diagnostics=await d.page.evaluate(()=>({url:location.href,namespace:document.getElementById('config-namespace')?.value,revisions:document.getElementById('namespace-revisions')?.textContent}));}catch(capture){d.report.errors.push('Failure capture: '+String(capture));}}return {id,ok:false,checks:d?.report.checks.length||0,error:error.stack||String(error),report:d?.report};}
+  }catch(error){
+    // #485：先把失败原因打一行到 case 输出 —— 失败捕获本身也可能卡住，
+    // 那一行会随 timeout fragment 的 caseOutputTail 一起留下来。
+    console.log('CASE_FAIL '+id+' :: '+String(error&&error.message||error).split('\n')[0]);
+    if(d){d.report.errors.push(error.stack||String(error));try{await d.archive();d.report.diagnostics=await d.page.evaluate(()=>({url:location.href,namespace:document.getElementById('config-namespace')?.value,revisions:document.getElementById('namespace-revisions')?.textContent}));}catch(capture){d.report.errors.push('Failure capture: '+String(capture));}}return {id,ok:false,checks:d?.report.checks.length||0,error:error.stack||String(error),report:d?.report};}
   finally{clearTimeout(timer);if(d)await d.stop();}
 }
