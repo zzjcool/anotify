@@ -39,7 +39,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-doc-links check-doc-endpoints check-secrets check-affected-map hooks lint-go tools test-affected e2e-affected plan-affected test-frontend
+.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-doc-links check-doc-endpoints check-examples check-secrets check-config-writes check-affected-map hooks lint-go tools test-affected e2e-affected plan-affected test-frontend
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -56,6 +56,15 @@ check-agents: ## 模块约定检查：AGENTS.md 的 path:line 引用 / 索引表
 
 check-wire-fields: ## 契约字段守卫：前端 model 读的 spec./status. 字段必须是服务端真的会发的
 	node scripts/check-wire-fields.mjs
+
+# #476：`/config` 降级成**读投影**（YAML 是唯一编辑面）。页面再出现 `PUT …/config`
+# 就是同一份事实的第二条写路径 —— 运行期两边各自 200，只有用户看到的值对不上
+# （docs/lint-guards.md §0 第 ⑤ 类缝隙）。唯一例外是系统保留期 `PUT /v1/system/config`：
+# 它的 system YAML 只读，所以那个 PUT 是保留期的唯一写入口，收掉它等于删功能。
+# @guard scripts/check-config-writes.mjs#config-literal-write
+check-config-writes: ## 配置写路径守卫：web-src/pages 里对资源级 …/config 的写调用必须为 0（#476）
+	@node scripts/check-config-writes.mjs --self-test
+	@node scripts/check-config-writes.mjs
 
 check-graph-access: ## 图库访问守卫：画图页只能走 Anotify.graphLib()（防 defer 加载竞态回归）
 	node scripts/check-graph-access.mjs
@@ -100,6 +109,7 @@ check-guard-selftest: ## 守卫自测：拦"守卫自己静默不查了"（恒�
 	node scripts/check-classes.mjs --self-test
 	node scripts/check-graph-access.mjs --self-test
 	node scripts/check-ui-copy.mjs --self-test
+	node scripts/check-config-writes.mjs --self-test
 
 check-annotations: ## 注解即外键：文档/注释里的 scripts、make、npm 引用与 @guard/@decision 锚点必须解析（docs/lint-guards.md §3）
 	node scripts/check-annotations.mjs --self-test
@@ -112,6 +122,13 @@ check-doc-links: ## 工作区引用：`.pi-orchestrator/` 已不入库，仓库�
 check-doc-endpoints: ## 文档端点检查：文档里的 /v1/<path> 必须存在于 api/*.yaml（#457：接入文档教已删除端点）
 	node scripts/check-doc-endpoints.mjs --self-test
 	node scripts/check-doc-endpoints.mjs
+
+# 能力样例（#472）：examples/capabilities/*.yaml 是给用户抄的 run.workDir 实物，没有执行者复算
+# 就只能随时间变错。这里复用 internal/artifact 的 Parse（经 go test），并在临时副本上做三处
+# 变异（删 workDir / 删 requires.values / 删被引用的 params.project），每一处都必须失败。
+check-examples: ## 能力样例检查：examples/capabilities/*.yaml 必须真过 artifact.Parse 且带 workDir（含变异自证）
+	node scripts/check-examples.mjs --self-test
+	node scripts/check-examples.mjs
 
 check-affected-map: ## 改动选择的映射表自测：已知耦合必须选中、已知无关不许选中、删一行必须红、表不许腐烂
 	node --test scripts/e2e/affected.test.mjs
@@ -147,7 +164,7 @@ hooks: ## 安装本地 git 钩子：pre-commit 跑 check-secrets --staged（不�
 tailwind: ## 重新生成 web/tailwind.css（改了工具类后执行；需要 npm install）
 	node scripts/build-tailwind.mjs
 
-fe: check-classes check-wire-fields check-css check-i18n-keys check-ui-copy check-contrast sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal/server/dist/（content-hash + 引用改写，供 embed）
+fe: check-classes check-wire-fields check-config-writes check-css check-i18n-keys check-ui-copy check-contrast sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal/server/dist/（content-hash + 引用改写，供 embed）
 	node scripts/hash.mjs web internal/server/dist
 	@# 产物指纹落好之后记下输入面指纹（dist/.source-stamp）：e2e 前置据此判定 dist 是否陈旧。
 	node scripts/dist-stamp.mjs --write
@@ -310,6 +327,9 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	@# 文档端点检查（#457）：文档里的 URL 没有执行者复算，接入文档曾教过已删除的
 	@# /v1/notify（真打必 404）。把「文档提到的端点」变成对 api/*.yaml 的外键。
 	$(MAKE) check-doc-endpoints
+	@# 能力样例（#472）：删掉 workDir / requires.values / 被引用的 params.project 都必须失败，
+	@# 否则用户抄到的是写入期会被 400 拒绝的 YAML。
+	$(MAKE) check-examples
 	@# 改动选择器的护栏：映射表烂掉不会让 CI 变红（只会让「跳过」变多）—— 那是最贵的假绿。
 	@# 它同时反证「选择确实来自表」（删一行必红），所以放进 make ci，而不是只留在报告里。
 	$(MAKE) check-affected-map

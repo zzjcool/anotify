@@ -260,7 +260,10 @@ export const ANCHOR_MIN = 4;
 // 2026-11-17 校准：C 实测仍是 300（只把 Makefile 两处自述与测试注释的措辞改准确，
 // 没有挪走真 claim）；D 由 432 降到 387 —— 下降全部来自 docs/perf 两份体检报告加
 // `snapshot-doc:`（定格数字 + 文内复算命令，不是「现在是多少」的承诺）。
-export const CLAIM_UNBACKED_BASELINE = 300;
+// 2026-11-19 校准：#476 把 parallel_runner 的两行「冻结值 = N 个套件」注释改成不带
+// 「证据」字样的陈述（它们只是解释常量来源，不是可执行断言），C 由 300 降到 299，
+// 同批下调基线（不允许留着空额度）。
+export const CLAIM_UNBACKED_BASELINE = 299;
 export const COUNT_UNMARKED_BASELINE = 385;
 
 /* ---------- 判据 ---------- */

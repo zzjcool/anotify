@@ -1093,15 +1093,17 @@ paths:
       operationId: getNamespaceYAML
       tags: [namespaces]
       security: [{session: []}]
-      summary: "读取命名空间文档的规范化 YAML（只读）"
+      summary: "读取命名空间文档的规范化 YAML（可直接贴回）"
       description: |
         `yaml` 是 `Namespace` 文档（`apiVersion` / `kind` / `metadata` / `spec`）的规范化重建，
         与 `GET /v1/nodes/{name}/yaml` 同一套形状约定：键序稳定、两次 GET 字节一致。
 
         三条边界：① `spec.vars` 是命名空间默认 vars（合并顺序 `local > node > namespace`），
         只投影真实存在的配置；② `status`（派生计数）与 `metadata.uid` **不出现**；
-        ③ **只有 GET**：vars 的写入口是 `PUT /v1/namespaces/{name}/config`（CAS +
-        `namespaceVarsRevision`），本端点刻意不提供写路径，文档头部也写明这一点。
+        ③ 这份文本**就是写请求**：`PUT /v1/namespaces/{name}/yaml` 接受它（`metadata.resourceVersion`
+        是命名空间 vars 的 CAS 令牌，与 `GET /v1/namespaces/{name}/config` 回的是同一个值），
+        「取 → 改 → 贴回」是一次真往返；`PUT /v1/namespaces/{name}/config` 作为同一份事实的
+        JSON wrapper 保留，两条入口共用同一个 store 写路径。
       responses:
         '200':
           description: "ResourceYAML（`yaml` 为 Namespace 文档全文）"
@@ -1110,6 +1112,40 @@ paths:
               schema: {$ref: '#/components/schemas/ResourceYAML'}
         '401': {$ref: '#/components/responses/AuthError401'}
         '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+    put:
+      operationId: putNamespaceYAML
+      tags: [namespaces]
+      security: [{session: []}]
+      summary: "用一份 Namespace YAML 文档整体替换命名空间默认 vars（CAS）"
+      description: |
+        命名空间 vars 的**唯一编辑面**（issue #476 阶段 2）：页面上的 vars 表格保存走这里。
+        `PUT /v1/namespaces/{name}/config` 是同一份事实的 JSON wrapper，保留兼容，但不再是编辑面。
+
+        - 文档先过严格 YAML 解析器（语法 / 未知字段 / 类型 / `metadata.name` 必填，带行号与字段路径），
+          文档层问题一律 400，`details.causes[].reason` ∈ `invalid_yaml` / `unknown_field` / `value_invalid`；
+        - `spec.vars` **整份替换**（不是 merge-patch）：省略 `spec.vars` → 400 `value_invalid`
+          （要清空请显式写 `vars: {}`）；
+        - `metadata.resourceVersion` 必填（CAS = 命名空间 vars 的令牌；`GET …/config` 与
+          `GET …/yaml` 回的是同一个值 `rv1:<uid>:<rev>`）；旧值 → 409
+          `resource_version_conflict`（`details.current.resourceVersion` 给当前令牌）；
+        - `status` → 400 `status_not_writable`；`metadata` 只接受 `name` / `resourceVersion`；
+        - `metadata.name` 必须与路径一致（slug 是身份），`kind` 固定 `Namespace`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ResourceYAML'}
+      responses:
+        '200':
+          description: "写入后的规范化 Namespace 文档（同 GET；`metadata.resourceVersion` 已前进）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResourceYAML'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
         '500': {$ref: '#/components/responses/Status500'}
 
   /v1/system/config:

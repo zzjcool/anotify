@@ -104,7 +104,12 @@ export async function nodeRetained(d,mode){
     assert.deepEqual(JSON.parse(await page.locator('#node-vars').inputValue()), concurrent.body.vars);
     await page.locator('#node-vars').fill('{"NODE_ONLY":"ui-saved", "SOURCE_ROOT":"/new-node-default"}'); await page.locator('#node-config-save').click(); await waitState('node-config-state', 'Saved.');
     const saved = (await req(configPath)).body; assert.equal(saved.vars.NODE_ONLY, 'ui-saved'); assert.equal(saved.appliedRevision, config.appliedRevision); assert.notEqual(saved.configRevision, config.configRevision);
-    const uiPut = (await calls()).filter(c => c.method === 'PUT' && c.url === configPath).at(-1); assert.deepEqual(Object.keys(uiPut.body).sort(), ['limits','metadata','namespaces','vars']);
+    // #476：页面不再写 `/config`（那只是读投影）；UI 保存序列化整份 Node 文档 → PUT …/yaml。
+    const uiPut = (await calls()).filter(c => c.method === 'PUT' && c.url === nodePath + '/yaml').at(-1);
+    assert.ok(uiPut, '期望一次 PUT …/yaml');
+    assert.deepEqual(Object.keys(uiPut.body), ['yaml']);
+    assert.ok(String(uiPut.body.yaml).includes('NODE_ONLY: ui-saved'), uiPut.body.yaml);
+    assert.equal(uiPut.httpStatus, 200);
     // 语义断言：保存后 appliedRevision 未变 → UI 必须透出「待应用」状态。
     // 旧版靠英文协议字面量 ConfigPending，本轮该文案已本地化，改用语言中立的 data 钩子。
     assert.equal(await page.locator('#node-applied [data-apply-state]').getAttribute('data-apply-state'), 'pending');
@@ -203,7 +208,12 @@ export async function nodeRetained(d,mode){
     await page.locator('#namespace-vars').fill('{"NS_ONLY":"draft-ns"}'); await page.locator('#namespace-save').click(); await waitState('namespace-state', 'draft retained exactly'); assert.equal(await page.locator('#namespace-vars').inputValue(), '{"NS_ONLY":"draft-ns"}');
     await acceptDialog(page, () => page.locator('#namespace-reload').click()); await waitState('namespace-state', 'Current configuration loaded');
     await page.locator('#namespace-vars').fill('{"NS_ONLY":"ui-ns-saved"}'); await page.locator('#namespace-save').click(); await waitState('namespace-state', 'Saved.');
-    const nsPut = (await calls()).filter(c => c.url === namespacePath && c.method === 'PUT').at(-1); assert.deepEqual(Object.keys(nsPut.body).sort(), ['metadata','vars']); assert.notEqual(nsPut.result.namespaceVarsRevision, ns.namespaceVarsRevision);
+    // #476：命名空间页的保存同样序列化进 YAML → PUT …/yaml（/config 只剩 GET 读投影）。
+    const nsYAMLPath = '/v1/namespaces/default/yaml';
+    const nsPut = (await calls()).filter(c => c.url === nsYAMLPath && c.method === 'PUT').at(-1);
+    assert.deepEqual(Object.keys(nsPut.body), ['yaml']);
+    assert.ok(String(nsPut.body.yaml).includes('NS_ONLY: ui-ns-saved'), nsPut.body.yaml);
+    assert.equal(nsPut.httpStatus, 200);
     const first = (await req(configPath)).body, secondBefore = (await req('/v1/nodes/anode-2/config')).body;
     // "过期 rv" 必须**格式合法**：真实服务对字面量 'stale' 回 400 resource_version_invalid
     // （那不是冲突，是畸形）。所以先成功写一次 anode-2 让 rv 前进，再用刚被淘汰的旧 rv
@@ -401,11 +411,11 @@ export async function nodeRetained(d,mode){
     assert.ok(nsYaml.includes('spec:') && nsYaml.includes('vars:'), 'YAML 有 spec.vars');
     assert.ok(nsYaml.includes('F3_NS_DETAIL: from-namespace'), 'YAML 读的是真实 vars');
     assert.ok(!nsYaml.includes('status:'), 'YAML 不含派生只读面 status');
-    assert.ok(nsYaml.includes('PUT /v1/namespaces/{name}/config'), '只读声明指向唯一写入口');
-    assert.equal(await page.locator('#namespace-yaml-input').count(), 0, '只读：没有 YAML 编辑框');
-    // 只读的机械证据：写这条路根本没有（PUT 不被接受；生产 mux 的静态兜底给 404）。
+    assert.ok(nsYaml.includes('PUT /v1/namespaces/{name}/yaml'), '#476：文档头指向唯一写入口 PUT …/yaml');
+    assert.equal(await page.locator('#namespace-yaml-input').count(), 0, 'YAML 不是第二个输入面：没有编辑框');
+    // 机械证据：写入口收下一份合法文档；坏文档（缺 spec.vars / CAS）仍然 400。
     const putYaml = await req('/v1/namespaces/default/yaml', { yaml: 'kind: Namespace' }, 'PUT');
-    assert.ok(putYaml.status >= 400, 'Namespace YAML 不能有写路径，实际 ' + putYaml.status);
+    assert.equal(putYaml.status, 400, '缺 metadata.resourceVersion 的文档必须 400，实际 ' + putYaml.status);
 
     if (d.mock) {
       /* 空态只在预览里造：真实权威的节点来自 fixtures，删掉会污染同批其它用例。
@@ -445,7 +455,7 @@ export async function nodeRetained(d,mode){
     }
     await shot('namespace-detail-list-to-yaml-and-member-403');
     await clean('namespace detail: list → detail → yaml / per-node table / member 403');
-    check('Sidebar nav (partials.js NAV) → namespaces list → row → namespace.html; read-only Namespace YAML (kind: Namespace, no editor); per-node table rows + effective values with server-provided source; node pages carry none of it; member sees real 403 (page + /v1/system/yaml).');
+    check('Sidebar nav (partials.js NAV) → namespaces list → row → namespace.html; Namespace YAML document (kind: Namespace, no second editor - writes go through the vars table → PUT …/yaml); per-node vars table rows + effective values with server-provided source; node pages carry none of it; member sees real 403 (page + /v1/system/yaml).');
   }
   if (mode === 'errors') {
     await goto('nodes'); await page.evaluate(() => window.__f3Fault = '/v1/nodes'); await page.locator('#nodes-refresh').click();

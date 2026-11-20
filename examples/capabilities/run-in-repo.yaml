@@ -1,0 +1,62 @@
+# 在**已经存在**的仓库目录里跑测试：`docs/agent-install.md` 里「能在你的项目目录里跑
+# make test」那句话的可执行版本。装上节点、把 SOURCE_ROOT 配成仓库路径，就能直接跑。
+#
+# 这条样例把三件事写在一起（缺任何一条都会被写入期拒绝）：
+#
+#   requires.values: [vars.SOURCE_ROOT]      ← 声明「这台机器能给出 SOURCE_ROOT」
+#   run.env.SOURCE_ROOT.valueFrom.fieldRef   ← 机器事实进脚本的唯一入口（脚本里是 $SOURCE_ROOT）
+#   run.workDir: $(vars.SOURCE_ROOT)         ← 任务直接在这个目录里启动（$PWD）
+#
+# 目录归你管，不归节点管：
+#   · workDir 必须**事先存在**且是绝对规范路径；节点**不创建**它，不存在时任务以
+#     workdir_unavailable 失败（这是配置问题，不是脚本 bug，也不会自动重试）；
+#   · 不得与 GC 根（节点工作根 `status.workRoot`）重叠：节点会清理自己的根，你的仓库
+#     不该落在会被回收的目录里；
+#   · run.files 会展开到 workDir：**同名文件会被覆盖、权限变成 0600（入口 0700）**。
+#     跑之前确认仓库里没有同名的 run.sh，或者把文件放进子目录隔离。
+apiVersion: anotify/v1
+kind: Capability
+metadata:
+  name: run-in-repo
+  displayName: 在仓库目录里跑测试
+spec:
+  # 参数是任务的输入契约；脚本里通过 ANOTIFY_PARAM_* 读取。这里只演示一个**可选**参数：
+  # 参数名归一 = 大写 + 非字母数字换下划线，所以 test_target → ANOTIFY_PARAM_TEST_TARGET。
+  params:
+    type: object
+    properties:
+      test_target:
+        type: string
+        default: test
+        description: 传给 make 的目标名（可选，缺省 test）
+  # 机器事实要「先声明再引用」：run.env 引用 vars.* 却没写在这里 = 400 undeclared_need。
+  requires:
+    commands: [make, bash]
+    values: [vars.SOURCE_ROOT]
+  run:
+    entrypoint: run.sh
+    files:
+      run.sh: |
+        #!/bin/bash
+        set -euo pipefail
+
+        target=${ANOTIFY_PARAM_TEST_TARGET:-test}
+
+        # workDir 已经展开过，$PWD 本来就是 $(vars.SOURCE_ROOT)；这里再 cd 一次是让
+        # 「目录从哪来」在脚本里看得见 —— 两者是同一个值，别在这里写死另一条路径。
+        cd "$SOURCE_ROOT"
+
+        echo "run-in-repo: pwd=$PWD target=$target"
+        make "$target"
+    env:
+      SOURCE_ROOT:
+        valueFrom:
+          fieldRef: {fieldPath: vars.SOURCE_ROOT}
+    workDir: $(vars.SOURCE_ROOT)
+  lifecycle:
+    # 跑测试通常可以重放；idempotent 只影响「短暂基础设施失败」是否自动重试。
+    idempotent: true
+    timeoutSec: 1800
+  concurrency:
+    # 同一个仓库目录上并行跑两份 make 会互相踩，默认就是 1；写成显式值提醒别调大。
+    maxPerNode: 1

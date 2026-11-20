@@ -77,6 +77,8 @@ const CHROME_SUITES = [
 	"i18n",
 	"i18n_coverage",
 	"frontend",
+	// #476：节点页/命名空间页的可视化 vars（真 server + 真 Chrome；写路径只走 PUT …/yaml）。
+	"vars_ui",
 	"lang_hint",
 	"cli_auth",
 	"passkey_enroll",
@@ -142,7 +144,7 @@ function suiteAuthority(name) {
 // 「前端 real 通过」——比红更危险，所以这里直接 exit 2，不给「先跑跑看」。
 function assertAuthorityContract() {
 	const problems = [];
-	// 注册表冻结（#338）：全量 e2e = 28 个套件，是门禁证据的一部分。
+	// 注册表冻结（#338）：全量 e2e = 29 个套件（#476 新增 vars_ui）；判定在 assertAuthorityContract。
 	if (ALL_SUITES.length !== SUITE_REGISTRY_SIZE) {
 		problems.push(
 			`注册套件 ${ALL_SUITES.length} 个，冻结值是 ${SUITE_REGISTRY_SIZE}` +
@@ -200,9 +202,9 @@ const SUITE_TIMEOUT_OVERRIDE = {
 	// capacity（#336）：保留期清理挂 30s 租约巡检 tick，三轮 ≈150s；默认 120s 会 SIGKILL。
 	capacity: 300_000,
 };
-// 注册套件数冻结（#338）：门禁证据要求「一次全量 = 28 个套件」。
+// 注册套件数冻结（#338）：一次全量 = 29 个套件（#476 新增 vars_ui）。
 // 增删套件必须同时改这里 + AUTHORITY 清单 + docs/v4/e2e-inventory.md，否则启动即 exit 2。
-const SUITE_REGISTRY_SIZE = 28;
+const SUITE_REGISTRY_SIZE = 29;
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");
 const CONCURRENCY = parseInt(process.env.E2E_CONCURRENCY || "4", 10);
@@ -468,7 +470,7 @@ async function runParallel(suites) {
 //   ② 从不校验断言数：没有 results/<suite>.json、或 0通过/0失败，都照样计入汇总。
 //      现在：必须落盘结果、assertions[] 与 passed+failed 自洽，且 passed>0
 //      （真存在 0 断言套件就进 ZERO_ASSERTION_ALLOW 具名白名单并写理由）。
-//   ③ 不校验集合：请求了 28 个套件，结果里少一个 / 多一个未注册的都不报。
+//   ③ 不校验集合：请求了 29 个套件，结果里少一个 / 多一个未注册的都不报。
 //      现在：结果集合必须等于请求集合（缺失/多余/未注册全部 fail）。
 const ZERO_ASSERTION_ALLOW = new Map(); // `套件名 → 为什么合法地 0 断言`（现在是空：不允许）
 
@@ -876,7 +878,7 @@ async function main() {
 		console.log("❌ E2E 未全绿");
 		process.exit(1);
 	}
-	// 绿灯也要能自证「验了多少」：全量运行必须 28/28 覆盖。
+	// 绿灯也要能自证「验了多少」：全量运行必须 29/29 覆盖。
 	console.log(
 		`✅ E2E 全绿：${agg.suiteSummary.length}/${suitesToRun.length} 个请求套件均达标` +
 			`（断言 ${agg.totalPass} 通过 / ${agg.totalFail} 失败，authority 清单覆盖 ${agg.suiteSummary.length} 个）`,

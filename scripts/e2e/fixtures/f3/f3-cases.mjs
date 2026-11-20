@@ -116,22 +116,22 @@ add('node-create',d=>nodeRetained(d,'create'),{expectHttpStatus:[
 // （用例断言的就是这两条拒绝路径，前端要原样显示原因并保住草稿）。
 add('namespace-system',d=>nodeRetained(d,'namespace-system'),{expectHttpStatus:[
   {status:409,path:'/v1/system/config',exact:true,note:'resource_version_conflict：旧 rv 保存 retention 必须 409'},
-  {status:409,path:'/v1/namespaces/default/config',exact:true,note:'resource_version_conflict：旧 rv 保存 namespace vars 必须 409'},
+  {status:409,path:'/v1/namespaces/default/yaml',exact:true,note:'resource_version_conflict：旧 rv 保存 namespace vars 必须 409（#476 起写入口是 YAML）'},
   {status:400,path:'/v1/namespaces/default/config',exact:true,note:'resource_version_required：缺 CAS 令牌必须 400'},
   {status:400,path:'/v1/system/config',exact:true,note:'resource_version_required：缺 CAS 令牌必须 400'},
 ]});
 // node-config：配置保存会拿到一个**真的** resource_version 冲突（用例先并发 PUT 改 rv，
 // 再从页面上用旧 rv 保存），页面必须保留草稿并显示 409。
 add('node-config',d=>nodeRetained(d,'config'),{expectHttpStatus:[
-  {status:409,path:'/v1/nodes/anode-1/config',note:'resource_version_conflict：并发 PUT 之后用旧 rv 保存必须 409'},
+  {status:409,path:'/v1/nodes/anode-1/yaml',note:'resource_version_conflict：并发 PUT 之后用旧 rv 保存必须 409（#476 起 UI 写 YAML）'},
 ]});
 for(const mode of ['actions-slots','errors'])add('node-'+mode,d=>nodeRetained(d,mode));
 // namespace-detail：列表 → 详情 → 只读 YAML / 逐节点表 / 非 admin 的 403（③④）。
 // 这条用例只读真相：导航入口在共享侧栏、YAML 由服务端重建、覆盖来源由服务端给出。
 add('namespace-detail',d=>nodeRetained(d,'namespace-detail'),{expectHttpStatus:[
-  // 只读证据：用 PUT 打 Namespace YAML —— 生产 mux 的静态兜底把「未注册方法」变成 404
-  // （与 production_mux_test 的「退役写 = 404」同一已知行为）。它必须**不是** 2xx。
-  {status:404,path:'/v1/namespaces/default/yaml',exact:true,note:'只读：Namespace YAML 没有写路径（PUT 不被接受）'},
+  // #476：Namespace YAML 有了写路径（PUT …/yaml），但文档必须带 CAS 令牌与 spec.vars ——
+  // 缺任何一项都是 400。这条用例同时证明「读是重建的、写是受校验的」，不是任意可写。
+  {status:400,path:'/v1/namespaces/default/yaml',exact:true,note:'缺 metadata.resourceVersion / spec.vars 的文档必须 400（写路径受校验）'},
 ]});
 // #455：顶栏切 ns 必须与页面编辑目标一致。namespace.html 的 `?name=` 就是这一页的
 // 范围，顶栏切换要去改它并整页跳转；页内下拉改 ns 时顶栏两个显示面要就地跟上。

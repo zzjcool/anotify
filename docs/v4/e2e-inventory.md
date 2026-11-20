@@ -12,7 +12,7 @@
 > 标注「66d926a 实测」的数字只代表基线版本；标「另一分支」的改动在本条基线上还看不到。
 >
 > **权威注册表**只有一处：`scripts/e2e/parallel_runner.mjs` 的 `HTTP_SUITES` /
-> `CHROME_SUITES`（共 **28** 个套件 = 13 HTTP + 15 Chrome）。本文件不复制清单，
+> `CHROME_SUITES`（共 **29** 个套件 = 13 HTTP + 16 Chrome）。本文件不复制清单，
 > 只解释每个套件为什么在、为什么走这个 authority。
 
 ## 0. 一页结论
@@ -20,12 +20,12 @@
 | 类别 | 数量 | 分类 | 验收 authority |
 |---|---|---|---|
 | HTTP 套件（无 Chrome） | 13 | 11 migrated（#336）+ 1 新增（`node_v4`）+ 1 kept（`passkeys`） | real |
-| Chrome 套件 | 15 | 5 migrated（#335/#354）+ 7 migrated（#338）+ 3 kept | 1 real 点名（`frontend`）+ 4 explicit-mock + 10 real |
+| Chrome 套件 | 16 | 5 migrated（#335/#354）+ 7 migrated（#338）+ 3 kept + 1 新增（`vars_ui`） | 1 real 点名（`frontend`）+ 4 explicit-mock + 11 real |
 | 已退役 | 1 | `real_backend`（#201 → #336 具名退役 → #338 删文件） | — |
 
 三条要记住的事实：
 
-1. **全部 28 个套件都真跑、真 exit**：`explicit-mock` 不是「跳过」，它只是把验收标的
+1. **全部 29 个套件都真跑、真 exit**：`explicit-mock` 不是「跳过」，它只是把验收标的
    从「真实后端语义」换成「locale / DOM / 几何 / 交互契约」（裁决见 §3）。
 2. `frontend` 是**唯一被点名**的 real 前端 authority；执行器对它**剥掉** `E2E_MOCK_ONLY`
    并告警，real 不允许静默降级成 mock。
@@ -55,7 +55,7 @@
 要点：v3 的节点侧 `cmd/agent` 与 `AGENT_BIN` 已随协议 v4 退役（#331/#332/#333），
 `run_all.sh` 现在只构建 `anotify`（`cmd/server`）/ `devseed` / `anode`（`cmd/anode`）。
 
-## 2. 15 个 Chrome 套件（真浏览器）
+## 2. 16 个 Chrome 套件（真浏览器）
 
 | 套件 | 分类 | authority | 覆盖什么 / 迁移要点 |
 |---|---|---|---|
@@ -67,6 +67,7 @@
 | `cli_auth` | migrated（#338 @ `3651707`） | real | CLI 设备授权全链路（AC-01~36 可端到端部分）。v4：事件投递改 `POST /v1/namespaces/{ns}/events`（Bearer Key）+ 开局建真实源 |
 | `passkey_enroll` | migrated（#338 @ `3651707`） | real | Passkey 新设备授权（D-B 端点契约 + D-C 安全不变量）；节点/身份断言改走 v4 真 WS 握手 |
 | `admin_flow` | migrated（#338 @ `3651707`） | real | 管理后台全流程（首用户自动 admin / 管理端点 / 权限 / 前端渲染）；任务读改 `/v1/namespaces/{ns}/tasks` + `TaskList` 信封 |
+| `vars_ui` | **新增**（#476） | real | 节点页/命名空间页的「可视化 vars」：表格的值/来源逐键对照 `status.effectiveVars`、需求列聚合 `spec.requires.values`、缺但被要求 → 红标；表格增删改序列化进同一份 YAML 文档，保存只走 `PUT …/yaml`（UI 对 `/config` 的写调用 = 0，守卫 `scripts/check-config-writes.mjs`） |
 | `deeplink` | migrated（#338 @ `3651707`） | real | 通知深链 → `message.html?id=<taskId>` 任务详情；断言改盯 v4 DOM 锚点（`#msg-title` / `#msg-sub` / `#task-facts` / `#msg-trace`） |
 | `auth_flow` | migrated（#338 @ `3651707`） | real | Passkey 认证全流程（CDP 虚拟认证器）；能力/边/源改 v4 信封（`capabilityBody` / `sourceBody`，边读派生投影 `source.spec.targets`） |
 | `events_paging` | migrated（#338 @ `3651707`） | real | events 游标分页（#234/#235/#236）。v4：`before` → `continue`，游标在 `metadata.continue`；UI 由「?before= 翻页」改「加载更多」累积 |
@@ -174,7 +175,7 @@ cat .e2e-bin/results/_authority-manifest.json
 ## 6. 怎么核对这份台账
 
 ```bash
-# 注册表 + authority（28 个套件，24 real / 4 explicit-mock）
+# 注册表 + authority（29 个套件，25 real / 4 explicit-mock）
 node scripts/e2e/parallel_runner.mjs --authority-plan
 
 # 某个套件真的跑、真的 exit（mode 打印在汇总每一行，也落盘在 manifest）
