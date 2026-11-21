@@ -2,7 +2,7 @@
  *
  * 为什么需要一张表，而不是从代码里猜：
  *   e2e 套件是**黑盒**（起真二进制 + 真 Chrome），代码里没有一条边声明「我盯着
- *   web-src/pages/source.html」。所以映射只能人工断言，但人工断言会腐烂 ——
+ *   web-src/pages/node.html」。所以映射只能人工断言，但人工断言会腐烂 ——
  *   于是本表被两层检查夹住（`affected.test.mjs`）：
  *
  *     ① 完整性：`scripts/e2e/suites/*.mjs` 里每个套件必须有行、有非空理由；
@@ -18,6 +18,7 @@
  *
  * 口径（自 2026-11-18 起）：
  *   · pages 里的名字 = `web-src/pages/<name>.html` 与生成物 `web/<name>.html`；
+ *     页面被删除（如 `source` 合并进 `source-detail`）时两处都要删，否则本表腐烂；
  *   · `pages: ALL` = 该套件对**全部**页面做矩阵遍历（i18n / ui_shift 类）；
  *   · paths 里的 glob 用 `**` / `*`（见 affected.mjs 的 globMatch）。
  */
@@ -44,7 +45,6 @@ export const NO_E2E_IMPACT = [
 	{ glob: "scripts/dev.sh", why: "开发环境脚本，e2e 不用它" },
 	{ glob: "scripts/cli_auth_smoke.sh", why: "手工冒烟脚本，e2e 用 cli_auth 套件" },
 	{ glob: "examples/**", why: "示例 playbook/能力包；e2e 用的是内联 fixture，不读 examples/" },
-	{ glob: "design/**", why: "设计稿 HTML/截图，不参与构建与运行" },
 	{ glob: "E2E_TESTING.md", why: "文档" },
 	{ glob: ".gitignore", why: "版本控制元数据" },
 	{ glob: "LICENSE", why: "许可证文本" },
@@ -136,14 +136,14 @@ export const SUITE_SURFACES = {
 	// pages 的来源：f3-cases.mjs 里每个注册 case 各自 goto 的页面。
 	// pages: ALL 的来源：矩阵/批次遍历 PAGES（f3-i18n-cases / f3-ui-helper）。
 	frontend: {
-		why: "注册 case 逐个起真 server + 真 Chrome（real authority）",
-		pages: ["admin", "capabilities", "capability", "sources", "source", "source-detail", "events", "trace", "message", "index", "playbooks", "playbook", "nodes", "node", "namespace", "namespaces", "security", "docs", "cli-auth", "login"],
-		paths: ["internal/sitegen/**", "cmd/sitegen/**", "web-src/layouts/**", "web-src/locales/**"],
+		why: "注册 case 逐个起真 server + 真 Chrome（real authority）；web/yamldoc.js 经预览 mock 参与每个页面的文档渲染（它一坏就是页面级 pageerror）",
+		pages: ["admin", "capabilities", "capability", "sources", "source-detail", "events", "trace", "message", "index", "playbooks", "playbook", "nodes", "node", "namespace", "namespaces", "security", "docs", "cli-auth", "login"],
+		paths: ["internal/sitegen/**", "cmd/sitegen/**", "web-src/layouts/**", "web-src/locales/**", "web/yamldoc.js"],
 	},
 	vars_ui: {
-		why: "#476 节点页/命名空间页的可视化 vars：表格数据 = effectiveVars + requires.values，保存只走 PUT …/yaml（真 server + 真 Chrome，零 /config 写）",
+		why: "#476 节点页/命名空间页的可视化 vars：表格数据 = effectiveVars + requires.values，保存只走 PUT …/yaml（真 server + 真 Chrome，零 /config 写）；文档文本的序列化器是 web/yamldoc.js（#473），改它就会改变这两个页面的写面",
 		pages: ["node", "namespace"],
-		paths: ["web/vars-table.js", "internal/server/resource_namespace_yaml.go"],
+		paths: ["web/vars-table.js", "web/yamldoc.js", "internal/server/resource_namespace_yaml.go"],
 	},
 	i18n: {
 		why: "全部页面 × 4 语言的本地化 AC（批次遍历 PAGES）",
@@ -194,7 +194,7 @@ export const SUITE_SURFACES = {
 	},
 	events_paging: {
 		why: "events 游标分页 + 资源分层",
-		pages: ["events", "index", "source", "sources", "trace"],
+		pages: ["events", "index", "sources", "trace"],
 	},
 	lang_hint: {
 		why: "语言提示条（纯客户端 navigator.language）",
@@ -202,8 +202,9 @@ export const SUITE_SURFACES = {
 	},
 	p2_guards: {
 		why: "字体自托管 / 抽屉 a11y / reduce 语义 / View Transitions / #489 ⋯ 菜单 reduce 下不自激重排",
-		// sources + source：第 5 段在 reduce 下点开行内 ⋯ 与页头 ⋯（两份 placeMenu 拷贝）。
-		pages: ["docs", "events", "login", "sources", "source"],
+		// 源页只剩下 sources（行内 ⋯）；旧的 source 重复页已删除（#479 黑盒审计 B-4），
+		// 所以第 5 段现在只有一处 placeMenu 拷贝可验。
+		pages: ["docs", "events", "login", "sources"],
 		paths: ["web/fonts/**"],
 	},
 	password_login: {

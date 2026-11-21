@@ -121,7 +121,7 @@ func countDocRefs(op *OpenAPIOperation, kind string) int {
 }
 
 // TestCanonicalSpecFiles 钉住五份 canonical spec 的文件名与合并顺序。
-// 名字/顺序变了就是契约变了（docs/design/v4/api-conventions.md §2）。
+// 名字/顺序变了就是契约变了（`api/` 五份文件就是拆分事实）。
 func TestCanonicalSpecFiles(t *testing.T) {
 	want := []string{"resource.yaml", "events.yaml", "agent.yaml", "ingress.yaml", "auth.yaml"}
 	if !reflect.DeepEqual(CanonicalSpecFiles, want) {
@@ -162,11 +162,11 @@ func TestLoadSpecDirFixtureSet(t *testing.T) {
 		}
 	}
 
-	// 组顺序 = 首次出现顺序（resource 声明顺序 → events → ingress → auth 声明顺序）。
+	// 组顺序 = 首次出现顺序（resource 声明顺序 → events → auth 声明顺序）。
+	// E-6：ingress 的 operation 归到规范 tag events（别名合并），所以这里没有 ingress 组。
 	wantOrder := []string{
 		"capabilities", "sources", "playbooks", "nodes", "namespaces", "tasks",
 		"events", "traces",
-		"ingress",
 		"auth", "keys", "passkey-enroll", "cli-auth", "admin", "devices", "system",
 	}
 	var gotOrder []string
@@ -175,6 +175,16 @@ func TestLoadSpecDirFixtureSet(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotOrder, wantOrder) {
 		t.Fatalf("group order:\n want %v\n  got %v", wantOrder, gotOrder)
+	}
+
+	// E-6：别名 tag 并到规范 tag —— events.yaml 的 2 条与 ingress.yaml 的 4 条同组。
+	if got := len(groupOps(set.Groups, "events")); got != 6 {
+		t.Errorf("events group must hold events.yaml + ingress.yaml operations (want 6, got %d)", got)
+	}
+	for _, alias := range []string{"node", "ingress"} {
+		if got := len(groupOps(set.Groups, alias)); got != 0 {
+			t.Errorf("alias tag %q must not survive as its own group (got %d ops)", alias, got)
+		}
 	}
 
 	// 合并后总端点：35（GET events 在 events.yaml、POST events 在 ingress.yaml，
@@ -1098,8 +1108,8 @@ func TestDocsPageRendersFiveSpecFixturesFourLanguages(t *testing.T) {
 		t.Fatalf("fixture set must expose 35 operations, got %d", wantOps)
 	}
 	wantGroups := len(set.Groups)
-	if wantGroups != 16 {
-		t.Fatalf("fixture set must expose 16 tag groups, got %d", wantGroups)
+	if wantGroups != 15 {
+		t.Fatalf("fixture set must expose 15 tag groups, got %d", wantGroups)
 	}
 
 	for _, lang := range langs {

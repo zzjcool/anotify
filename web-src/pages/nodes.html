@@ -38,23 +38,6 @@
   .nd-v.is-unknown { color: var(--muted); }
   .nd-acts { margin-left: auto; flex: none; display: flex; align-items: center; gap: 8px; }
   @media (max-width: 900px) { .nd-kv { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-  /* 旁白折叠（ND-3）：原文一字不删，只是默认收起 */
-  .nd-more { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-1); }
-  .nd-more > summary {
-    padding: 8px 12px;
-    font-size: 12px;
-    color: var(--muted);
-    cursor: pointer;
-    list-style: none;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .nd-more > summary::-webkit-details-marker { display: none; }
-  .nd-more > summary::before { content: "▸"; color: var(--faint); }
-  .nd-more[open] > summary::before { content: "▾"; }
-  .nd-more > summary:hover { color: var(--text); }
-  .nd-more-body { padding: 0 12px 12px; margin: 0; }
   /* 保留期字段：label 右侧带单位，下面一行给「秒 ≈ 天」的人类可读换算 */
   .nd-label { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
   .nd-label-unit { font-size: 11px; color: var(--faint); font-weight: 400; }
@@ -133,11 +116,6 @@
     <p class="c2-note">{{t "nodes.v4.setup_hint"}}</p><button id="reg-close" class="btn btn-ghost" type="button">{{t "nodes.v4.cancel"}}</button>
   </section>
   <section class="card"><div id="nodes-skel" class="card-pad c2-note">{{t "nodes.v4.loading"}}</div><!-- #377：搜索只过滤已加载的页（不重新请求） --><div class="nd-toolbar"><input id="nodes-search" class="input" type="search" autocomplete="off" placeholder="{{t "paging.search_ph"}}" aria-label="{{t "paging.search_ph"}}" /><span id="nodes-count" class="nd-toolbar-count" aria-live="polite"></span></div><div id="nodes-list" aria-live="polite"></div><div id="nodes-more-wrap" class="nd-more-wrap" hidden><button id="nodes-load-more" class="btn btn-ghost" type="button">{{t "paging.load_more"}}</button></div></section>
-  <!-- ND-3：槽位判定与批量写规则默认收起（详规不占首屏） -->
-  <details class="nd-more">
-    <summary>{{t "uxaudit.res.nodes.note_summary"}}</summary>
-    <p class="c2-note nd-more-body" id="slot-note">{{t "nodes.v4.slot_note"}} {{t "nodes.v4.batch_hint"}}</p>
-  </details>
 </div></div>
 {{end}}
 {{define "script"}}
@@ -150,9 +128,87 @@
   const yd = key => A.t('uxaudit.dev.' + key);
   A.mountLayout({ active: 'nodes', title: t('title'), subtitle: t('subtitle') });
   const make = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
-  // ND-2：主次分开 —— 行尾动作是次要按钮（.btn-quiet），不再每行挂一个主按钮。
-  // 仍然只有一个 <button>，文案与回调不变（e2e 点 [data-node] button 的语义保留）。
-  const button = (text, fn) => { const x = make('button', 'btn btn-ghost btn-sm btn-quiet', text); x.type = 'button'; x.addEventListener('click', fn); return x; };
+  /* B-6：行内动作收成「⋯」菜单（与 sources.html 同一套形状：.act-menu / .menu / .act-more
+     全局样式已存在）。轮换身份令牌会立刻踢掉在线节点，不再与「进入详情」同权重摆在行首。 */
+  const actionMenu = (items) => {
+    const wrap = make('div', 'act-menu');
+    const trigger = make('button', 'btn btn-ghost btn-sm act-more', '⋯');
+    trigger.type = 'button';
+    trigger.setAttribute('aria-haspopup', 'menu');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.setAttribute('aria-label', t('more'));
+    const menu = make('div', 'menu hidden');
+    menu.setAttribute('role', 'menu');
+    const setOpen = open => {
+      menu.classList.toggle('hidden', !open);
+      trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) placeMenu(wrap);
+    };
+    trigger.onclick = () => setOpen(menu.classList.contains('hidden'));
+    for (const item of items) {
+      const b = make('button', 'menu-item act-item' + (item.danger ? ' act-danger' : ''));
+      b.type = 'button';
+      b.setAttribute('role', 'menuitem');
+      if (item.act) b.dataset.act = item.act;
+      /* 只有带 hint 的条目才拆两行；单行条目保持纯文本。 */
+      if (item.hint) b.append(make('span', null, item.label), make('span', 'act-item-hint', item.hint));
+      else b.textContent = item.label;
+      b.onclick = () => { setOpen(false); item.run(b); };
+      menu.append(b);
+    }
+    wrap.append(trigger, menu);
+    return wrap;
+  };
+  const closeMenus = except => {
+    for (const menu of document.querySelectorAll('.act-menu .menu:not(.hidden)')) {
+      const wrap = menu.parentElement;
+      if (except && wrap.contains(except)) continue;
+      menu.classList.add('hidden');
+      const trigger = wrap.querySelector('.act-more');
+      if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    }
+  };
+  /* 菜单是 fixed 浮层（ui.css），left/top 按触发器的矩形夹进视口：
+     行尾的触发器离右缘近，右对齐后会越出视口被裁掉。 */
+  function placeMenu(wrap) {
+    const trigger = wrap.querySelector('.act-more'), menu = wrap.querySelector('.menu');
+    if (!trigger || !menu || menu.classList.contains('hidden')) return;
+    const gap = 8, pad = 8;
+    /* 先清掉上次打开留下的 left/top 再量宽高：超出视口的旧 left 会把可用宽度压小 */
+    menu.style.left = '';
+    menu.style.top = '';
+    const box = trigger.getBoundingClientRect(), w = menu.offsetWidth, h = menu.offsetHeight;
+    const left = Math.min(Math.max(pad, box.right - w), Math.max(pad, innerWidth - pad - w));
+    let top = box.bottom + gap;
+    if (top + h > innerHeight - pad && box.top - gap - h >= pad) top = box.top - gap - h;
+    top = Math.min(Math.max(pad, top), Math.max(pad, innerHeight - pad - h));
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    /* 行 :active 的按压缩放带 transform，会让 fixed 的包含块变成那个祖先；按矩形差补一次 */
+    const rect = menu.getBoundingClientRect();
+    if (Math.abs(rect.left - left) > 0.5 || Math.abs(rect.top - top) > 0.5) {
+      menu.style.left = (left + (left - rect.left)) + 'px';
+      menu.style.top = (top + (top - rect.top)) + 'px';
+    }
+  }
+  const reflowMenus = () => {
+    if (!document.querySelector('.act-menu .menu:not(.hidden)')) return;
+    for (const menu of document.querySelectorAll('.act-menu .menu:not(.hidden)')) placeMenu(menu.parentElement);
+  };
+  document.addEventListener('click', event => closeMenus(event.target));
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    const open = document.querySelector('.act-menu .menu:not(.hidden)');
+    if (!open) return;
+    const wrap = open.parentElement;
+    closeMenus(null);
+    /* 关掉之后再把焦点还给触发器 */
+    const trigger = wrap.querySelector('.act-more');
+    if (trigger) trigger.focus();
+  });
+  document.addEventListener('scroll', reflowMenus, { passive: true, capture: true });
+  window.addEventListener('resize', reflowMenus);
+  document.addEventListener('transitionend', reflowMenus, true);
   const message = (id, text, error = false) => { $(id).textContent = text; $(id).classList.toggle('is-error', error); };
   const errorText = e => e.status === 409 && e.reason === 'resource_version_conflict' ? t('stale') : t('error') + ': ' + (e.reason || '') + ' ' + e.message;
   const write = (path, body, method = 'PUT') => A.api(path, { method, body: JSON.stringify(body) });
@@ -260,7 +316,7 @@
     const warn = make('div', 'nd-drift');
     warn.dataset.drift = 'config-vs-applied';
     warn.append(make('span', 'nd-drift-ico', '!'),
-      make('span', null, yd('drift').replace('{config}', rev(n.configRevision)).replace('{applied}', rev(n.appliedRevision))),
+      make('span', null, yd('drift').replace('{config}', rev(n.configRevision)).replace('{rev}', rev(n.appliedRevision))),
       make('span', 'badge badge-warn', yd('drift_short')));
     frag.append(warn);
     return frag;
@@ -304,7 +360,7 @@
       head.append(link, statusBadge(n));
       main.append(head, kvGrid(n));
       row.append(main, make('div', 'nd-acts'));
-      row.lastChild.append(button(t('rotate'), () => rotate(n.name)));
+      row.lastChild.append(actionMenu([{ label: t('rotate'), act: 'rotate', danger: true, run: () => rotate(n.name) }]));
       $('nodes-list').appendChild(row);
     }
     if (!NODES.length) $('nodes-list').appendChild(make('div', 'empty', t('empty')));

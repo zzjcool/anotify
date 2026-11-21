@@ -93,7 +93,8 @@ curl -fsSL https://raw.githubusercontent.com/zzjcool/anotify/main/scripts/instal
 
 兜底路径保留的理由：首次安装本来就没有 agent 可以「自升级」，镜像不通的机器拿不到
 中枢的二进制，容器只读 FS 的平台永远走不通自替换（`not_supported`）。
-设计、退出码与排查表见 `docs/design/agent-upgrade.md`。
+退出码与排查表见 `docs/anode-install.md`；升级链路实现在 `internal/server/node_upgrade_handlers.go`
+与 `cmd/anode/internal/ops/`。
 
 ```bash
 # 卸载（保留 ~/.anotify 数据目录）

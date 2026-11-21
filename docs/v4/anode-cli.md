@@ -15,7 +15,7 @@
 | `path` | 看/调**任务环境的 PATH 基线**（`Environment=PATH=` + `install.json`） | 管理员 |
 | `emit` | 能力脚本的**唯一出口**（把产物交给下游能力） | 能力脚本 |
 
-内置事实（配置、身份、变量）见 `docs/design/v4/anode.md`；本文件只讲命令行。
+内置事实（配置、身份、变量）见 `cmd/anode/internal/config/config.go`；本文件只讲命令行。
 
 ---
 

@@ -1,3 +1,5 @@
+> **历史快照**：本文件是当时的交付记录，不随代码演进；行为以代码、测试与 `docs/contracts/` 为准。
+
 <!-- snapshot-doc: 2026-11-19 #457 交付时的定格数字（make ci 的真实输出），复算命令见 §6 -->
 # 接入文档端点漂移 + 文档端点检查（#457）交付报告
 
@@ -61,7 +63,7 @@ v4 里这条路由已经删了（`api/ingress.yaml` 对它 0 命中；`internal/
 
 - 扫面 = **sitegen 的输入面**（`web-src/pages`、`web-src/layouts`、`web-src/locales`）+ 两份 README。
   这是「用户最终看到的文档」的全集。
-- **不扫** `docs/**`、`design/`、`DEVELOPMENT.md`、`IOS_TESTING.md`、`scripts/**`：它们是历史快照 /
+- **不扫** `docs/**`、`DEVELOPMENT.md`、`IOS_TESTING.md`、`scripts/**`：它们是历史快照 /
   内部排障笔记 / 测试夹具，很多地方**故意**引用旧端点（v3 契约、复盘报告、`scripts/ws_test.mjs` 的旧探针）。
   把它们也管起来只会逼人到处贴豁免，最终得到「到处是豁免的假绿」。
 - **不扫** `.html` 里的 `<script>` 与其它 `web/*.js`：那是客户端代码，URL 是拼出来的

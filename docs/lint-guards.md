@@ -66,6 +66,7 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 | L9 | `scripts/check-ui-copy.mjs` | `9ec8afff`（PR #447）节点页挂着「命名空间与系统配置不在这页…已迁到…」，用户看到直接问「搞笑吧？你没有审核出来吗？」——但这类文案不只一处，而且**旧门禁完全没有抓它的面**：`check-i18n-keys` 只验 key 在不在、e2e 只验页面 200，于是任何旁白都能绿到生产。`#458` 补的第二个面：散文也会直接写在页面模板里（「写给维护者与排障者」当时就在 docs 页的 `<p>` 里），只扫 locale = 漏一半 | ①扫 `web-src/locales/*.yaml` 的**值**；②扫 `web-src/pages/*.html` 的**文本节点**——排除 HTML 注释、`<script>`/`<style>` 内容、标签（属性名/属性值/类名）、`{{…}}` 表达式，以及没被 layout `{{block}}` 接进渲染树的 define 体（sitegen 只执行 `__layout__`）。5 类高危特征 = 迁移叙述 / 对照内部实现（工单号、`v4`、`docs/`、构建命令）/ 对开发者喊话 / 历史形态对照 / TODO。词表**窄而准**：宽带扫定稿前在现有 locale 上实测命中 0 条；被故意排除的误报词（`make test`、`移行`、`旧 `、`XXX`）逐条记在脚本头注释里。行内豁免 `# ui-copy-ok: <理由>`（locale 值）/ `<!-- ui-copy-ok: <理由> -->`（页面），理由必填。反假绿：locale 文件/值、页面/文本节点四个下限（页面扫到 0 条不许算绿）；`--self-test` 20 红 / 13 绿 / 5 豁免 + 页面 6 红 / 7 绿 / 4 豁免（绿样例钉住抽到的节点数）+ 反向证明 | `make fe` + `make check-guard-selftest` |
 | L10 | `scripts/check-doc-endpoints.mjs` | #457：接入文档教**已删除的端点** —— `docs` 页「接入 Agent」步骤与 `events.empty` 文案都写 `POST /v1/notify` / `POST /v1/events`（v4 入口是 `POST /v1/namespaces/{namespace}/events`，旧扁平路由的下线由 `internal/server/api_integration_test.go` 钉住），照文档打过去必 404。文档里的 URL 没有执行者复算，所以只能随时间变错 | 事实源是 `api/*.yaml` 的 `paths:` 键；扫面 = sitegen 的输入面（`web-src/`）+ 两份 README；文档里的每个 `/v1/<path>` 必须命中一条 spec 路径（去 query / 行尾标点，`{param}` 与 `:param` 按段比对，以斜杠结尾的基路径另有前缀规则）。历史对照走「同一行标注已废弃」或 `<!-- docs-endpoints:historical -->` 整段标记，**只对引用不存在生效**；`<script>` 与 HTML 注释先遮罩（那是客户端代码，不是教学文案）。反假绿：spec 路径 / 扫描文件 / 引用数三条下限，任一归零 ⇒ 退出码 2；`paths:` 块内出现无法识别的行 ⇒ 退出码 2（不静默跳过）。`--self-test` 含变异用例：写一个不存在的端点必须判红 | `make ci` |
 | L11 | `scripts/check-config-writes.mjs` | #476：`/config` 降级成**读投影**（YAML 是唯一编辑面）之后，节点页与命名空间页仍各留着一条 `PUT …/config` 的第二写路径（清理前实测：`node.html:550` 的 `write(path + '/config', body)`、`namespace.html:156` 的 `write(nsPath(saveScope), …)`）——YAML 那一面看不到表单改的值，两个入口各自 200，只有用户看到的值对不上（§0 第 ⑤ 类缝隙） | 扫 `web-src/pages/*.html` 的内联 `<script>`（`<script src>` 跳过），用状态机剥注释（字符串 / 模板 / 正则里的 `//` 不是注释，否则 `'https://…/config'` 被吞成假绿）；「config 路径源」= 静态尾部以 `/config` 结尾的字面量，或 `const\|let\|var NAME =` 初始化器里含它的名字（含 `NAME = ns => …/config` 这种 helper 形态）；写调用点 = 页面自定义 `write(...)`（显式第 3 参 `'GET'` 除外）/ `….api(` 且 `method:` 字面量是写方法 / `fetch(` 同判；第一个实参括号配平切出后，**含 `/config` 字面量**或**等于 / 以 `NAME(` / `NAME +` 引用路径源**即红。输出 `文件:行 → 调用原文 → 命中原因`，退出码 0 绿 / 1 违规 / 2 解析或用法错误。**唯一例外面**：明写 `…/system/config` 的系统保留期单例不判红（system YAML 只读 ⇒ 它是保留期唯一写入口，不在 #476 范围），且例外只认后缀精确匹配，其余 `/config` 一律 fail-closed | `make fe` + `make check-guard-selftest` |
+| L12 | `scripts/check-comment-density.mjs` | #495：注释被当成第二份真相 —— `check-annotations`（L5）只保证「留下的注释不说谎」，没有任何东西保证「这些注释不该存在」；Go 注释行 24,947 而代码行 145,191，`docs/v4/` 的清单快照早已指向被删的套件。判据：注释只在「代码无法自述」处（非显然取舍、外部约束、危险操作）；文档只留操作手册，设计与契约定居代码与测试 | **棘轮（超与降都算不一致）**：①每个目录的注释行冻结；②仓库注释行总量冻结；③单文件注释行 ≤ max(12, 代码行 × 0.5)，当前已超限的 58 个文件登记预算，登记表过期即红；④`docs/` 面：`design`/`specs`/`plans` 禁止重建，待收缩目录（`contracts`/`v4`/`research`/`perf`）的文件数只许下调。`--update` 只降不入表（抬高直接拒），`--init` 仅首次可建。逐目录判据与 B 阶段计划见 [reports/comment-and-doc-ratchet.md](reports/comment-and-doc-ratchet.md) @count node scripts/check-comment-density.mjs --report | `make ci` |
 
 ### 1.1 本批顺带发现（真 bug，已修/待裁）
 
@@ -87,8 +88,8 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 
 - **过期指令**：`internal/version/version.go:16` 注释让人 `go run ./cmd/agent`（该目录已删除）→ 改成 `./cmd/anode`。
 - **坏引用**：`cmd/agent`（v3 节点，已删除）/ `make demo-chain`（已退役）/ `scripts/e2e/suites/real_backend.mjs`（已删除）/ `make mountpoint`（把报错原文当成了目标名）—— 逐条改成「已删除/已退役」的历史提及，或改指向现存目标。
-- **v3 设计文档**（`docs/design/capability-spec-v3.md`、`docs/design/agent-upgrade.md`）挂了 `frozen-doc:`，
-  它们不再参与引用检查；**标记本身也被校验**：哪天引用全部解析了，标记会红（强迫删）。
+- **v3 设计文档**挂了 `frozen-doc:`（随 2026-11-19 设计文档整套移除，已不存在），
+  冻结文档不再参与引用检查；**标记本身也被校验**：哪天引用全部解析了，标记会红（强迫删）。
 - **谎报已接线**：`DEVELOPMENT.md:720` 把零调用点的 `scripts/v4-frontend.test.mjs` 称「回归测试」
   → 改成「尚未接线、手工跑、判据是失败集合与 base 逐条相同」，并把旁边的禁裸读 `AnotifyGraphs`
   那条改成带锚点的形式：`@guard scripts/check-graph-access.mjs#no-direct-graph-lib`。
@@ -208,7 +209,7 @@ lead 删掉这两条写路径后全扫转绿（23 页 / 32 个写调用点 / 1 �
 | 类型 | 例子 | 处置 |
 |---|---|---|
 | 可判定的事实/约束 | 「不得裸读 `AnotifyGraphs`」「缺键会回退」「有 13 个宽度值」 | **改成可执行断言**（lint/test），注释里只留锚点 `@guard <脚本>#<规则码>` |
-| 不可判定的意图 | 「为什么宁可少报也不伪造 stale」 | 保留，但必须挂**决策编号** `@decision D7`，编号由 lint 校存在性 |
+| 不可判定的意图 | 「为什么宁可少报也不伪造 stale」 | 保留，但必须挂**决策编号** `@decision V4-D1`，编号由 lint 校存在性 |
 | 历史/废止物 | v3 设计文档里提到的已删脚本 | 文件头打 `frozen-doc: 理由`，**该标记自己也由 lint 校验仍需要**（引用全部解析成功即红，强迫删标记） |
 | 检查文件自己的规格段 | 测试文件头写「这条测试查什么」（如 `openapi_parity_test.go` 的对账说明） | 代码文件头（四十行内）打 `spec-doc: 理由`（**仅代码文件**），整份跳过 claim 棘轮并单独记账；三条硬校验：① 必须真是测试/检查文件（Go `func Test…` / JS `test(`、`describe(`、`it(`），否则 `SPEC_DOC_NOT_TEST` 红；② 去掉标记行后必须仍有 claim 行，否则 `SPEC_DOC_STALE` 红；③ markdown 里写它无效（`SPEC_DOC_NOT_CODE` 红），文档类继续用 `frozen-doc` / `snapshot-doc` |
 
@@ -216,7 +217,7 @@ lead 删掉这两条写路径后全扫转绿（23 页 / 32 个写调用点 / 1 �
 
 ```
 @guard    scripts/check-css.mjs#NESTED_RULE     ← 脚本必须存在，且真的会抛这个规则码
-@decision D7                                     ← 决策编号必须能在契约文档里找到
+@decision V4-D1                                  ← 决策编号必须在契约文档里找到（见 docs/contracts/v4/CONTRACT.md §0）
 @count    node scripts/check-contrast.mjs        ← 计数型断言必须附可重跑的命令
 frozen-doc: v3 设计快照，不再随代码演进           ← 仅 markdown 前 40 行，且引用已全部解析时必红
 spec-doc:  本文件是这条检查自己的规格说明         ← 仅代码文件（测试/检查文件）的文件头，整份跳过 claim 棘轮；

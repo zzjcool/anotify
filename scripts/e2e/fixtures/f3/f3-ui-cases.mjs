@@ -33,11 +33,11 @@ const SUITES = Object.freeze({
     {
       id: "mobile-390-fits",
       kind: "mobile",
-      pages: ["keys", "admin", "index", "docs", "trace", "source"],
+      pages: ["keys", "admin", "index", "docs", "trace"],
       lang: "zh-CN",
       theme: "dark",
       viewport: "mobile",
-      views: 6,
+      views: 5,
     },
     /* 同一组事实在 768×1024 竖屏平板上必须同样成立 —— 验收口径是
        390 / 360 / **768** 三档，而「内容档」820 正是为 768 而立（640 档覆盖不到）。
@@ -45,11 +45,11 @@ const SUITES = Object.freeze({
     {
       id: "mobile-768-fits",
       kind: "tablet",
-      pages: ["keys", "admin", "index", "docs", "trace", "source"],
+      pages: ["keys", "admin", "index", "docs", "trace"],
       lang: "zh-CN",
       theme: "dark",
       viewport: "tablet",
-      views: 6,
+      views: 5,
     },
     /* 宽档回归守卫：桌面（1440/1024/820）必须还是横向完整图，且 DOM 里不能残留
        任何紧凑视图控件（#369 已把 `.flograph-compact*` 整块删掉，这里同时钉住
@@ -61,11 +61,11 @@ const SUITES = Object.freeze({
     {
       id: "desktop-graph-clean",
       kind: "desktop",
-      pages: ["index", "trace", "source"],
+      pages: ["index", "trace"],
       lang: "zh-CN",
       theme: "dark",
       viewport: "desktop",
-      views: 3,
+      views: 2,
     },
     ...shots.map(s => ({ id: s.id, kind: "shots", lang: "zh-CN", page: s.page, views: 4 })),
   ]),
@@ -273,8 +273,9 @@ async function mobileFitsCase(c) {
           assert.ok(facts.rowActionRight !== null && facts.rowActionW > 0, label + ": \u884c\u5185\u64cd\u4f5c\u6309\u94ae\u5fc5\u987b\u5b58\u5728\u4e14\u53ef\u89c1");
           assert.ok(facts.rowActionRight <= facts.innerW, label + ": \u64cd\u4f5c\u5217\u4e0d\u8be5\u9700\u8981\u6a2a\u6eda\u624d\u80fd\u770b\u5230\uff08right=" + facts.rowActionRight + " > " + facts.innerW + "\uff09");
         }
-        // trace / source 一定有图；index 的「最新链路」在没有任何执行时可以是空的
-        if (page === "trace" || page === "source") assert.ok(graph.hasGraph, label + ": \u94fe\u8def\u56fe\u5fc5\u987b\u6e32\u67d3\u51fa\u6765");
+        // trace 一定有图；index 的「最新链路」在没有任何执行时可以是空的
+        // （source.html 已删除 → 这里不再有第二个图页可断言）
+        if (page === "trace") assert.ok(graph.hasGraph, label + ": \u94fe\u8def\u56fe\u5fc5\u987b\u6e32\u67d3\u51fa\u6765");
         if (graph.hasGraph) {
           assert.equal(graph.compactDom, 0, label + ": #369 \u5df2\u5220\u6389\u7d27\u51d1\u89c6\u56fe\uff0cDOM \u91cc\u4e0d\u5f97\u6b8b\u7559 .flograph-compact*");
           /* 用户第二裁决：手机上也要**横向**（和桌面同一种排布），

@@ -1609,8 +1609,31 @@ func normalizeCapabilitySpec(name string, version int, displayName string, spec 
 func capabilitySpecError(err error) error {
 	var artifactErr *artifact.Error
 	if errors.As(err, &artifactErr) && len(artifactErr.Problems) > 0 {
-		return errStatus(http.StatusBadRequest, artifact.Code(err),
-			artifact.ProblemMessage(artifactErr.Problems[0]))
+		causes := make([]statusCause, 0, len(artifactErr.Problems))
+		located := false
+		for i, problem := range artifactErr.Problems {
+			field := ""
+			if i < len(artifactErr.Fields) {
+				field = artifactErr.Fields[i]
+			}
+			if field != "" {
+				located = true
+			}
+			causes = append(causes, statusCause{
+				Reason:  artifact.ProblemCode(problem),
+				Field:   field,
+				Message: artifact.ProblemMessage(problem),
+			})
+		}
+		ae := &apiError{
+			Code:    http.StatusBadRequest,
+			Reason:  artifact.Code(err),
+			Message: artifact.ProblemMessage(artifactErr.Problems[0]),
+		}
+		if located {
+			ae.Details = &statusDetails{Causes: causes}
+		}
+		return ae
 	}
 	return errStatus(http.StatusBadRequest, reasonBadRequest, err.Error())
 }

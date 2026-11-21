@@ -16,12 +16,53 @@
         min-width: 0;
       }
 
-      /* 页头动作条（编辑 / 部署 / 删除 + 一句部署语义说明） */
+      /* 页头动作条（编辑 / 部署 / 启停 / 试跑，破坏性的删除收进 ⋯ 菜单） */
       .cap-actions {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
         gap: 8px;
+      }
+
+      /* 「开发者信息」折叠块（与 message.html / admin.html 同一形状）：
+         协议字段名之类的细节收起，页面正文只说人话。 */
+      .devf {
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+        background: var(--surface-1);
+        margin: 12px 0;
+        min-width: 0;
+      }
+      .devf > summary {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 12px;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--muted);
+        cursor: pointer;
+        list-style: none;
+      }
+      .devf > summary::-webkit-details-marker {
+        display: none;
+      }
+      .devf > summary::before {
+        content: "▸";
+        color: var(--faint);
+        font-size: 11px;
+      }
+      .devf[open] > summary::before {
+        content: "▾";
+      }
+      .devf > summary:hover {
+        color: var(--text);
+      }
+      .devf-body {
+        display: grid;
+        gap: 10px;
+        padding: 0 12px 12px;
+        min-width: 0;
       }
 
       /* 加载 / 错误 / 空态宿主 */
@@ -530,14 +571,13 @@
         <h2 id="cap-name" class="page-title cap-wrap">{{t "caps.detail.page_title"}}</h2>
         <!-- 状态徽标（#432）：内容由 render() 按 status.enabled 填，服务端事实一变就跟着变。 -->
         <div id="cap-badges" class="cap-badges"></div>
-        <p class="page-sub">{{t "caps.detail.page_sub"}}</p>
       </div>
       <div class="page-actions">
         <button type="button" id="cap-refresh" class="btn btn-ghost">{{t "caps.refresh"}}</button>
       </div>
     </div>
 
-    <!-- 动作条：内容在 render() 里按能力填充（编辑 / 部署 / 删除）。
+    <!-- 动作条：内容在 render() 里按能力填充（编辑 / 部署 / 启停 / 试跑 + ⋯ 菜单里的删除）。
          版本历史开关留在 [data-sec="versions"] 里（与改造前的语义一致）。 -->
     <div id="cap-actions" class="cap-actions"></div>
 
@@ -717,8 +757,7 @@
   </div>
 </div>
 
-<!-- 人工部署：选版本 + 选节点（不选 = 服务端按现有策略选候选）。
-     安装包保存/install 都不会自动部署，这一点在弹层里写明。 -->
+<!-- 人工部署：选版本 + 选节点（不选 = 服务端按现有策略选候选）。 -->
 <div id="deploy-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="deploy-title">
   <div class="modal-panel">
     <div class="modal-head">
@@ -726,7 +765,6 @@
       <button id="deploy-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.close"}}">×</button>
     </div>
     <div class="modal-body">
-      <p class="field-hint mb-3">{{t "caps.deploy.hint"}}</p>
       <div class="field">
         <label class="field-label" for="deploy-version">{{t "caps.deploy.version"}}</label>
         <select id="deploy-version" class="select mono"></select>
@@ -850,7 +888,6 @@
       A.mountLayout({
         active: "capabilities",
         title: t("caps.detail.page_title", "能力详情"),
-        subtitle: t("caps.detail.page_sub", "身份、健康、定义与脚本；写操作都在这一页"),
       });
 
       /* ============================== 状态 ============================== */
@@ -1031,10 +1068,13 @@
       }
       function condRow(c) {
         const row = el("div", { class: "cap-cond" });
+        /* 条件类型是协议值（Implemented / NodesAvailable …）：挂在 data-cond 上供
+           告警与自动化断言取，界面只说人话（见 caps.cond.<Type> 词条）。 */
+        if (c.type) row.setAttribute("data-cond", String(c.type));
         const type = el("div", { class: "cap-cond-type" });
         type.append(
           el("span", { class: "cap-dot " + (c.status === "True" ? "is-ok" : "is-bad") }),
-          txt("span", null, c.type || "—"),
+          txt("span", null, c.type ? t("caps.cond." + c.type, String(c.type)) : "—"),
         );
         const body = el("div", { class: "cap-cond-body" });
         body.append(txt("span", "cap-kv-val", c.status == null ? "—" : String(c.status)));
@@ -1117,6 +1157,89 @@
         return box;
       }
 
+      /* ============================ 动作菜单 ============================
+         ⋯ 菜单与源列表同一套组件（.act-menu / .menu / .menu-item，样式在 ui.css）：
+         主动作留在动作条，破坏性动作收进菜单。菜单是 fixed 浮层，left/top 由
+         placeMenu 按触发器矩形夹进视口（祖先的 overflow 不再裁剪它）。 */
+      function actionMenu(items) {
+        const wrap = el("div", { class: "act-menu" });
+        const trigger = el("button", { type: "button", class: "btn btn-ghost btn-sm act-more", text: "⋯" });
+        trigger.setAttribute("aria-haspopup", "menu");
+        trigger.setAttribute("aria-expanded", "false");
+        trigger.setAttribute("aria-label", t("caps.detail.more", "更多动作"));
+        const menu = el("div", { class: "menu hidden" });
+        menu.setAttribute("role", "menu");
+        const setOpen = (open) => {
+          menu.classList.toggle("hidden", !open);
+          trigger.setAttribute("aria-expanded", open ? "true" : "false");
+          if (open) placeMenu(wrap);
+        };
+        trigger.addEventListener("click", () => setOpen(menu.classList.contains("hidden")));
+        for (const item of items) {
+          const b = el("button", { type: "button", class: "menu-item" });
+          b.setAttribute("role", "menuitem");
+          if (item.act) b.setAttribute("data-act", item.act);
+          b.textContent = item.label;
+          b.addEventListener("click", () => {
+            setOpen(false);
+            item.run(b);
+          });
+          menu.append(b);
+        }
+        wrap.append(trigger, menu);
+        return wrap;
+      }
+      function closeMenus(except) {
+        for (const menu of document.querySelectorAll(".act-menu .menu:not(.hidden)")) {
+          const wrap = menu.parentElement;
+          if (except && wrap.contains(except)) continue;
+          menu.classList.add("hidden");
+          const trigger = wrap.querySelector(".act-more");
+          if (trigger) trigger.setAttribute("aria-expanded", "false");
+        }
+      }
+      function placeMenu(wrap) {
+        const trigger = wrap.querySelector(".act-more"), menu = wrap.querySelector(".menu");
+        if (!trigger || !menu || menu.classList.contains("hidden")) return;
+        const gap = 8, pad = 8;
+        /* 先清掉上次打开留下的 left/top 再量宽高：超出视口的旧 left 会把可用宽度
+           压到 0，量出来的宽度偏小，之后夹边就会算错。 */
+        menu.style.left = "";
+        menu.style.top = "";
+        const r = trigger.getBoundingClientRect(), w = menu.offsetWidth, h = menu.offsetHeight;
+        const left = Math.min(Math.max(pad, r.right - w), Math.max(pad, innerWidth - pad - w));
+        let top = r.bottom + gap;
+        if (top + h > innerHeight - pad && r.top - gap - h >= pad) top = r.top - gap - h;
+        top = Math.min(Math.max(pad, top), Math.max(pad, innerHeight - pad - h));
+        menu.style.left = left + "px";
+        menu.style.top = top + "px";
+        /* 祖先若带 transform/filter，fixed 的包含块会变成那个祖先（页头入场动画
+           就带 transform）；用实际矩形与期望矩形的差补一次，菜单不偏移。 */
+        const box = menu.getBoundingClientRect();
+        if (Math.abs(box.left - left) > 0.5 || Math.abs(box.top - top) > 0.5) {
+          menu.style.left = left + (left - box.left) + "px";
+          menu.style.top = top + (top - box.top) + "px";
+        }
+      }
+      /* 菜单是 fixed 浮层：页面滚动、视口变化、按压过渡结束时都要重新贴回触发器 */
+      function reflowMenus() {
+        if (!document.querySelector(".act-menu .menu:not(.hidden)")) return;
+        for (const menu of document.querySelectorAll(".act-menu .menu:not(.hidden)")) placeMenu(menu.parentElement);
+      }
+      document.addEventListener("click", (event) => closeMenus(event.target));
+      document.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        const open = document.querySelector(".act-menu .menu:not(.hidden)");
+        if (!open) return;
+        const wrap = open.parentElement;
+        closeMenus(null);
+        const trigger = wrap.querySelector(".act-more");
+        if (trigger) trigger.focus();
+      });
+      document.addEventListener("scroll", reflowMenus, { passive: true, capture: true });
+      window.addEventListener("resize", reflowMenus);
+      document.addEventListener("transitionend", reflowMenus, true);
+
       /* ======================= 脚本正文（懒加载 includeBody） ======================= */
       function paintRun() {
         const sec = document.querySelector('#cap-body [data-sec="run"]');
@@ -1124,10 +1247,8 @@
         sec.replaceChildren();
         sec.append(txt("div", "cap-sec-title", t("caps.detail.script")));
         if (RUN.status === "error") {
-          // 失败只坏这一块：其它区块照常可读，给一句具体原因 + 重试
+          // 失败只坏这一块：一句中文 + 重试，不把服务端英文原文贴到页面上
           sec.append(txt("p", "cap-detail-empty", t("caps.detail.script_error", "脚本正文加载失败")));
-          const line = statusLine(RUN.err);
-          if (line) sec.append(txt("p", "cap-mono", line));
           const retry = el("button", { type: "button", class: "btn btn-ghost btn-sm", text: t("common.retry", "重试") });
           retry.addEventListener("click", () => {
             RUN.status = "idle";
@@ -1186,8 +1307,6 @@
         }
         if (YAML.status === "error") {
           holder.append(txt("p", "cap-detail-empty", t("caps.detail.yaml_error", "原始 YAML 加载失败")));
-          const line = statusLine(YAML.err);
-          if (line) holder.append(txt("p", "cap-mono", line));
           const retry = el("button", { type: "button", class: "btn btn-ghost btn-sm", text: t("common.retry", "重试") });
           retry.addEventListener("click", () => {
             YAML.status = "idle";
@@ -1397,7 +1516,8 @@
           }),
         );
 
-        // 动作：编辑 / 人工部署 / 启用（或停用）/ 试跑 / 删除（版本历史在下面的独立小节里）
+        // 动作：编辑 / 人工部署 / 启用（或停用）/ 试跑留在动作条；
+        // 破坏性的删除收进 ⋯ 菜单（与源列表同一套 .act-menu 组件，不靠颜色抢主次）。
         const actions = $("cap-actions");
         actions.replaceChildren();
         const editBtn = el("button", { type: "button", class: "btn btn-sm", text: t("caps.detail.edit", "编辑") });
@@ -1418,16 +1538,12 @@
         const testBtn = el("button", { type: "button", class: "btn btn-ghost btn-sm", text: t("caps.act.test", "试跑") });
         testBtn.setAttribute("data-act", "test");
         testBtn.addEventListener("click", () => openTest());
-        const deleteBtn = el("button", { type: "button", class: "btn btn-danger btn-sm", text: t("caps.detail.delete", "删除") });
-        deleteBtn.setAttribute("data-act", "delete");
-        deleteBtn.addEventListener("click", () => openDelete());
         actions.append(
           editBtn,
           deployBtn,
           switchBtn,
           testBtn,
-          deleteBtn,
-          txt("span", "field-hint", t("caps.deploy.hint", "安装包保存或 install 都不会自动部署；部署只在这里发生。")),
+          actionMenu([{ label: t("caps.detail.delete", "删除"), act: "delete", run: () => openDelete() }]),
         );
 
         // 正文
@@ -1438,16 +1554,23 @@
         state.replaceChildren();
         state.classList.add("hidden");
 
-        // 身份：版本 / digest / resourceVersion / 安装来源
+        // 身份：版本 / 内容指纹 / 版本令牌；安装来源对日常操作无影响 → 收进「开发者信息」
         const idsec = el("div", { class: "cap-sec" });
         const idrow = el("div", { class: "cap-kv" });
         idrow.append(
           kvLine(t("caps.spec.version", "版本"), "v" + (m.version == null ? "—" : m.version)),
           kvLine(t("caps.spec.digest", "内容指纹"), shortDigest(m.status.digest), true),
-          kvLine(t("caps.detail.rv", "resourceVersion"), m.resourceVersion || "—", true),
-          kvLine(t("caps.spec.installed_from", "安装来源"), m.installedFrom || "—", Boolean(m.installedFrom)),
+          kvLine(t("caps.detail.rv", "版本令牌"), m.resourceVersion || "—", true),
         );
         idsec.append(idrow);
+        if (m.installedFrom) {
+          const dev = el("details", { class: "devf" });
+          dev.append(el("summary", null, t("uxaudit.dev.summary", "开发者信息")));
+          const devBody = el("div", { class: "devf-body" });
+          devBody.append(kvLine(t("caps.spec.installed_from", "安装来源"), m.installedFrom, true));
+          dev.append(devBody);
+          idsec.append(dev);
+        }
         body.append(idsec);
 
         // 四条 condition：type / status / reason / message 全显示
@@ -1483,7 +1606,7 @@
         body.append(rsec);
 
         /* 近期调用记录（status.observed）——服务端按 24h 窗口给出**真实事实**
-           （docs/design/v4/capability.md §2「observed」、CONTRACT-observed）：
+           （`internal/server/resource_capability.go` 的 observed 投影、CONTRACT-observed）：
              {taskId, emits:[{to,fields,ok}], pruned:[{to,reason,detail}], tasks:{total,failed}}
            四个键全空时服务端写 `{}`（这个能力从没跑过）——那时如实空态，不杜撰
            时间与计数。emits/pruned 各被服务端截到 50 条（store.ObservedEmitLimit /
@@ -1510,10 +1633,10 @@
           /* tasks.total/failed 是**近 24h** 窗口（更早的任务不计入）：不写出窗口就等于
              把 24h 的数字说成全部历史。 */
           osec.append(txt("p", "cap-detail-empty", t("caps.observed.window", "计数是近 24 小时的窗口")));
-          osec.append(txt("div", "cap-kv-key", t("caps.observed.emits", "派出记录")));
-          if (!obEmits.length) {
-            osec.append(txt("p", "cap-detail-empty", t("caps.observed.emits_empty", "这次运行没有派出去")));
-          } else {
+          /* 两个留痕块只在**有数据**时整块出现（标题也不渲染）：空态文字等于把
+             「这次没派发」变成一屏固定内容，读者只记住两块空白。 */
+          if (obEmits.length) {
+            osec.append(txt("div", "cap-kv-key", t("caps.observed.emits", "派出记录")));
             for (const e of obEmits) {
               const line = el("div", { class: "cap-line" });
               line.append(txt("span", "cap-mono", String(e.to == null ? "—" : e.to)));
@@ -1539,10 +1662,8 @@
               );
             }
           }
-          osec.append(txt("div", "cap-kv-key", t("caps.observed.pruned", "剪枝留痕")));
-          if (!obPruned.length) {
-            osec.append(txt("p", "cap-detail-empty", t("caps.observed.pruned_empty", "这次运行没有剪枝")));
-          } else {
+          if (obPruned.length) {
+            osec.append(txt("div", "cap-kv-key", t("caps.observed.pruned", "剪枝留痕")));
             for (const p of obPruned) {
               const line = el("div", { class: "cap-line" });
               line.append(
@@ -2719,7 +2840,8 @@
           const res = await nsApi("capabilities", name);
           render(res);
         } catch (err) {
-          // 404 与其它失败都落到同一套错误态：说清发生了什么，并给「重试 / 返回列表」
+          // 404 与其它失败都落到同一套错误态：只给中文说明 + 「重试 / 返回列表」。
+          // 服务端的 reason / message 是英文协议串，不拼进页面文案（排查看请求 ID 与日志）。
           CAP = null;
           META = null;
           $("cap-badges").replaceChildren();
@@ -2728,7 +2850,8 @@
           $("cap-body").classList.add("hidden");
           const state = $("cap-state");
           state.classList.remove("hidden");
-          state.replaceChildren(loadErrorNode(err, () => load(), { back: listHref() }));
+          const pageErr = isObj(err) ? { status: err.status, requestId: err.requestId } : {};
+          state.replaceChildren(loadErrorNode(pageErr, () => load(), { back: listHref() }));
         }
       }
 

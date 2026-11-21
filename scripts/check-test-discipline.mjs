@@ -46,7 +46,7 @@
  *     `locator(ready)` 也不算 —— 变量不是「宽选择器」（这两处是实测出来的假阳性）。
  *     `page.click("button")` 这类动作调用也在「裸标签定位器」的识别面里，但判据要求
  *     **紧跟 `.first()/.nth(`** 才算命中。
- *   · 扫描范围剔除 `node_modules/`、`.pi` 系列目录、`design/`、`_tmp_` 系列、`vendor/`、`.git/`。
+ *   · 扫描范围剔除 `node_modules/`、`.pi` 系列目录、`_tmp_` 系列、`vendor/`、`.git/`。
  *
  * 用法：
  *   node scripts/check-test-discipline.mjs               # 跑守卫（CI 用这个）
@@ -68,7 +68,7 @@
  *
  * 基线实测：2026-11-16，main @ `e6fcc8fe`，命令 `node scripts/check-test-discipline.mjs`
  *   （55 个 e2e mjs / 201 个 internal 测试文件）。
- *   五项实测值：waitForTimeout 21 / swallowCatch 39 / testSkip 3 / timeSleep 37 / bareTagFirstNth 3
+ *   五项实测值：waitForTimeout 21 / swallowCatch 38 / testSkip 3 / timeSleep 37 / bareTagFirstNth 3
  *   复现命令（与脚本口径一致，剥注释后的值）见每项注释里的 grep 基线命令。
  */
 import fs from "node:fs";
@@ -90,7 +90,7 @@ export const BASELINE = {
 	// grep -rn 'catch(() => {})' → 33，'catch(() => null)' → 7，共 40；其中 3 条出现在
 	// 注释里（harness.mjs:285 的 `.catch(() => {})`，f3-ui-cases.mjs:854/859 的
 	// `.catch(()=>{})`）都在解释反例 —— 剥注释后 32 + 7 = 39
-	swallowCatch: 39,
+	swallowCatch: 38,
 	// grep -rnE 't\.Skipf?\(' internal --include='*_test.go' | wc -l → 3
 	testSkip: 3,
 	// grep -rn 'time.Sleep(' internal --include='*_test.go' | wc -l → 38，剥掉
@@ -150,7 +150,6 @@ export const MIN_SCANNED_FILES = {
 export const EXCLUDED_SEGMENTS = [
 	/^node_modules$/,
 	/^vendor$/,
-	/^design$/,
 	/^\.git$/,
 	/^\.pi/, // .pi / .pi-orchestrator / .pi-subagents …
 	/^_tmp_/, // 临时工作目录 _tmp_pbvalidate 之类

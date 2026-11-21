@@ -74,14 +74,6 @@
   .nd-sum { display: grid; gap: 6px; margin-top: 10px; min-width: 0; }
   .nd-sum-k { font-size: 11px; line-height: 1.4; color: var(--faint); }
   .nd-sum-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  /* 开发者旁白默认收起（同 nodes.html 的 ND-3）：原文一字不删 */
-  .nd-more { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-1); }
-  .nd-more > summary { display: flex; align-items: center; gap: 6px; padding: 8px 12px; font-size: 12px; line-height: 1.5; color: var(--muted); cursor: pointer; list-style: none; }
-  .nd-more > summary::-webkit-details-marker { display: none; }
-  .nd-more > summary::before { content: "▸"; color: var(--faint); }
-  .nd-more[open] > summary::before { content: "▾"; }
-  .nd-more > summary:hover { color: var(--text); }
-  .nd-more-body { padding: 0 12px 12px; margin: 0; }
   /* 槽位行：实例号 + 占用徽章（原始 task=/id= 串进开发者信息） */
   .nd-slot { align-items: center; gap: 8px; }
   .nd-slot-head { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
@@ -92,13 +84,12 @@
   .nd-drift { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn) 42%, transparent); border-radius: var(--r-sm); background: var(--warn-soft); font-size: 12px; line-height: 1.5; color: var(--warn); }
   .nd-drift-ico { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex: none; border-radius: var(--r-full); background: var(--warn); color: var(--surface-1); font-size: 11px; font-weight: 700; line-height: 1; }
   @media (max-width: 760px) { .c2-grid { grid-template-columns: minmax(0,1fr); } }
-  /* ---------- ② Node YAML：查看（只读规范化文本）+ 编辑（严格解析） ---------- */
+  /* ---------- ② Node YAML：唯一的编辑面（读的是服务端原文，写的是同一份文本） ---------- */
   .yd-block { margin-top: 12px; }
   .yd-pre { max-height: 340px; overflow: auto; margin: 0; }
   .yd-errors { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
   .yd-error { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--error) 38%, transparent); border-radius: var(--r-sm); background: var(--error-soft); font-size: 12px; line-height: 1.5; color: var(--error); overflow-wrap: anywhere; }
   .yd-error-field { font-family: var(--font-mono); color: var(--text); }
-  .yd-hint { margin: 6px 0 0; }
 </style>
 {{end}}
 {{define "content"}}
@@ -122,11 +113,11 @@
              某个 ns 的有效值；唯一与命名空间有关的是「授权列表」（spec.namespaces）。 -->
         <div class="card-title">{{t "nodes.v4.config"}}</div>
         <div id="node-config-summary" class="c2-stack"></div>
-        <!-- ② YAML：看的是服务端按当前事实重建的规范化文档（不含 status 与本机私有字段），
-             编辑走严格解析（未知字段 / 类型 / CAS 都会被拒并指到行号与字段路径）。 -->
+        <!-- ② YAML：唯一的编辑面与写入口。上面 `pre` 里是服务端按当前事实重建的
+             规范化文档（不含 status 与本机私有字段），编辑区读它、写也写它 ——
+             不再有第二条写配置的路。 -->
         <div class="yd-block">
           <div class="card-title">{{t "nodes.v4.yaml_title"}}</div>
-          <p class="c2-note">{{t "nodes.v4.yaml_hint"}}</p>
           <div class="code-block"><div class="code-head"><span>{{t "nodes.v4.yaml_view"}}</span><button id="node-yaml-copy" class="copy-btn" type="button">{{t "nodes.v4.copy"}}</button></div><pre class="code-body yd-pre"><code id="node-yaml-text"></code></pre></div>
           <details id="node-yaml-edit" class="devf">
             <summary><span>{{t "nodes.v4.yaml_edit"}}</span><span class="devf-hint">{{t "nodes.v4.yaml_edit_hint"}}</span></summary>
@@ -138,16 +129,6 @@
             </div>
           </details>
         </div>
-        <details id="node-config-advanced" class="devf">
-          <summary><span>{{t "uxaudit.dev.edit_raw"}}</span><span class="devf-hint">{{t "uxaudit.dev.edit_raw_hint"}}</span></summary>
-          <div class="devf-body">
-            <div id="node-revisions" class="c2-note"></div>
-            <div class="field"><label for="node-namespaces" class="field-label">{{t "nodes.v4.authorized"}} (JSON)</label><textarea id="node-namespaces" class="input" spellcheck="false" disabled></textarea></div>
-            <div class="field"><label for="node-vars" class="field-label">{{t "nodes.v4.vars"}}</label><textarea id="node-vars" class="input c2-json" spellcheck="false" disabled></textarea></div>
-            <div class="field"><label for="node-limits" class="field-label">{{t "nodes.v4.limits"}} (JSON)</label><textarea id="node-limits" class="input c2-json" spellcheck="false" disabled></textarea></div>
-          </div>
-        </details>
-        <div class="c2-actions"><button id="node-config-save" class="btn btn-primary" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="node-config-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div><div id="node-config-state" class="c2-state" role="status"></div>
       </section>
       <section class="card card-pad c2-stack">
         <div class="card-title">{{t "nodes.v4.revision"}}</div><div id="node-applied" class="c2-note"></div>
@@ -168,9 +149,8 @@
       <div id="node-vars-state" class="c2-state" role="status"></div>
       <datalist id="node-vars-suggest"></datalist>
     </section>
-    <section class="card card-pad" aria-labelledby="node-ns-title">
       <div class="card-title" id="node-ns-title">{{t "nodes.v4.authorized_title"}}</div>
-      <p class="c2-note">{{t "nodes.v4.authorized_hint"}}</p>
+      <p class="c2-note">{{t "nodes.v4.authorized_note"}}</p>
       <div id="node-authorized" class="nd-sum-chips"></div>
       <div class="card-title">{{t "nodes.v4.effective_title"}}</div>
       <p class="c2-note">{{t "nodes.v4.effective_hint"}}</p>
@@ -179,10 +159,8 @@
       <div class="c2-actions"><a id="node-open-namespace" class="btn btn-ghost" href="namespaces.html">{{t "nodes.v4.open_namespace"}}</a></div>
     </section>
     <div class="c2-grid"><section class="card card-pad"><div class="card-title">{{t "nodes.v4.artifacts"}}</div><div id="node-deployments"></div></section><section class="card card-pad"><div class="card-title">{{t "nodes.v4.tasks"}}</div><div id="node-tasks"></div></section></div>
-    <section class="card card-pad"><div class="card-title">{{t "nodes.v4.slots"}}</div><div id="node-slots"></div>
-      <details class="nd-more"><summary>{{t "uxaudit.res.nodes.note_summary"}}</summary><p class="c2-note nd-more-body">{{t "nodes.v4.slot_note"}} {{t "nodes.v4.batch_hint"}}</p></details>
-    </section>
-    <section class="card card-pad"><div class="code-block"><div class="code-head">{{t "nodes.v4.bootstrap_title"}}</div><pre class="code-body nd-code">curl -fsSL https://&lt;your-hub&gt;/install-anode.sh | sh -s -- --name &lt;node&gt; --server https://&lt;your-hub&gt; --token &lt;node-token&gt;</pre></div><p class="c2-note">{{t "nodes.v4.setup_hint"}}</p></section>
+    <section class="card card-pad"><div class="card-title">{{t "nodes.v4.slots"}}</div><div id="node-slots"></div></section>
+    <section class="card card-pad"><div class="code-block"><div class="code-head">{{t "nodes.v4.bootstrap_title"}}</div><pre class="code-body nd-code">curl -fsSL https://&lt;your-hub&gt;/install-anode.sh | sh -s -- --name &lt;node&gt; --server https://&lt;your-hub&gt; --token &lt;node-token&gt;</pre></div></section>
   </div>
 </div></div>
 {{end}}
@@ -196,28 +174,17 @@
   const name = new URLSearchParams(location.search).get('id') || '', path = '/v1/nodes/' + encodeURIComponent(name);
   // IA（#436）：节点是**节点维度**。旧的 `?namespace=` 参数被忽略（书签继续可用），
   // 页面不再请求任何带 ns 上下文的读面。
-  let n, nodeId = '', config, original = '', loaded = false;
-  /* #476：vars 表格状态。varsRows = 服务端事实折成的行；varsEditing = 正在编辑的那一行；
-     varsDirty = 有未保存改动（保存按钮也跟着它走）。 */
-  const VT = window.AnotifyVars;
-  let varsRows = [], varsEditing = null, varsRequired = {}, varsDirty = false, varsSeq = 0;
-  /* #454：`tags` 的**现值**只存在于权威读面，不在 `GET …/config` 里。
-   * config 是 W5 wrapper（只有 namespaces / vars / limits 三个可写键 + 只读 revision 三兄弟），
-   * 所以 `config.tags || []` 会把「这个读面没告诉我」写成「用户清空了」—— YAML 一保存
-   * 就是一次静默的数据丢失（P1）。现值取自 `GET /v1/nodes/{name}` 的 `spec.tags`；
-   * 真拿不到（读面没给 / 还没加载）就是 null = **未知**，序列化时整键省略，
-   * 让服务端按 merge-patch 的「省略 = 不动」保留原值（resource_node_yaml.go · nodeYAMLSpecPatch）。
-   * 铁律：不许把「不知道」降级成 `[]`。 */
-  let knownTags = null;
+  let n, nodeId = '', config;
   A.mountLayout({ active: 'nodes', title: t('config'), subtitle: t('node_subtitle') });
   const make = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
   const msg = (id, text, error = false) => { $(id).textContent = text; $(id).classList.toggle('is-error', error); };
   const errorText = e => e.status === 409 && e.reason === 'resource_version_conflict' ? t('stale') : t('error') + ': ' + (e.reason || '') + ' ' + e.message;
   const write = (url, body, method = 'PUT') => A.api(url, { method, body: JSON.stringify(body) });
-  const configInputs = ['namespaces', 'vars', 'limits'];
-  const draft = () => JSON.stringify(configInputs.map(k => $('node-' + k).value));
-  const parseDraft = key => { try { return JSON.parse($('node-' + key).value); } catch (_) { return undefined; } };
 
+  /* #476：vars 表格状态。varsRows = 服务端事实折成的行；varsEditing = 正在编辑的那一行；
+     varsDirty = 有未保存改动（保存按钮也跟着它走）。 */
+  const VT = window.AnotifyVars;
+  let varsRows = [], varsEditing = null, varsRequired = {}, varsDirty = false, varsSeq = 0;
   /* ---------- #476：可视化 vars 表格（值 / 来源 / 谁要 / 缺） ----------
    * 数据全来自既有读面：`GET /v1/nodes/{name}?namespace=<侧栏作用域>` 的
    * status.effectiveVars（来源由服务端逐键解析）+ 当前 ns 能力读面的
@@ -362,21 +329,24 @@
     if (varsDirty && !(await A.confirmDanger({ body: t('vars_reset_confirm') }))) return;
     varsSetState(''); await refreshVars();
   };
-  /* 表格保存 = 把行折回 vars 映射 → 写进同一份 Node 文档 → PUT …/yaml。
-     `#node-vars`（高级 JSON 草稿）与它是同一个事实的两个编辑器，写路径只有一条。 */
   $('node-vars-save').onclick = async () => {
     if (varsEditing) return varsSetState(t('vars_finish_edit'), true);
     if (!config) return varsSetState(t('error'), true);
-    const vars = VT.rowsToVars(varsRows);
+    if (!yamlModel) return varsSetState(t('yaml_unparsable'), true);
+    /* base = 文档里现有的 spec.vars：被 local 压住的行显示的是生效值，
+       表格保存不能把它们抄成节点默认值、也不能把它们删掉（rowsToVars 的规则 ①）。 */
+    const docVars = (yamlModel.spec && yamlModel.spec.vars) || {};
+    const vars = VT.rowsToVars(varsRows, docVars);
     const diff = VT.diffVars(config.vars || {}, vars);
     if (!diff.added.length && !diff.removed.length && !diff.changed.length) return varsSetState(t('vars_no_changes'));
     $('node-vars-save').disabled = true; varsSetState(t('loading'));
     try {
-      $('node-vars').value = JSON.stringify(vars, null, 2);
-      renderConfigSummary(); syncYAMLFromForm();
+      const text = editDoc({ spec: { vars } });
+      if (text === null) return varsSetState(t('yaml_unparsable'), true);
+      $('node-yaml-input').value = text; yamlDirty = true;
       await saveNodeDoc();
       varsDirty = false; varsSetState(t('vars_saved'));
-      await loadFacts(); await loadYAML(); await refreshVars();
+      await loadYAML(); await refreshVars();
     } catch (e) { varsSetState(errorText(e), true); }
     finally { $('node-vars-save').disabled = !varsDirty; }
   };
@@ -411,27 +381,18 @@
   function driftBanner() {
     const box = make('div', 'nd-drift');
     box.append(make('span', 'nd-drift-ico', '!'),
-      make('span', null, dev('drift').replace('{config}', revText(n.configRevision)).replace('{applied}', revText(n.appliedRevision))));
+      make('span', null, dev('drift').replace('{config}', revText(n.configRevision)).replace('{rev}', revText(n.appliedRevision))));
     return box;
   }
   function showRevisions(value) {
     devConfig = [['resourceVersion', value.metadata.resourceVersion], ['configRevision', value.configRevision], ['appliedRevision', value.appliedRevision]];
-    $('node-revisions').textContent = x('config_rev') + ' ' + revText(value.configRevision) + ' · ' + x('applied_rev') + ' ' + revText(value.appliedRevision);
     renderDev();
     renderConfigSummary();
   }
   /* ---------- #375：配置摘要（结构化）---------- */
-  function summarySource() {
-    // 编辑器里的草稿优先（改了一半也看得见自己的值）；解析失败就退回已加载的配置。
-    try {
-      const draftObj = {};
-      for (const key of configInputs) draftObj[key] = JSON.parse($('node-' + key).value);
-      return draftObj;
-    } catch (_) { return config || null; }
-  }
   function renderConfigSummary() {
     const host = $('node-config-summary'); if (!host) return;
-    const src = summarySource();
+    const src = config;
     host.replaceChildren();
     if (!src) { host.append(make('div', 'c2-note', t('loading'))); return; }
     const vars = make('div', 'nd-sum');
@@ -454,65 +415,28 @@
     host.append(vars, lim);
   }
 
-  /* ---------- ② Node YAML：服务端规范化文档 + 严格解析的写入口 ----------
-   * 前端只做**序列化**（表单草稿 → YAML 文本），从不解析：解析、校验、CAS 都在服务端
-   * （internal/yamldoc + store.UpdateNode），错误带行号与字段路径回显到 #node-yaml-errors。
-   * `yamlDirty` = 用户手改过 YAML：此时表单改动不再覆盖他的文本（避免互相踩草稿）。 */
-  let yamlDirty = false;
-  const yamlScalar = v => {
-    if (v === null || v === undefined) return 'null';
-    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-    const s = String(v);
-    if (/^[A-Za-z0-9][A-Za-z0-9_./:@+-]*$/.test(s) && !/^(?:true|false|null|yes|no|on|off|y|n|~)$/i.test(s) && !/^[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?$/.test(s)) return s;
-    // JSON 字符串本身就是合法的 YAML 双引号标量：这就是「不写解析器也不写错」的做法。
-    return JSON.stringify(s);
-  };
-  const sortedEntries = obj => Object.entries(obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  const yamlList = (key, items, indent) => {
-    const pad = ' '.repeat(indent);
-    if (!items.length) return [pad + key + ': []'];
-    return [pad + key + ':'].concat(items.map(item => pad + '  - ' + yamlScalar(item)));
-  };
-  const yamlMap = (key, obj, indent) => {
-    const pad = ' '.repeat(indent), entries = sortedEntries(obj);
-    if (!entries.length) return [pad + key + ': {}'];
-    return [pad + key + ':'].concat(entries.map(([k, v]) => pad + '  ' + yamlScalar(k) + ': ' + yamlScalar(v)));
-  };
-  function docToYAML(doc) {
-    const spec = doc.spec || {}, limits = spec.limits || {};
-    const lines = ['apiVersion: ' + yamlScalar(doc.apiVersion), 'kind: ' + yamlScalar(doc.kind), 'metadata:', '  name: ' + yamlScalar(doc.metadata.name)];
-    if (doc.metadata.resourceVersion) lines.push('  resourceVersion: ' + yamlScalar(doc.metadata.resourceVersion));
-    lines.push('spec:');
-    lines.push(...yamlList('namespaces', Array.isArray(spec.namespaces) ? spec.namespaces : [], 2));
-    lines.push(...yamlMap('vars', spec.vars, 2));
-    const perCap = limits.perCapability, perEntries = sortedEntries(perCap);
-    // total 未设置时**省略这一行**（不写 `total: null`）：服务端 ValidateLimits 要求
-    // total 是 ≥1 的整数，把 null 贴回去会被 400 value_invalid。服务端 YAML 读面为
-    // 了表达「不压住下层」会写 `total: null`，但那是**读**语义；写回去时省略 = 不动。
-    // （相邻缺陷：「取 → 贴回」原样往返在无 limits 的节点上会 400，已记入报告。）
-    lines.push('  limits:');
-    if (limits.total != null) lines.push('    total: ' + yamlScalar(limits.total));
-    lines.push('    perCapability:' + (perEntries.length ? '' : ' {}'));
-    for (const [k, v] of perEntries) lines.push('      ' + yamlScalar(k) + ': ' + yamlScalar(v));
-    // #454：只有**真的知道**现值时才写这个键。未知（null/undefined）就整键省略 ——
-    // 写 `tags: []` 在两条写入口（YAML / PATCH）上都等于「显式清空」。
-    if (Array.isArray(spec.tags)) lines.push(...yamlList('tags', spec.tags, 2));
-    return lines.join('\n') + '\n';
+  /* ---------- ② Node YAML：唯一的编辑面与写入口 ----------
+   * 读面与写面是同一份文本：`#node-yaml-text` 永远是服务端 GET 回来的原文，输入框
+   * 只在用户没手改（yamlDirty 为假）时跟着它走。
+   *
+   * 表单编辑的是**同一份文档**：`YD.edit` 用服务端原文当起点，只替换表单真的改了的键
+   * （`spec.vars`），再用同一份序列化写回文本。所以「表单不认识的字段」不会因为保存被
+   * 丢掉：读面多一个键，这里原样带回去。解析与校验仍在服务端，问题带行号与字段名回显到
+   * #node-yaml-errors；这里的 parse 只为编辑提供模型，读不懂时表单拒绝改写（不猜、
+   * 不兜底成空 —— 猜一份恰好就是把用户没改的字段写没）。
+   * 问题非空时调用方不得渲染：那是把「读不懂」写成「用户清空了」。 */
+  const YD = window.AnotifyYamlDoc;
+  let yamlDirty = false, yamlModel = null;
+  function adoptYAML(text) {
+    const parsed = YD.parse('Node', text);
+    yamlModel = parsed.problems.length ? null : parsed.model;
+    return parsed.problems;
   }
-  function draftDoc() {
-    if (!config) return null;
-    const namespaces = parseDraft('namespaces'), vars = parseDraft('vars'), limits = parseDraft('limits');
-    if (!Array.isArray(namespaces) || !vars || typeof vars !== 'object' || !limits || typeof limits !== 'object') return null;
-    return {
-      apiVersion: 'anotify/v1', kind: 'Node',
-      metadata: { name, resourceVersion: config.metadata.resourceVersion },
-      spec: { namespaces, vars, limits, tags: Array.isArray(config.tags) ? config.tags : knownTags },
-    };
-  }
-  function syncYAMLFromForm() {
-    if (yamlDirty) return;
-    const doc = draftDoc(); if (!doc) return;
-    $('node-yaml-input').value = docToYAML(doc);
+  function editDoc(patch) {
+    const res = YD.edit('Node', $('node-yaml-text').textContent, patch);
+    if (res.problems.length) return null;
+    yamlModel = res.model;
+    return res.text;
   }
   function clearYAMLErrors() { const box = $('node-yaml-errors'); box.replaceChildren(); box.hidden = true; }
   function showYAMLErrors(causes) {
@@ -526,38 +450,45 @@
   }
   async function loadYAML() {
     try {
-      const value = await A.api(path + '/yaml');
+      const value = await A.api(YD.path('Node', name));
       if (typeof value?.yaml !== 'string') throw new Error('Invalid ResourceYAML');
       $('node-yaml-text').textContent = value.yaml;
       if (!yamlDirty) $('node-yaml-input').value = value.yaml;
-    } catch (e) { msg('node-yaml-state', errorText(e), true); }
+      adoptYAML(value.yaml);
+    } catch (e) { $('node-yaml-text').textContent = ''; A.toast(errorText(e), 'error'); }
   }
+  $('node-yaml-copy').onclick = () => A.copyText($('node-yaml-copy'), () => $('node-yaml-text').textContent);
   $('node-yaml-input').addEventListener('input', () => { yamlDirty = true; msg('node-yaml-state', t('yaml_dirty')); });
   $('node-yaml-reset').onclick = () => {
     yamlDirty = false; clearYAMLErrors();
-    const doc = draftDoc();
-    $('node-yaml-input').value = doc ? docToYAML(doc) : $('node-yaml-text').textContent;
+    $('node-yaml-input').value = yamlModel ? YD.render('Node', yamlModel) : $('node-yaml-text').textContent;
     msg('node-yaml-state', t('yaml_reset_done'));
   };
-  $('node-yaml-copy').onclick = () => A.copyText($('node-yaml-copy'), () => $('node-yaml-text').textContent);
-  $('node-yaml-save').onclick = async () => {
+  /* 唯一的写函数：把编辑区里的文本原样交给 `PUT …/yaml`（CAS 在服务端判）。
+     YAML 编辑区与 vars 表格都调它 —— 同一份事实只有这一条写路径。 */
+  async function saveNodeDoc() {
     const text = $('node-yaml-input').value;
     $('node-yaml-save').disabled = true; clearYAMLErrors(); msg('node-yaml-state', t('loading'));
     try {
-      const value = await write(path + '/yaml', { yaml: text });
+      const value = await write(YD.path('Node', name), { yaml: text });
       if (typeof value?.yaml !== 'string') throw new Error('Invalid ResourceYAML');
       $('node-yaml-text').textContent = value.yaml;
       $('node-yaml-input').value = value.yaml; yamlDirty = false;
+      adoptYAML(value.yaml);
       msg('node-yaml-state', t('yaml_saved'));
-      await loadFacts(); await loadConfig(); await loadYAML();
+      await loadFacts(); await loadConfig();
+      return value;
     } catch (e) {
       const causes = Array.isArray(e.details?.causes) ? e.details.causes : [];
       showYAMLErrors(causes);
+      const stale = e.status === 409 && e.reason === 'resource_version_conflict';
       msg('node-yaml-state', causes.length ? t('yaml_invalid') : errorText(e), true);
+      // 撞上版本冲突时把服务端的最新原文重新拉一次（不覆盖用户草稿）：好让人对着改。
+      if (stale) await loadYAML();
+      throw e;
     } finally { $('node-yaml-save').disabled = false; }
-  };
-  /* 草稿改动实时反映到摘要，并（在用户没手改 YAML 时）同步成同一份文本 */
-  for (const key of configInputs) $('node-' + key).addEventListener('input', () => { renderConfigSummary(); syncYAMLFromForm(); });
+  }
+  $('node-yaml-save').onclick = () => saveNodeDoc().catch(() => { /* 错误已落在 #node-yaml-state */ });
 
   const table = (id, values, source, valueText = v => String(v)) => {
     const rows = Object.entries(values || {}); $(id).replaceChildren();
@@ -670,8 +601,6 @@
     if (resource.kind !== 'Node') throw new Error('Invalid Node resource');
     nodeId = resource.metadata?.uid;
     if (!nodeId) throw new Error('Node metadata.uid missing');
-    // #454：tags 的现值来自这里（Node.spec.tags），不是 /config。读面没给就是未知。
-    knownTags = Array.isArray(resource.spec?.tags) ? resource.spec.tags.slice() : null;
     n = A.model.node(resource); renderFacts(); renderConfigSummary();
   }
   /* 这台节点的「已部署能力」与「最近任务」：**节点事实**，不是节点配置。
@@ -693,65 +622,55 @@
       $(id).replaceChildren(); const result = results[i];
       if (result.status === 'rejected') { $(id).appendChild(A.loadErrorNode(result.reason, loadRelated)); continue; }
       const rows = i === 0 ? A.deploymentsOf(result.value) : result.value.items.filter(x => x.status.nodeName === name);
+      if (i === 1) { TASKS = rows; tasksAll = false; renderTaskRows(); continue; }
       if (!rows.length) $(id).appendChild(make('div', 'c2-note', t('none')));
       const depDev = [];
       for (const x of rows) {
         const row = make('div', 'c2-row');
-        if (i === 0) {
-          /* #374：已部署能力首屏只给「能力名 + 状态 + 原因」，digest 指纹（sha256:<64>）进开发者信息 */
-          const cap = x.spec?.capability?.name || x.capability || '—';
-          row.classList.add('nd-dep');
-          row.append(make('span', 'nd-dep-name', cap),
-            make('span', 'badge badge-neutral', x.state || t('unknown')));
-          if (x.reason) row.append(make('span', 'c2-note', x.reason));
-          depDev.push([cap + ' · digest', x.digest || '']);
-        } else {
-          const link = make('a', null, x.metadata.name + ' · ' + x.status.phase);
-          link.href = 'message.html?namespace=' + encodeURIComponent(namespace) + '&id=' + encodeURIComponent(x.metadata.name);
-          row.appendChild(link);
-        }
+        /* #374：已部署能力首屏只给「能力名 + 状态 + 原因」，digest 指纹（sha256:<64>）进开发者信息 */
+        const cap = x.spec?.capability?.name || x.capability || '—';
+        row.classList.add('nd-dep');
+        row.append(make('span', 'nd-dep-name', cap),
+          make('span', 'badge badge-neutral', x.state || t('unknown')));
+        if (x.reason) row.append(make('span', 'c2-note', x.reason));
+        depDev.push([cap + ' · digest', x.digest || '']);
         $(id).appendChild(row);
       }
-      if (i === 0) { devDeploy = depDev; renderDev(); }
+      devDeploy = depDev; renderDev();
     }
   }
+  /* C-3：最近任务默认只铺前 TASK_ROWS 行，其余同页展开。
+     不链到事件流：事件流按 source 过滤、没有节点过滤，也不列任务 —— 跳过去看不到
+     「这台节点跑过什么」，只是多一次导航。 */
+  const TASK_ROWS = 5;
+  let TASKS = [], tasksAll = false;
+  function renderTaskRows() {
+    const host = $('node-tasks'), namespace = A.readScope().namespace || '';
+    host.replaceChildren();
+    if (!TASKS.length) { host.appendChild(make('div', 'c2-note', t('none'))); return; }
+    const shown = tasksAll ? TASKS : TASKS.slice(0, TASK_ROWS);
+    for (const task of shown) {
+      const row = make('div', 'c2-row'), link = make('a', null, task.metadata.name + ' · ' + task.status.phase);
+      link.href = 'message.html?namespace=' + encodeURIComponent(namespace) + '&id=' + encodeURIComponent(task.metadata.name);
+      row.appendChild(link); host.appendChild(row);
+    }
+    if (shown.length >= TASKS.length) return;
+    const all = make('button', 'btn btn-ghost btn-sm', t('tasks_all').replace('{n}', String(TASKS.length)));
+    all.id = 'node-tasks-all'; all.type = 'button';
+    all.addEventListener('click', () => { tasksAll = true; renderTaskRows(); });
+    host.appendChild(all);
+  }
   async function loadConfig() {
-    $('node-config-save').disabled = true; msg('node-config-state', t('loading'));
     try {
       const value = await A.api(path + '/config');
       if (!value.metadata?.resourceVersion || !Array.isArray(value.namespaces) || !value.vars || !value.limits) throw new Error('Invalid Node config wrapper');
-      config = value;
-      for (const key of configInputs) { $('node-' + key).value = JSON.stringify(value[key], null, 2); $('node-' + key).disabled = false; }
-      original = draft(); showRevisions(value);
-      msg('node-config-state', t('loaded')); $('node-config-save').disabled = false;
-      syncYAMLFromForm();
-    } catch (e) { msg('node-config-state', errorText(e), true); }
+      config = value; showRevisions(value);
+    } catch (e) {
+      // 配置摘要只是便利视图：读不到就在原地说明，YAML 卡照旧显示主读面。
+      const host = $('node-config-summary');
+      host.replaceChildren(make('p', 'c2-note is-error', errorText(e)));
+    }
   }
-  /* 唯一的写函数：把当前草稿序列化成**整份 Node 文档**，走 PUT …/yaml。
-     `draftDoc()` 里的 namespaces/vars/limits/tags 一个都不少（省略 = 不动是
-     merge-patch 的语义；这里是整份文档，所以必须把读到的其它字段原样带上）。 */
-  async function saveNodeDoc() {
-    const doc = draftDoc();
-    if (!doc) throw new Error('draft is not valid JSON');
-    const value = await write(path + '/yaml', { yaml: docToYAML(doc) });
-    if (typeof value?.yaml !== 'string') throw new Error('Invalid ResourceYAML');
-    $('node-yaml-text').textContent = value.yaml;
-    $('node-yaml-input').value = value.yaml; yamlDirty = false;
-    // 回读读投影：CAS 令牌与三块配置都以服务端规范化后的值为准。
-    config = await A.api(path + '/config');
-    for (const key of configInputs) { $('node-' + key).value = JSON.stringify(config[key], null, 2); $('node-' + key).disabled = false; }
-    original = draft(); showRevisions(config); syncYAMLFromForm();
-    return value;
-  }
-  $('node-config-reload').onclick = async () => { if (draft() !== original && !(await A.confirmDanger({ body: t('reload_confirm') }))) return; await loadConfig(); try { await loadFacts(); await loadYAML(); await refreshVars(); } catch (e) { msg('node-config-state', errorText(e), true); } };
-  $('node-config-save').onclick = async () => {
-    if (!config) return; $('node-config-save').disabled = true;
-    try {
-      await saveNodeDoc();
-      msg('node-config-state', t('saved'));
-      await loadFacts(); await loadYAML(); await refreshVars();
-    } catch (e) { msg('node-config-state', errorText(e), true); } finally { $('node-config-save').disabled = false; }
-  };
   for (const action of ['drain', 'upgrade']) $('node-' + action).onclick = async () => {
     if (!(await A.confirmDanger({ body: t(action + '_confirm').replace('{name}', name) }))) return;
     const btn = $('node-' + action); btn.disabled = true; msg('node-action-state', t('loading'));
@@ -772,16 +691,22 @@
       await A.ready();
       await loadFacts(); await loadRelated(); $('node-body').hidden = false; $('node-load-state').replaceChildren();
       await refreshVars();
-      // Refresh never silently replaces a user's configuration draft.
-      if (!loaded) { await loadConfig(); await loadYAML(); loaded = true; }
+      /* 刷新不覆盖正在编辑的草稿：loadYAML 只在 yamlDirty 为假时才回填输入框。 */
+      await loadConfig(); await loadYAML();
     } catch (e) {
       $('node-body').hidden = true;
+      /* 错误态只给中文标题 + 说明 + 「重试 / 返回列表」：原始 err.reason / err.message 是英文协议词，
+         拼在中文说明后面既读不懂，也解释不了下一步该做什么。 */
       const notFound = e && e.status === 404;
-      $('node-load-state').replaceChildren(emptyState(notFound ? t('not_found') : A.t('common.request_failed'), [e?.reason, e?.message].filter(Boolean).join(': ') || t('not_found'), boot));
+      $('node-load-state').replaceChildren(emptyState(
+        notFound ? A.t('common.err.title.not_found', '找不到这个内容') : A.t('common.request_failed'),
+        notFound ? t('not_found') : t('load_failed'),
+        boot,
+      ));
     }
     finally { $('node-load-state').removeAttribute('aria-busy'); }
   }
-  $('node-refresh').onclick = async () => { await boot(); if (loaded) { try { await loadYAML(); } catch (_) { /* 错误已落在 #node-yaml-state */ } } };
+  $('node-refresh').onclick = () => boot();
   boot();
 })();
 </script>

@@ -204,6 +204,54 @@ export const RULES = [
 ];
 
 /**
+ * 实现词表（ui-audit 2026-11-19 §3.2）：内部机制词当了按钮名/字段名。
+ * 只收「用户据此无法改变操作」的词；协议值本身（GET / resourceVersion 字段）留在
+ * `<code>`、`<pre>`、YAML 块或 class 含 dev 的容器里就不算「产品文案」。
+ * 大小写敏感：`spec` 只抓小写（避免命中 Spec 缩写以外的普通词）。
+ */
+export const IMPL_WORDS = [
+	{ word: "CAS", re: /(?<![\w-])CAS(?![\w-])/ },
+	{ word: "schema", re: /(?<![\w-])schema(?![\w-])/i },
+	{ word: "PUT", re: /(?<![\w-])PUT(?![\w-])/ },
+	{ word: "GET", re: /(?<![\w-])GET(?![\w-])/ },
+	{ word: "resourceVersion", re: /(?<![\w-])resourceVersion(?![\w-])/ },
+	{ word: "digest", re: /(?<![\w-])digest(?![\w-])/i },
+	{ word: "租约", re: /租约/ },
+	{ word: "幂等", re: /幂等/ },
+	{ word: "spec", re: /(?<![\w-])spec(?![\w-])/ },
+	{ word: "applied", re: /(?<![\w-])applied(?![\w-])/ },
+];
+
+/** 代码/协议上下文：命在这里面的实现词是「照抄协议」，不是产品文案。 */
+const CODE_TAGS = new Set(["code", "pre", "kbd", "samp"]);
+const CODE_CLASSES = new Set(["dev", "devf", "dev-only", "method", "code-body", "doc-code"]);
+
+/** 找出一段文本里 `<code>…</code>` / `<pre>…</pre>` 的区间（含标签本身）。 */
+export function codeRanges(text) {
+	const out = [];
+	const re = /<(code|pre|kbd|samp)\b[^>]*>[\s\S]*?<\/\1>/gi;
+	let m;
+	while ((m = re.exec(text))) out.push([m.index, m.index + m[0].length]);
+	return out;
+}
+
+/**
+ * 实现词命中（跳过代码区间）。返回 `{ word }` 或 null。
+ * `ranges` 由调用方给：页面文本节点用它所在的祖先链判定（见 textNodeLines），
+ * locale 值用值里的 `<code>`/`<pre>` 标记判定。
+ */
+export function implWordHit(text, ranges = codeRanges(text)) {
+	for (const w of IMPL_WORDS) {
+		const re = new RegExp(w.re.source, "g");
+		let m;
+		while ((m = re.exec(text))) {
+			if (!ranges.some(([a, b]) => m.index >= a && m.index < b)) return { word: w.word };
+		}
+	}
+	return null;
+}
+
+/**
  * 反假绿下限（棘轮）：2026-11-19 在 main 上实测 ——
  * @count node scripts/check-ui-copy.mjs
  * 4 份 locale、非空值 9280；23 个页面、222 个文本节点。
@@ -211,7 +259,7 @@ export const RULES = [
  * 页面数留了删页的余量（真实删页就同步下调）；文本节点数同理，但不允许归零 ——
  * 「扫出空集却报绿」正是这个检查最怕的假绿形态。
  */
-const FLOORS = { files: 4, values: 9000, pages: 20, pageNodes: 160 };
+const FLOORS = { files: 4, values: 9000, pages: 20, pageNodes: 160, implNodes: 90 };
 
 /**
  * 取一行的注释部分：第一个「不在引号里的 `#`」到行尾。没有注释返回 ""。
@@ -267,6 +315,7 @@ export function scanLocale(text, file = "<memory>") {
 	for (const [key, { line, value }] of entries) {
 		if (!value.trim()) continue;
 		values += 1;
+		const impl = implWordHit(value);
 		for (const rule of RULES) {
 			const m = value.match(rule.re);
 			if (!m) continue;
@@ -285,6 +334,23 @@ export function scanLocale(text, file = "<memory>") {
 				exempted: ex.marked && ex.reason !== "",
 				reason: ex.reason,
 				// 「标记了但没写理由」要单独报：它不是豁免，是格式错。
+				blankReason: ex.marked && ex.reason === "",
+			});
+		}
+		if (impl) {
+			const own = readExemption(commentPart(lines[line - 1] ?? ""));
+			const prev = line >= 2 ? readExemption(commentPart(lines[line - 2] ?? "")) : { marked: false, reason: "" };
+			const ex = own.marked ? own : prev;
+			violations.push({
+				file,
+				line,
+				key,
+				ruleId: "impl-word",
+				why: "实现词（审计 §3.2）：用户界面说「能做什么」，不说协议字段名",
+				hit: impl.word,
+				value,
+				exempted: ex.marked && ex.reason !== "",
+				reason: ex.reason,
 				blankReason: ex.marked && ex.reason === "",
 			});
 		}
@@ -362,16 +428,39 @@ function countNl(text, from, to) {
 /**
  * 展平状态机：从（已按 define 遮罩过的）模板文本里取文本节点。
  * 丢掉：标签（属性名/属性值/类名）、HTML 注释、<script>/<style> 内容、{{…}} 表达式。
- * 返回 [{ line, text }]；text 已折叠空白，line 是 1-based 原文件行号。
+ * 保留一个祖先栈，给每个节点标 `dev`：`pre/code/kbd/samp`、class 含 dev/devf/method…
+ * 或带 `data-dev` 的容器里的文字是「照拄协议」，实现词表不扫它。
+ * 返回 [{ line, text, dev }]；text 已折叠空白，line 是 1-based 原文件行号。
  */
+const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+
+function inCodeContext(stack) {
+	return stack.some(
+		(e) => CODE_TAGS.has(e.tag) || e.devAttr || e.classes.some((c) => CODE_CLASSES.has(c)),
+	);
+}
+
+function parseTag(raw) {
+	const m = /^\/?\s*([a-zA-Z][a-zA-Z0-9-]*)/.exec(raw);
+	if (!m) return null;
+	const closing = /^\//.test(raw);
+	const selfClose = /\/\s*$/.test(raw);
+	const tag = m[1].toLowerCase();
+	const cls = /(?:^|\s)class\s*=\s*("([^"]*)"|'([^']*)')/i.exec(raw);
+	const classes = cls ? (cls[2] ?? cls[3] ?? "").split(/\s+/).filter(Boolean) : [];
+	return { tag, closing, selfClose, classes, devAttr: /(?:^|\s)data-dev(?:\s|=|$)/i.test(raw) };
+}
+
 function textNodeLines(masked) {
 	const out = [];
 	let buf = "";
 	let bufLine = 1;
+	let bufDev = false;
 	let line = 1;
+	const stack = [];
 	const flush = () => {
 		const v = buf.replace(/\s+/g, " ").trim();
-		if (v) out.push({ line: bufLine, text: v });
+		if (v) out.push({ line: bufLine, text: v, dev: bufDev });
 		buf = "";
 	};
 	const n = masked.length;
@@ -417,6 +506,19 @@ function textNodeLines(masked) {
 				}
 				j += 1;
 			}
+			const info = parseTag(masked.slice(i + 1, Math.max(i + 1, j - 1)));
+			if (info) {
+				if (info.closing) {
+					for (let k = stack.length - 1; k >= 0; k--) {
+						if (stack[k].tag === info.tag) {
+							stack.length = k;
+							break;
+						}
+					}
+				} else if (!info.selfClose && !VOID_TAGS.has(info.tag)) {
+					stack.push(info);
+				}
+			}
 			i = j;
 			continue;
 		}
@@ -428,7 +530,10 @@ function textNodeLines(masked) {
 			i = stop;
 			continue;
 		}
-		if (!buf) bufLine = line;
+		if (!buf) {
+			bufLine = line;
+			bufDev = inCodeContext(stack);
+		}
 		buf += c;
 		i += 1;
 	}
@@ -461,10 +566,11 @@ export function scanPage(text, file = "<memory>", opts = {}) {
 
 	const nodes = textNodeLines(masked);
 	const violations = [];
+	let implNodes = 0;
 	for (const node of nodes) {
-		for (const rule of RULES) {
-			const m = node.text.match(rule.re);
-			if (!m) continue;
+		const checked = !node.dev;
+		if (checked) implNodes += 1;
+		const push = (ruleId, why, hit) => {
 			const own = pageExemption(lines[node.line - 1] ?? "");
 			const prev = node.line >= 2 ? pageExemption(lines[node.line - 2] ?? "") : { marked: false, reason: "" };
 			const ex = own.marked ? own : prev;
@@ -472,17 +578,26 @@ export function scanPage(text, file = "<memory>", opts = {}) {
 				file,
 				line: node.line,
 				key: null,
-				ruleId: rule.id,
-				why: rule.why,
-				hit: m[0],
+				ruleId,
+				why,
+				hit,
 				value: node.text,
 				exempted: ex.marked && ex.reason !== "",
 				reason: ex.reason,
 				blankReason: ex.marked && ex.reason === "",
 			});
+		};
+		for (const rule of RULES) {
+			const m = node.text.match(rule.re);
+			if (!m) continue;
+			push(rule.id, rule.why, m[0]);
+		}
+		if (checked) {
+			const impl = implWordHit(node.text, []);
+			if (impl) push("impl-word", "实现词（审计 §3.2）：用户界面说「能做什么」，不说协议字段名", impl.word);
 		}
 	}
-	return { violations, nodes: nodes.length, defines };
+	return { violations, nodes: nodes.length, implNodes, defines };
 }
 
 /** 自测用：红样例必须真红（且命中指定规则），绿样例必须完全无违规。 */
@@ -497,7 +612,7 @@ const SELF_TEST = {
 		// 对照内部实现
 		{ text: `pb:\n  hint: "槽位判定（#436）按物理槽位算"\n`, rule: "issue-ref" },
 		{ text: `docs:\n  note: "端点来自五份 v4 spec"\n`, rule: "internal-version" },
-		{ text: `docs:\n  note: "细节见 docs/design/v4/decisions.md"\n`, rule: "docs-path" },
+		{ text: `docs:\n  note: "细节见 docs/contracts/CONTRACT.md"\n`, rule: "docs-path" },
 		{ text: `docs:\n  empty: "重新运行 make sitegen 即可生成这一节"\n`, rule: "build-tool" },
 		{ text: `docs:\n  note: "Re-run make sitegen to generate this section"\n`, rule: "build-tool" },
 		// #458：构建命令（白名单式，见 RULES 里的 build-command）
@@ -511,6 +626,14 @@ const SELF_TEST = {
 		{ text: `caps:\n  stale: "旧形态声明"\n`, rule: "cjk-retired-shape" },
 		{ text: `docs:\n  x: "ビルド時に生成されます"\n`, rule: "ja-build-pipeline" },
 		{ text: `docs:\n  x: "Se genera en tiempo de compilación"\n`, rule: "es-build-pipeline" },
+		// 实现词（审计 §3.2）：协议词当了产品文案
+		{ text: `nodes:\n  save: "以当前 CAS 保存"\n`, rule: "impl-word" },
+		{ text: `caps:\n  rv: "当前 resourceVersion：{rv}"\n`, rule: "impl-word" },
+		{ text: `ns:\n  hint: "只影响该命名空间的下一次解析；不写进节点 applied。"\n`, rule: "impl-word" },
+		{ text: `pb:\n  x: "省略（使用 schema 默认值）"\n`, rule: "impl-word" },
+		{ text: `caps:\n  x: "当前 digest"\n`, rule: "impl-word" },
+		{ text: `m:\n  x: "租约过期"\n`, rule: "impl-word" },
+		{ text: `docs:\n  x: "用 PUT 整体替换模板"\n`, rule: "impl-word" },
 		// TODO
 		{ text: `a:\n  b: "TODO: 换成真数据"\n`, rule: "dev-todo" },
 	],
@@ -535,8 +658,12 @@ const SELF_TEST = {
 		`recv:\n  hint: "Make the node visible to this namespace first."\n`,
 		// `移行` 是数据流状态迁移（进入实时流），不是配置搬家
 		`docs:\n  reconnect: "その後リアルタイムストリームに移行します。"\n`,
-		// 历史「状态」标签（旧 digest = 陈旧 digest）不是历史「过程」叙述
-		`caps:\n  stale: "旧 digest"\n`,
+		// 历史「状态」标签（旧指纹 = 前一代内容指纹）不是历史「过程」叙述
+		`caps:\n  stale: "旧指纹"\n`,
+		// 实现词只出现在 <code>/<pre> 里 = 照抄协议，不是产品文案
+		`caps:\n  hint: "字段名 <code>spec.concurrency.maxPerNode</code>，默认 1。"\n`,
+		`docs:\n  sample: "<pre>GET /v1/nodes\nresourceVersion: 3</pre>"\n`,
+		`nodes:\n  save: "保存"\n`,
 		// 注解里的 `#` 与值里的普通数字
 		`docs:\n  retain: "默认 604800 秒，最大 2592000 秒"\n`,
 	],
@@ -562,6 +689,9 @@ const SELF_TEST = {
 			{ html: `<pre>\nGET /v1/nodes\n已迁到命名空间页\n</pre>\n`, rule: "zh-migration", line: 3 },
 			// 同一个 define：被 layout 接进渲染树就被扫（证明过滤是「选」，不是「一律不扫」）
 			{ html: `{{define "content"}}<p>写给维护者</p>{{end}}\n`, rule: "zh-dev-audience", line: 1, renderedDefines: ["content"] },
+			// 实现词写进可见正文（不是代码块、不是 dev 容器）
+			{ html: `<div>\n  <p>以当前 CAS 保存</p>\n</div>\n`, rule: "impl-word", line: 2 },
+			{ html: `<div>\n  <p>当前 resourceVersion 已过期</p>\n</div>\n`, rule: "impl-word", line: 2 },
 		],
 		green: [
 			// 同一句放 HTML 注释里 → 不扫（写给维护者的注释合法）；`nodes` 是预期抽到的文本节点数，
@@ -580,6 +710,13 @@ const SELF_TEST = {
 			{ html: `<pre>GET /v1/nodes/{name}/config\ncurl -fsSL https://&lt;hub&gt;/install-anode.sh | sh</pre>\n`, nodes: 2 },
 			// 正常散文（真实页面上就有这种）：必须真抽到
 			{ html: `<div>\n  <p>下面这几条是产品行为里最容易误读的地方，出问题时按它们对账。</p>\n</div>\n`, nodes: 1 },
+			// 实现词（审计 §3.2）的结构化例外：<pre> / <code> / class 含 dev 的容器 / data-dev / HTML 注释
+			{ html: `<pre>PUT /v1/nodes/{name}/config\nresourceVersion: 3</pre>\n`, nodes: 2 },
+			{ html: `<p>字段名 <code>spec.vars</code> 由服务端管。</p>\n`, nodes: 3 },
+			{ html: `<details class="devf"><summary>开发者信息</summary><p>schema 与 applied</p></details>\n`, nodes: 2 },
+			{ html: `<div data-dev><span>digest</span></div>\n`, nodes: 1 },
+			{ html: `<p><span class="method m-get">GET</span> /v1/nodes</p>\n`, nodes: 2 },
+			{ html: `<div>\n  <!-- CAS 只在注释里，写给维护者 -->\n  <p>保存</p>\n</div>\n`, nodes: 1 },
 		],
 		// 页面侧豁免：`<!-- ui-copy-ok: 理由 -->` 同行/上一行→绿；空理由/写在文字里→红。
 		exempt: [
@@ -690,6 +827,17 @@ export function selfTest(log = console.log) {
 	const pageStripped = scanPage(`<p>Namespace and system configuration</p>\n`, "page-strip.html");
 	expect(pageStripped.violations.length === 0, "页面删掉命中词后应转绿（否则规则在乱扫）");
 
+	// 实现词表：正向命中 + 三处结构化例外都不能「扫空」。
+	const implRed = scanPage(`<p>以 CAS 保存</p>\n`, "impl-red.html");
+	expect(implRed.violations.some((v) => v.ruleId === "impl-word" && v.hit === "CAS"), "实现词表未命中 CAS");
+	const implGreen = scanPage(`<pre>PUT /v1/x</pre>\n<p><code>resourceVersion</code></p>\n<details class=\"devf\"><p>schema</p></details>\n<!-- digest -->\n`, "impl-green.html");
+	expect(implGreen.violations.length === 0, `代码/dev 容器里的实现词不该红：${implGreen.violations.map((v) => v.hit).join(",")}`);
+	expect(implGreen.implNodes === 0, `纯代码/dev 容器页面不该有实现词检查面（实际 ${implGreen.implNodes}）`);
+	const implStripped = scanPage(`<p>保存</p>\n`, "impl-strip.html");
+	expect(implStripped.violations.length === 0, "删掉实现词后应转绿（否则实现在乱扫）");
+	const implComment = scanPage(`<div>\n  <!-- 以 CAS 保存 -->\n  <p>保存</p>\n</div>\n`, "impl-comment.html");
+	expect(implComment.violations.length === 0, "实现词只在 HTML 注释里时必须保持绿（注释是写给维护者的）");
+
 	// 页面侧 define 过滤不是空转：同一个 define，没被 layout 引用就不扫、被引用就扫。
 	const dead = scanPage(`{{define "dead"}}<p>写给维护者</p>{{end}}\n`, "page-dead.html", { renderedDefines: new Set(["content"]) });
 	expect(dead.violations.length === 0 && dead.nodes === 0, "未被引用的 define 体不该扫（当前扫到了）");
@@ -753,14 +901,16 @@ async function main() {
 	const pageTexts = await Promise.all(pageNames.map((n) => fs.readFile(path.join(pageDir, n), "utf8")));
 	const rendered = renderedDefineNames([...layoutTexts, ...pageTexts]);
 	let pageNodes = 0;
+	let implNodes = 0;
 	for (const [i, name] of pageNames.entries()) {
 		const got = scanPage(pageTexts[i], `${src}/pages/${name}`, { renderedDefines: rendered });
 		pageNodes += got.nodes;
+		implNodes += got.implNodes;
 		all.push(...got.violations);
 	}
 
-	const counts = `${names.length} 份 locale / ${values} 条值 · ${pageNames.length} 个页面 / ${pageNodes} 个文本节点 · ${RULES.length} 条规则`;
-	const floors = `下限 locale≥${FLOORS.files} 份、值≥${FLOORS.values}；页面≥${FLOORS.pages} 个、文本节点≥${FLOORS.pageNodes}`;
+	const counts = `${names.length} 份 locale / ${values} 条值 · ${pageNames.length} 个页面 / ${pageNodes} 个文本节点（实现词检查面 ${implNodes} 个）· ${RULES.length} 条规则 + ${IMPL_WORDS.length} 个实现词`;
+	const floors = `下限 locale≥${FLOORS.files} 份、值≥${FLOORS.values}；页面≥${FLOORS.pages} 个、文本节点≥${FLOORS.pageNodes}、实现词检查面≥${FLOORS.implNodes}`;
 
 	// 反假绿：扫描面被改窄（少语言、值为空、页面扫不到、文本节点归零）不能算绿。
 	const floorBreach = [];
@@ -768,6 +918,7 @@ async function main() {
 	if (values < FLOORS.values) floorBreach.push(`只解析到 ${values} 条值（下限 ${FLOORS.values}）`);
 	if (pageNames.length < FLOORS.pages) floorBreach.push(`只扫到 ${pageNames.length} 个页面（下限 ${FLOORS.pages}）`);
 	if (pageNodes < FLOORS.pageNodes) floorBreach.push(`只抽到 ${pageNodes} 个页面文本节点（下限 ${FLOORS.pageNodes}）`);
+	if (implNodes < FLOORS.implNodes) floorBreach.push(`实现词检查面只剩 ${implNodes} 个页面文本节点（下限 ${FLOORS.implNodes}）：代码容器标记被写宽了？`);
 	for (const lang of LANGS) {
 		if (!names.includes(`${lang}.yaml`)) floorBreach.push(`缺 ${lang}.yaml`);
 	}

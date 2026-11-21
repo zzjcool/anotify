@@ -1,7 +1,7 @@
 package playbook
 
 // issue #338 / F8：`writeOnly` 打码与敏感推导必须覆盖 schema 的**全部容器形态**，不能只认
-// `properties` / `items`（docs/design/v4/playbook.md:474 无条件承诺「这类字段在回执里是
+// `properties` / `items`（本包的 `MaskValues` 无条件承诺「这类字段在回执里是
 // `"***"`」）：
 //   - 对象里 `properties` 没声明的键 → 回落 `additionalProperties`（任意键）。该 schema
 //     自身/子树含 writeOnly 时，回执 `values` 与 `unapplied[].declared/actual` 都不许出现明文；
@@ -660,7 +660,7 @@ func TestMaskUnprovableKeywordTableMatchesPredicate(t *testing.T) {
 	if len(maskProvableKeywords) == 0 {
 		t.Fatal("豁免关键字表为空：所有 schema 都会被整值打码")
 	}
-	// 契约（docs/design/v4/playbook.md §1.2 的 fail-closed note）逐字点名了下面这些关键字。
+	// 契约（`sensitive.go` 的 fail-closed 判据）逐字点名了下面这些关键字。
 	// 判据是 allowlist 语义（不在豁免表即打码），所以**从理由表删掉一行不会让任何用例变红**——
 	// 「文档承诺了、判据没写理由」就会静默发生。这里把文档点到名的关键字钉死。
 	for _, kw := range []string{

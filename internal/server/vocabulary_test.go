@@ -337,7 +337,7 @@ func TestVocabulary(t *testing.T) {
 				}
 				if got != want {
 					t.Errorf("%s %q = %q，钉桩表要求 %q\n"+
-						"  改名请同时改 docs/design/capability-spec-v3.md §13 与 internal/server/vocabulary_test.go",
+						"  改名请同时改 4 份 locale 与 internal/server/vocabulary_test.go",
 						lang, pin.key, got, want)
 				}
 			}

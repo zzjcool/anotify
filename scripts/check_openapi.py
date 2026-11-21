@@ -6,8 +6,8 @@ v3 版本硬编码 `api/openapi.yaml`、只查 path 集合与 `security` 存在�
 ——把 path item 写成 `$ref` 后它会被无声跳过（非方法键静默 continue），于是「拆五文件」
 这件事一旦发生，门禁会变成假绿。
 
-v4 的真源是且只是这五份文件（`docs/design/v4/api-conventions.md` §2 /
-`docs/contracts/v4/API-SPEC-HANDOFF.md`）：
+v4 的真源是且只是这五份文件（`internal/sitegen/openapi.go` 
+`CanonicalSpecFiles` / `docs/contracts/v4/API-SPEC-HANDOFF.md`）：
 
     api/resource.yaml   api/events.yaml   api/agent.yaml   api/ingress.yaml   api/auth.yaml
 

@@ -350,7 +350,7 @@
 <div id="page-main">
   <div class="page">
     <!-- 页头：标题 + 一句说明 + 页级动作。
-         页面内容里不出现 h1 —— 顶栏那个才是全站唯一的 h1（契约 §1）。
+         页面内容里不出现 h1 —— 顶栏那个 h1 写的是同一句页面名（E-4）。
          `.page-sub` 全页只出现一次：mountLayout 检测到它就不再重复画副标题。 -->
     <div class="page-head">
       <div class="min-w-0">
@@ -652,8 +652,9 @@
           // #381：receivers **不在**侧栏 NAV 里，没有合法的 active id。原来传
           // active: "receivers" 是一个死键：侧栏零高亮（对，本来就没它）、
           // 顶栏拿不到分组名（NAV_GROUP_OF[未知 id] === null）—— 两个副作用都
-          // 不可见地降级。现在显式传 null：侧栏不点亮任何项，顶栏只画范围面包屑，
-          // 页面自己的「返回工作台 / 接入文档」两个出口负责把人带回有内容的地方。
+          // 不可见地降级。现在显式传 null：侧栏不点亮任何项，顶栏只有页面名 +
+          // 范围面包屑（没有分组名），页面自己的两个出口（回首页 / 接入文档）
+          // 负责把人带回有内容的地方。
           active: null,
           title: t("receivers.title", "通知接收"),
           subtitle: t("receivers.subtitle", "按设备控制通知接收"),
@@ -839,15 +840,6 @@
               text: t(
                 "receivers.unavailable",
                 "手机推送暂未开放，上线后这里会显示你的接收设备。",
-              ),
-            }),
-            // #381：不只说「没开」，还说「开了以后有什么」—— 否则这页读完仍然不知道
-            // 这里将来提供的是什么能力。
-            el("p", {
-              class: "rcv-empty-desc",
-              text: t(
-                "receivers.unavailable_next",
-                "开放后这里会出现接收设备与送达率。",
               ),
             }),
             acts,

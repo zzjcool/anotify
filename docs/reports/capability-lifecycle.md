@@ -1,8 +1,10 @@
+> **历史快照**：本文件是当时的交付记录，不随代码演进；行为以代码、测试与 `docs/contracts/` 为准。
+
 <!-- snapshot-doc: 2026-11-18 #432 交付时的定格数字（make ci / e2e 的真实输出），复算命令见 §8 -->
 # 能力启停 + 手动测试（#432）交付报告
 
 > 分支 `feat/cap-lifecycle` · 基线 `origin/main` `2c115020` · 设计真源
-> `docs/design/capability-lifecycle.md`（随 #433 合入）· 冻结 wire 契约
+> 设计真源（随 #433 合入；该设计文档已于 2026-11-19 移除）· 冻结 wire 契约
 > `docs/contracts/cap-lifecycle/WIRE.md`
 > PR：[#438](https://github.com/zzjcool/anotify/pull/438)（`Fixes #432`）
 
@@ -420,7 +422,7 @@ $ E2E_CONCURRENCY=2 ./scripts/e2e/run_all.sh
 1. **`status.observed.pruned` 承载不了「被完全剪掉的触发」**（设计 §10 的期望需要修订）。
    `observedPrunes` 以**最近一个任务**的 (traceId, taskId) 为键；一次被全部剪掉的触发没有任务，
    于是 `status.observed = {}`，剪枝看不见。证据改为**回执 `pruned[]` + trace 事件**
-   （本 PR 的 e2e 断言走这两条，并在 `docs/design/capability-lifecycle.md` 的既有文字之外明确记录）。
+   （本 PR 的 e2e 断言走这两条，并在当时的 L-D 设计表述之外明确记录）。
    若产品要在能力页显示「停用期间的剪枝计数」，需要一个新的读模型（不在本卡范围）。
 2. **任务卡的「已有 dev 库原地升级」与设计 §5.4 + store 模块约定冲突**：设计明确写「老库被具名拒绝，
    开发机删库重建」，模块约定写「引入第 2 块需单独授权」。本 PR 未改迁移引擎，改为交付

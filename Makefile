@@ -39,7 +39,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-doc-links check-doc-endpoints check-examples check-secrets check-config-writes check-affected-map hooks lint-go tools test-affected e2e-affected plan-affected test-frontend
+.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-comment-density check-guard-selftest check-annotations check-doc-links check-doc-endpoints check-examples check-secrets check-config-writes check-yaml-doc check-affected-map hooks lint-go tools test-affected e2e-affected plan-affected test-frontend
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -65,6 +65,16 @@ check-wire-fields: ## 契约字段守卫：前端 model 读的 spec./status. 字
 check-config-writes: ## 配置写路径守卫：web-src/pages 里对资源级 …/config 的写调用必须为 0（#476）
 	@node scripts/check-config-writes.mjs --self-test
 	@node scripts/check-config-writes.mjs
+
+# #473：文档层只有一份实现。三条判据（脚本自测里每条都红/绿双侧自证过）：
+#   ① 页面与页面级脚本不得声明 YAML 序列化器（转义/拼行/整份渲染都算）；
+#   ② 页面不得自己拼文档文本（`'apiVersion: ' + …` 这种字面量拼装）；
+#   ③ 前端 kind 表的字段顺序必须与 `internal/server` 的文档结构体一致 —— 前后端同一套
+#      规则，服务端加一个文档字段而前端没跟上时立刻红，而不是等到「字段被静默丢掉」。
+# @guard scripts/check-yaml-doc.mjs#kind-parity
+check-yaml-doc: ## 文档层检查：页面不得自带 YAML 序列化器，且前端 kind 表与服务端文档结构体逐字段一致（#473）
+	@node scripts/check-yaml-doc.mjs --self-test
+	@node scripts/check-yaml-doc.mjs
 
 check-graph-access: ## 图库访问守卫：画图页只能走 Anotify.graphLib()（防 defer 加载竞态回归）
 	node scripts/check-graph-access.mjs
@@ -105,11 +115,16 @@ check-test-discipline: ## 测试纪律棘轮：waitForTimeout/吞异常/t.Skip/t
 	node scripts/check-test-discipline.mjs --self-test
 	node scripts/check-test-discipline.mjs
 
+check-comment-density: ## 注释/文档棘轮：目录与总量注释行冻结、单文件密度阈值、docs 面只许收缩（docs/lint-guards.md L12）
+	node scripts/check-comment-density.mjs --self-test
+	node scripts/check-comment-density.mjs
+
 check-guard-selftest: ## 守卫自测：拦"守卫自己静默不查了"（恒绿的门禁等于没有门禁）
 	node scripts/check-classes.mjs --self-test
 	node scripts/check-graph-access.mjs --self-test
 	node scripts/check-ui-copy.mjs --self-test
 	node scripts/check-config-writes.mjs --self-test
+	node scripts/check-yaml-doc.mjs --self-test
 
 check-annotations: ## 注解即外键：文档/注释里的 scripts、make、npm 引用与 @guard/@decision 锚点必须解析（docs/lint-guards.md §3）
 	node scripts/check-annotations.mjs --self-test
@@ -135,11 +150,16 @@ check-affected-map: ## 改动选择的映射表自测：已知耦合必须选中
 	@# CI 上 e2e 的判定器（已知环境性失败清单 + 「清单外必须拦」的变异自测）
 	node scripts/e2e/ci-e2e-verdict.mjs --self-test
 
-test-frontend: ## 前端单测（node:test）：管理后台「全局消息」流字段映射 + 变异自证（#456）
+test-frontend: ## 前端单测（node:test）：消息流字段映射（#456）+ YAML 文档层（#473）+ vars 表格行逻辑（#476）
 	@# 为什么必须接进 ci：这页的事故是「页面读的字段名服务端从不发」，静态检查
 	@# （check-classes / check-i18n-keys）和 e2e（只看端点 200 + 数组）当时都通过了，
 	@# 只有真的把一条事件送进渲染路径才会失败。
 	node --test scripts/admin-messages.test.mjs
+	@# #473：文档层的转义/字段顺序/空集合/省略规则 + 「读 → 表单编辑 → 写 → 再读」字段保真，
+	@# 并把「换回页面各自拼一份」写成同一份测试里的变异自证（旧实现必须让保真判据红）。
+	node --test scripts/yamldoc.test.mjs
+	@# #476：表格的行聚合 / 「缺但被要求」判据（含变异自证）。
+	node --test scripts/vars-table.test.mjs
 
 # GitHub 上那条 `GitGuardian Security Checks` 是**服务端 App**：推上去之后才扫 PR diff。
 # 本地这一道才是推之前的防线；它同时也盯「被跟踪的 .env / *.pem / *.key」。
@@ -318,7 +338,12 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	@# 守卫自测 + 测试纪律棘轮（docs/lint-guards.md）：毫秒级，放在最便宜的位置，
 	@# 让"检查本身坏了"和"测试纪律倒退"在 PR 里第一批就红。
 	$(MAKE) check-guard-selftest
+	@# 文档层（#473）：前端只有一份 YAML 序列化，且它的字段顺序与服务端文档结构体对齐。
+	$(MAKE) check-yaml-doc
 	$(MAKE) check-test-discipline
+	@# 注释密度棘轮（#495）：`check-annotations` 只管「注释不许说谎」，这里管「注释不该存在」——
+	@# 两者不打架：前者管极少数留下者的可追溯性，后者管总量只许降。
+	$(MAKE) check-comment-density
 	$(MAKE) check-annotations
 	@# 协调者工作区引用：`.pi-orchestrator/` 自 2026-11-19 起不入库，所以 docs/ 里指向它的
 	@# 「唯一事实源」链接会在 fresh clone 里直接扑空。检查面是 git ls-files（不是工作区），

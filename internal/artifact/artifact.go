@@ -127,7 +127,8 @@ const (
 	// CodeConcurrencyInvalid 是 concurrency.maxPerNode < 1 或不是整数。
 	CodeConcurrencyInvalid = "concurrency_invalid"
 	// CodeParamEnvCollision 是两个参数名归一后撞同一个 ANOTIFY_PARAM_*。
-	CodeParamEnvCollision = "param_env_collision"
+	CodeParamEnvCollision   = "param_env_collision"
+	CodeParamPatternInvalid = "param_pattern_invalid"
 	// CodeRequiresInvalid 是 requires 不是对象 / 元素不合格 / 超上限 / 未知子键。
 	CodeRequiresInvalid = "requires_invalid"
 	// CodeVersionContentImmutable 是显式同版内容不同（store 判定，本包给辅助）。
@@ -409,16 +410,17 @@ func (e *fieldError) Error() string { return e.code + ": " + e.msg }
 // 而不是修一条、再跑一次、再发现下一条。
 type Error struct {
 	Problems []string
+	Fields   []string
 }
 
 func (e *Error) Error() string { return strings.Join(e.Problems, "; ") }
 
-// errIf 如果 problems 非空就返回一个 *Error，否则返回 nil。
-func errIf(problems []string) error {
+// errIfLocated 在 Problems 非空时返回 *Error，并保留 field 与 problem 的平行关系。
+func errIfLocated(problems, fields []string) error {
 	if len(problems) == 0 {
 		return nil
 	}
-	return &Error{Problems: problems}
+	return &Error{Problems: problems, Fields: fields}
 }
 
 // Code 返回第一个问题的机器可读短码（用于 HTTP Status.reason / apply 帧的 reason）。
@@ -598,8 +600,16 @@ func Validate(a *Artifact) error {
 		return &Error{Problems: []string{CodeBadRequest + ": 产物为空"}}
 	}
 	var p []string
+	var fields []string
 	add := func(code, format string, args ...any) {
 		p = append(p, code+": "+fmt.Sprintf(format, args...))
+		fields = append(fields, "")
+	}
+	addProblems := func(problems []string) {
+		for _, problem := range problems {
+			p = append(p, problem)
+			fields = append(fields, "")
+		}
 	}
 
 	if a.APIVersion != APIVersion {
@@ -617,14 +627,18 @@ func Validate(a *Artifact) error {
 	}
 
 	params, paramProblems := validateParams(a.Spec.Params)
-	p = append(p, paramProblems...)
-	p = append(p, validateNext(a.Spec.Next)...)
-	p = append(p, validateRequires(&a.Spec.Requires)...)
-	p = append(p, validateRun(&a.Spec, params)...)
-	p = append(p, validateLifecycle(&a.Spec.Lifecycle)...)
-	p = append(p, validateConcurrency(&a.Spec.Concurrency)...)
+	addProblems(paramProblems)
+	for _, located := range validateParamPatterns(a.Spec.Params) {
+		p = append(p, located.problem)
+		fields = append(fields, located.field)
+	}
+	addProblems(validateNext(a.Spec.Next))
+	addProblems(validateRequires(&a.Spec.Requires))
+	addProblems(validateRun(&a.Spec, params))
+	addProblems(validateLifecycle(&a.Spec.Lifecycle))
+	addProblems(validateConcurrency(&a.Spec.Concurrency))
 
-	return errIf(p)
+	return errIfLocated(p, fields)
 }
 
 // paramInfo 是校验期从 params schema 里读出来的那点信息。
@@ -644,10 +658,10 @@ func validateParams(params json.RawMessage) (paramInfo, []string) {
 		return info, nil
 	}
 
-	var schema struct {
+	var decoded struct {
 		Properties map[string]json.RawMessage `json:"properties"`
 	}
-	if err := json.Unmarshal(params, &schema); err != nil {
+	if err := json.Unmarshal(params, &decoded); err != nil {
 		add("params 必须是 JSON Schema 对象（省略 = {}）：%s", err.Error())
 		return info, p
 	}
@@ -655,7 +669,7 @@ func validateParams(params json.RawMessage) (paramInfo, []string) {
 	// 两个参数名归一后撞同一个 ANOTIFY_PARAM_* → 写入期拒（capability.md §2.3）：
 	// 运行期「谁覆盖谁」是隐式的，而隐式行为在排障时永远说不清。
 	byEnvName := map[string][]string{}
-	for name := range schema.Properties {
+	for name := range decoded.Properties {
 		info.properties[name] = struct{}{}
 		envName := protocol.ParamEnvName(name)
 		byEnvName[envName] = append(byEnvName[envName], name)
@@ -678,6 +692,88 @@ func validateParams(params json.RawMessage) (paramInfo, []string) {
 // paramEnvName retains the package-local call shape used by template assertions;
 // normalization has exactly one implementation, in shared protocol.
 func paramEnvName(name string) string { return protocol.ParamEnvName(name) }
+
+type locatedProblem struct {
+	problem string
+	field   string
+}
+
+func validateParamPatterns(params json.RawMessage) []locatedProblem {
+	trimmed := bytes.TrimSpace(params)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil
+	}
+	var root any
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	if err := dec.Decode(&root); err != nil {
+		return nil // 形状错误由 validateParams 报，不重复
+	}
+	node, ok := root.(map[string]any)
+	if !ok {
+		return nil
+	}
+	var out []locatedProblem
+	var walk func(map[string]any, string)
+	walk = func(sch map[string]any, path string) {
+		if raw, ok := sch["pattern"]; ok {
+			fieldPath := path + ".pattern"
+			pattern, isString := raw.(string)
+			if !isString {
+				out = append(out, locatedProblem{
+					problem: CodeParamPatternInvalid + ": " + fieldPath + " 必须是字符串",
+					field:   fieldPath,
+				})
+			} else if _, err := compileParamPattern(pattern); err != nil {
+				out = append(out, locatedProblem{
+					problem: fmt.Sprintf("%s: %s 不是合法的 RE2 正则 %q：%v",
+						CodeParamPatternInvalid, fieldPath, pattern, err),
+					field: fieldPath,
+				})
+			}
+		}
+		if props, ok := sch["properties"].(map[string]any); ok {
+			for _, name := range sortedMapKeys(props) {
+				if child, ok := props[name].(map[string]any); ok {
+					walk(child, path+".properties."+name)
+				}
+			}
+		}
+		if child, ok := sch["additionalProperties"].(map[string]any); ok {
+			walk(child, path+".additionalProperties")
+		}
+		if child, ok := sch["items"].(map[string]any); ok {
+			walk(child, path+".items")
+		}
+		if prefix, ok := sch["prefixItems"].([]any); ok {
+			for i, item := range prefix {
+				if child, ok := item.(map[string]any); ok {
+					walk(child, fmt.Sprintf("%s.prefixItems[%d]", path, i))
+				}
+			}
+		}
+	}
+	walk(node, "spec.params")
+	return out
+}
+
+const maxParamPatternLen = 1024
+
+func compileParamPattern(pattern string) (*regexp.Regexp, error) {
+	if len(pattern) > maxParamPatternLen {
+		return nil, fmt.Errorf("pattern 长度 %d 字节，超过上限 %d", len(pattern), maxParamPatternLen)
+	}
+	return regexp.Compile(pattern)
+}
+
+func sortedMapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 // validateNext 校验 spec.next 的形状（≤32 个，`name` 或 `name@version`）。
 //

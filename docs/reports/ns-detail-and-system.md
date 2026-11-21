@@ -1,7 +1,9 @@
+> **历史快照**：本文件是当时的交付记录，不随代码演进；行为以代码、测试与 `docs/contracts/` 为准。
+
 # 命名空间详情页补齐 + 系统配置区块（#436 ③④）—— 交付报告
 
 - Issue: [#436](https://github.com/zzjcool/anotify/issues/436)
-- 设计: [`docs/design/node-namespace-ia.md`](../design/node-namespace-ia.md)（§2.2 已按实现校准）
+- 设计: 已随设计文档移除（当时那份已按实现校准过；历史见 `docs/README.md`）
 - 基线: `origin/feat/node-namespace-ia` @ `7cd93dbb`（PR [#441](https://github.com/zzjcool/anotify/pull/441)，①② 在那边；
   该分支已把 `origin/main` 合进来，本 PR 直接 rebase 到它）
 - 本分支: `feat/ns-detail-yaml`

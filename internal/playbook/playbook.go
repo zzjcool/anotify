@@ -1,6 +1,7 @@
 // Package playbook 实现 v4 的**目录安装包**（Playbook）：解析、渲染、安装计划与回执。
 //
-// 语义基线是 `docs/design/v4/playbook.md`（一个目录 + values 参数化 + 只做加法），
+// 语义基线是本包的实现与 `docs/contracts/console-declares/CONTRACT-artifact.md`
+// （一个目录 + values 参数化 + 只做加法），
 // 本包只做**纯领域**计算，不碰数据库、不碰网络、不写任何东西：
 //
 //	Parse  包入库前的**值无关**校验（文件集合：入口 / 闭合 / 路径 / 计数 / 槽位形状）

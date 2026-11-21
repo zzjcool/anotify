@@ -6,7 +6,7 @@
  * v3 的 contract 套件验的是 v3 CONTRACT.md §9 的 A1–A12，其中一半的不变量在 v4 里
  * **载体变了**（边表 → 资源 spec、port → 单一 emit 通道、handler 能力 → 不存在、
  * `tasks.status` 列 → `phase`、`outputs` → `spec.next`）。v4 的权威是
- * `docs/design/v4/decisions.md`（V4-D1…D6）与四份主文档。
+ * `docs/contracts/v4/CONTRACT.md` 的 V4-D1…D6 决策索引与 `api/` 五份 spec。
  *
  * 所以本套件改成**逐条钉 v4 决策**，并保留 v3 十二断言的编号做对照表 —— 每一条
  * v3 断言要么迁到 v4 的等价物，要么明确写出「为什么它在 v4 里不存在了」。没有静默删除：

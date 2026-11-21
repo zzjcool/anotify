@@ -8,7 +8,23 @@ A2（父会话正式执行细则补齐）：新增 `ANOTIFY_ARTIFACT_DIR` 作为
 rev2（父会话实施编排修订）：在 T1 的纯协议/产物已稳定后拆出 T3 anode 并行，消除串行关键链，不减少功能或测试。T3 接收只读产物快照并成为 `internal/protocol` 唯一作者，T1 消费其冻结更新；新增传输接缝见 §7。
 
 状态：用户已授权实施；父会话冻结分工与技术边界。设计基线 `368b489`。
-语义权威：`docs/design/v4/decisions.md` V4-D1～D6 为批准增补，四主文档为其余语义基线；`config.md`/`api-conventions.md` 是派生接口约定。实现不得自行修改已冻结设计迁就旧代码/测试。
+语义权威：本文 §0 的 V4-D1～D6 决策索引 + `api/` 五份 OpenAPI + 代码与测试。原设计文档（含 `decisions.md`）已于
+2026-11-19 整套移除（见 `docs/README.md`）；决策号只能锚定到本文。实现不得自行修改已冻结决策迁就旧代码/测试。
+
+## 0. V4 已批准决策索引（唯一落点）
+
+`@decision` 锚点解析到本表（`scripts/check-annotations.mjs` 的 `DECISION_DOC_CANDIDATES`）。
+原设计文档里的长文推导已移除，所以这里只留「决定了什么 + 实现在哪」。
+
+| 决策 | 内容 | 实现位置 |
+|---|---|---|
+| V4-D1 | 轻量资源 API：保留 spec/status 信封，`status` 只读、读时派生；不引完整 Kubernetes 框架 | `internal/store` 的 spec 结构体 + `internal/server/resource_capability.go`；`api/resource.yaml` |
+| V4-D2 | 三层 `vars` 作用域（本机 / 中枢节点 / 中枢命名空间），逐键合并 + `configRevision` / `namespaceVarsRevision` | `internal/store/config.go`；`internal/protocol/hash.go` |
+| V4-D3 | 安装只加不改：真冲突原子拒绝，整包零写 | `internal/playbook/plan.go`（动作矩阵）+ store 单事务写入 |
+| V4-D4 | 安全执行：重试 / 租约 / 尝试 / emit 幂等 | `internal/lease/lease.go`、`internal/route`、`internal/protocol/emit.go` |
+| V4-D5 | 运行环境与凭证：中枢只下发变量名，值留本机 | `cmd/anode/internal/execenv/execenv.go`；`internal/protocol/env.go` |
+| V4-D6 | 有限保留与引用完整性：tombstone 物理回收 + 保留窗口 | `internal/server/capability_gc.go`；`internal/store` 的 prune 路径 |
+
 
 ## 1. 交付范围与非目标
 
@@ -22,7 +38,7 @@ rev2（父会话实施编排修订）：在 T1 的纯协议/产物已稳定后�
 
 | 团队 | 独占文件 | 不得改 |
 |---|---|---|
-| T1 core-runtime | 全部 `internal/` **除 `internal/sitegen/`、`internal/protocol/`**；`cmd/` **除 `cmd/sitegen/`、`cmd/fe-preview/`、`cmd/anode/`**；`api/`；Go依赖文件（仅必要新增）、`Makefile`、Dockerfile(s) **除 `Dockerfile.anode`**、compose文件；`scripts/` **除下方 T2/T3 列出的文件**；`docs/contracts/CONTRACT.md`、安装/开发/测试/README/CHANGELOG说明 **除 `docs/anode-install.md`**；`.gitignore` 中新二进制忽略项 | `web/`、`web-src/`、T2/T3文件、已冻结 `docs/design/v4/`、根协调者工作区（不入库）的 `v4/PLAN.md`/`v4/STATUS.md`、`docs/contracts/v4/CONTRACT.md`、用户 settings/env/依赖目录 |
+| T1 core-runtime | 全部 `internal/` **除 `internal/sitegen/`、`internal/protocol/`**；`cmd/` **除 `cmd/sitegen/`、`cmd/fe-preview/`、`cmd/anode/`**；`api/`；Go依赖文件（仅必要新增）、`Makefile`、Dockerfile(s) **除 `Dockerfile.anode`**、compose文件；`scripts/` **除下方 T2/T3 列出的文件**；`docs/contracts/CONTRACT.md`、安装/开发/测试/README/CHANGELOG说明 **除 `docs/anode-install.md`**；`.gitignore` 中新二进制忽略项 | `web/`、`web-src/`、T2/T3文件、已冻结的 v4 决策（本文件 §0，设计文档已移除）、根协调者工作区（不入库）的 `v4/PLAN.md`/`v4/STATUS.md`、`docs/contracts/v4/CONTRACT.md`、用户 settings/env/依赖目录 |
 | T2 frontend | `web-src/**`；跟踪的 `web/**` 静态 JS/CSS/SW/assets（不提交生成HTML/hash dist）；`internal/sitegen/**`、`cmd/sitegen/**`、`cmd/fe-preview/**`；`scripts/v4-frontend.test.mjs`；`scripts/e2e/suites/frontend.mjs`、`i18n.mjs`、`i18n_coverage.mjs`、`ui_shift.mjs`、`ux_regression_19_23.mjs` | T1文件（尤其Makefile/api/schema/harness）、已冻结v4设计、根编排状态 |
 | T3 anode | `internal/protocol/**`（接收 T1 已冻结代码后唯一作者）；新增 `cmd/anode/**`、`Dockerfile.anode`、`scripts/install-anode.sh`、`docs/anode-install.md`；自己的 `teams/anode/` 进度/接口 | store/artifact/ws/route/server/api/Makefile/其它scripts、T2文件、冻结v4设计、父状态；不得写T1旧worktree |
 | 父会话 | 根编排契约/状态、集成决策、仅必要跨团队缝隙、最终合并及验收 | 不在团队写入中抢改其文件 |

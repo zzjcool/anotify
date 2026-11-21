@@ -57,7 +57,7 @@ common:
     failed: Undo failed
     hint: Undo within 5s
     action: Undo
-  resource_version_required: 'missing resourceVersion; refresh and try again'
+  resource_version_required: 'Page is out of date; refresh and try again'
   brand:
     name: Anotify
     tagline: Get notified when your agents finish
@@ -274,7 +274,7 @@ index:
     title: Event stream
     subtitle: Latest events · click to open the trace
     open: All events →
-    refresh: Refresh →
+    refresh: 'Refresh'
     count: 'Latest {n}'
     loading: Loading events…
     empty: 'No events yet. Once a webhook or cron source is wired up, the stream shows here.'
@@ -344,7 +344,7 @@ message:
     failed: Failed
     canceled: Canceled
     abandoned: Abandoned
-    lease_expired: Lease expired
+    lease_expired: 'Execution grant expired'
   node:
     central: Executed by hub
   chain:
@@ -354,8 +354,6 @@ message:
   v4:
     diagnostics: "Execution diagnostics"
     attempt: "Attempt / maximum"
-    wait_hint: "Waiting does not consume execution attempts. Non-idempotent tasks do not retry automatically; an unknown acceptance is not safe rerun evidence."
-    lease_hint: "A lease bounds execution authorization, not exactly-once business effects. Old attempts and expired leases cannot submit further results."
     cancel: "Cancel task"
     abandon: "Abandon task"
     confirm_cancel: "Cancel this task? Execution authorization will be revoked and the current execution stopped."
@@ -363,12 +361,10 @@ message:
     params: "Task input parameters"
     env: "Environment diagnostics (names and sources only)"
     env_hint: "Only variable names and sources used by this task; no host values or full passthrough allowlist."
-    env_empty: "No retained environment diagnostics."
     result: "Result summary / error / artifacts"
     error_message: 'Message'
     error_reason: 'Reason'
     attempts: "Retained execution attempt facts"
-    attempts_empty: "No retained execution attempt facts."
     logs: "Task logs"
     current: "Latest archived logs"
     previous: "Previous execution attempt"
@@ -376,7 +372,6 @@ message:
     complete: "Not truncated"
     logs_empty: "No lines for this attempt (or no previous attempt)."
     emissions: "Accepted emit facts"
-    emissions_empty: "No retained emit facts."
     missing: "URL is missing task id."
     not_found: "Task not found, cleaned up, or outside this namespace."
     artifact_download: "Download managed artifact"
@@ -500,9 +495,8 @@ login:
     signup_success_short: Account created — entering workspace…
     need_username_short: Please pick a username first.
 receivers:
-  back_home: "Back to dashboard"
+  back_home: 'Back to overview'
   docs_link: "Integration docs"
-  unavailable_next: "Once released, your receiving devices and delivery rate will appear here."
   unavailable: 'Push notifications are not available yet. Your receiving devices will show up here once released.'
   title: Receivers
   channel:
@@ -759,17 +753,6 @@ security:
     nudge_action: Add Passkey on this device
     nudge_dismiss: Got it
   concept:
-    title: Two independent axes
-    auth_label: Auth axis
-    auth_axis: who you are (this page)
-    auth_p1: '· Login methods: Passkey or password — always keep at least one'
-    auth_p2: '· Login sessions: multi-device, individually revocable'
-    auth_p3: '· Recovery codes: fallback when all devices are lost'
-    delivery_label: Delivery axis
-    delivery_axis: where notifications go
-    delivery_p1: · Managed on the Receivers page, separate from this page
-    delivery_p2: · Browser push subscriptions + WebSocket connections
-    delivery_p3: · Still received after logout, until unsubscribed
   unnamed_passkey: Unnamed Passkey
   unknown_device: Unknown device
   credential: Credential
@@ -832,9 +815,9 @@ docs:
   design:
     title: "Behavior and limits: where things are easy to misread"
     lede: "These are the product behaviors most often misread; use them to check when something looks wrong."
-    sources: "Sources produce events; target capabilities receive params. The downstream graph on a source page mirrors the references in spec.targets — it is not proof of execution success: check the event stream for ingestion and the task detail for execution. A deliveryId is de-duplicated for 30 days by default; the same id only means \"already received\"."
+    sources: 'Sources produce events; target capabilities receive params. The downstream graph on a source page mirrors references — it is not proof of execution success: check the event stream for ingestion and the task detail for execution. A deliveryId is de-duplicated for 30 days by default; the same id only means "already received".'
     playbooks: "playbook.yaml is the only root manifest, and every capability/source file it references must be inside the package. The playbooks page only stores that package: installing is a separate POST …/install and deploying is a capability POST …/deploy."
-    nodes: "Node configuration is edited per node. The batch API is atomic per node and permits partial success. Retention is in seconds and 0 means forever; defaults are 604800 s for logs/artifacts and 2592000 s for events and terminal tasks, active tasks and reference protection still apply, and a user workDir is never deleted. Config revision and applied revision show the server's current values; when unreadable they show unknown rather than an assumed default."
+    nodes: 'Node configuration is edited per node. The batch API is atomic per node and permits partial success. Retention is in seconds and 0 means forever; defaults are 604800 s for logs/artifacts and 2592000 s for events and terminal tasks, active tasks and reference protection still apply, and a user workDir is never deleted. Config revision and the revision in effect on the node show the server''s current values; when unreadable they show unknown rather than an assumed default.'
   endpoints:
     title: All endpoints
   openapi:
@@ -861,6 +844,10 @@ docs:
       ingress: "Ingress"
       traces: "Traces"
       system: "System configuration"
+      source-actions: 'Source actions'
+      hooks: 'Hooks'
+      aggregates: 'Aggregates'
+      console: 'Console'
 
   events:
     core: Core
@@ -872,7 +859,7 @@ docs:
       source: Event source. It doubles as the origin capability name (github, cron, http).
       type: Event type, a name meaningful to that source (e.g. pull_request.opened).
       payload: Event payload, passed through verbatim as the downstream task params.
-      idem: Idempotency key. The same source + idemKey produces one event only.
+      idem: 'De-duplication key. The same source + idemKey produces one event only.'
       trace: Explicit trace id. A new trace is created when omitted.
     note: A 200 is returned as soon as the event is stored. Dispatch failures still return 200 — events are never lost because a downstream step failed; you can replay later.
     curl:
@@ -908,7 +895,7 @@ docs:
     base_url: Base URL
     base_url_desc: Your domain when self-hosting, or a Tunnel domain
     version: API version
-    version_desc: All dynamic endpoints are version-prefixed; static assets go to /static/*
+    version_desc: 'All dynamic endpoints are version-prefixed; static assets are served from the root path with a content fingerprint (e.g. /ui.<hash>.css).'
     map:
       title: Endpoint map
       notify: Agent reports a notification (core)
@@ -1015,17 +1002,17 @@ docs:
       title: Reconnect and resume
       desc: On reconnect, send the <code class="doc-code">Last-Event-Id</code> header (or a <code class="doc-code">resume</code> first frame). The server replays unacknowledged notifications from the last 24h (replay window), then enters the live stream. Beyond the retention window it returns a <code class="doc-code">resume_expired</code> error; the client should fetch full history.
   v4:
-    five_specs: "Endpoints come from five specs: resource / events / agent / ingress / auth."
+    five_specs: 'Endpoint list: grouped by resource, with method and path.'
     missing: "Endpoint list unavailable"
     ingress: "Namespaced event ingress (not resource creation)"
     node: "anode: local execution & configuration"
     node_note: "Register a Node, then issue a long-lived identity token. Declared namespaces intersect central authorization; install never auto-registers."
-    resource: "Namespaced resources & write CAS"
-    resource_note: "Read KindList.items. Create with apiVersion/kind/metadata/spec. Edits send writable fields plus metadata.resourceVersion; missing is 400, stale is 409 with draft retained. DELETE uses query resourceVersion."
+    resource: 'Namespaced resources (save-conflict protection)'
+    resource_note: 'Read the resource list; create with apiVersion, kind, metadata and the definition fields. Edits send only writable fields plus the version token: a missing token returns 400, a stale one returns 409 and keeps the draft; DELETE uses the version token in the query.'
 
 cliauth:
   title: CLI Device Authorization
-  back_home: Back to dashboard
+  back_home: 'Back to overview'
   entry:
     heading: Enter authorization code
     sub: After running the login script in your terminal, enter the 8-character code shown there to authorize it.
@@ -1176,7 +1163,7 @@ admin:
     group_retention: "Retention (editable)"
     group_retention_note: "All three values are in seconds; 0 means keep forever. A save takes effect for the next cleanup run."
     group_yaml: "System YAML (read-only)"
-    group_yaml_note: "Normalized document rebuilt from the current facts. Read-only: the only write path for retention is the CAS save action below; there is no second route."
+    group_yaml_note: 'Normalized document rebuilt from the current facts. Read-only.'
     group_danger: "Dangerous actions"
     group_danger_note: "Saving retention really changes data lifetime: events / tasks / artifacts beyond the new window are cleaned up and cannot be restored; 0 keeps them forever (the disk only grows). Check the window and the impact before saving."
     yaml_view: "Current document"
@@ -1305,7 +1292,6 @@ events:
     namespace: "Namespace"
     source: "Involved object / source"
     limit: "Page size"
-    filter: "Apply filters"
     filters: "Filters"
     filters_active: "{n} active"
     loading: "Loading data…"
@@ -1360,22 +1346,21 @@ caps:
     Implemented: 'Implemented'
     NodesAvailable: 'Nodes available'
     none: 'The server returned no conditions'
-    title: 'Four conditions (derived on read)'
+    title: 'Can it run'
   conflict:
-    body: 'The server''s current resourceVersion is {rv}; your local input is still here. Reloading the latest discards local changes.'
+    body: 'The server''s current version token is {rv}; your local input is still here. Reloading the latest discards local changes.'
     reload: 'Reload latest (discard local changes)'
     reloaded: 'Loaded the latest version'
     title: 'This resource changed elsewhere (409 resource_version_conflict)'
   delete:
     body: 'Delete "{name}"? Only this capability is removed and nothing is cascaded: other capabilities or sources that reference it will fail to resolve (reported by status).'
-    conflict: 'This capability was just changed elsewhere (409). Reloaded the latest resourceVersion {rv}; confirm and click delete again. No automatic retry.'
+    conflict: 'This capability was just changed elsewhere (409). Reloaded the latest version token {rv}; confirm and click delete again. No automatic retry.'
     deleting: 'Deleting…'
-    rv: 'Current resourceVersion: {rv}'
+    rv: 'Current version token: {rv}'
     submit: 'Delete'
     title: 'Delete capability'
   deploy:
     col: 'Deployment'
-    hint: 'Saving or installing a package never deploys; deployment only happens with this button.'
     nodes: 'Target nodes'
     nodes_hint: 'No selection = the server picks candidates with the current policy.'
     nodes_empty: 'No deployable nodes (no node is authorized for this namespace).'
@@ -1397,12 +1382,12 @@ caps:
     gone_hint: 'Use the undo bar at the bottom to restore it, or go back to the list to look at the others.'
     hide: 'Hide'
     loading: 'Loading the capability…'
+    more: 'More actions'
     no_name: 'Missing capability name (the URL needs ?name=…)'
     no_name_hint: 'Open a capability from the list, or add ?namespace=<ns>&name=<name> to the URL.'
     outputs: 'Outputs (what it can emit)'
-    page_sub: 'Identity, health, definition and script; edit, deploy and delete live on this page'
     page_title: 'Capability details'
-    rv: 'resourceVersion'
+    rv: 'Version token'
     script: 'Script (run.files)'
     script_empty: 'This capability has no script files'
     script_entry: 'Entrypoint'
@@ -1425,7 +1410,7 @@ caps:
     batch_created: 'Created {caps} capabilities · {m} downstream'
     cancel: 'Cancel'
     concurrency: 'Concurrency per node'
-    concurrency_hint: 'spec.concurrency.maxPerNode, default 1.'
+    concurrency_hint: 'Default 1: how many tasks run at once on one node.'
     create_title: 'New capability'
     current_version: 'Current version: v{v}'
     display_name: 'Display name'
@@ -1467,8 +1452,8 @@ caps:
     file_path: 'Relative path, e.g. run.sh'
     files: 'Files'
     files_hint: 'The entrypoint must start with a #! shebang; every file is part of the capability.'
-    idempotent: 'Allow automatic retries (idempotent)'
-    idempotent_hint: 'Enable only when clearly idempotent; otherwise a failure is terminal.'
+    idempotent: 'Allow automatic retries (repeatable)'
+    idempotent_hint: 'Turn it on only when the run is clearly repeatable; otherwise a failure is final.'
     lifecycle: 'Lifecycle'
     max_attempts: 'Max attempts'
     name: 'Capability name'
@@ -1519,22 +1504,20 @@ caps:
     next: 'Downstream'
     nodes: 'Nodes {total} (current {deployed} · old {stale} · not deployed {missing})'
   nodes:
-    deployed: 'current digest'
+    deployed: 'Synced'
     held_empty: 'No node holds this capability yet (click Deploy)'
     missing: 'not deployed'
-    stale: 'old digest'
+    stale: 'Out of date'
     title: 'State on nodes'
   observed:
     emits: 'Emits'
-    emits_empty: 'This run emitted nothing'
     empty: 'No retained history (observed is empty after cleanup; no timestamps are invented)'
     fields: 'Fields: {f}'
     no_fields: 'No fields'
     pruned: 'Pruned'
-    pruned_empty: 'This run pruned nothing'
     task: 'Latest task'
-    tasks: 'Tasks total'
-    tasks_failed: 'Failed'
+    tasks: 'Tasks in last 24h'
+    tasks_failed: 'Failed in last 24h'
     title: 'Trace of the latest run (observed)'
     truncated: 'Only the latest {n} are listed; earlier ones are not shown'
     unavailable: 'This capability has no run history yet (it appears after the first run)'
@@ -1554,14 +1537,14 @@ caps:
     entrypoint: 'Entrypoint'
     env: 'Environment (env)'
     files: 'Files'
-    idempotent: 'Idempotent'
+    idempotent: 'Repeatable'
     installed_from: 'Installed from'
     max_attempts: 'Max attempts'
     next: 'Downstream (next)'
     params: 'Params contract (JSON Schema)'
     result_ttl: 'Result retention (s)'
     timeout: 'Run timeout (s)'
-    title: 'Definition (spec)'
+    title: 'Definition'
     valuefrom: 'from'
     values: 'Values'
     version: 'Version'
@@ -1577,15 +1560,15 @@ caps:
     hint: 'A test run really creates and dispatches a task (it is not a preview): the event is marked origin=test and excluded from statistics.'
     version: 'Version'
     version_hint: 'Defaults to the current live version; an explicit version must already exist.'
-    params: 'Params (rendered from spec.params)'
+    params: 'Params (rendered from the definition)'
     params_json: 'Fill in params JSON directly'
     params_json_hint: 'A full params object here overrides the form above; leave it empty to use the form values.'
     params_degraded: 'This params contract (oneOf / allOf / $ref …) cannot be rendered as a form — fill in JSON directly.'
     params_empty: 'This capability takes no params.'
     params_invalid: 'params must be a JSON object'
     nodes: 'Limit to nodes'
-    nodes_hint: 'Empty = every online node holding the required digest; candidates come from the deploy candidates.'
-    nodes_none: 'No deploy candidate nodes (leave empty and the server picks by digest).'
+    nodes_hint: 'Empty = every online node holding this version; candidates come from the deploy candidates.'
+    nodes_none: 'No deploy candidate nodes (leave empty and the server picks).'
     submit: 'Test run'
     submitting: 'Submitting…'
     trace: 'traceId: '
@@ -1613,7 +1596,7 @@ caps:
   yaml:
     open: 'Create from YAML'
     title: 'Create capability from YAML'
-    hint: 'Paste a Capability document (apiVersion/kind/metadata/spec). status and metadata.resourceVersion are managed by the server — do not write them.'
+    hint: 'Paste a capability document; the server manages status and the version token — do not write them.'
     submit: 'Create'
     cancel: 'Cancel'
     created: 'Capability created from YAML'
@@ -1741,18 +1724,19 @@ nodes:
     name: "Cluster-unique name"
     create: "Create, then issue identity token"
     cancel: "Close and clear plaintext"
-    refresh: "Refresh facts"
+    refresh: 'Refresh'
     loading: "Loading…"
     empty: "No cluster Nodes. Register, issue a token, then install locally."
     token: "Node identity token"
     token_warning: "Plaintext is returned only this time. This is a long-lived identity, not one-use bootstrap; no expiresAt. Explicit rotation invalidates old tokens and sessions. Keep it out of URLs, logs and vars."
     rotate: "Rotate identity token"
+    more: 'More actions'
     rotate_confirm: "Rotate identity for {name}? The old token immediately becomes invalid, including new authorization on old sessions. Update local configuration."
     bootstrap_title: "One-command install (run it on the node host)"
     bootstrap_hint: "This command downloads and verifies the node binary, preflights the identity against the hub, writes the config and the service unit, then starts the service. When it needs privileges the script asks for your password itself — do not prefix the command with sudo. The plaintext token is shown in this panel only and cannot be retrieved once you close it."
     copy_bootstrap: "Copy install command"
     local_setup: "Local setup & three public commands"
-    setup_hint: "Save anode.yaml before install or serve. Installation uses an issued token; it never auto-registers. vars are not secrets. envPassthrough names stay local; PATH, HOME and ANOTIFY_ are forbidden. No full whitelist or values are uploaded. ANOTIFY_ARTIFACT_DIR is node-provided; diagnostics expose names/sources, not absolute export paths."
+    setup_hint: 'Save anode.yaml before running install or serve; installation uses an issued token and never registers on its own. ANOTIFY_ARTIFACT_DIR is node-provided; diagnostics show names/sources, not absolute export paths.'
     copy_emit: "Copy emit command"
     emit_hint: "This line uses “{cap}”, a capability that already exists on this instance. emit runs inside a task on the node (the task token is supplied for you) — don’t run it in your own shell."
     emit_none: "This instance has no capability yet — create one first, then this command becomes runnable."
@@ -1765,25 +1749,26 @@ nodes:
     slots: "Physical slot facts"
     slot_note: "Only busy=false on a valid slot means idle; slot 0 is valid. A terminal Task is not evidence of physical reaping. Missing busy/instances never implies idle."
     effective_namespaces: "Effective namespaces (declared ∩ allowed)"
-    authorized: "Allowed namespaces"
+    authorized: 'Namespaces the hub authorizes'
+    authorized_note: 'Only the namespaces this node declares take effect.'
     none: "None"
     config: "Node defaults"
     vars: "vars (nonsecret JSON name → string)"
     limits: "limits (local + node only)"
-    save: "Save with current CAS"
+    save: 'Save'
     reload: "Reload latest explicitly"
     reload_confirm: "Reload replaces your current draft. Continue?"
     saved: "Saved. Node defaults wait for node apply; namespace values affect the next task only."
-    stale: "409: Stale CAS; draft retained exactly. Reload explicitly before retrying; no automatic overwrite."
+    stale: 'Changed elsewhere since you loaded it; your draft is kept intact. Refresh, then try again — nothing is overwritten automatically.'
     error: "Request failed"
     loaded: "Current configuration loaded."
-    pending: "ConfigPending: node defaults not yet applied"
-    applied: "Node revisions match (not the namespace input revision)"
-    revision: "Configuration & applied facts"
+    pending: 'Pending config: node defaults not in effect yet'
+    applied: 'Node config matches the hub'
+    revision: 'Configuration and version facts'
     override_stale: "overrideStale: lower default changed; local override still wins"
-    context: "Namespace context for effective values"
-    effective_vars: "Effective vars (local > node > namespace, per-key source)"
-    machine_vars: "Node-applied vars (excludes namespace defaults)"
+    context: 'Namespace context of the effective values'
+    effective_vars: 'Effective vars (local override > node default, source per key)'
+    machine_vars: 'vars in effect on this node (namespace defaults excluded)'
     vars_table_title: "Variables at a glance (value / source / who needs it)"
     vars_table_hint: "Values resolve per key as local > node > namespace, and the source comes from the server. A name a capability requires but nothing provides is highlighted - that is the value a task would fail to resolve."
     vars_col_name: "Name"
@@ -1828,7 +1813,7 @@ nodes:
     key: "Name / leaf field"
     value: "Value"
     ns_config: "Namespace vars configuration (no limits)"
-    ns_hint: "Resolved for the next task in this namespace; never written to node applied."
+    ns_hint: 'Only affects that namespace''s next task; it is not written into the node''s defaults.'
     retention: "System retention (administrator)"
     retention_hint: "Seconds; 0 means keep forever."
     admin_only: "Only administrators may read or edit system retention."
@@ -1838,26 +1823,27 @@ nodes:
     upgrade_confirm: "Request upgrade of {name}? It may replace and restart the node binary. Only actual hub/node results are shown."
     action_done: "Hub accepted action: "
     not_found: "Node not found; return to the cluster list."
+    load_failed: 'Couldn''t load this node. Retry, or go back to the node list.'
     back: "Back to Nodes"
-    tasks: "Recent tasks in this namespace"
+    tasks: 'Recent tasks in the current namespace'
+    tasks_all: 'Show all {n}'
     artifacts: "Reported capability deployments"
     batch_hint: "Edit configurations individually. The batch API is atomic per node and permits partial success."
 
-    node_subtitle: "Node dimension: identity & connection · authorized namespaces · config (YAML) · physical slots"
+    node_subtitle: 'This node: connection state, running capabilities and config'
     yaml_title: "Node YAML (apiVersion anotify/v1 · kind Node)"
-    yaml_hint: "The canonical document rebuilt by the server from current facts: only the spec field set, no status and no machine-private fields (token / server / listen / envPassthrough never reach the hub). Paste the whole document back to save; form edits sync into the same text."
     yaml_view: "Current document"
-    yaml_edit: "Edit YAML"
-    yaml_edit_hint: "Strict parsing: unknown fields, wrong types and a missing resourceVersion are rejected with line numbers and field paths"
-    yaml_input: "Full YAML"
-    yaml_save: "Save this YAML"
-    yaml_reset: "Rewrite from the current form"
-    yaml_saved: "Saved: the YAML was applied and the document renormalized."
-    yaml_invalid: "The document did not validate: fix the line numbers and field paths below, then save again."
-    yaml_dirty: "Draft changed; the server normalizes it on save."
-    yaml_reset_done: "Rewritten from the current form (not saved yet)."
+    yaml_edit: 'Edit YAML'
+    yaml_edit_hint: 'Checked as a whole on save: problems come back with line numbers and field names'
+    yaml_input: 'Full YAML'
+    yaml_save: 'Save this YAML'
+    yaml_reset: 'Rewrite from current config'
+    yaml_saved: 'Saved: the document is updated and the node runs the new config once it picks it up.'
+    yaml_invalid: 'The document did not validate: fix the line numbers and field names below, then save again.'
+    yaml_dirty: 'Draft changed; the server normalizes it on save.'
+    yaml_reset_done: 'Rewritten from the current config (not saved yet).'
+    yaml_unparsable: 'The form cannot read this document as written: edit it in the text box instead (the server validates on save).'
     authorized_title: "Authorized namespaces (who may use this node)"
-    authorized_hint: "This is the authorization list, not a copy: effective = authorized ∩ declared by the machine, and it can only be tightened."
     effective_title: "Effective namespaces (read-only)"
     effective_hint: "Declared by the node ∩ authorized by the hub. To revoke everything, empty the authorization list."
     open_namespace: "Open a namespace page"
@@ -1869,7 +1855,7 @@ sources:
     close: "Close"
     save: "Save"
     save_failed: "Save failed"
-    reload: "Reload latest resource"
+    reload: 'Refresh'
     detail: "Source details"
     back: "Back to sources"
     intro: "Sources produce events; target capabilities receive params."
@@ -1877,7 +1863,7 @@ sources:
     empty: "No sources yet. An entry without targets is legal."
     name: "Resource name · metadata.name"
     display: "Display name (optional)"
-    kind: "Source kind · spec.kind"
+    kind: 'Source kind'
     immutable: "Name and kind are immutable after creation; delete and recreate to change them."
     expr: "Cron expression (five fields)"
     tz: "IANA timezone (default Local)"
@@ -1894,7 +1880,7 @@ sources:
     remove_target: "Remove target row"
     capability: "Capability reference (name or name@version)"
     params: "Params object · targets[].params"
-    params_hint: "Use constants, $(payload.x), $(payload.items.0.x), or concatenation. Whole references preserve types; missing paths prune. Defaults belong to capability schemas. Empty targets are legal."
+    params_hint: 'Supports constants, $(payload.x), $(payload.items.0.x) and string concatenation. Whole-value references keep their type; missing paths are pruned. Defaults belong to the capability; targets may be empty.'
     enabled: "Enabled"
     disabled: "Disabled"
     enable: "Enable"
@@ -1919,20 +1905,20 @@ sources:
     more: "More actions"
     saved_dry_hint: "Preview only — no event written; “Fire now” writes an event and dispatches"
     yaml: "Raw YAML"
-    yaml_hint: "Rebuilt from the stored definition; credentials are write-only, so only hookUrl / secretSet appear"
+    yaml_hint: 'Rebuilt from the stored definition; credentials are write-only; includes the sanitized config'
     yaml_loading: "Generating YAML…"
     yaml_error: "Could not load the raw YAML"
     yaml_create:
       open: "Create from YAML"
       title: "Create source from YAML"
-      hint: "Paste a Source document. `spec.config.token` / `secret` are write-only; only hookUrl is shown after save."
+      hint: 'Paste a Source document. <code>spec.config.token</code> / <code>secret</code> are write-only; only hookUrl is shown after save.'
       submit: "Create"
       cancel: "Cancel"
       created: "Source created from YAML"
       empty: "Paste a YAML document first"
     draft_dry: "Draft preview (no save needed)"
     namespace: "Namespace"
-    rv: "resourceVersion (CAS token)"
+    rv: 'Version token'
     health: "Health"
     resolved: "targetsResolved (boolean)"
     last_fire: "Last fired"
@@ -1955,7 +1941,7 @@ sources:
     delete_confirm: "Delete source “{name}”? Existing events and tasks are retained."
     confirm_again: "Reloaded. Check the latest state; deleting requires another confirmation."
     reload_draft: "Discard draft and reload latest"
-    draft_preserved: "CAS conflict: draft preserved; no automatic retry with a new token. Explicitly reload the latest resource."
+    draft_preserved: 'Version conflict: draft preserved; no automatic retry with a new token. Reload the latest resource explicitly.'
     reload_confirm: "Discard current input and reload from the server?"
   empty_title: No sources yet
   detail: "Details"
@@ -2034,7 +2020,7 @@ sources:
     result_schema: "Event payload contract (resultSchema, optional)"
     result_schema_hint: "Optional. With a JSON Schema here (e.g. {\"type\":\"object\",\"required\":[\"action\"]}) every delivery is checked before dispatch: non-conforming events are still stored but not dispatched, and an event_schema prune shows up in the trace. Empty = no check."
     bad_schema: "payload contract is not valid JSON: {e}"
-    schema_not_object: "payload contract must be a JSON object (arrays/scalars are not a schema)"
+    schema_not_object: 'payload contract must be a JSON object (arrays/scalars are not objects)'
     no_caps: 'No usable capabilities yet. Create some on the “Capabilities” page first.'
     no_params: This capability takes no parameters
     bad_json: Parameter {k} is not valid JSON
@@ -2129,7 +2115,7 @@ trace:
   copy_failed: Copy failed
   triggered_by: Triggered by
   nolib: Renderer failed to load.
-  empty: 'No tasks under this trace. Usually means it was pruned at the first step (no matching target capability, params failed the schema, or no node declares the target capability).'
+  empty: 'No tasks under this trace. Usually means it was pruned at the first step (no matching target capability, params do not match the definition, or no node declares the target capability).'
   empty_title: No tasks
   emits:
     title: Output (emits)
@@ -2240,7 +2226,7 @@ pb:
   subtitle: 'Turn capabilities, downstream and sources into one playbook you can check and complete'
   detail_subtitle: 'Readiness: capabilities → downstream → nodes → sources'
   detail_title: Playbook detail
-  rescan: Re-check
+  rescan: 'Refresh'
   rescanned: Re-checked
   back: Back to playbooks
   install: Complete
@@ -2323,12 +2309,12 @@ pb:
     upload_directory: "Choose self-contained package directory"
     upload_hint: "Use a directory for nested capabilities/ and sources/ paths, or paste the complete file-map JSON."
     file_map: "Complete file-map JSON (path → unrendered text)"
-    oci_hint: "The hub pulls once and stores the digest. Choose OCI OR files; private registry credentials stay on the hub."
+    oci_hint: 'The hub pulls once and stores the content fingerprint. Choose OCI OR files; private registry credentials stay on the hub.'
     store: "Store package"
     saving: "Saving…"
     open: "Open package"
     stored: "Template stored; no resources have been installed."
-    slug_taken: "Slug exists: open details and use PUT to replace the template (your input is retained)."
+    slug_taken: 'Slug exists: open details and save the whole template to replace it (your input is retained).'
     namespace: "Namespace"
     loading: "Loading…"
     load_failed: "Load failed"
@@ -2337,10 +2323,9 @@ pb:
     unapplied_count: "{n} unapplied differences"
     last_install: "Last install receipt"
     duplicate_files: "Duplicate paths; choose a directory that preserves relative paths."
-    detail_hint: "Additive only: install does not edit existing routes/sources or delete resources. Deploy to nodes manually."
+    detail_hint: 'Install only adds; it never overwrites existing capabilities or sources.'
     checkup: "Checkup: conditions / items"
     values: "Install values"
-    values_hint: "Fields come from playbook.yaml JSON Schema. The server fills recursive defaults; writeOnly values are only entered for this request."
     values_json: "Complete values JSON input"
     values_json_hint: "Sends the same values object as the form (not a second protocol); used only after selecting Apply."
     use_json: "Apply JSON values"
@@ -2351,7 +2336,6 @@ pb:
     instances: "Installs grouped by valuesDigest"
     instances_hint: "Read-only derived view: attempts counts tries. Provenance records the first creation receipt, not ownership."
     template: "Edit / export the original package"
-    template_hint: "Raw text comes from GET includeBody=true spec.files. CAS-protected PUT replaces the entire template without installing."
     file_path: "Relative package path"
     raw_content: "Unrendered original content"
     new_path: "New file relative path"
@@ -2359,16 +2343,17 @@ pb:
     remove_file: "Remove file from template"
     export: "Export complete raw file map"
     import_map: "Import complete file-map JSON (draft only)"
-    save_template: "Save whole template"
+    save_template: 'Save template'
     reload_template: "Reload template (discard draft)"
     delete_manifest: "Delete manifest only"
-    delete_hint: "Not an uninstall: capabilities, sources and receipts remain. Deletion requires current resourceVersion and confirmation."
+    delete_section: 'Delete this playbook'
+    delete_hint: 'Not an uninstall: capabilities, sources and receipts remain. Deletion requires the current version token and confirmation.'
     unapplied: "Unapplied differences — NOT ready"
     unapplied_hint: "Existing definitions are reused, not edited. Compare declared vs actual next / targets.params, then edit manually."
     declared: "Declared by package"
     actual: "Actual stored value"
-    omitted: "Omitted (schema default)"
-    schema_loaded: "Values schema loaded from the raw root manifest."
+    omitted: 'Omitted (default)'
+    schema_loaded: 'Values definition loaded from the raw root manifest.'
     dry_receipt: "Dry-run receipt (not persisted)"
     receipt: "Single install receipt"
     created: "Created"
@@ -2389,7 +2374,7 @@ pb:
     group_count: "{n} valuesDigest groups"
     single_receipt: "Read full single receipt"
     no_installs: "No normal installs (dry-runs are not recorded)."
-    raw_missing: "Raw spec.files / playbook.yaml missing; a summary cannot be saved as a template."
+    raw_missing: 'Raw <code>spec.files</code> / <code>playbook.yaml</code> missing; a summary cannot be saved as a template.'
     missing_id: "Missing package slug."
     invalid_path: "Invalid or duplicate file path; use a relative package path."
     entry_required: "playbook.yaml is the required entry and cannot be removed."
@@ -2398,12 +2383,12 @@ pb:
     template_saved: "Whole template saved; existing resources unchanged and no install triggered."
     draft_kept: "400 / 409: draft retained exactly. Inspect the error or explicitly reload; no automatic overwrite retry."
     reload_confirm: "Reloading discards unsaved files and values input. Continue?"
-    reloaded: "Latest raw package and CAS token loaded."
+    reloaded: 'Latest raw package and version token loaded.'
     values_object: "values must be a JSON object."
     json_selected: "The next action uses this complete values JSON."
     delete_confirm: "Delete only the manifest? Capabilities, sources, receipts and provenance remain. This is not an uninstall."
     deleted: "Manifest deleted; retained contents below."
-    delete_stale: "Stale CAS. Re-check for the current version; a second delete still requires confirmation."
+    delete_stale: 'Version is stale. Refresh to get the current version; a second delete still requires confirmation.'
 
 node:
   artifacts:
@@ -2466,7 +2451,6 @@ uxaudit:
     common:
       cancel: 'Cancel'
     nodes:
-      note_summary: 'Slot semantics and batch-write rules'
       unknown: '— (unknown)'
       ns_label: 'Authorized namespaces'
       config_rev: 'Config revision'
@@ -2488,7 +2472,7 @@ uxaudit:
       ns_label: 'Authorized namespaces'
       apply_state: 'Apply state'
       pending_short: 'pending'
-      applied_short: 'applied'
+      applied_short: 'in effect'
       config_rev: 'Config revision'
       applied_rev: 'Applied revision'
       applied_hash: 'Applied hash'
@@ -2503,7 +2487,7 @@ uxaudit:
       group_basic_hint: 'Name and kind cannot change after creation'
       group_credentials: 'Ingest credentials'
       group_payload: 'Payload'
-      group_payload_hint: 'Static payload / payload schema'
+      group_payload_hint: 'Static payload / value contract'
       group_targets: 'Targets'
       group_targets_hint: 'An empty target list is valid'
       group_other: 'Other'
@@ -2519,12 +2503,6 @@ uxaudit:
       role_admin: 'Super admin'
       role_member: 'Member'
       active_sessions: '{n} active sessions'
-      scope_note: 'Scope: all namespaces (does not follow the top-bar namespace)'
-      notes_title: 'What this console can do'
-      notes_sub: 'These are system-level actions: changes take effect immediately and are recorded in the event stream.'
-      note_role: 'Two roles only: super admins manage users and sessions; members use workspace resources.'
-      note_disable: 'Disabling an account takes effect immediately: its next request is rejected (401).'
-      note_session: 'Sessions can be revoked individually; only that device is signed out.'
   security:
     passkey_empty_title: 'No Passkeys yet'
     session_empty_title: 'No active sessions'
@@ -2578,7 +2556,7 @@ uxaudit:
     copy: 'Copy'
     raw: 'View raw JSON'
     event_id: 'Event ID'
-    drift: 'Config not applied yet: config {config}, node applied {applied}'
+    drift: 'Config out of sync: config revision {config}, node currently at {rev}'
     drift_short: 'Awaiting node apply'
     field: 'Field'
     type: 'Type'
@@ -2591,7 +2569,7 @@ uxaudit:
     total: 'Total'
     per_cap: 'Per capability'
     edit_raw: 'Edit raw JSON'
-    edit_raw_hint: 'saved with the current CAS token'
+    edit_raw_hint: 'saved with the current version token'
 
 paging:
   search_ph: 'Search name / display name'
@@ -2611,13 +2589,10 @@ source_detail:
   resolved_no: 'targets unresolved'
   created: 'Created'
   updated: 'Updated'
-  updated_hint: 'There is no separate updated timestamp: every write is reflected by an incrementing resourceVersion.'
   hook_url: 'Hook URL'
   secret_set_yes: 'HMAC secret is set (write-only)'
   secret_set_no: 'No HMAC secret'
   schema_none: 'The payload contract declares no fields'
-  config_json: 'View raw JSON'
-  config_json_hint: 'read projection already masked'
   params_none: 'No params configured'
   recent: 'Recent receipts'
   recent_hint: 'Last 20 events (filtered by source); accepted does not mean the task succeeded.'
@@ -2638,8 +2613,6 @@ namespaces:
     col_sources: "Sources"
     col_tasks: "Tasks"
     col_created: "Created"
-    note_summary: "What a namespace can configure"
-    note_body: "At namespace level there are only default vars (namespace_configs) and the config revision; the schema has no namespace quota — limits exist only on the machine + node layers, and node authorization decides which namespaces may use a machine."
 namespace:
   v4:
     title: "Namespace"
@@ -2647,8 +2620,6 @@ namespace:
     back: "Back to namespaces"
     scope: "Current namespace"
     scope_label: "Namespace"
-    scope_hint: "Switching updates the name parameter in the URL (bookmarkable/shareable), and the same CAS rules guarantee A's draft is never written into B."
-    vars_hint: "Only affects the next task resolved in this namespace; never written into a node's applied snapshot."
     counts: "Counts (derived)"
     count_capabilities: "Capabilities"
     count_nodes: "Nodes"
@@ -2656,20 +2627,20 @@ namespace:
     count_tasks: "Tasks"
     effective: "Effective vars on one node"
     node: "Node"
-    effective_hint: "Resolved key by key as local > node > namespace; sources come from the server, the page does not guess."
+    effective_hint: 'Local > node > namespace, resolved one variable at a time; the server reports where each value comes from.'
     col_node: "Node"
     col_status: "Status"
     node_online: "Online"
     node_offline: "Offline"
     node_draining: "Draining"
     node_online_draining: "Online (draining)"
-    effective_source_hint: "Sources are resolved by the server: local (machine snapshot) > node (node defaults) > namespace (the defaults configured here). vars has no capability level - perCapability exists only under limits."
+    effective_source_hint: 'The server labels where each value comes from: local snapshot > node default > namespace default. These defaults have no per-capability layer; that layer exists only in the node''s limits.'
     vars_table_title: "Namespace variables (this table writes namespace defaults)"
     vars_table_hint: "Values and sources are resolved for the selected node; edits here change the namespace defaults and are serialized into the same YAML document (the only write path)."
     vars_raw_title: "Raw JSON (advanced)"
     vars_raw_hint: "Saving here writes the same YAML document; the table is the structured entry for the same fact."
-    yaml_title: "Namespace YAML (document)"
-    yaml_hint: "Normalized document rebuilt from the current facts (apiVersion / kind / metadata / spec.vars). Edits in the table above are serialized into this document and saved through the single write path PUT /v1/namespaces/{name}/yaml (CAS = metadata.resourceVersion)."
+    yaml_title: "Namespace YAML (read-only)"
+    yaml_hint: 'A read-only document generated by the server from the current configuration.'
     yaml_view: "Current document"
     context_namespace: "Namespace context"
     links: "Other things in this namespace"

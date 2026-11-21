@@ -97,6 +97,56 @@ function onlyVarLine(lines, name) {
 	});
 }
 
+function yamlSection(text, key) {
+	const out = [];
+	let indent = -1;
+	for (const line of String(text || "").split("\n")) {
+		if (line.trim() === "") continue;
+		const lead = line.length - line.trimStart().length;
+		const head = line.trim();
+		if (indent < 0) {
+			if (head === key + ":" || head.startsWith(key + ": ")) {
+				indent = lead;
+				out.push(line);
+			}
+			continue;
+		}
+		if (lead <= indent) break; // 回到同级或更浅 = 本段结束
+		out.push(line);
+	}
+	return out.join("\n");
+}
+
+function yamlWithoutSection(text, key) {
+	const out = [];
+	let skip = -1;
+	for (const line of String(text || "").split("\n")) {
+		const lead = line.length - line.trimStart().length;
+		const head = line.trim();
+		if (skip >= 0) {
+			if (head === "" || lead > skip) continue;
+			skip = -1;
+		}
+		if (head === key + ":" || head.startsWith(key + ": ")) {
+			skip = lead;
+			continue;
+		}
+		out.push(line);
+	}
+	return out.join("\n");
+}
+
+function yamlWithoutLine(text, prefix) {
+	return String(text || "")
+		.split("\n")
+		.filter((line) => !line.trimStart().startsWith(prefix))
+		.join("\n");
+}
+
+function namespaceDocShell(text) {
+	return yamlWithoutLine(yamlWithoutSection(text, "spec"), "resourceVersion:");
+}
+
 /* 点保存并等**真的** PUT …/yaml 回执（不是等本地行状态变化 —— 那只证明点了按钮）。 */
 async function saveAndWait(page, saveSelector, pathSuffix) {
 	const [response] = await Promise.all([
@@ -131,10 +181,15 @@ async function main() {
 		body: {
 			apiVersion: V.API_VERSION, kind: "Node",
 			metadata: { name: NODE },
-			spec: { namespaces: [NS], vars: { SOURCE_ROOT: "/from-node", NODE_ONLY: "node-value" } },
+			spec: {
+				namespaces: [NS],
+				vars: { SOURCE_ROOT: "/from-node", NODE_ONLY: "node-value" },
+				limits: { total: 4, perCapability: { "*": 2 } },
+				tags: ["gpu", "prod"],
+			},
 		},
 	});
-	V.expectStatus("登记节点（带 spec.vars）", created, 201);
+	V.expectStatus("登记节点（带 spec.vars / limits / tags）", created, 201);
 
 	// 命名空间默认值：NS_ONLY 只有 ns 层有。走真实 API（页面写的是同一份事实）。
 	const nsCfg = await H.req(server.base, V.P.namespaceConfig(NS), { session: s.session });
@@ -242,6 +297,20 @@ async function main() {
 	const nodeYamlPath = V.P.node(NODE) + "/yaml";
 	const beforeNodeYAML = (await H.req(server.base, nodeYamlPath, { session: s.session })).json?.yaml || "";
 	H.check("节点 YAML 读面可用", beforeNodeYAML.includes("kind: Node"), beforeNodeYAML.slice(0, 120));
+	const nodeBefore = {
+		tags: yamlSection(beforeNodeYAML, "tags"),
+		limits: yamlSection(beforeNodeYAML, "limits"),
+		namespaces: yamlSection(beforeNodeYAML, "namespaces"),
+	};
+	H.check("造数：节点文档改前含 tags / limits / namespaces 三段",
+		!!nodeBefore.tags && !!nodeBefore.limits && !!nodeBefore.namespaces,
+		JSON.stringify(nodeBefore));
+	H.check('造数：limits 段是 total: 4 + perCapability 的 "*" 档',
+		/total: 4/.test(nodeBefore.limits) && /\*'?: 2/.test(nodeBefore.limits),
+		nodeBefore.limits);
+	H.check("造数：tags 段是 gpu / prod",
+		/- gpu/.test(nodeBefore.tags) && /- prod/.test(nodeBefore.tags),
+		nodeBefore.tags);
 	{
 		const ctx = await browser.newContext();
 		await H.mockExternalCdn(ctx);
@@ -266,6 +335,20 @@ async function main() {
 			return cell && cell.textContent.trim() === "node-value-v2";
 		}, null, { timeout: 10000 });
 		const afterNodeYAML = (await H.req(server.base, nodeYamlPath, { session: s.session })).json?.yaml || "";
+		const nodeAfter = {
+			tags: yamlSection(afterNodeYAML, "tags"),
+			limits: yamlSection(afterNodeYAML, "limits"),
+			namespaces: yamlSection(afterNodeYAML, "namespaces"),
+		};
+		H.check("保真：表格保存后 tags 段逐字不变（gpu / prod 都还在）",
+			nodeAfter.tags === nodeBefore.tags,
+			JSON.stringify({ before: nodeBefore.tags, after: nodeAfter.tags }));
+		H.check("保真：表格保存后 limits 段逐字不变（total: 4 与 perCapability 都在）",
+			nodeAfter.limits === nodeBefore.limits,
+			JSON.stringify({ before: nodeBefore.limits, after: nodeAfter.limits }));
+		H.check("保真：表格保存后授权 namespaces 段逐字不变",
+			nodeAfter.namespaces === nodeBefore.namespaces,
+			JSON.stringify({ before: nodeBefore.namespaces, after: nodeAfter.namespaces }));
 		const changeDiff = lineDiff(beforeNodeYAML, afterNodeYAML);
 		H.check("改一个 var：YAML 里只有该键 + resourceVersion 变化",
 			changeDiff.removed.length === 2 && changeDiff.added.length === 2,
@@ -305,6 +388,10 @@ async function main() {
 	console.log("--- 阶段 2：命名空间页表格保存 → PUT …/yaml ---");
 	const nsYamlPath = V.P.namespace(NS) + "/yaml";
 	const beforeNSYAML = (await H.req(server.base, nsYamlPath, { session: s.session })).json?.yaml || "";
+	const nsBeforeShell = namespaceDocShell(beforeNSYAML);
+	H.check("造数：命名空间文档壳含 apiVersion / kind / metadata.name",
+		nsBeforeShell.includes("apiVersion: anotify/v1") && nsBeforeShell.includes("kind: Namespace") && nsBeforeShell.includes("name: " + NS),
+		nsBeforeShell);
 	{
 		const ctx = await browser.newContext();
 		await H.mockExternalCdn(ctx);
@@ -330,6 +417,9 @@ async function main() {
 			return cell && cell.textContent.trim() === "ns-value-v2";
 		}, null, { timeout: 10000 });
 		const afterNSYAML = (await H.req(server.base, nsYamlPath, { session: s.session })).json?.yaml || "";
+		H.check("保真：命名空间文档除 spec.vars 与 resourceVersion 外的行逐字不变",
+			namespaceDocShell(afterNSYAML) === nsBeforeShell,
+			JSON.stringify({ before: nsBeforeShell, after: namespaceDocShell(afterNSYAML) }));
 		const changeDiff = lineDiff(beforeNSYAML, afterNSYAML);
 		H.check("命名空间改一个 var：YAML 只有该键 + resourceVersion 变化",
 			onlyVarLine(changeDiff.removed, "NS_ONLY").length === 1 && onlyVarLine(changeDiff.added, "NS_ONLY").length === 1,
@@ -381,6 +471,24 @@ async function main() {
 		await page.close();
 		await ctx.close();
 	}
+
+	console.log("--- 边界：total: null 的文档原样贴回 ---");
+	const BARE = "anode-vars-bare";
+	const bareCreated = await H.req(server.base, V.P.nodes(), {
+		session: s.session,
+		body: { apiVersion: V.API_VERSION, kind: "Node", metadata: { name: BARE }, spec: { namespaces: [NS] } },
+	});
+	V.expectStatus("登记 bare 节点（spec 不带 limits）", bareCreated, 201);
+	const barePath = V.P.node(BARE) + "/yaml";
+	const bareBefore = (await H.req(server.base, barePath, { session: s.session })).json?.yaml || "";
+	H.check("边界前提：没有 limits.total 的节点，读面写成显式 total: null",
+		bareBefore.includes("total: null"), bareBefore);
+	const barePut = await H.req(server.base, barePath, { session: s.session, method: "PUT", body: { yaml: bareBefore } });
+	H.eq("边界：把 total: null 的原文原样贴回 → 400", barePut.status, 400);
+	H.eq("边界：拒绝原因 = value_invalid", barePut.json?.reason, "value_invalid");
+	const bareAfter = (await H.req(server.base, barePath, { session: s.session })).json?.yaml || "";
+	H.check("边界：被拒的写没有落库（文档逐字未变）", bareAfter === bareBefore,
+		JSON.stringify({ before: bareBefore, after: bareAfter }));
 
 	const passed = H.summary("vars_ui");
 	await browser.close();

@@ -290,16 +290,25 @@ async function conflict(d,lang) {
   const f=await fixture(d);await d.goto('node',query('node',f),lang);
   const p='/v1/nodes/'+encodeURIComponent(f.nodes[0].metadata.name)+'/config';
   const current=await d.req(p);assert.ok(current.metadata.resourceVersion);
-  // #375：JSON textarea 默认收在「编辑原始 JSON」折叠里；fill 前先展开。
-  await d.page.locator('#node-config-advanced').evaluate(el=>{el.open=true;});
-  await d.page.locator('#node-vars').fill('{"LOCALE_DRAFT":"retained"}');
-  const fresh=await d.response(p,{metadata:{resourceVersion:current.metadata.resourceVersion},config:current.config},'PUT');assert.equal(fresh.status,200);
-  await d.page.locator('#node-config-save').click();await hasText(d,'#node-config-state','nodes.v4.stale');
-  assert.equal(await d.page.locator('#node-vars').inputValue(),'{"LOCALE_DRAFT":"retained"}');
-  assert.ok((await d.calls()).some(c=>c.url===p.replace(/\/config$/, '/yaml')&&c.method==='PUT'&&c.httpStatus===409&&c.reason==='resource_version_conflict'),'#476：UI 保存走 PUT …/yaml');
-  await dialogClick(d,d.page.locator('#node-config-reload'),'nodes.v4.reload_confirm');
-  assert.equal(await d.page.locator('#node-vars').inputValue(),'{"LOCALE_DRAFT":"retained"}');
-  await scan(d,lang,f);d.check('Real concurrent CAS409 exact localized stale error/unmodified draft/explicit reload dialog');
+  /* B-1（方向变更 2026-11-19）：节点页的唯一写入口是 YAML —— 顶撞 CAS 的那条路径也换成 YAML。
+     编辑面在折叠块里，先展开；等 GET …/yaml 把文档写进 textarea 再动手。 */
+  const details=d.page.locator('#node-yaml-edit');if(await details.count())await details.evaluate(el=>{el.open=true;});
+  await d.page.waitForFunction(()=>/apiVersion:/.test(document.getElementById('node-yaml-input')?.value||''));
+  const editor=d.page.locator('#node-yaml-input');
+  const before=await editor.inputValue();
+  // 草稿 = 原文 + 一行注释（YAML 注释不进文档，所以唯一的拒绝理由就是旧版本令牌）。
+  const draft=before.replace(/\n*$/,'\n')+'# locale draft retained\n';
+  assert.notEqual(draft,before,'草稿必须与原文档有差异（否则「草稿未丢」无从判断）');
+  await editor.fill(draft);
+  // 并发写先把版本抬走（d.response 走裸 fetch，不进 __f3Calls，所以下面的 409 一定是页面发的）。
+  const fresh=await d.response(p,{metadata:current.metadata,vars:current.vars,limits:current.limits,namespaces:current.namespaces},'PUT');
+  assert.equal(fresh.status,200);
+  await d.page.locator('#node-yaml-save').click();
+  await d.page.waitForFunction(()=>__f3Calls.some(c=>c.method==='PUT'&&/\/yaml$/.test(c.url)&&c.httpStatus===409),null,{timeout:15000});
+  await hasText(d,'#node-yaml-state','nodes.v4.stale');
+  assert.equal(await editor.inputValue(),draft,'409 后草稿必须逐字保留');
+  assert.ok((await d.calls()).some(c=>c.method==='PUT'&&/\/yaml$/.test(c.url)&&c.httpStatus===409&&c.reason==='resource_version_conflict'));
+  await scan(d,lang,f);d.check('YAML write entry: real concurrent CAS409 exact localized stale error and unmodified draft');
 }
 async function readme(d) {
   const [zh,en]=await Promise.all(['README.md','README.en.md'].map(x=>readFile(path.join(ROOT,x),'utf8')));
@@ -335,7 +344,7 @@ export async function runLocaleCase(suite,id) {
   }catch(error){
     if(d){
       d.report.errors.push(error.stack||String(error));
-      try{await d.archive();d.report.diagnostics=await d.page.evaluate(()=>({url:location.href,states:['pb-unapplied','pb-badge','pb-receipt','node-config-state','current-device-card'].map(id=>({id,text:document.getElementById(id)?.innerText})),deviceRows:[...document.querySelectorAll('.rc-dev-row')].map(e=>({text:e.innerText,enabled:e.querySelector('[aria-pressed]')?.getAttribute('aria-pressed')}))}));}
+      try{await d.archive();d.report.diagnostics=await d.page.evaluate(()=>({url:location.href,states:['pb-unapplied','pb-badge','pb-receipt','node-yaml-state','current-device-card'].map(id=>({id,text:document.getElementById(id)?.innerText})),deviceRows:[...document.querySelectorAll('.rc-dev-row')].map(e=>({text:e.innerText,enabled:e.querySelector('[aria-pressed]')?.getAttribute('aria-pressed')}))}));}
       catch(capture){d.report.errors.push('Failure capture: '+String(capture));}
     }
     return {id,ok:false,checks:d?.report.checks.length||0,error:error.stack||String(error),report:d?.report};

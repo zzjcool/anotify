@@ -1,7 +1,7 @@
 package server
 
 // resource_namespace_yaml.go 是 Namespace 与 System 文档的 YAML 面
-// （IA 重构的 ③ / ④，docs/design/node-namespace-ia.md §2.2 / §3.1）：
+// （IA 重构的 ③ / ④）：
 //
 //	GET  /v1/namespaces/{name}/yaml  规范化 Namespace 文档文本（{"yaml": "…"}）
 //	PUT  /v1/namespaces/{name}/yaml  严格解析 → PutNamespaceConfigByName（CAS）
@@ -87,7 +87,6 @@ type namespaceYAMLMeta struct {
 // 注释用**英文**：这份文本是服务端按事实生成的、与 locale 无关（页面不翻译它），
 // 而 en/es 的 i18n 残留扫描（f3 的 chrome residue）会把可见 DOM 里的中文当成漏翻。
 // 中文解释属于页面文案（`namespace.v4.yaml_hint` / `effective_hint`）。
-// 同样的理由适用于文件头的两段 prelude。
 type namespaceYAMLSpec struct {
 	Vars *yaml.Node `yaml:"vars" json:"vars"`
 }
@@ -179,22 +178,6 @@ var systemYAMLShape = yamldoc.Shape{
 	},
 	Required: []string{"apiVersion", "kind", "metadata.resourceVersion"},
 }
-
-// namespaceYAMLPrelude / systemYAMLPrelude 是文档头部的声明。
-//
-// 为什么写在文本里而不是只写页面上：YAML 会被复制走（贴进 wiki、贴进 PR、贴给同事），
-// 离开页面之后「谁是可写的、写入入口在哪」这条信息必须还在文档自己身上。
-const (
-	namespaceYAMLPrelude = `# Namespace document. spec.vars are namespace defaults; a node may override them
-# (merge order: local > node > namespace). Edit this document with
-# PUT /v1/namespaces/{name}/yaml (metadata.resourceVersion = the CAS token of the
-# namespace vars).
-`
-	systemYAMLPrelude = `# SystemConfig document (read-only). retention holds three TTLs in seconds; 0 means
-# keep forever. Writes go through PUT /v1/system/config (CAS) - this endpoint
-# deliberately has no PUT.
-`
-)
 
 // getNamespaceYAML 处理 GET /v1/namespaces/{name}/yaml。
 func (a *namespaceAPI) getNamespaceYAML(w http.ResponseWriter, r *http.Request) {
@@ -399,7 +382,7 @@ func namespaceYAMLText(ns *store.Namespace, cfg *store.NamespaceConfig) ([]byte,
 		},
 		Spec: namespaceYAMLSpec{Vars: varsNode},
 	}
-	return enqueueYAMLDoc(namespaceYAMLPrelude, doc, namespaceYAMLShape)
+	return enqueueYAMLDoc(doc, namespaceYAMLShape)
 }
 
 // systemYAMLText 把系统配置行序列化成规范化 SystemConfig 文档。
@@ -417,17 +400,16 @@ func systemYAMLText(cfg *store.SystemConfig) ([]byte, error) {
 			ResultTTLSec: cfg.RetentionResultTTLSec,
 		}},
 	}
-	return enqueueYAMLDoc(systemYAMLPrelude, doc, systemYAMLShape)
+	return enqueueYAMLDoc(doc, systemYAMLShape)
 }
 
-// enqueueYAMLDoc 把「只读声明 + 文档」编码成文本，并用严格解析器**校验自己**。
+// enqueueYAMLDoc 把文档编码成规范化文本，并用严格解析器**校验自己**。
 //
 // 2 空格缩进与 Node YAML 读面一致；键序由 struct 声明固定、map 键由 yaml.v3 排序，
 // 所以同一份事实永远序列化成同一份文本（两次 GET 字节一致，页面不会每次刷新都跳）。
 // 自校验失败是**服务端事实损坏**（500），不是调用方的输入错误。
-func enqueueYAMLDoc(prelude string, doc any, shape yamldoc.Shape) ([]byte, error) {
+func enqueueYAMLDoc(doc any, shape yamldoc.Shape) ([]byte, error) {
 	var buf bytes.Buffer
-	buf.WriteString(prelude)
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err := enc.Encode(doc); err != nil {

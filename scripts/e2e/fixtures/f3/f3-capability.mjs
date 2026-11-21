@@ -71,6 +71,13 @@ async function runtimeI18n(d) {
 		assert.equal(typeof dict[key], "string", "运行时字典必须有 " + key + "（缺了页面就渲染兜底文案，四语言守卫也会红）");
 		assert.ok(dict[key].trim() && dict[key] !== key, key + " 必须有真实译文");
 	}
+	/* B-5：计数标签必须自己说明**窗口**。旧文案是「任务总数：0／失败：0」，而旁边的
+	   最近任务并不是 24h 口径 —— 两个数字互相解释不了。四语的新值都带 24 这个锚点
+	   （en/zh 带 h、ja 带 時間、es 带 h），且不得再退回「总数」那种无限定说法。 */
+	for (const key of ["caps.observed.tasks", "caps.observed.tasks_failed"]) {
+		assert.match(dict[key], /24/, key + " 必须标明 24h 窗口（实际：" + dict[key] + "）");
+	}
+	assert.ok(!/任务总数/.test(dict["caps.observed.tasks"]), "不得再用「任务总数」这种无限定说法：" + dict["caps.observed.tasks"]);
 	return dict;
 }
 /* 有数据态：taskId + 24h 计数（含窗口说明）都是读模型里的**具体值**，不是“出现过某个标签”。 */
@@ -83,8 +90,8 @@ async function assertObservedDataDom(d, root, ob, label) {
 	assert.ok(text.includes(String(ob.taskId)), label + "：observed 必须显示最近任务 id " + ob.taskId + "，实际：" + text);
 	assert.ok(Number.isInteger(ob.tasks && ob.tasks.total), label + "：读模型必须给 tasks.total（整数）");
 	assert.ok(Number.isInteger(ob.tasks && ob.tasks.failed), label + "：读模型必须给 tasks.failed（整数）");
-	// 计数必须和它自己的标签连在一起出现：「任务总数：3」而不是碰巧页面里有个 3。
-	assert.ok(text.includes(dict["caps.observed.tasks"] + "：" + ob.tasks.total), label + "：必须显示 24h 任务总数 " + ob.tasks.total + "，实际：" + text);
+	// 计数必须和它自己的标签连在一起出现（「近 24h 任务：3」）而不是碰巧页面里有个 3。
+	assert.ok(text.includes(dict["caps.observed.tasks"] + "：" + ob.tasks.total), label + "：必须显示近 24h 任务数 " + ob.tasks.total + "，实际：" + text);
 	assert.ok(text.includes(dict["caps.observed.tasks_failed"] + "：" + ob.tasks.failed), label + "：必须显示失败数 " + ob.tasks.failed + "，实际：" + text);
 	assert.ok(text.includes(dict["caps.observed.window"]), label + "：计数必须标明是近 24h 窗口，否则 24h 的数字被当成全部历史");
 	assert.ok(!text.includes(dict["caps.observed.unavailable"]), label + "：有数据时不得再显示空态文案");
@@ -367,7 +374,12 @@ export async function capability(d){
 			const banner = await page.textContent("#cap-banner");
 			assert.match(banner, /409/);
 			assert.match(banner, /输入都还在/);
-			assert.match(banner, new RegExp(stale + "|resourceVersion"));
+			/* 横幅要透出**服务端当前**的版本令牌（用户拿它判断「我手上这份多旧」），
+			   而不是本地那份旧令牌。旧断言用了英文 `resourceVersion` 字面量，本地化之后
+			   必然假红；改成拿真值比对（语言中立）。 */
+			const currentRv = await page.evaluate(async () => (await (await fetch("/v1/namespaces/default/capabilities/f2a-demo")).json()).metadata.resourceVersion);
+			assert.notEqual(currentRv, stale, "T1 seam: 并发写必须让 rv 前进，否则下面这条断言证明不了任何事");
+			assert.ok(banner.includes(currentRv), "横幅必须透出服务端当前版本令牌 " + currentRv + "，实际：" + banner);
 			assert.equal(await page.inputValue("#cap-display-name"), "用户本地改动", "失败后用户输入必须保留");
 			assert.equal(await page.locator("#cap-modal:not(.hidden)").count(), 1, "失败后编辑器必须还开着");
 			await shot(page, "03-conflict-409-preserved");
@@ -515,8 +527,12 @@ export async function capability(d){
 				const sel = document.getElementById("deploy-version");
 				return sel && sel.options.length >= 3;
 			}, { timeout: 15000 });
+			/* 弹层必须说清「不选目标节点时谁来决定」—— 这句话已经本地化并改写过，
+			   所以断运行时字典里的那一句，而不是某个中文/英文短语。 */
+			const capsI18n = await page.evaluate(() => Object.assign({}, window.AnotifyI18n || {}));
 			const hint = await page.textContent("#deploy-modal .modal-body");
-			assert.match(hint, /不会自动部署/);
+			assert.equal(typeof capsI18n["caps.deploy.nodes_hint"], "string", "字典必须有 caps.deploy.nodes_hint");
+			assert.ok(hint.includes(capsI18n["caps.deploy.nodes_hint"]), "部署弹层必须说明目标节点的默认选择策略（" + capsI18n["caps.deploy.nodes_hint"] + "），实际：" + hint);
 			const opts = await page.$$eval("#deploy-version option", (os) =>
 				os.map((o) => ({ v: o.value, text: o.textContent || "" })),
 			);
@@ -541,14 +557,20 @@ export async function capability(d){
 			assert.ok(dep, "必须 POST …/capabilities/analyze-pr/deploy");
 			assert.equal(dep.body.version, 1);
 			assert.deepEqual(dep.body.nodes, [nodeName]);
-			// 状态刷新后：该节点持有旧 digest → stale
+			// 状态刷新后：该节点持有旧版本 → stale（界面词是「版本落后」，读字典断言）
 			await page.waitForFunction((n) => {
 				const row = document.querySelector('[data-cap="analyze-pr"]');
 				return row && row.querySelector('[data-sec="nodes"]') && row.textContent.includes(n);
 			}, nodeName, { timeout: 15000 });
 			const detail = await page.textContent('[data-cap="analyze-pr"] [data-sec="nodes"]');
 			assert.match(detail, new RegExp(nodeName));
-			assert.match(detail, /旧 digest|old digest|digest (antiguo|旧)/, "部署 v1 后节点必须显示 stale（旧 digest）");
+			/* B-5：节点上的状态是**状态标签**（不是取值行）：「已同步 / 版本落后 / 未部署」。
+			   旧文案把「当前 digest」当一行事实印出来、而它没有值——现在按状态派生，
+			   所以这里读运行时字典里的 stale 词（四语都对），并钉住不再出现 digest 字样。 */
+			const nodesDict = await runtimeI18n(d);
+			assert.equal(typeof nodesDict["caps.nodes.stale"], "string", "字典必须有节点状态词 caps.nodes.stale");
+			assert.ok(detail.includes(nodesDict["caps.nodes.stale"]), "部署 v1 后节点必须显示「版本落后」（字典值 " + nodesDict["caps.nodes.stale"] + "），实际：" + detail);
+			assert.ok(!/digest/i.test(detail), "节点状态行不得再印 digest（旧文案一直是空值）：" + detail);
 			await shot(page, "07-deploy-result-stale");
 			return "POST body " + JSON.stringify(dep.body) + "；节点 " + nodeName + " → stale";
 		});
@@ -557,19 +579,34 @@ export async function capability(d){
 		await check("诊断：conditions 四条 + resolved 明细（missing/reason/required）+ observed emits/pruned", async () => {
 			const fx = await openCap(page, "fixer");
 			await fx.locator('[data-sec="conditions"]').waitFor({ state: "visible" });
-			const condTypes = await fx.locator('[data-sec="conditions"] .cap-cond-type').allTextContents();
-			assert.deepEqual(
-				[...new Set(condTypes.map((s) => s.trim()))].sort(),
-				["Deployed", "DownstreamResolved", "Implemented", "NodesAvailable"].sort(),
-				"conditions 必须是冻结四类（不依赖顺序）",
+			/* A-5 ③：四条条件的**类型**是协议值，挂在 `data-cond` 上（界面只说人话：
+			   「实现 / 节点可用 / 下游可解析 / 已部署」）。断言改读属性，不再拿界面文案
+			   当协议字串——那样一改词就会假红。 */
+			const condTypes = await fx.locator('[data-sec="conditions"] [data-cond]').evaluateAll((nodes) =>
+				nodes.map((n) => n.getAttribute("data-cond")),
 			);
+			assert.deepEqual(
+				[...new Set(condTypes.map((s) => String(s).trim()))].sort(),
+				["Deployed", "DownstreamResolved", "Implemented", "NodesAvailable"].sort(),
+				"conditions 必须是冻结四类（data-cond 上，不依赖顺序）",
+			);
+			/* 界面说人话：类型标签必须来自**字典**（`caps.cond.<type>`），不是硬编码的协议值。
+			   注意不能断言「正文里不出现 Deployed」—— 英文译文恰好就是 'Deployed'，那条断言
+			   在任何实现下都是假红；真正的契约是「标签由字典给出」，四语改词时自动跟随。
+			   （同一行里的 reason 码 NodeOffline / NotDeployed / Valid… 是机器事实，原样展示。） */
+			const capsDict2 = await runtimeI18n(d);
+			const condText = await fx.locator('[data-sec="conditions"]').innerText();
+			for (const type of ["Implemented", "NodesAvailable", "DownstreamResolved", "Deployed"]) {
+				assert.equal(typeof capsDict2["caps.cond." + type], "string", "字典必须有 caps.cond." + type);
+				assert.ok(condText.includes(capsDict2["caps.cond." + type]), "条件行必须显示字典里的类型词 " + capsDict2["caps.cond." + type] + "（实际：" + condText + "）");
+			}
 			const resolved = await fx.textContent('[data-sec="resolved"]');
 			assert.match(resolved, /analyze-pr/);
 			assert.match(resolved, /lint-fix/);
 			assert.match(resolved, /v1/, "钉死 lint-fix@1 必须显示版本");
 			const observed = await fx.textContent('[data-sec="observed"]');
 			/* observed 现在两种权威都说**真实事实**（服务端 `status.observed`：最近任务 +
-			 * emits/pruned + 近 24h 计数，见 docs/design/v4/capability.md §2）。修复器在本用例的
+			 * emits/pruned + 近 24h 计数，见 `internal/server/resource_capability.go` 的 observed 投影）。修复器在本用例的
 			 * 默认 ns 里已经有真实任务（真实权威：base fixtures 经 `POST /sources/deploy-hook/fire`
 			 * 建出 fixer 任务；mock 权威：种子 tsk_mock_1），所以这一条直接对账「页面 = 读模型」，
 			 * 不再把契约上已不存在的「恒 {}」当预期。 */
@@ -629,6 +666,10 @@ export async function capability(d){
 		/* ---------- 11) DELETE CAS：旧 rv 409 重载 + 二次确认 ---------- */
 		await check("删除 CAS：旧 rv → 409 重新载入并二次确认；成功 DELETE 带 ?resourceVersion=", async () => {
 			const row = await openCap(page, "lint-fix");
+			// C-6：删除进了页头 ⋯ 菜单（破坏性动作不与「编辑 / 部署」同权重）—— 先开菜单再点。
+			assert.equal(await row.locator('[data-act="delete"]').count(), 1, '删除必须在 ⋯ 菜单里（唯一入口）');
+			await page.locator("#cap-actions .act-more").click();
+			await row.locator('[data-act="delete"]').waitFor({ state: "visible" });
 			await row.locator('[data-act="delete"]').click();
 			await page.waitForSelector("#del-modal:not(.hidden)");
 			// 并发写先验一次“内容面不可变”：把整份 spec 塞进 PATCH 必须被 400 immutable_field
@@ -665,7 +706,15 @@ export async function capability(d){
 			await page.waitForSelector("#del-msg:not(.hidden)", { timeout: 15000 });
 			const msg = await page.textContent("#del-msg");
 			assert.match(msg, /409/);
-			assert.match(msg, /重新载入最新 resourceVersion/);
+			/* 冲突文案来自字典（`caps.delete.conflict`，{rv} 由页面替换成服务端当前令牌）：
+			   断「本地化文案 + 真 rv」而不是某句中文散文 —— 改词、换语种都不该假红。
+			   旧断言钉的是 `重新载入最新 resourceVersion`，那句英文原话已经不存在了。 */
+			const delI18n = await page.evaluate(() => Object.assign({}, window.AnotifyI18n || {}));
+			assert.equal(typeof delI18n["caps.delete.conflict"], "string", "字典必须有 caps.delete.conflict");
+			assert.ok(
+				msg.includes(delI18n["caps.delete.conflict"].replace("{rv}", freshRv)),
+				"删除冲突必须说明「已重新载入最新版本令牌 " + freshRv + "」（实际：" + msg + "）",
+			);
 			await shot(page, "10-delete-conflict");
 			await takeRec(page);
 			await page.click("#del-submit");

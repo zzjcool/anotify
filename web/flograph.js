@@ -1521,7 +1521,7 @@
 	}
 
 	/* ============================================================
-	 * Silk 皮肤 —— trace 页「图」视图（design/flowline-lab.html 的 01 silk）
+	 * Silk 皮肤 —— trace 页「图」视图（视觉基线：`web/ui.css` 的 `.flograph--silk` 段）
 	 *
 	 * **两个入口共用这张舞台**：trace 的链路图（taskChain，执行事实）与源详情页的
 	 * 下游流向（capabilityFlow，配置预览）。差别只在 options.preview：

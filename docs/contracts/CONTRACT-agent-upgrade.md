@@ -142,7 +142,7 @@ anotify-agent upgrade [--check] [--force] [--server URL] [--install-to PATH] [--
 |---|---|---|
 | **A agent 侧** | §1（version 包 + agent 的 ldflags）、§4（upgrade 子命令）、hello 带 `agent_version` 的**发送**侧 | `internal/version/**`、`cmd/agent/upgrade*.go`、`cmd/agent/main.go`、`cmd/agent/client.go`（只加 hello 字段）、`cmd/agent/*_test.go`、`Makefile` |
 | **B 中枢侧** | §1（server 的 ldflags 由 A 统一改 Makefile，B 不改）、§2（二进制端点）、§3（列 + 迁移 3 + hello 解析）、§5 + **§5.1 控制台读侧**（WS 帧 / 端点 / ack 处理 / `targetAgentVersion` / `agentUpgrade`） | `internal/store/schema.sql`、`internal/store/node.go`、`internal/ws/*.go`、`internal/server/*.go`、`api/openapi.yaml`、`Dockerfile`、`docker-compose*.yml` |
-| **C 控制台与文档** | §6 UI、§5/§4 的文案、docs | `web-src/**`、`web/**`、`docs/contracts/CONTRACT.md`、`docs/design/agent-upgrade.md`、`DEVELOPMENT.md`、`scripts/e2e/suites/frontend.mjs` |
+| **C 控制台与文档** | §6 UI、§5/§4 的文案、docs | `web-src/**`、`web/**`、`docs/contracts/CONTRACT.md`、`internal/server/node_upgrade_handlers.go`、`DEVELOPMENT.md`、`scripts/e2e/suites/frontend.mjs` |
 
 `internal/ws/node_protocol.go` 的 `HelloFrame.AgentVersion` 字段**由 A 加**（一条 `json:"agent_version,omitempty"`），A 同时负责 agent 发送侧；B 只负责**解析 + 落库 + 视图**，不得再改这个 struct。这样两边的分支都能独立编译，不需要 SEAM 注释。
 

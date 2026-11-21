@@ -6,7 +6,7 @@
 .source-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
 .source-facts dt{color:var(--muted);font-size:12px}
 .source-facts dd{margin:4px 0;overflow-wrap:anywhere}
-/* SRC-1：单条源 = 头部（标题 + 徽章 / 右上动作组）+ 4 列 KV + 折叠的次要字段。
+/* SRC-1：单条源 = 头部（标题 + 徽章 / 右上动作组）+ 主 KV 网格 + 折叠的次要字段。
    label/value 严格成对（每对是两行 grid），动作不再夹在两组字段中间。 */
 #src-list .src-row{display:flex;flex-direction:column;align-items:stretch;gap:10px;padding:14px}
 #src-list .src-row:hover{background:var(--surface-2)}
@@ -16,7 +16,7 @@
 .src-title:hover{color:var(--accent)}
 .src-badges{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
 .src-acts{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-left:auto}
-.src-kv{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px 18px;margin:0}
+.src-kv{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 18px;margin:0}
 .src-pair{display:grid;gap:2px;min-width:0}
 .src-k{font-size:11px;line-height:1.4;color:var(--faint)}
 .src-v{margin:0;font-size:13px;line-height:1.45;color:var(--text);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
@@ -30,7 +30,11 @@
 .src-more-body{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px 18px;margin-top:10px}
 /* 空态：图标 + 标题 + 说明 + 动作 */
 .src-empty-title{font-size:15px;font-weight:600;color:var(--text)}
-.src-note-p{display:block;margin:10px 0 0}
+/* ⋯ 菜单里的只读信息项（版本令牌）：禁用态，标签与值分两行，不吃 hover 高亮；
+   令牌本身是个长串，窄屏下必须能折行。 */
+.act-menu .menu-item[disabled]{cursor:default}
+.act-menu .menu-item[disabled]:hover{background:transparent;color:var(--muted)}
+.act-menu .menu-item[disabled] .act-item-hint{overflow-wrap:anywhere}
 @media(max-width:900px){.src-kv{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:640px){
   .src-acts{width:100%;margin-left:0}
@@ -76,11 +80,6 @@
 </button>
 </div>
 </div>
-<!-- SRC-3：整段说明默认收起，不再一条通栏灰字压在列表上方 -->
-<details class="card card-pad src-more" id="dedup-note">
-<summary>{{t "uxaudit.res.sources.dedup_summary"}}</summary>
-<p class="field-hint src-note-p">{{t "sources.v4.dedup"}}</p>
-</details>
 <div id="action-error" aria-live="polite">
 </div>
 <div id="src-list-skel" class="source-loading">
@@ -213,6 +212,17 @@ const actionMenu = (items) => {
   };
   trigger.onclick=()=>setOpen(menu.classList.contains("hidden"));
   for(const item of items){
+    /* 只读信息项（版本令牌）：禁用态、不绑动作，不进 tab 序列 */
+    if(item.info){
+      const info=el("button","menu-item act-item");
+      info.type="button";
+      info.disabled=true;
+      info.setAttribute("role","menuitem");
+      info.setAttribute("aria-disabled","true");
+      info.append(el("span",null,item.label),el("span","act-item-hint mono",item.value));
+      menu.append(info);
+      continue;
+    }
     const b=el("button","menu-item act-item"+(item.danger ? " act-danger" : ""));
     b.type="button";
     b.setAttribute("role","menuitem");
@@ -610,14 +620,16 @@ function render(){
       label:t(m.enabled ? "disable" : "enable"),run:b=>toggle(src,b)
     },{
       label:t("delete"),danger:true,run:b=>removeSource(src,b)
+    },{
+      /* 版本令牌原来常驻主网格，现在只在这里露一次（只读信息，不是动作） */
+      label:t("rv"),value:m.resourceVersion,info:true
     }];
     acts.append(actionMenu(menuItems));
     head.append(titleWrap,acts);
-    /* ② 主字段：4 列 KV 网格 */
+    /* ② 主字段：KV 网格（版本令牌已移到行尾 ⋯ 菜单，不再常驻） */
     const kv=el("dl","src-kv");
     kv.append(
       pair(t("namespace"),m.namespace),
-      pair(t("rv"),m.resourceVersion),
       pair(t("last_fire"),fmt(m.lastFiredAt),!m.lastFiredAt),
       pair(t("next_fire"),fmt(m.nextFireAt),!m.nextFireAt));
     /* ③ 次要字段：默认折叠（SRC-4：移动端一条源不再 700px 高） */
@@ -660,7 +672,7 @@ function yamlMsg(lines){
 /* 一行一条原因：首行只放机器码 reason（e2e 断言它必须可见），后面逐条展开 causes。
    服务端的 cause 是「field 独立 + message 自带『第 N 行』」，所以人话那行拼成
    「字段路径 · 第 N 行：人话」；顶层 Status 的人话就是第一条 cause，不再重复印一遍。 */
-function yamlLines(err){
+function yamlErrorLines(err){
   const out=[],seen=new Set();
   const push=line=>{
     const text=line==null?"":String(line);
@@ -719,7 +731,7 @@ $("src-yaml-submit").onclick=async()=>{
     /* 不自动跳转：留在列表上，新行就是这次创建的回执 */
     await load();
   }catch(err){
-    yamlMsg(yamlLines(err));
+    yamlMsg(yamlErrorLines(err));
   }finally{
     YAML_BUSY=false;
     btn.disabled=false;
