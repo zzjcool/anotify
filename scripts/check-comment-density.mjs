@@ -20,6 +20,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 
+import { runsAsMain } from "./lib/direct-run.mjs";
+
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 /* BASELINE-BEGIN（`--init` / `--update` 只改这一段） */
@@ -1066,5 +1068,5 @@ function main() {
 	return runCheck();
 }
 
-const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const invokedDirectly = runsAsMain(import.meta.url);
 if (invokedDirectly) process.exitCode = main();

@@ -27,7 +27,8 @@
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+
+import { runsAsMain } from "./lib/direct-run.mjs";
 
 const SRC = path.resolve(
 	process.argv.find((a) => a.startsWith("--src="))?.split("=")[1] ?? "web-src",
@@ -842,9 +843,7 @@ async function main() {
 	process.exit(1);
 }
 
-const isDirectRun =
-	process.argv[1] &&
-	path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+const isDirectRun = runsAsMain(import.meta.url);
 if (isDirectRun) {
 	if (process.argv.includes("--self-test")) {
 		selfTest()
