@@ -1,59 +1,56 @@
 package server
 
 // spec-doc: 本文件是五份 spec ↔ 真实 mux / 中间件 / Go 结构体的双向对账自检，下面各段说明的是这道自检自己的规格（本文件实现它），不是对外部代码的无锚点约束声称。
-//
 // 本文件是 #333（exact-five OpenAPI）的 **Go 侧门禁**：五份 spec 与真实 mux /
 // 真实中间件 / 真实 Go 结构体的双向对账 + 负向变异自测。
-//
 // # 为什么是 Go 而不是 python
-//
 // `scripts/check_openapi.py` 只能看 spec 自己（exact-five、归属、operationId、security 方案、
 // 错误具名族）。它**看不见 handler**。历史上的漂移都是这一半造成的：
-//   - mux 上加了一条路由、spec 没跟上 → 文档少一条端点（按文档写的客户端永远调不到）；
-//   - spec 写了一条 mux 上不存在的端点 → 文档在骗人（客户端 404，而门禁全绿）；
-//   - spec 声明 `security: [session]`、真实路由却忘了包 session 中间件 → **匿名可写**；
-//   - schema 少一个字段 → 按 schema 生成的客户端永远提交不了实现。
+// - mux 上加了一条路由、spec 没跟上 → 文档少一条端点（按文档写的客户端永远调不到）；
+// - spec 写了一条 mux 上不存在的端点 → 文档在骗人（客户端 404，而门禁全绿）；
+// - spec 声明 `security: [session]`、真实路由却忘了包 session 中间件 → **匿名可写**；
+// - schema 少一个字段 → 按 schema 生成的客户端永远提交不了实现。
 //
 // 所以这里不「读 spec 和自己比」，而是四份**独立事实**互相对账：
-//  1. 静态 AST：`internal/server/*.go`（排除 `_test.go`）里所有 `mux.Handle/HandleFunc`
-//     的第一个实参，按 Go 的常量规则求值成真实 pattern；
-//  2. 真实 `http.ServeMux`：把上面的 pattern 装成一个探针 mux，用 spec 的
-//     (method, path) 去问「谁接住了这个请求」；
-//  3. 真实装配：`newProductionAppForTest` + 无凭据请求，实测 spec 声明的鉴权是不是真的；
-//  4. 真实 Go 结构体：`reflect` 取 json tag，与 schema 的 properties **双向**比。
+// 1. 静态 AST：`internal/server/*.go`（排除 `_test.go`）里所有 `mux.Handle/HandleFunc`
+// 的第一个实参，按 Go 的常量规则求值成真实 pattern；
+// 2. 真实 `http.ServeMux`：把上面的 pattern 装成一个探针 mux，用 spec 的
+// (method, path) 去问「谁接住了这个请求」；
+// 3. 真实装配：`newProductionAppForTest` + 无凭据请求，实测 spec 声明的鉴权是不是真的；
+// 4. 真实 Go 结构体：`reflect` 取 json tag，与 schema 的 properties **双向**比。
 //
 // # 纪律
 //
-//   - 静态求值**失败即 Fatal**（"无法静态求值的 pattern 表达式"）：静默跳过一条 pattern
-//     就等于给「新增路由永不进 spec」开后门。
-//   - 裸 pattern（`/v1/auth/` 这种不带方法的）走**显式表** `bareMountSpec()`：method 由
-//     handler 内部 switch 决定，AST 里根本看不到；表里每条都要有「handler 源码里的字符串
-//     判据」，判据找不到 = 表和 handler 已经脱节，红。
-//   - 例外表（`securityProbeExceptions` / onlyGo / onlySchema / `wideSchemas` /
-//     `unpairedSchemas` / 三张 status 例外表）**过期即红**：某条例外不再需要（两边都有了 /
-//     都没有了 / spec 里那条 operation 没了 / 基线期望已经与例外同向）就失败，防止例外变成
-//     永久后门。
-//   - **每个 component schema 都有归属**（F1）：230 个 schema 必须要么在 `parityPairs` 里，
-//     要么被某对 pair 顺着 `$ref` 递归比对到（`schemaReachability` 的真实可达集），要么在
-//     `unpairedSchemas` 里（理由 + 源码证人）。Go 侧形状可以直接反射具名类型，也可以从
-//     handler 源码里读（`goWire`：`writeJSON` 的 map 字面量 / 函数内的匿名 struct）。
-//   - **宽投影不许静默退出比对**（F3）：`additionalProperties` 的 schema 必须登记在
-//     `wideSchemas`（理由 + 证人），未登记 = 红；证人符号消失 = 红。
-//   - **注册语句里有真实中间件**（F4）：adminSession / consoleKey / nodeToken 三种方案靠
-//     匿名探针分不出来（都回 401），所以判据落在 mux 注册语句的中间件链上（+ adminMW 的
-//     定义、handler 里的鉴权调用），每条都带真实符号证人。
-//   - **裸挂载的 method 有源码判据**（F5）：每个 op 都带一条 method 分派 token
-//     （`case http.MethodPatch:` 这类），token 的方法必须与表里的 method 一致。
-//   - **responses 与参数也在门禁内**（F2）：query 参数双向对账、requestBody → 400、
-//     CAS DELETE → 400+409、security → 401、裸挂载 handler 会 405 就必须声明 405。
-//   - **`in: header` 也在门禁内**（F2）：契约声明了请求头，就必须有人在实现里真的读它
-//     （`X.Header.Get(...)`，参数可以是字面量也可以是常量）；读了没声明同样红。两个方向都
-//     走「登记 + 过期即红」的例外表 —— 之前这里只收 `in: query`，header 是 fail-open by
-//     omission（#355 的 `X-Anotify-Signature` 就是这么溜过去的）。
-//   - 负向变异（`TestOpenAPIParityMutations`）把每一层门禁都打一遍：删 operation、加幽灵
-//     operation、复制 operationId、把 session 改成匿名、给 schema 删/加字段、断跨文件 $ref
-//     都必须**报错**。变异只在内存里做，绝不写盘。
-//   - 本文件里**不许出现 skip**：`TestOpenAPIParityFakeGreenGuard` 会扫自己（见该函数）。
+// - 静态求值**失败即 Fatal**（"无法静态求值的 pattern 表达式"）：静默跳过一条 pattern
+// 就等于给「新增路由永不进 spec」开后门。
+// - 裸 pattern（`/v1/auth/` 这种不带方法的）走**显式表** `bareMountSpec()`：method 由
+// handler 内部 switch 决定，AST 里根本看不到；表里每条都要有「handler 源码里的字符串
+// 判据」，判据找不到 = 表和 handler 已经脱节，红。
+// - 例外表（`securityProbeExceptions` / onlyGo / onlySchema / `wideSchemas` /
+// `unpairedSchemas` / 三张 status 例外表）**过期即红**：某条例外不再需要（两边都有了 /
+// 都没有了 / spec 里那条 operation 没了 / 基线期望已经与例外同向）就失败，防止例外变成
+// 永久后门。
+// - **每个 component schema 都有归属**（F1）：230 个 schema 必须要么在 `parityPairs` 里，
+// 要么被某对 pair 顺着 `$ref` 递归比对到（`schemaReachability` 的真实可达集），要么在
+// `unpairedSchemas` 里（理由 + 源码证人）。Go 侧形状可以直接反射具名类型，也可以从
+// handler 源码里读（`goWire`：`writeJSON` 的 map 字面量 / 函数内的匿名 struct）。
+// - **宽投影不许静默退出比对**（F3）：`additionalProperties` 的 schema 必须登记在
+// `wideSchemas`（理由 + 证人），未登记 = 红；证人符号消失 = 红。
+// - **注册语句里有真实中间件**（F4）：adminSession / consoleKey / nodeToken 三种方案靠
+// 匿名探针分不出来（都回 401），所以判据落在 mux 注册语句的中间件链上（+ adminMW 的
+// 定义、handler 里的鉴权调用），每条都带真实符号证人。
+// - **裸挂载的 method 有源码判据**（F5）：每个 op 都带一条 method 分派 token
+// （`case http.MethodPatch:` 这类），token 的方法必须与表里的 method 一致。
+// - **responses 与参数也在门禁内**（F2）：query 参数双向对账、requestBody → 400、
+// CAS DELETE → 400+409、security → 401、裸挂载 handler 会 405 就必须声明 405。
+// - **`in: header` 也在门禁内**（F2）：契约声明了请求头，就必须有人在实现里真的读它
+// （`X.Header.Get(...)`，参数可以是字面量也可以是常量）；读了没声明同样红。两个方向都
+// 走「登记 + 过期即红」的例外表 —— 之前这里只收 `in: query`，header 是 fail-open by
+// omission（#355 的 `X-Anotify-Signature` 就是这么溜过去的）。
+// - 负向变异（`TestOpenAPIParityMutations`）把每一层门禁都打一遍：删 operation、加幽灵
+// operation、复制 operationId、把 session 改成匿名、给 schema 删/加字段、断跨文件 $ref
+// 都必须**报错**。变异只在内存里做，绝不写盘。
+// - 本文件里**不许出现 skip**：`TestOpenAPIParityFakeGreenGuard` 会扫自己（见该函数）。
 //
 // 所有测试函数名都以 `TestOpenAPIParity` 开头：`make contract` 用
 // `go test ./internal/server -run TestOpenAPIParity`，一旦改名，"no tests to run"
@@ -127,8 +124,9 @@ const (
 	// parityPairsFloor 是 parityPairs() 的对数（含 auth/ingress/agent 的全部 DTO 与协议帧）。
 	// 192 → 196：上面那四个 observed 子 schema 各自进 pair（虽然能从 CapabilityStatus
 	// 递归到达，但「可达」不等于「被单独钉住」——具名 DTO 都单独成对）。
-	// 196 → 202：启停/试跑的六对 DTO；202 → 204：#510 卸载响应两对（结果 / kept 行）。
-	parityPairsFloor = 204
+	// 196 → 202：启停/试跑的六对 DTO；202 → 204：#510 卸载响应两对（结果 / kept 行）；
+	// 204 → 206：#511 版本历史两对（列表 / 一行）。
+	parityPairsFloor = 206
 	// bareMountFloor 是 bareMountSpec() 的条目数。
 	bareMountFloor = 27
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底）。
@@ -142,8 +140,9 @@ const (
 	// 124 → 126：两条**只读** YAML 读面（IA ③④：
 	// `GET /v1/namespaces/{name}/yaml`、`GET /v1/system/yaml`）。
 	// 126 → 127：命名空间的 YAML 写面（#476 阶段 2：`PUT /v1/namespaces/{name}/yaml`）。
-	// 127 → 128：`DELETE …/playbooks/{slug}/releases/{release}`（#510 实例卸载）。
-	muxPatternCount = 128
+	// 127 → 128：`DELETE …/playbooks/{slug}/releases/{release}`（#510 实例卸载）；
+	// 128 → 129：`GET …/playbooks/{slug}/versions`（#511 版本历史）。
+	muxPatternCount = 129
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 39
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数。
@@ -151,8 +150,8 @@ const (
 	// （CapabilityObserved + Emit + Prune + Tasks，CONTRACT-observed）。
 	// 234 → 240：启停/试跑六个具名 schema（CapabilityDisableRequest / CapabilityTestRequest /
 	// CapabilityTestReceipt / CapabilityTestWarning / CapabilityAuditEntry / CapabilityAuditList）；
-	// 240 → 242：#510 卸载响应的结果与 kept 行。
-	specSchemaFloor = 242
+	// 240 → 242：#510 卸载响应的结果与 kept 行；242 → 244：#511 版本历史（列表 + 一行）。
+	specSchemaFloor = 244
 )
 
 // ---------- 测试入口 ----------
@@ -194,9 +193,10 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 	// 129 → 133：+4 能力的启停/试跑/审计端点（enable / disable / test / audit）。
 	// 133 → 135：+2 Node 文档 YAML 读/写（IA 重构 ②）。
 	// 135 → 137：+2 只读 YAML（IA ③④：Namespace 文档 / SystemConfig 文档）。
-	// 137 → 138：+1 命名空间的 YAML 写面（#476 阶段 2）；138 → 139：+1 实例卸载（#510 的 DELETE releases）。
-	if len(ops) != 139 {
-		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 139（138 + #510 的实例卸载 DELETE）", len(ops))
+	// 137 → 138：+1 命名空间的 YAML 写面（#476 阶段 2）；138 → 139：+1 实例卸载（#510 的 DELETE releases）；
+	// 139 → 140：+1 包版本历史读模型（#511 的 GET …/playbooks/{slug}/versions）。
+	if len(ops) != 140 {
+		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 140（139 + #511 的包版本历史）", len(ops))
 	}
 	// 至少一条来自 components.pathItems（agent.yaml 四条 + events/ingress 的共享 pathItem）。
 	fromPathItems := 0
@@ -3067,6 +3067,8 @@ func parityPairs() []parityPair {
 		{GoLabel: "playbook.Receipt", File: "resource.yaml", Schema: "PlaybookReceipt", Sample: playbook.Receipt{}},
 		{GoLabel: "playbook.RenderResult", File: "resource.yaml", Schema: "PlaybookRenderResult", Sample: playbook.RenderResult{}},
 		{GoLabel: "store.PlaybookInstallList", File: "resource.yaml", Schema: "PlaybookInstallList", Sample: store.PlaybookInstallList{}},
+		{GoLabel: "store.PlaybookVersionList", File: "resource.yaml", Schema: "PlaybookVersionList", Sample: store.PlaybookVersionList{}},
+		{GoLabel: "store.PlaybookVersionEntry", File: "resource.yaml", Schema: "PlaybookVersionEntry", Sample: store.PlaybookVersionEntry{}},
 		{GoLabel: "store.PlaybookInstallGroup", File: "resource.yaml", Schema: "PlaybookInstallGroup", Sample: store.PlaybookInstallGroup{}},
 		{GoLabel: "store.PlaybookDeleteResult", File: "resource.yaml", Schema: "PlaybookDeleteResult", Sample: store.PlaybookDeleteResult{}},
 		{GoLabel: "store.PlaybookKept", File: "resource.yaml", Schema: "PlaybookKept", Sample: store.PlaybookKept{}},
@@ -3626,11 +3628,11 @@ func wideSchema(schema map[string]any) bool {
 
 // jsonFields 按 encoding/json 的规则把一个结构体摊成 wire 字段表。
 //
-//   - `json:"-"` → 跳过（显式不上 wire 的内部字段）
-//   - 没有 tag → 用 Go 字段名（encoding/json 的回落规则）
-//   - 匿名内嵌结构体 → 拍平（promoted fields）
-//   - `omitempty` → **不影响**：可以缺省不等于可以不声明
-//   - 未导出字段 → encoding/json 根本看不到
+// - `json:"-"` → 跳过（显式不上 wire 的内部字段）
+// - 没有 tag → 用 Go 字段名（encoding/json 的回落规则）
+// - 匿名内嵌结构体 → 拍平（promoted fields）
+// - `omitempty` → **不影响**：可以缺省不等于可以不声明
+// - 未导出字段 → encoding/json 根本看不到
 func jsonFields(t reflect.Type) map[string]reflect.Type {
 	for t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -4132,8 +4134,8 @@ func witnessProblems(where, witness string) []string {
 //
 // 「登记了但没期限」就是这次要治的病（#355：契约里的验签头没人读，测试也不会红），
 // 所以这里把「挂在哪个 issue 上」做成必填：
-//   - GH 能查到的写 `#355`；
-//   - 查不到的写 `TODO(parity-header)`，并在 Reason 里说清为什么现在不做。
+// - GH 能查到的写 `#355`；
+// - 查不到的写 `TODO(parity-header)`，并在 Reason 里说清为什么现在不做。
 func headerExceptionProblems(where string, ex headerParamException) []string {
 	var problems []string
 	switch issue := strings.TrimSpace(ex.Issue); {
@@ -5131,16 +5133,16 @@ var bareMount405Exceptions = map[string]statusException{
 // TestOpenAPIParityResponsesAndParams 是 F2：responses 与参数此前完全不在门禁内。
 //
 // 机械对账六件事：
-//  1. spec 声明的每个 query 参数名，必须在 internal/server 的非测试源码里作为字符串字面量
-//     出现（真有人读它）——反例就是被 review 抓到的 `tail`（spec 写 tail、实现只读 tailLines）。
-//  2. 实现里真的读出来的每个 query 名，必须被至少一条 operation 声明。
-//  3. spec 声明的每个 `in: header` 请求头，必须真的有人从 `http.Header` 里读它
-//     （字面量或同名常量都算）——反例就是 #355 的 `X-Anotify-Signature`：契约声明了
-//     验签头，而实现里没人读，旧版收集器直接把 `in: header` 筛掉了，测试也不会红。
-//  4. 实现里（internal/server 内）真的读出来的每个请求头，必须有 operation 声明它。
-//  5. 状态码正向（有限但真实）：requestBody → 400；CAS DELETE → 400+409；
-//     security 非空 → 401；落在裸挂载下且 handler 有 405 分支 → 405。
-//  6. 检查数量必须非零（防「0 项检查也绿」）；header 声明数还有快照下限（削表即红）。
+// 1. spec 声明的每个 query 参数名，必须在 internal/server 的非测试源码里作为字符串字面量
+// 出现（真有人读它）——反例就是被 review 抓到的 `tail`（spec 写 tail、实现只读 tailLines）。
+// 2. 实现里真的读出来的每个 query 名，必须被至少一条 operation 声明。
+// 3. spec 声明的每个 `in: header` 请求头，必须真的有人从 `http.Header` 里读它
+// （字面量或同名常量都算）——反例就是 #355 的 `X-Anotify-Signature`：契约声明了
+// 验签头，而实现里没人读，旧版收集器直接把 `in: header` 筛掉了，测试也不会红。
+// 4. 实现里（internal/server 内）真的读出来的每个请求头，必须有 operation 声明它。
+// 5. 状态码正向（有限但真实）：requestBody → 400；CAS DELETE → 400+409；
+// security 非空 → 401；落在裸挂载下且 handler 有 405 分支 → 405。
+// 6. 检查数量必须非零（防「0 项检查也绿」）；header 声明数还有快照下限（削表即红）。
 func TestOpenAPIParityResponsesAndParams(t *testing.T) {
 	docs, problems := loadSpecDocs()
 	fatalIfProblems(t, "载入五份 spec", problems)
