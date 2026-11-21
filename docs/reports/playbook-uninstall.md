@@ -317,6 +317,8 @@ $ ./scripts/e2e/run_all.sh --serial playbook_release
 
 ### 5.5 门禁
 
+`make ci`（本分支，产品代码提交 `f8efcebf` 的树；其后只有本报告的措辞改动）：
+
 ```
 $ make ci
 ✅ 契约静态断言（A2/A4/A5/A6/A7 + openapi 一致性 + 字段级核对 + anode 可编译）通过
@@ -326,11 +328,11 @@ $ make ci
 ✅ 注解即外键守卫通过：全部引用可解析、锚点可解析、棘轮未超基线。
 ✅ 与基线完全一致（超与降都算不一致）—— 有收紧请同批下调基线，新增必须在此刻被拦住
 go test ./... -count=1 -shuffle=on
-ok  	github.com/zzjcool/anotify/internal/playbook	0.582s
-ok  	github.com/zzjcool/anotify/internal/server	68.902s
-ok  	github.com/zzjcool/anotify/internal/store	18.531s
-ok  	github.com/zzjcool/anotify/internal/store/v4test	46.148s
-BenchmarkDispatchChain-12  1  2201795 ns/op  123376 B/op  2282 allocs/op
+ok  	github.com/zzjcool/anotify/internal/playbook	0.535s
+ok  	github.com/zzjcool/anotify/internal/server	67.833s
+ok  	github.com/zzjcool/anotify/internal/store	19.661s
+ok  	github.com/zzjcool/anotify/internal/store/v4test	45.891s
+BenchmarkDispatchChain-12  1  1968310 ns/op  122400 B/op  2275 allocs/op
 $ echo $?
 0
 ```
