@@ -38,7 +38,6 @@ import (
 // sourceResClock 是夹具的固定时钟（秒）：让回执/事件时间可复现。
 const sourceResClock = 1_700_000_000
 
-// sourceResEnv 是 Source 资源域的测试环境。
 type sourceResEnv struct {
 	t    *testing.T
 	db   *store.DB

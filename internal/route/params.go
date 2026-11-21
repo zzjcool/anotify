@@ -32,13 +32,11 @@ import (
 type Prune struct {
 	// Capability 是下游能力（解析得到时用解析名，解析不到时用声明引用）。
 	Capability string `json:"capability,omitempty"`
-	// Reason 是封闭原因码：no_target / event_schema / param_missing / param_schema /
-	// param_type / downstream_missing。
+	// Reason 是封闭原因码：no_target / event_schema / param_missing / param_schema / param_type / downstream_missing。
 	Reason string `json:"reason"`
 	// Detail 是给人看的补充（缺哪个参数、哪个字段类型不对），不参与任何判定。
 	Detail string `json:"detail,omitempty"`
-	// Field 是导致剪枝的参数路径（如 `params.diff`），只用于把 400 的
-	// details.causes[].field 指到具体字段。**不进 wire**：pruned[] 的形状不变。
+	// Field 是导致剪枝的参数路径（如 `params.diff`），只填 400 的 details.causes[].field。**不进 wire**。
 	Field string `json:"-"`
 }
 
@@ -260,9 +258,8 @@ func PrepareParams(schema json.RawMessage, input map[string]any) (json.RawMessag
 
 // ValidatePayload 校验源投递载荷是否符合 `config.payloadSchema`（event_schema 剪枝）。
 //
-// 返回 nil 表示通过；否则 reason 固定是 event_schema（source.md §6）。载荷 schema
-// 不可用时同样按 event_schema 拒绝——那不是投递方的错，但不能放一批形状未知的
-// 载荷进去（写路径已拒绝坏 schema，这里是防御）。
+// 返回 nil 表示通过；否则 reason 固定是 event_schema（source.md §6）。载荷 schema 不可用时同样按
+// event_schema 拒绝——那不是投递方的错，但不能放一批形状未知的载荷进去（写路径已拒绝坏 schema，这里是防御）。
 func ValidatePayload(schema json.RawMessage, payload map[string]any) *Prune {
 	trimmed := bytes.TrimSpace(schema)
 	if len(trimmed) == 0 || string(trimmed) == "null" || string(trimmed) == "{}" {
@@ -289,8 +286,19 @@ func ValidatePayload(schema json.RawMessage, payload map[string]any) *Prune {
 			return &Prune{Reason: protocol.ReasonEventSchema, Detail: issue.detail, Field: "payload." + issue.field}
 		}
 	}
+	// required 独立于 properties：只写 required 时上面一个名字都看不到 —— 这里只查「键存在」（null 也算）。
+	for name := range s.required {
+		if _, declared := s.properties[name]; declared {
+			continue
+		}
+		if _, ok := payload[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
 	if len(missing) > 0 {
-		return &Prune{Reason: protocol.ReasonEventSchema, Detail: "载荷缺 " + strings.Join(missing, ", ")}
+		sort.Strings(missing) // required 是 map：排序后 detail/Field 才可复现
+		return &Prune{Reason: protocol.ReasonEventSchema, Detail: "载荷缺 " + strings.Join(missing, ", "),
+			Field: "payload." + missing[0]}
 	}
 	return nil
 }
