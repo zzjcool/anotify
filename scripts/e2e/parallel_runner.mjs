@@ -5,8 +5,7 @@
  *   1. 按套件类型分组：HTTP 类（无 Chrome）全并行，Chrome 类信号量控制并发
  *   2. 每套件 spawn node suites/<name>.mjs，传 E2E_RESULTS_DIR 环境变量
  *   3. per-suite 预算：默认 120s，重套件按**CI 实测 ×2**单独放宽（SUITE_TIMEOUT_OVERRIDE）；
- *      超预算不再「直接 SIGKILL 什么都不留」（#488）：先落 results/<suite>.json 的部分现场
- *      （timedOut/elapsedMs/completedCases/lastCase/partial），再 SIGTERM，宽限后 SIGKILL
+ *      超预算先落部分现场（timedOut/completedCases/lastCase），再 SIGTERM，宽限后 SIGKILL（#488）
  *   4. 读各套件 JSON 结果聚合汇总报告，并按 #338 判分：exit≠0 一律 fail、
  *      每个套件必须 passed>0 且 assertions[] 自洽、结果集合 == 请求集合、
  *      authority 清单必须覆盖请求套件且 mode 与注入计划一致
@@ -36,8 +35,7 @@
  *   E2E_RESULTS_DIR  JSON 结果输出目录（默认 .e2e-bin/results）
  *   ANOTIFY_BIN / DEVSEED_BIN / ANODE_BIN  二进制路径（由 run_all.sh 设置）
  *   ANOTIFY_VAPID_*  VAPID 密钥（由 run_all.sh 设置）
- *   E2E_MOCK_ONLY    **不由调用方设置**（#338）：本执行器只对 EXPLICIT_MOCK_SUITES
- *                    里的四个具名套件自注入它，其余套件（含 frontend）一律剥掉
+ *   E2E_MOCK_ONLY    **不由调用方设置**（#338）：只对四个具名套件自注入，其余一律剥掉
  *   E2E_SUITE_BUDGET_MS / E2E_SUITE_BUDGET_<SUITE>  临时覆盖墙钟预算（**诊断/注入用**；
  *                    被覆盖的套件会在启动横幅里显式打印，抬预算不许留静默）
  *   E2E_RETRY_WALL_LIMIT_MS  套件级重试的墙钟上限（默认 25min）：再重试一次就会撞上
@@ -159,8 +157,7 @@ function suiteAuthority(name) {
 	return EXPLICIT_MOCK_SUITES.has(name) ? "explicit-mock" : "real";
 }
 
-// 清单自检：写进常量就是契约。frontend 一旦混进 mock 清单，门禁会对着 mock 判
-// 「前端 real 通过」——比红更危险，所以这里直接 exit 2，不给「先跑跑看」。
+// 清单自检：写进常量就是契约。frontend 混进 mock 清单，门禁会对着 mock 判「前端 real 通过」⇒ 直接 exit 2。
 function assertAuthorityContract() {
 	const problems = [];
 	// 注册表冻结（#338）：全量 e2e = 29 个套件（#476 新增 vars_ui）；判定在 assertAuthorityContract。
@@ -231,8 +228,7 @@ const SUITE_REGISTRY_SIZE = 29;
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");
 const CONCURRENCY = parseInt(process.env.E2E_CONCURRENCY || "4", 10);
-// #488：套件级重试的墙钟上限。CI 的 e2e job 是 40min（setup 约 4min）—— 再拖一个完整
-// 预算就会拿 job 超时去赌整份 artifact，那比「直接红 + 现场仍在盘上」更糟。
+// #488：套件级重试的墙钟上限。再重试一次就会撞上 job 超时（= 赌整份 artifact 丢掉）。
 const RETRY_WALL_LIMIT_MS = (() => {
 	const v = Number(process.env.E2E_RETRY_WALL_LIMIT_MS);
 	return Number.isFinite(v) && v > 0 ? v : 1_500_000;

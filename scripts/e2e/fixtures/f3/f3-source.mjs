@@ -86,13 +86,11 @@ export async function source(d){
   assert.equal((await req('/v1/namespaces/default/sources/ui-webhook')).spec.config.secretSet, true);
   check('Explicit reload -> next edit succeeds, omitted credentials preserve secret/hookUrl');
   await wait('row menu: click Disable',()=>pickMenu('ui-webhook', 'Disable'));
-  await wait('row menu: reopen after disable write',()=>openMenu('ui-webhook'));
-  await wait('row shows Enable after disable roundtrip',()=>visible('#src-list > div[data-name="ui-webhook"] button:text-is("Enable")'));
+  await wait('row badge turns Disabled after disable roundtrip',()=>visible('#src-list > div[data-name="ui-webhook"] .badge:text-is("Disabled")')); // #502：读行内 badge（始终可见）不读菜单条目——菜单会被 toggle 的 PATCH→load()→render() 关掉（TOCTOU）
   const afterDisable=await wait('GET source after disable (enabled=false)',()=>req('/v1/namespaces/default/sources/ui-webhook'));
   assert.equal(afterDisable.spec.enabled, false);
-  await wait('row menu: click Enable',()=>row('ui-webhook').locator('.menu-item', { hasText: 'Enable' }).click());
-  await wait('row menu: reopen after enable write',()=>openMenu('ui-webhook'));
-  await wait('row shows Disable after enable roundtrip',()=>visible('#src-list > div[data-name="ui-webhook"] button:text-is("Disable")'));
+  await wait('row menu: click Enable',()=>pickMenu('ui-webhook', 'Enable'));
+  await wait('row badge turns Enabled after enable roundtrip',()=>visible('#src-list > div[data-name="ui-webhook"] .badge:text-is("Enabled")'));
   check('CAS toggle disable/enable actual state changes (via the row action menu)');
   // Make list DELETE stale through a concurrent real PATCH, then require two
   // separate user confirmations: failed delete and explicit retry after reload.
