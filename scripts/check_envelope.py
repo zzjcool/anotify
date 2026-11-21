@@ -126,10 +126,11 @@ ERROR_FAMILY_TARGET = {
 # E7：v4 已退役/未采纳的旧键（出现即说明有人按旧契约写 schema）。
 RETIRED_KEYS = ("nextCursor", "before", "sinceId", "remainingItemCount")
 
-# E8：哪些路径是「带 CAS 的资源」（DELETE 必须带 ?resourceVersion=）。
-# 用正则而不是列举 5 条路径：新增 CAS 资源时正则自动覆盖，不会漏。
+# E8：哪些路径是「带 CAS 的资源」（DELETE 必须带 ?resourceVersion=）。用正则而不是列举 5 条路径：新增 CAS 资源时正则自动覆盖，不会漏。
+# playbooks 只收单资源 DELETE：`…/releases/{release}` 是动作端点（#510 契约 §1 明确不新增令牌，CAS 逐行执行）。
 CAS_DELETE_PATHS = (
-    re.compile(r"^/v1/namespaces/\{[^}]+\}/(capabilities|sources|playbooks)/"),
+    re.compile(r"^/v1/namespaces/\{[^}]+\}/(capabilities|sources)/"),
+    re.compile(r"^/v1/namespaces/\{[^}]+\}/playbooks/\{[^}]+\}$"),
     re.compile(r"^/v1/namespaces/\{[^}]+\}$"),
     re.compile(r"^/v1/nodes/\{[^}]+\}$"),
 )

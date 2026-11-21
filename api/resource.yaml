@@ -921,6 +921,54 @@ paths:
         '404': {$ref: '#/components/responses/Status404'}
         '500': {$ref: '#/components/responses/Status500'}
 
+  /v1/namespaces/{namespace}/playbooks/{slug}/releases/{release}:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: slug
+        in: path
+        required: true
+        schema: {type: string}
+      - name: release
+        in: path
+        required: true
+        description: "实例身份（`^(a-z0-9)[a-z0-9._-]{0,62}$`）"
+        schema: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,62}$'}
+    delete:
+      operationId: uninstallPlaybookRelease
+      tags: [playbooks]
+      security: [{session: []}]
+      summary: "卸载一个实例：删掉它装出来的能力与源，保留回执与他人的行"
+      description: |
+        归属键是 **release**（不是某一次 install）：只删 `installed_from` 属于该 release 回执的未删行
+        （能力按行软删 + 行级 CAS，源删行），回执保留作审计、只打上卸载时刻 `uninstalledAt`。
+
+        不删、进 `kept[]` 并带 `reason` 的行：同名的**手工行**（`manual`）、同名但属于**别的安装**的行
+        （`other_release`）、本 release 建的但被**另一个仍生效的 release** 记在 `skipped` 里复用的行
+        （`shared_by_release`）。同名 = 能力按 `name`（跨版本）、源按 `name`。
+
+        重复卸载 → `200` 且 `alreadyUninstalled: true`，零变化（`removed` 两个列表与 `kept` 都是 `[]`）；
+        release 从未存在 → `404` `release_not_found`。
+
+        `installId` 可选：用「我看到的那次安装」钉住 release，不属于该 release → `409` `install_conflict`。
+        删除走逐行 CAS，并发改动某行 → `409` `resource_version_conflict`（不静默删）。
+      parameters:
+        - name: installId
+          in: query
+          required: false
+          description: "把这次卸载钉在某一条安装回执上（视图过期的保护；不属于该 release → 409 install_conflict）"
+          schema: {type: string}
+      responses:
+        '200':
+          description: "卸载结果（removed / kept / installIds / note）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PlaybookUninstallResult'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
   # ----------------------------------------------------------------- namespaces
   /v1/namespaces:
     get:
@@ -3020,6 +3068,40 @@ components:
             type: object
             additionalProperties: true
         note: {type: string}
+    PlaybookUninstallResult:
+      type: object
+      required: [release, alreadyUninstalled, uninstalledAt, installIds, removed, kept, note]
+      properties:
+        release: {type: string}
+        alreadyUninstalled:
+          type: boolean
+          description: "为真时本次零写：removed 两个列表与 kept 都是 []"
+        uninstalledAt: {type: string, format: date-time}
+        installIds:
+          type: array
+          description: "该 release 的全部回执 id（已卸载时仍返回）"
+          items: {type: string}
+        removed: {$ref: '#/components/schemas/PlaybookKept'}
+        kept:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookUninstallKept'}
+        note: {type: string}
+    PlaybookUninstallKept:
+      type: object
+      required: [kind, name, reason]
+      properties:
+        kind: {type: string, enum: [capability, source]}
+        name: {type: string}
+        version:
+          type: integer
+          description: "仅能力有（源名在命名空间内唯一）"
+        reason:
+          type: string
+          enum: [manual, other_release, shared_by_release]
+          description: "manual=同名的行是手工建的；other_release=同名行属于别的安装；shared_by_release=被另一个仍生效的 release 复用"
+        ownerRelease:
+          type: string
+          description: "仅 other_release / shared_by_release 有"
 
     # ------------------------------------------------------------- namespace
     NamespaceSpec:

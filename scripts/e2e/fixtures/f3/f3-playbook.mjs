@@ -125,8 +125,9 @@ export async function playbook(d,mode){
     assert.ok(!JSON.stringify(groups).includes(credential));
     assert.equal((await req(basePath+'/installs/'+first.response.install.id)).install.id, first.response.install.id);
     // 打开「单次回执」的那个按钮。install 组里现在还有 code-block 头部的复制按钮
-    // （.copy-btn），所以这里显式排除它——strict mode 下 `#pb-installs button` 会命中 2 个。
-    await page.locator('#pb-installs button:not(.copy-btn)').click();
+    // （.copy-btn）与每个 release 的卸载按钮（[data-action="uninstall"]，#510），
+    // 所以这里显式排除它们——strict mode 下 `#pb-installs button` 会命中多个。
+    await page.locator('#pb-installs button:not(.copy-btn):not([data-action="uninstall"])').click();
     await page.waitForFunction(id => __c1Calls.some(c => c.url.endsWith('/installs/' + id)), second.response.install.id);
     assert.match(await page.locator('#pb-receipt').innerText(), /Install|receipt/i);
     assert.ok(!((await page.locator('#pb-receipt').innerText()).includes(credential)));
@@ -157,8 +158,7 @@ export async function playbook(d,mode){
     const installed = await clickAction('#btn-install', '/install');
     assert.deepEqual(installed.response.unapplied.map(u => u.reason), ['routing_unapplied', 'targets_unapplied']);
     // external / pending 里的 ref 是**包里写的那一串**（plan.go·resolveRefs 原样收集），
-    // 不会补 `@版本`；external 的语义是"包外但库里已有"，pending 是"两边都没有"。
-    // 这里同时验语义：notify 真的在库里存在，future-cap 真的不存在。
+    // 不补 `@版本`；notify 真的在库里存在，future-cap 真的不存在。
     assert.ok(installed.response.external.includes('notify'), JSON.stringify(installed.response.external));
     assert.ok(installed.response.pending.includes('future-cap'));
     // 用宿主侧读（d.api）而不是页面 fetch：这两条是"库里有没有"的事实核对，
