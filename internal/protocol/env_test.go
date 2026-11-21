@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestEnvContractVariables 钉死五个 ANOTIFY_ 契约变量的字面值（capability.md §4.0 / A2）。
+// TestEnvContractVariables 钉死七个 ANOTIFY_ 契约变量的字面值（capability.md §4.0 / A2、#522）。
 //
 // 这些名字是协议：能力脚本、节点注入、文档三方必须逐字一致；改一个字就是
 // 「脚本读不到端点」。所以连值一起快照，不接受「反正 Go 常量两边都用」。
@@ -25,8 +25,15 @@ func TestEnvContractVariables(t *testing.T) {
 	if EnvArtifactDir != "ANOTIFY_ARTIFACT_DIR" {
 		t.Fatalf("EnvArtifactDir = %q", EnvArtifactDir)
 	}
+	if EnvDecisionToken != "ANOTIFY_DECISION_TOKEN" {
+		t.Fatalf("EnvDecisionToken = %q", EnvDecisionToken)
+	}
+	if EnvDecisionURL != "ANOTIFY_DECISION_URL" {
+		t.Fatalf("EnvDecisionURL = %q", EnvDecisionURL)
+	}
 	// 全部以 ANOTIFY_ 开头；参数变量名必须真的挂在这个前缀上。
-	for _, name := range []string{EnvEmitEndpoint, EnvTaskToken, EnvTaskID, EnvParamPrefix, EnvArtifactDir} {
+	for _, name := range []string{EnvEmitEndpoint, EnvTaskToken, EnvTaskID, EnvParamPrefix,
+		EnvArtifactDir, EnvDecisionToken, EnvDecisionURL} {
 		if !strings.HasPrefix(name, "ANOTIFY_") {
 			t.Fatalf("%q 不是 ANOTIFY_ 契约变量", name)
 		}
