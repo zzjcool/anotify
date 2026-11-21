@@ -32,8 +32,7 @@ type App struct {
 
 	// Spool 是中枢自有的产物字节池（#332）：nil = 托管根不可用（产物端点回 503）。
 	Spool *resultspool.Store
-	// ArtifactGC 是产物字节回收驱动（nil = 未配置周期，或 spool 不可用）。
-	// 它是后台写者（Expire / Ack 都打库），所以由 NewApp 用 runBackgroundLoop 起，
+	// ArtifactGC 是产物字节回收驱动（nil = 未配置周期，或 spool 不可用）。它是后台写者（Expire / Ack 都打库），所以由 NewApp 用 runBackgroundLoop 起，
 	// 与背压采样 / 派发 / cron / 租约同受 WaitBackground 的收尾约束；测试可直接
 	// 调 RunOnce 做**真实**回收验证，不需要等 ticker。
 	ArtifactGC *resultspool.GC
@@ -455,6 +454,9 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// store 的 Begin/Register 在事务内复核 attempt/lease/token/相位/撤销。
 	mux.Handle("PUT "+protocol.NodeTaskArtifactsPathPrefix+"{taskId}"+protocol.NodeTaskArtifactsPathInfix+"{sha256}",
 		noStore(newArtifactUploadHandler(db, spool, slog.Default())))
+
+	// 任务决策端点（#522）：能力没有会话、只有 lease.grant 的一次性凭据，故挂在资源域之外。
+	mux.Handle("POST "+protocol.DecisionPatternPath, noStore(newTaskDecisionHandler(db, slog.Default())))
 
 	// --- 事件投递入口（Bearer key + 背压）---
 	//

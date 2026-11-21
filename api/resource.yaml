@@ -1667,6 +1667,43 @@ paths:
         '409': {$ref: '#/components/responses/Status409'}
         '500': {$ref: '#/components/responses/Status500'}
 
+  /v1/tasks/{taskId}/decision:
+    parameters:
+      - $ref: '#/components/parameters/TaskIDPath'
+    post:
+      operationId: submitTaskDecision
+      tags: [tasks]
+      security: [{taskToken: []}]
+      summary: "提交 router 的判决（能力 → 中枢的唯一判断回传通道）"
+      description: |
+        **不是会话端点**：调用方是节点上运行的 router 能力，凭据是 lease.grant 下发的
+        一次性决策凭据（`ANOTIFY_DECISION_TOKEN`，绑定 taskId、短 TTL、成功提交即消费）。
+
+        权限边界只有一句：**凭据只能给自己这个 task 选一个已声明的结局**，不能点名别的
+        能力。所以：结局名不在该任务的 `outcomes` 表里 → 403（+ trace 里一条
+        `outcome_not_declared` 审计行）；同一 task 第二次提交 → 409
+        `decision_already_taken`（幂等拒绝，不覆盖）；任务已结束 → 409 `task_not_running`；
+        凭据不可用（不存在/不匹配/过期/已消费）→ 401 `token_invalid`。
+
+        判决**允许在任务成功之前提交**（先写判决再退出是推荐姿势）；平台在任务成功终态
+        之后才按表执行动作。空动作结局（`drop: []`）返回 `actions: 0`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TaskDecisionRequest'}
+      responses:
+        '200':
+          description: "判决已落库"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskDecisionResponse'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/Status401'}
+        '403': {$ref: '#/components/responses/Status403'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
   /v1/namespaces/{namespace}/tasks/{taskId}/abandon:
     parameters:
       - $ref: '#/components/parameters/NamespacePath'
@@ -1860,6 +1897,12 @@ components:
       in: cookie
       name: anotify_session
       description: "登录会话 + 超管权限（两层中间件：先 401 再 403）"
+    taskToken:
+      type: http
+      scheme: bearer
+      description: |
+        任务级**决策凭据**（`Authorization: Bearer <decision token>`）：由 lease.grant 随任务
+        下发，一次性、绑定 taskId、短 TTL。它只能为**这一个任务**选一个已声明的结局（#522）。
 
   parameters:
     NamespacePath:
@@ -2613,10 +2656,53 @@ components:
         capability: {type: string, description: 能力引用（`name` 或 `name@version`）}
         params:
           type: object
-          description: "该下游的固定入参（JSON 对象，可省）"
+          description: |
+            该下游的固定入参（JSON 对象，可省）。模板里只认 `$(payload)` / `$(payload.路径)`：
+            `$(decision.…)` 属于 outcomes 动作（#522），写在这里建任务时求不出来、只会永远留成
+            字面量，所以写入期直接 400（`invalid_source_config`，message 指出参数路径）。
           additionalProperties: true
         match:
           $ref: '#/components/schemas/SourceMatch'
+        outcomes:
+          type: object
+          description: |
+            **router 的结局表**（#522 / A3「判断用能力，执行留 hub」）：结局名 → 1..N 个动作。
+
+            非空表示这个 target 的能力是 router——它只**判断**、只选一个结局名，平台按表
+            **执行**。结局名就是白名单：陌生的事件内容最多影响 `params`，影响不了「运行哪段
+            程序」。`params` 与 `outcomes` 同时出现是合法的（params 是 router 的输入）。
+
+            - 结局名：`^[a-z0-9][a-z0-9_-]{0,31}$`，最多 32 个；单个结局最多 16 个动作。
+            - `drop: []` 合法：**空动作 = 留痕不派发**（`outcome_dropped`）。
+            - 动作的 `capability` 必须 ∈ 这个能力版本 `spec.next` 里声明过的下游 → 否则
+              写入期 400（`details.causes[].field` 指到 `spec.targets[0].outcomes.close[0].capability`）。
+            - 动作参数模板有两个根名：`$(payload.路径)` 在建 router 任务时求值，
+              `$(decision.路径)` 在判决执行时求值（取不到 → 该动作按 `param_missing` 剪枝）。
+            - 判决怎么回传：router 任务拿到一次性 `ANOTIFY_DECISION_TOKEN` 与
+              `ANOTIFY_DECISION_URL`，`POST` 决策端点提交 `{outcome, params}`；任务结束仍无
+              判决 → `no_decision`，任务失败 → `router_failed`，都不静默、都不派发。
+          additionalProperties:
+            type: array
+            maxItems: 16
+            items: {$ref: '#/components/schemas/SourceOutcomeAction'}
+    SourceOutcomeAction:
+      type: object
+      required: [capability]
+      description: |
+        outcomes 表里的一条动作（#522）：结局被选中后要派给哪个下游能力。
+      properties:
+        capability:
+          type: string
+          description: |
+            能力引用（`name` 或 `name@version`）。必须 ∈ router 能力 `spec.next` 里声明过的
+            下游（裸名要在同 basename 的唯一声明里命中；`name@v` 只认精确声明）。
+        params:
+          type: object
+          description: |
+            动作参数模板：常量、`$(payload.路径)`（建任务时求值）与 `$(decision.路径)`
+            （判决执行时用判决的 `params` 求值）混写。下游 `spec.params` 的 required 取不到
+            → 该动作按 `param_missing` 剪枝（不是 4xx）。
+          additionalProperties: true
     SourceMatch:
       type: object
       description: |
@@ -3682,6 +3768,30 @@ components:
           type: string
           description: "封闭失败码（`script_failed` / `downstream_missing` / `max_attempts_exceeded` / …）"
         message: {type: string}
+    TaskDecisionRequest:
+      type: object
+      required: [outcome]
+      description: |
+        router 的判决（#522）。`outcome` 必须是该任务 `outcomes` 表里声明过的结局名。
+      properties:
+        outcome:
+          type: string
+          description: "结局名（白名单 = 任务的 outcomes 表）"
+        params:
+          type: object
+          description: "判决的附加事实（`reason` 等）；结局动作的 `$(decision.…)` 模板消费它"
+          additionalProperties: true
+    TaskDecisionResponse:
+      type: object
+      required: [taskId, outcome, actions]
+      properties:
+        taskId: {type: string}
+        outcome: {type: string}
+        actions:
+          type: integer
+          description: |
+            该结局挂的动作数（`drop: []` → 0）。平台在任务成功终态之后才执行它们，
+            所以它不是「已建任务数」。
     TaskArtifactRef:
       type: object
       required: [path, sha256]

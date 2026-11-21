@@ -437,7 +437,7 @@ func TestArtifactDownloadHistoricalAttemptNotServed(t *testing.T) {
 		t.Fatalf("reassign: %v", err)
 	}
 	nodeAuth := store.NodeAuthorization{NodeID: env.node.ID, NodeTokenHash: env.node.TokenHash}
-	lease, _, attempt, _, err := env.db.GrantLeaseAuthorized(ctx, nodeAuth, env.task.ID, "asg-artifact-2", 2, 0, now+65)
+	lease, _, _, attempt, _, err := env.db.GrantLeaseAuthorized(ctx, nodeAuth, env.task.ID, "asg-artifact-2", 2, 0, now+65)
 	if err != nil {
 		t.Fatalf("grant next attempt: %v", err)
 	}
