@@ -54,13 +54,15 @@
  *    的 `BRACE_UNBALANCED` / `NESTED_RULE`、`check-i18n-keys.mjs` 的 `ref-missing-key` /
  *    `locale-drift`、`check-test-discipline.mjs` 的 `over` / `under` /
  *    `skip-unregistered` 都是这种形态）。找不到 ⇒ 红：引用方被改坏。
- *    `@decision <ID>`：ID 必须出现在决策文档里。探测顺序（见 `DECISION_DOC_CANDIDATES`）：
+ *    `@decision <ID>`：ID 必须出现在决策索引里。探测顺序（见 `DECISION_DOC_CANDIDATES`）：
  *      ① `docs/contracts/v4/CONTRACT.md`（V4-D1～D6 的决策索引）
  *      ② `docs/contracts/CONTRACT.md`
+ *      ③ `internal/decisions/decisions.go`（索引的**代码侧**落点）
  *    判决取**并集**、每条锚点报出命中的那一份；`--report` 会打印探测顺序与实际存在的文件。
  *    2026-11-19 收窄：设计文档整套已移除（权威 = 代码 + 测试 + 契约文档，
  *    见 `docs/README.md`），决策号只能落在契约文档里。原第三级（设计目录下的 `v4/*.md`）
  *    一并取消 —— 让锚点去解析一份已经不存在的快照，等于把外键指向空气。
+ *    2026-11-21：第三级 `internal/decisions/decisions.go`（索引的代码侧落点，契约文档只是副本）。
  *    `@count <command>`：只登记、不执行（打印清单），避免守卫自己变成命令执行面。
  *
  * C `CLAIM_UNBACKED`（棘轮，只许降）· 「声称有检查在兜底」必须有锚点
@@ -94,11 +96,13 @@
  *    计 1 条 `unmarked`。棘轮同上。
  *
  * ── 反假绿（本仓教训：恒绿的门禁等于没有门禁） ────────────────────────
- *   1. 永远打印「扫描文件数 / 注释行数 / 引用数 / 锚点数 / unbacked / unmarked」，
- *      每一项都有下限（常量 + 实测出处写在下面注释里）。0 文件、0 引用直接红。
+ *   1. 永远打印「扫描文件数 / 注释行数 / 引用数 / 锚点数 / unbacked / unmarked」。
+ *      下限只留「扫描面覆盖」与「解析器存活」（`ANNOTATION_MIN` / `trackedSurface`）；
+ *      注释与文档的总量由 L12 的逐目录等值棘轮管。
  *   2. `--report`：只盘点、不判红、exit 0（首次盘点用；`make ci` 用默认模式）。
- *   3. `--self-test`：纯内存 fixture，红/绿双侧自证 32 组（①～⑫ 是 docs/lint-guards.md
- *      §1 L5 行冻结的 12 条，㉔～㉗ 为收窄判据后的加固用例，㉘～㉜ 为 spec-doc 豁免的防滥用校验与对照）。
+ *   3. `--self-test`：纯内存 fixture，红/绿双侧自证（①～⑫ 是 docs/lint-guards.md §1 L5 行
+ *      冻结的那些，㉔～㉗ 为收窄判据后的加固用例，㉘～㉜ 为 spec-doc 豁免的防滥用校验与对照；
+ *      组数以运行输出为准）。
  *
  * ── 用法 ────────────────────────────────────────────────────────────────
  *   node scripts/check-annotations.mjs               # 体检（CI 用）；有 findings ⇒ exit 1
@@ -198,30 +202,20 @@ export const EXCLUDE_PREFIXES = [
 /** 根目录下的临时目录（_tmp_pbvalidate 之类）。 */
 export const EXCLUDE_ROOT_PREFIX = "_tmp_";
 
-/** 决策文档探测顺序（docs/lint-guards.md §3.2 的口径；2026-11-19 设计文档移除后只剩契约）。 */
+/** 决策索引探测顺序（docs/lint-guards.md §3.2 的口径）。契约文档是副本，代码侧索引是落点。 */
 export const DECISION_DOC_CANDIDATES = [
 	"docs/contracts/v4/CONTRACT.md",
 	"docs/contracts/CONTRACT.md",
+	"internal/decisions/decisions.go",
 ];
 
-/* ---------- 反假绿下限（实测值，出处写在每条后面） ---------- */
-/*
- * 实测日期 2026-11-16 · 实测命令 `node scripts/check-annotations.mjs --report`
- * （main e9cff0d8 + 本文件；git 可用）。**下限一律 ≤ 实测值**，语义是「至少」——
- * 它只拦「解析出 0 条 / 解析器坏了 / 文件没读到」，不拦「少了一点」：
- *   扫描文件 575（代码 528 / 文档 47） → 520（文档 40）
- *   注释行   28699                    → 24000
- *   引用     606（解析 583 / 未解析 15 / 历史提及 8 / 占位符 19） → 550
- *   锚点     8（guard 5 / decision 1 / count 1 / 占位符 1） → 4（= 头部四条自锚点）
- * 注意：文档只认 `git ls-files '*.md'` 且排除 .pi-orchestrator/ 等目录 —— 协调者工作区
- * 自 2026-11-19 起不再入库，这条排除如今只作兜底；文档实测份数以运行输出为准，这是扫描范围不是 bug。
- */
-export const SCAN_FILES_MIN = 520;
-export const SCAN_DOCS_MIN = 40;
-export const COMMENT_LINES_MIN = 24000;
-export const REFS_MIN = 550;
+/* ---------- 反假绿下限：扫描面覆盖 + 解析器存活 ---------- */
+/* 2026-11-21（#495 B 阶段前置 1）：四个「实测快照」下限（扫描文件 520 / 文档 40 / 注释行 24000
+ * / 引用 550）会随删注释、删文档变成本批必须下调的墙，而改下限是禁止动作 —— 换成扫描面覆盖
+ * （`trackedSurface` + `SCAN_MISSING_*`，比「≥ 520」严）与解析器存活（不得归零）。详见 docs/lint-guards.md L5。 */
+export const ANNOTATION_MIN = { commentLines: 1, refs: 1, anchors: 4 };
 /** 锚点下限 = 本文件头部的 4 条自锚点。为 0 就等于「锚点机制在真仓库上从未跑过」。 */
-export const ANCHOR_MIN = 4;
+export const ANCHOR_MIN = ANNOTATION_MIN.anchors;
 
 /* ---------- 棘轮基线（实测值；低于基线也红，必须同批下调） ---------- */
 /*
@@ -255,23 +249,21 @@ export const ANCHOR_MIN = 4;
  * 一条 claim 行都没有（说明段里没有「声称有检查兜底」的句子），按 SPEC_DOC_STALE 加标记
  * 即红，故**未**加 —— 需豁免时先让它真的产生 noise，而不是给标记挖一个空容器。
  */
-// 2026-11-17 校准：C 实测仍是 300（只把 Makefile 两处自述与测试注释的措辞改准确，
-// 没有挪走真 claim）；D 由 432 降到 387 —— 下降全部来自 docs/perf 两份体检报告加
-// `snapshot-doc:`（定格数字 + 文内复算命令，不是「现在是多少」的承诺）。
+// 2026-11-17 校准：C 仍 300；D 432→387（docs/perf 两份报告改挂 `snapshot-doc:`）。
 // 2026-11-19 批末重测（#479 rebase 后的并集）：C 299 —— #476 把 parallel_runner 的两行
 // 「冻结值 = N 个套件」注释改成不带「证据」字样的陈述（它们只是解释常量来源，不是可执行
 // 断言），C 由 300 降到 299；D 383 —— #479 删掉 source.html 的图脚本说明，同批新增 e2e 注释。
 // 两个数字都是本树上 `node scripts/check-annotations.mjs` 的实测值，基线零余量（只许降）。
 //
 // 2026-11-19 校准（#477 rebase 到 #479 之后）：设计文档整套移除（Refs #473）后 D 由 383 降到 **312**。
-// 不是 314：PR 原分支的 314 是「385 - 71」，而 main 上 #479 已经先把 385 收到 383（见上一段），
-// 同一份删除在并集树上就是「383 - 71 = 312」—— 删掉的十八份 markdown 在两条基线上的贡献完全相同
-// （实测：8dacf8c6 上 385→314；e9878432 上 385→314；57298070 上 383→312，差量与删掉的文档对齐）。
+// 不是 314：那是 PR 原分支的口径；并集树上 383-71=312，差量与删掉的文档对齐。
 // 下降**全部**来自这些整篇落在规则 D 扫描面里的散文，不是判据放宽、也不是把计数断言换成不计数。
 // C 保持 299（#479 批末的实测值）—— 本批新增/改写的注释一句都没带「有检查在兜底」这类声称，
 // 没有可降的量，也没凭校准把噪声吞进基线。同批新增的交付报告用 `snapshot-doc:` 定格，不参与 D。
-export const CLAIM_UNBACKED_BASELINE = 299;
-export const COUNT_UNMARKED_BASELINE = 312;
+// 2026-11-21（#495 B 阶段前置）：下限改成「扫描面覆盖 + 解析器存活」，删掉写死四个实测快照的那段注释、
+// 也压掉了两段历史校准流水账，所以 C 299→298、D 312→311（均为本树实测；不是判据放宽）。
+export const CLAIM_UNBACKED_BASELINE = 298;
+export const COUNT_UNMARKED_BASELINE = 311;
 
 /* ---------- 判据 ---------- */
 
@@ -1353,8 +1345,8 @@ export function analyzeProject({ files, env }) {
 
 /* ---------- 反假绿下限 + 棘轮判定（默认模式） ---------- */
 
-/** 纯函数：把计数与下限/基线比对，产出 findings。 */
-export function judge(counts, { claimBaseline, countBaseline, mins } = {}) {
+/** 纯函数：把计数与下限/基线比对，产出 findings（`coverage` 来自 `trackedSurface`，fixture 可不传）。 */
+export function judge(counts, { claimBaseline, countBaseline, mins, coverage } = {}) {
 	const out = [];
 	const floor = (rule, actual, min, label, extra) => {
 		if (actual >= min) return; // 下限是「至少」语义：等于下限算过
@@ -1363,16 +1355,30 @@ export function judge(counts, { claimBaseline, countBaseline, mins } = {}) {
 			file: "（总计）",
 			line: 0,
 			raw: `${label} ${actual} < 下限 ${min}`,
-			message: `${label}掉到实测下限以下 —— 文件没读到 / 解析器坏了 / 判据在空转；「绿」不能和「没检查」同形`,
-			fix: "先确认扫描范围与 git 可用；若仓库真的变小了，同步下调头注释里的下限并写明出处。",
+			message: `${label}掉到下限以下 —— 解析器坏了 / 判据在空转；「绿」不能和「没检查」同形`,
+			fix: "先确认扫描范围与 git 可用；下限不随仓库存量调（见 ANNOTATION_MIN 的注释）。",
 			...extra,
 		});
 	};
-	floor("SCAN_FILES_BELOW_MIN", counts.files, mins.files, "扫描文件数");
-	floor("SCAN_DOCS_BELOW_MIN", counts.docFiles, mins.docs, "文档文件数");
-	floor("COMMENT_LINES_BELOW_MIN", counts.commentLines, mins.commentLines, "注释行数");
-	floor("REFS_BELOW_MIN", counts.refs, mins.refs, "引用数");
-	floor("ANCHORS_BELOW_MIN", counts.anchors, mins.anchors, "锚点数");
+	for (const [kind, missing, what] of [
+		["SCAN_MISSING_CODE", coverage?.missingCode ?? [], "代码"],
+		["SCAN_MISSING_DOCS", coverage?.missingDocs ?? [], "文档"],
+	]) {
+		if (missing.length === 0) continue;
+		const head = missing.slice(0, 8).join("、");
+		out.push({
+			rule: kind,
+			file: "（扫描面）",
+			line: 0,
+			raw: `${what}漏读 ${missing.length} 个`,
+			message: `${what}扫描面不完整：git 索引里有、本守卫没读到 —— ${head}${missing.length > 8 ? ` …（共 ${missing.length} 个）` : ""}`,
+			fix: "修扫描范围/读文件；漏读的文件里的注释不受任何约束，这时的绿是假绿。",
+		});
+	}
+	const min = mins ?? {};
+	floor("COMMENT_LINES_BELOW_MIN", counts.commentLines, min.commentLines ?? ANNOTATION_MIN.commentLines, "注释行数");
+	floor("REFS_BELOW_MIN", counts.refs, min.refs ?? ANNOTATION_MIN.refs, "引用数");
+	floor("ANCHORS_BELOW_MIN", counts.anchors, min.anchors ?? ANCHOR_MIN, "锚点数");
 
 	const ratchet = (name, actual, baseline, ruleOver, ruleUnder, what) => {
 		if (actual > baseline) {
@@ -1501,6 +1507,26 @@ export function collectRealFiles(env, root = ROOT) {
 	return files;
 }
 
+/** git 索引侧的扫描面：与 `listCodeFiles` / `listTrackedDocs` 同口径，用来算「漏读」。 */
+export function trackedSurface(root = ROOT) {
+	let tracked = [];
+	try {
+		const stdout = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+		tracked = stdout.split("\0").filter(Boolean);
+	} catch {
+		return { code: [], docs: [], available: false }; // 非 git 环境：不做覆盖判据（不能在没能力判时红）
+	}
+	const code = [];
+	for (const f of tracked) {
+		if (isExcluded(f)) continue;
+		const ext = path.extname(f);
+		if (CODE_SOURCES.some((s) => f.startsWith(`${s.dir}/`) && s.exts.includes(ext))) code.push(f);
+		else if (EXTRA_CODE_FILES.includes(f)) code.push(f);
+	}
+	const docs = tracked.filter((f) => f.endsWith(".md") && !isExcluded(f));
+	return { code: code.sort(), docs: docs.sort(), available: true };
+}
+
 /* ---------- 已知真事实核验（只用于 --report 自证，不影响退出码） ---------- */
 /*
  * 这三条是真事实（docs/lint-guards.md §1 L5 行 + §3）：守卫跑 --report 若看不见它们，
@@ -1508,7 +1534,7 @@ export function collectRealFiles(env, root = ROOT) {
  * ⚠️ 未命中 —— 那时把这一行从表里删掉即可（它是自证探针，不是契约）。
  */
 export const KNOWN_FACT_PROBES = [
-	{ file: "docs/v4/e2e-inventory.md", kind: "script", target: "scripts/e2e/suites/real_backend.mjs" },
+	{ file: "docs/history/v4-dispatch/TRACKER.md", kind: "script", target: "scripts/e2e/suites/real_backend.mjs" },
 	{ file: "docs/reports/orchestrator-untrack.md", kind: "make", target: "demo-chain" },
 	{ file: "docs/dev-docker.md", kind: "make", target: "mountpoint" },
 ];
@@ -1527,8 +1553,8 @@ const RULE_LABEL = {
 	SPEC_DOC_NOT_TEST: "spec-doc 标到非测试/检查文件上了",
 	SPEC_DOC_STALE: "spec-doc 标记已过期",
 	SCAN_NO_FILES: "扫描空转",
-	SCAN_FILES_BELOW_MIN: "扫描量低于下限",
-	SCAN_DOCS_BELOW_MIN: "文档量低于下限",
+	SCAN_MISSING_CODE: "扫描面漏读（代码）",
+	SCAN_MISSING_DOCS: "扫描面漏读（文档）",
 	COMMENT_LINES_BELOW_MIN: "注释量低于下限",
 	REFS_BELOW_MIN: "引用量低于下限",
 	ANCHORS_BELOW_MIN: "锚点量低于下限",
@@ -1540,15 +1566,15 @@ function fmtWhere(f) {
 	return f.line > 0 ? `${f.file}:${f.line}` : f.file;
 }
 
-function printCounts(counts) {
-	console.log(
-		`  扫描文件 ${counts.files}（代码 ${counts.codeFiles} / 文档 ${counts.docFiles}）  ` +
-			`下限 ${SCAN_FILES_MIN}（文档 ≥ ${SCAN_DOCS_MIN}）`,
-	);
-	console.log(`  注释行 ${counts.commentLines}   下限 ${COMMENT_LINES_MIN}`);
+function printCounts(counts, coverage) {
+	const cov = coverage?.available
+		? `覆盖 ${coverage.code.length - coverage.missingCode.length}/${coverage.code.length} 代码 · ${coverage.docs.length - coverage.missingDocs.length}/${coverage.docs.length} 文档`
+		: "覆盖 未校验（非 git 环境）";
+	console.log(`  扫描文件 ${counts.files}（代码 ${counts.codeFiles} / 文档 ${counts.docFiles}）  ${cov}`);
+	console.log(`  注释行 ${counts.commentLines}   下限 ${ANNOTATION_MIN.commentLines}`);
 	console.log(
 		`  引用 ${counts.refs}（已解析 ${counts.refsOk} / 未解析 ${counts.refsUnresolved} / 占位符跳过 ${counts.refsPlaceholder}）` +
-			`   下限 ${REFS_MIN}`,
+			`   下限 ${ANNOTATION_MIN.refs}`,
 	);
 	const kinds = Object.entries(counts.byKind)
 		.sort((a, b) => b[1] - a[1])
@@ -1655,7 +1681,9 @@ function printReportExtras(counts, info, findings) {
 
 function selfTest() {
 	let failed = 0;
+	let total = 0;
 	const check = (name, ok, detail) => {
+		total++;
 		if (ok) {
 			console.log(`  ✅ ${name}`);
 		} else {
@@ -1910,14 +1938,30 @@ function selfTest() {
 		);
 	}
 
-	// ㉑ 下限：0 引用 / 少量文件 ⇒ 红（反假绿）
+	// ㉑ 反假绿：扫描面漏读 / 解析器归零 ⇒ 红（与仓库规模无关）
 	{
-		const mins = { files: 10, docs: 5, commentLines: 100, refs: 50, anchors: 1 };
-		const got = judge({ files: 1, docFiles: 1, commentLines: 2, refs: 0, anchors: 0, claimUnbacked: 0, countUnmarked: 0 }, { claimBaseline: 0, countBaseline: 0, mins }).map((f) => f.rule);
+		const counts = { files: 1, docFiles: 1, commentLines: 0, refs: 0, anchors: 0, claimUnbacked: 0, countUnmarked: 0 };
+		const zero = judge(counts, { claimBaseline: 0, countBaseline: 0 }).map((f) => f.rule);
 		check(
-			"㉑ 扫描量/引用量低于下限 → 红（含 0 引用）",
-			["SCAN_FILES_BELOW_MIN", "SCAN_DOCS_BELOW_MIN", "COMMENT_LINES_BELOW_MIN", "REFS_BELOW_MIN", "ANCHORS_BELOW_MIN"].every((r) => got.includes(r)),
-			JSON.stringify(got),
+			"㉑ 注释/引用/锚点归零 → 红（含 0 引用）",
+			["COMMENT_LINES_BELOW_MIN", "REFS_BELOW_MIN", "ANCHORS_BELOW_MIN"].every((r) => zero.includes(r)),
+			JSON.stringify(zero),
+		);
+		const tinyButComplete = judge({ ...counts, files: 2, commentLines: 1, refs: 1, anchors: 4 }, {
+			claimBaseline: 0,
+			countBaseline: 0,
+			coverage: { available: true, code: ["a.go"], docs: ["a.md"], missingCode: [], missingDocs: [] },
+		});
+		check("㉑' 小仓库（但扫描面完整）→ 绿：下限不再按仓库存量判", tinyButComplete.length === 0, JSON.stringify(tinyButComplete));
+		const leaky = judge({ ...counts, commentLines: 1, refs: 1, anchors: 4 }, {
+			claimBaseline: 0,
+			countBaseline: 0,
+			coverage: { available: true, code: ["a.go"], docs: ["a.md"], missingCode: ["internal/b.go", "internal/c.go"], missingDocs: ["docs/x.md"] },
+		}).map((f) => f.rule);
+		check(
+			"㉑'' 漏读被跟踪文件 → SCAN_MISSING_* 红（代码/文档分开报）",
+			leaky.includes("SCAN_MISSING_CODE") && leaky.includes("SCAN_MISSING_DOCS"),
+			JSON.stringify(leaky),
 		);
 	}
 
@@ -1932,6 +1976,25 @@ function selfTest() {
 		const r = run(env, { "internal/x.go": "// @decision V4-D6\n" });
 		const ok = r.findings.length === 0 && r.info.decisionDocs.used.includes("docs/contracts/v4/CONTRACT.md");
 		check("㉒ 决策文档探测：设计文档已移除，决策号由契约文档 v4/CONTRACT.md 提供", ok, JSON.stringify(r.findings));
+	}
+
+	// ㉒' 契约文档删光后，决策号仍能落到代码侧索引（#495 B 阶段的前置 2）
+	{
+		const env = virtualEnv({
+			Makefile: "fe:\n\tnode scripts/check-css.mjs\n",
+			"package.json": '{"scripts":{}}',
+			"internal/decisions/decisions.go": 'package decisions\n\n// LightweightResourceAPI 是 V4-D9。\nconst LightweightResourceAPI = "V4-D9"\n',
+			"internal/x.go": "// @decision V4-D9\n",
+		});
+		const r = run(env, { "internal/x.go": "// @decision V4-D9\n" });
+		const bad = run(env, { "internal/x.go": "// @decision V4-D10\n" });
+		check(
+			"㉒' 契约文档不在时，@decision 由 internal/decisions/decisions.go 提供；不存在的号仍红",
+			r.findings.length === 0 &&
+				r.info.decisionDocs.used.includes("internal/decisions/decisions.go") &&
+				bad.findings.some((f) => f.rule === "ANCHOR_UNRESOLVED"),
+			JSON.stringify({ ok: r.findings, bad: bad.findings }),
+		);
 	}
 
 	// ㉓ 冻结标记只在 markdown 前 40 行有效
@@ -2080,7 +2143,7 @@ function selfTest() {
 		);
 	}
 
-	console.log(failed === 0 ? "\n✅ 自测全部通过（32 组红/绿判据）" : `\n❌ 自测失败 ${failed} 组`);
+	console.log(failed === 0 ? `\n✅ 自测全部通过（${total} 组红/绿判据）` : `\n❌ 自测失败 ${failed} 组`);
 	return failed === 0;
 }
 
@@ -2088,7 +2151,7 @@ function selfTest() {
 
 function usage() {
 	console.log("用法：node scripts/check-annotations.mjs [--report|--self-test|--help]");
-	console.log("  默认        体检：引用/锚点/棘轮/下限，任何一条不成立 exit 1");
+	console.log("  默认        体检：引用/锚点/棘轮/扫描面覆盖，任何一条不成立 exit 1");
 	console.log("  --report    盘点：只列 findings，不判红，exit 0");
 	console.log("  --self-test 守卫自身的红/绿双侧自证（纯内存 fixture）");
 }
@@ -2119,12 +2182,21 @@ async function main() {
 	}
 
 	const { counts, findings, info } = analyzeProject({ files, env });
+	const surface = trackedSurface(ROOT);
+	const scanned = new Set(files.map((f) => f.file));
+	const coverage = {
+		available: surface.available,
+		code: surface.code,
+		docs: surface.docs,
+		missingCode: surface.available ? surface.code.filter((f) => !scanned.has(f)) : [],
+		missingDocs: surface.available ? surface.docs.filter((f) => !scanned.has(f)) : [],
+	};
 
 	console.log("注解即外键守卫 · docs/lint-guards.md §1 L5 + §3");
 	console.log(`  仓库 ${ROOT}`);
 	console.log(`  模式 ${reportMode ? "--report（盘点：不判红）" : "默认（体检）"}`);
 	console.log(`  Makefile 目标 ${info.makeTargets.size} 个 · package.json scripts ${info.npmScripts ? info.npmScripts.size : "?"} 个`);
-	printCounts(counts);
+	printCounts(counts, coverage);
 
 	// 环境类问题（读不到 Makefile / package.json 坏了 / 0 文件）→ exit 2，不是「红」
 	const envBroken = findings.some((f) =>
@@ -2143,7 +2215,8 @@ async function main() {
 	const judged = judge(counts, {
 		claimBaseline: CLAIM_UNBACKED_BASELINE,
 		countBaseline: COUNT_UNMARKED_BASELINE,
-		mins: { files: SCAN_FILES_MIN, docs: SCAN_DOCS_MIN, commentLines: COMMENT_LINES_MIN, refs: REFS_MIN, anchors: ANCHOR_MIN },
+		mins: ANNOTATION_MIN,
+		coverage,
 	});
 	const all = [...findings, ...judged];
 

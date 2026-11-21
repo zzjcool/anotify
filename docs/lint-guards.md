@@ -58,7 +58,7 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 | L2 | `scripts/check-i18n-keys.mjs` | `8e253d4e`（补四语言键）、`7dc2c260`（en/es 中文残留）；sitegen 缺键只 `WARN`（`sitegen.go:356,370`） | 模板里引用的 key 必须在 4 份 locale 里都存在；4 份 locale 的 key 集合互等；解析必须 fail-loud（不认识的 YAML 语法直接报错，不许静默跳过） | `make fe` |
 | L3 | `scripts/check-test-discipline.mjs` | `edc71233`/`44184536`（`waitForTimeout` 当就绪）、`.catch(()=>{})` 吞断言、`t.Skip` 静默、裸标签定位器 + `.first()` 掩盖双命中 | **棘轮**：现值为基线，超基线红、低于基线也红（必须同步下调）；每项打印 count/baseline | `make ci` |
 | L4 | `internal/store/orderby_tiebreak_test.go` | `1461f7e4`（`usr_`+`crypto/rand` 破平局 → `TestAdmin_ListUsers` 42.5% 随机红） | store 里每条 `ORDER BY` 的末键必须唯一（`rowid` / 主键 / UNIQUE 索引覆盖，含部分唯一索引的 `WHERE deleted_at IS NULL` 谓词）；白名单条目过期即红；7 条变异子测试自证判据有牙 | `make test`（→ `make ci`） |
-| L5 | `scripts/check-annotations.mjs` | `189a57f3`（文档把 bug 诱导回来）、`e16c2536`（契约缺口写成注释）、`30856f69`（过期计数注释）、`DEVELOPMENT.md:720`（把未接线的脚本称「回归测试」） | ①文档/注释里的 `scripts/*`、`make <target>`、`npm run <x>` 引用必须解析（含 `docs/v4/e2e-inventory.md` 指向已删套件这类真事实）；②`@guard/@decision` 锚点必须解析到存在的规则码/决策号；③约束性注释无锚点数量、计数型注释无 `@count` 数量 —— **棘轮，只许降** | `make ci` |
+| L5 | `scripts/check-annotations.mjs` | `189a57f3`（文档把 bug 诱导回来）、`e16c2536`（契约缺口写成注释）、`30856f69`（过期计数注释）、`DEVELOPMENT.md:720`（把未接线的脚本称「回归测试」） | ①文档/注释里的 `scripts/*`、`make <target>`、`npm run <x>` 引用必须解析（含 `docs/v4/e2e-inventory.md` 指向已删套件这类真事实）；②`@guard/@decision` 锚点必须解析到存在的规则码/决策号；③约束性注释无锚点数量、计数型注释无 `@count` 数量 —— **棘轮，只许降**；④反假绿下限 = 扫描面覆盖（`git ls-files` 里落在扫描面的文件必须全被读到，漏读即红）+ 解析器存活（注释/引用/锚点不得归零）—— 2026-11-21 起不再写死「仓库存量」型下限（#495 B 前置，见 `docs/reports/doc-density-b.md`） | `make ci` |
 
 | L6 | `scripts/check-secrets.mjs` | GitHub 上的 `GitGuardian Security Checks` 是**服务端 App**：推上去之后才扫 PR diff，本地 `git commit` 时无感。本仓的秘密面又很具体（`install.json`/`anode.yaml` 里的令牌、VAPID 私钥、`docs/` 里的示例命令） | PEM 私钥块 / 供应商形状（`ghp_`、`AKIA`、`sk-`…）/ 本仓令牌形状（`VAPID_PRIVATE`、`token:` + ≥32 字符字面量、`Bearer`）/ 被跟踪的 `.env`、`*.pem`、`id_*`。**不做熵检测**（夹具里全是假令牌）；`ALLOWLIST` 每条带理由且过期即红；`--staged` 供 pre-commit。**首次提交就自证了一次**：默认模式只扫**被跟踪**文件，于是它把自己的 self-test 夹具当成泄漏——已把夹具改成运行时拼接（源码里不留秘密形状）。这与 L5 那个「未跟踪文档漏扫」是同一类不对称 | `make ci` + `make hooks` |
 | L7 | `Makefile` 的 `lint-go` | Go 侧原先只有 `gofmt` + `go vet`；AGENTS.md §3 写的「包注释」「`%w` 包装」两条纪律**无机检**（实测 `%v` 包 err 为 0 处、3 个包缺包注释、staticcheck SA 类 5 条） | gofmt + 包注释（`go list -f '{{if not .Doc}}'`）+ vet + `staticcheck -checks=SA*,U1000`（正确性类 + 未使用符号；`U1000` 已清零后再开，见 backlog #14；`S*`/`ST*` 噪声大仍另立项） | `make ci` |
@@ -217,7 +217,7 @@ lead 删掉这两条写路径后全扫转绿（23 页 / 32 个写调用点 / 1 �
 
 ```
 @guard    scripts/check-css.mjs#NESTED_RULE     ← 脚本必须存在，且真的会抛这个规则码
-@decision V4-D1                                  ← 决策编号必须在契约文档里找到（见 docs/contracts/v4/CONTRACT.md §0）
+@decision V4-D1                                  ← 决策编号必须在决策索引里找到（internal/decisions/decisions.go 或 docs/contracts/v4/CONTRACT.md §0）
 @count    node scripts/check-contrast.mjs        ← 计数型断言必须附可重跑的命令
 frozen-doc: v3 设计快照，不再随代码演进           ← 仅 markdown 前 40 行，且引用已全部解析时必红
 spec-doc:  本文件是这条检查自己的规格说明         ← 仅代码文件（测试/检查文件）的文件头，整份跳过 claim 棘轮；

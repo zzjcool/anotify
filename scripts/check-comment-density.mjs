@@ -26,9 +26,9 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const BASELINE = {
 	"schemaVersion": 2,
 	"measuredAt": "2026-11-21",
-	"commentLines": 43373,
-	"codeLines": 266224,
-	"files": 664,
+	"commentLines": 43372,
+	"codeLines": 266349,
+	"files": 666,
 	"dirs": {
 		".": 89,
 		".github/workflows": 108,
@@ -62,6 +62,7 @@ export const BASELINE = {
 		"internal/artifact": 424,
 		"internal/auth": 1259,
 		"internal/authn": 16,
+		"internal/decisions": 2,
 		"internal/lease": 36,
 		"internal/logging": 22,
 		"internal/playbook": 1347,
@@ -82,7 +83,7 @@ export const BASELINE = {
 		"internal/version": 48,
 		"internal/ws": 669,
 		"internal/yamldoc": 262,
-		"scripts": 3617,
+		"scripts": 3614,
 		"scripts/demo": 16,
 		"scripts/e2e": 634,
 		"scripts/e2e/fixtures": 0,
@@ -192,8 +193,9 @@ export const BASELINE = {
 export const PER_FILE_RATIO_MAX = 0.5;
 export const PER_FILE_FLOOR = 12;
 export const NEW_DIR_COMMENT_MAX = 10;
-/** 扫描面坏掉（路径/过滤/解析）时不允许静默通过。 */
-export const MIN_SCANNED = { files: 600, commentLines: 30000, codeLines: 150000 };
+/** 扫描面坏掉（路径/过滤/解析）时不允许静默通过。2026-11-21（#495 B 阶段前置 1）删掉了
+ * `commentLines: 30000`：它随删注释变成「本批必须下调」的墙，而目录等值棘轮已管住这个形态。 */
+export const MIN_SCANNED = { files: 600, codeLines: 150000 };
 
 export const CODES = {
 	DIR_OVER: "DIR_OVER",
@@ -531,8 +533,6 @@ export function evaluate({ measured, docs }, baseline, opts = {}) {
 	const scan = opts.minScanned ?? MIN_SCANNED;
 	if (measured.total.files < scan.files)
 		push(CODES.SCAN_TOO_SMALL, `只扫到 ${measured.total.files} 个文件（下限 ${scan.files}）—— 扫描面坏了`);
-	if (measured.total.comment < scan.commentLines)
-		push(CODES.SCAN_TOO_SMALL, `只扫到 ${measured.total.comment} 行注释（下限 ${scan.commentLines}）`);
 	if (measured.total.code < scan.codeLines)
 		push(CODES.SCAN_TOO_SMALL, `只扫到 ${measured.total.code} 行代码（下限 ${scan.codeLines}）`);
 
@@ -828,7 +828,7 @@ const FIXTURE_BASELINE = {
 	docs: { contracts: { files: 5, lines: 400 }, v4: { files: 2, lines: 60 }, research: { files: 1, lines: 30 }, perf: { files: 1, lines: 20 } },
 	rootPlans: { files: 1, lines: 40 },
 };
-const FIXTURE_MIN = { files: 1, commentLines: 1, codeLines: 1 };
+const FIXTURE_MIN = { files: 1, codeLines: 1 };
 
 function fixtureMeasured({ dirs = {}, files = [], total } = {}) {
 	const comment = Object.values(dirs).reduce((a, b) => a + b, 0);
@@ -981,7 +981,7 @@ export function selfTest() {
 	}
 	{
 		const res = evaluate({ measured: { dirs: {}, files: [], total: { files: 3, comment: 3, code: 3 } }, docs: FIXTURE_DOCS }, { ...FIXTURE_BASELINE, dirs: {}, commentLines: 3 });
-		check("⑩ 扫到的文件/注释/代码任一不足下限 → SCAN_TOO_SMALL ×3", kinds(res).filter((k) => k === CODES.SCAN_TOO_SMALL).length === 3, JSON.stringify(kinds(res)));
+		check("⑩ 扫到的文件/代码任一不足下限 → SCAN_TOO_SMALL ×2（注释行不再有绝对地板）", kinds(res).filter((k) => k === CODES.SCAN_TOO_SMALL).length === 2, JSON.stringify(kinds(res)));
 	}
 	{
 		const measured = fixtureMeasured({ dirs: { "internal/a": 24 } });
