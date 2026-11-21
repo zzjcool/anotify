@@ -396,21 +396,18 @@ CREATE INDEX IF NOT EXISTS idx_event_deliveries_expiry
 -- phase ∈ pending | running | succeeded | failed | cancelled | abandoned。
 -- waiting_reason ∈ waiting_for_slot | retry_backoff | waiting_for_config（只有 pending 有意义）。
 -- lease_id / lease_until / attempt_token_hash 是执行授权事实（token 只存 sha256）。
--- lease_instance_id 是**这一次 attempt 绑定的物理槽位**（node_instances.id）：
--- 同一逻辑任务换 attempt 重试时可能同时占着旧 attempt 的槽（旧进程未回收），
--- 释放只能按「node + 这个 attempt 绑的槽」精确释放，不能按 task_id 一把清掉
--- （否则旧 attempt 的进程还在跑，槽位就被新任务用了）。
--- assignment_id / proposed_attempt 是「这次派给谁」的候选事实（assign 时不授执行权）。
--- assignment_expires_at 是这次候选的**统一有界窗口**（初值 30s，与节点 reservation 同一
--- 截止时刻）：窗口失效后不再接受对应 slot 的 grant；新派发会写新 assignment。
+-- lease_instance_id 是**这一次 attempt 绑定的物理槽位**（node_instances.id）：换 attempt
+-- 重试时可能同时占着旧 attempt 的槽，释放只能按「node + 这个 attempt 绑的槽」精确释放，
+-- 不能按 task_id 一把清掉（否则旧进程还在跑，槽位就被新任务用了）。
+-- assignment_id / proposed_attempt 是「这次派给谁」的候选事实（assign 时不授执行权）；
+-- assignment_expires_at 是候选的**统一有界窗口**（30s，与节点 reservation 同一截止时刻）。
 -- idempotent 在派发时从 spec.lifecycle 钉住（重试判定只看这一列，不回读能力）。
--- namespace_vars / namespace_vars_revision 是**任务被接受时**钉住的命名空间默认输入快照
--- 与它的 namespaceVarsRevision（D2）：排队期间 ns 配置更新不影响已接受的任务，
--- 换节点重试沿用同一份快照；值只在内部执行输入里用，不进公共 DTO（json:"-"）。
+-- namespace_vars / namespace_vars_revision 是**任务被接受时**钉住的命名空间默认输入快照与
+-- 它的 revision（D2）：排队期间的 ns 更新不影响已接受任务，换节点重试沿用同一份快照；
+-- 只在内部执行输入里用，不进公共 DTO（json:"-"）。
 -- cancel_reason / cancel_requested_at / stop_intent 记录停止事实：stop_intent 是**意图**
--- （cancel | abandon，空 = 无停止意图），cancel_reason 是人话原因或默认封闭码。终态相位
--- 由 stop_intent 决定（不从 reason 字面反推）；running 时要等 cancel.ack 的
--- processGroupReaped 才落终态，pending 时直接终态。
+-- （cancel | abandon，空 = 无）；终态相位由 stop_intent 决定（不从 reason 字面反推），
+-- running 要等 cancel.ack 的 processGroupReaped，pending 直接终态。
 -- reported=1 表示节点已回报终态；summary/artifacts/error 是结果。
 CREATE TABLE IF NOT EXISTS tasks (
     id                 TEXT PRIMARY KEY,
@@ -509,25 +506,19 @@ CREATE INDEX IF NOT EXISTS idx_tasks_cap_created
 CREATE INDEX IF NOT EXISTS idx_tasks_pending_created_at
     ON tasks(created_at) WHERE phase = 'pending';
 
--- 每次执行（attempt）一行：逻辑任务仍然只有 tasks 一行，attempt 是它的**执行事实**。
---
--- 它不是 child task（parent_task_id 只表示业务 emit 的父子关系），也不参与路由。
--- 为什么必须持久化机器快照：机器级输入（local > node 合并后的 vars/limits）在 grant
--- 那一瞬确定，本次 attempt 期间后续 config 更新 / hello 上报不得改动它（D2）。
--- TaskInputs 只读这张表，不回读当前 node_configs——那会让同一 attempt 中途换值。
--- namespace 默认值仍由 tasks.namespace_vars 在任务接受时钉住（跨 attempt 不变，
--- 本表只记它当时的 revision 作诊断）。
---
--- machine_vars / machine_limits / machine_var_sources 是**非敏感**机器值：
--- 凭证、envPassthrough 名单、namespace 值都不进来（D5）。config_hash 只由共享
--- protocol.MachineConfigHash 计算（canonical JSON 只有 vars + limits 两个键，
--- 不含 revision / namespace / token / passthrough）。
---
--- instance_id / slot 是这次 attempt 实际占用的物理槽（node_instances）；
--- lease_id / attempt_token_hash 是这一代的授权摘要（token 只存 sha256）。
--- reaped_at 是「该 attempt 的进程组已被可信事实证明回收」的落点；reaped_at IS NULL
--- 的 attempt 是任务 GC 的硬保留条件（物理事实不能随任务行级联消失）。
--- reclaim_reason 记录是哪一种事实（result / cancel_ack / node_instance_idle …）。
+-- 每次执行（attempt）一行：逻辑任务仍只有 tasks 一行，attempt 是它的**执行事实**。
+-- 它不是 child task（parent_task_id 只表示业务 emit 的父子），也不参与路由。
+-- 机器快照必须持久化：机器级输入（local > node 合并后的 vars/limits）在 grant 那一瞬
+-- 确定，本次 attempt 期间后续 config 更新 / hello 上报不得改动它（D2）；TaskInputs 只读
+-- 这张表、不回读当前 node_configs。namespace 默认值仍由 tasks.namespace_vars 钉住，
+-- 本表只记它当时的 revision 作诊断。
+-- machine_vars / machine_limits / machine_var_sources 是**非敏感**机器值：凭证、
+-- envPassthrough 名单、namespace 值都不进来（D5）；config_hash 只由共享
+-- protocol.MachineConfigHash 计算（canonical JSON 只有 vars + limits）。
+-- instance_id / slot 是这次 attempt 占用的物理槽；lease_id / attempt_token_hash 是这一代
+-- 的授权摘要（token 只存 sha256）。reaped_at 是「进程组已被可信事实证明回收」的落点，
+-- IS NULL 的 attempt 是任务 GC 的硬保留条件（物理事实不能随任务行级联消失）。
+-- reclaim_reason 记录是哪一种事实（result / cancel_ack / node_instance_idle …）；
 -- phase / error 是 attempt 级诊断，不是任务状态机（任务相位仍只有 tasks.phase）。
 CREATE TABLE IF NOT EXISTS task_attempts (
     task_id                 TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -747,3 +738,13 @@ CREATE TABLE IF NOT EXISTS playbook_versions (
     created_by  TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (playbook_id, version)
 );
+
+-- router 的结局表与决策凭据（#522）。outcomes 是**声明快照**（建任务那一刻钉住，不回读源）；
+-- decision 是**判决事实**（一次且仅一次，`decision = ''` 是 CAS 闸）；*_token_hash /
+-- *_expires_at 是一次性凭据（与 attempt token 同一条「只存摘要」纪律）。
+-- +migration 5 router_outcomes
+ALTER TABLE tasks ADD COLUMN outcomes TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN decision TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN decision_at INTEGER;
+ALTER TABLE tasks ADD COLUMN decision_token_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN decision_expires_at INTEGER;

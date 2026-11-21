@@ -14,13 +14,11 @@ import (
 
 // v4 布局格式闭包的外部验收（G1-6C1）。
 //
-// 三条事实被分开钉住：
-//   - **记账** schema_version：跑过哪些迁移块（v4 baseline = 1）；
+// 三条事实被分开钉住：  - **记账** schema_version：跑过哪些迁移块（v4 baseline = 1）；
 //   - **布局格式** PRAGMA user_version：表结构是哪一代（v4 = 4）；
 //   - 两者只有在一起、且结构真的完整时才是「v4 库」。
 //
-// 这里全部用真实 SQLite 文件造反例（旧库/坏库/半写库），并且每条拒绝都要验：拒绝前后**用户数据、DDL、布局标记**一字不差——程序不许自愈、不许补标记、不许删数据。
-// 唯一不比较的是 SQLite 自己的 journal/WAL 字节（父裁决明确排除）。
+// 这里全部用真实 SQLite 文件造反例（旧库/坏库/半写库），每条拒绝都要验：拒绝前后**用户数据、DDL、布局标记**一字不差（不许自愈/补标记/删数据，不比 journal/WAL 字节）。
 
 // TestFormatNewDatabaseWritesLayoutMarker 全新空库：baseline 记账 1 + 布局标记 4， 重开幂等，字段往返一致。
 func TestFormatNewDatabaseWritesLayoutMarker(t *testing.T) {
@@ -29,9 +27,9 @@ func TestFormatNewDatabaseWritesLayoutMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open fresh: %v", err)
 	}
-	// 记账 = headVersion：baseline（1）之后还有增量块（2 release 身份、3 卸载标记、4 包版本历史）。
-	if v, err := db.SchemaVersion(); err != nil || v != 4 {
-		t.Fatalf("SchemaVersion = %d, %v; want 4", v, err)
+	// 记账 = headVersion：baseline（1）之后还有增量块（2 release 身份、3 卸载标记、4 包版本历史、5 router 结局表/判决凭据）。
+	if v, err := db.SchemaVersion(); err != nil || v != 5 {
+		t.Fatalf("SchemaVersion = %d, %v; want 5", v, err)
 	}
 	// 布局标记是**独立**的另一件事。
 	if got := rawUserVersion(t, path); got != 4 {
@@ -51,7 +49,7 @@ func TestFormatNewDatabaseWritesLayoutMarker(t *testing.T) {
 	if got := rawUserVersion(t, path); got != 4 {
 		t.Fatalf("重开后 PRAGMA user_version = %d, want 4", got)
 	}
-	if v, err := db2.SchemaVersion(); err != nil || v != 4 {
+	if v, err := db2.SchemaVersion(); err != nil || v != 5 {
 		t.Fatalf("重开后 SchemaVersion = %d, %v; want 4", v, err)
 	}
 	var name, digest, foldKey string
@@ -283,8 +281,8 @@ func TestFormatMarkerContradictoryLedgerRejected(t *testing.T) {
 			name: "ledger_ahead_of_head",
 			stmts: []string{
 				`CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`,
-				// 1..5：第 5 块比本版本代码认识的 headVersion（= schema.sql 的块数）更高。
-				`INSERT INTO schema_version (version, applied_at) VALUES (1, 1), (2, 1), (3, 1), (4, 1), (5, 1)`,
+				// 1..6：第 6 块比本版本代码认识的 headVersion（= schema.sql 的块数）更高。
+				`INSERT INTO schema_version (version, applied_at) VALUES (1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1)`,
 			},
 			wantHint: "高于",
 		},
@@ -509,8 +507,7 @@ func TestFormatCollidingBaselineViewRejectedBeforeInitialization(t *testing.T) {
 	}
 }
 
-// TestFormatCollidingLedgerViewRejectedBeforeInitialization 保留原同名 ledger 视图夹具，具名非空拒绝。
-// 不再声称已经运行到 INSERT；中途记账/marker 失败白盒覆盖仍待后续授权卡补齐。
+// TestFormatCollidingLedgerViewRejectedBeforeInitialization 保留原同名 ledger 视图夹具，具名非空拒绝。不再声称已经运行到 INSERT；中途记账/marker 失败白盒覆盖仍待后续授权卡补齐。
 func TestFormatCollidingLedgerViewRejectedBeforeInitialization(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ledger-fail.db")
 	raw := openRawFixture(t, path)
@@ -982,8 +979,7 @@ func TestFormatMarkerExtraCheckRejected(t *testing.T) {
 	assertCheckDefect(t, path, "多余 CHECK 约束 nodes.name")
 }
 
-// TestFormatCheckInCommentIsNotAConstraint CHECK 只在**真实的约束位置**才算数：
-// 注释里的 CHECK 文本不是约束。字符串搜索式实现会在这里误报「多余 CHECK 约束」。
+// TestFormatCheckInCommentIsNotAConstraint CHECK 只在**真实的约束位置**才算数：注释里的 CHECK 文本不是约束。字符串搜索式实现会在这里误报「多余 CHECK 约束」。
 //
 // 两个子用例分别盯两个面：
 //   - after_comma：注释在列定义行尾（基线里 tasks 的 DDL 本来就有带 CHECK 字样的注释）；

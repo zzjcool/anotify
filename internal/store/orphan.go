@@ -20,7 +20,6 @@ import (
 // 自动删掉会把现场一起清掉。要不要自动化、阈值多少是运营策略，不是数据层的事。
 // 本文件只提供「看得见」（ListOrphanPendingTasks）与「处置得了」（AbandonPendingTask）。
 
-// 孤儿原因分类。
 const (
 	// OrphanNoCapability 表示任务钉住的能力行已不存在。
 	OrphanNoCapability = "no_capability"

@@ -303,8 +303,10 @@ func insertPruneFactEventOn(ctx context.Context, ex queryExec, e *Event) error {
 	if e.Type == "" {
 		return fmt.Errorf("insert prune event: empty type (剪枝码)")
 	}
-	if !protocol.IsPruneReason(e.Type) && e.Type != protocol.ReasonDownstreamMissing {
-		return fmt.Errorf("insert prune event: %q 不是剪枝原因码（允许：%v）", e.Type, protocol.PruneReasons())
+	if !protocol.IsPruneReason(e.Type) && e.Type != protocol.ReasonDownstreamMissing &&
+		!protocol.IsRouteObservationReason(e.Type) {
+		return fmt.Errorf("insert prune event: %q 不是剪枝原因码（允许：%v / %v）",
+			e.Type, protocol.PruneReasons(), protocol.RouteObservationReasons())
 	}
 	payload := string(e.Payload)
 	if len(e.Payload) == 0 || !json.Valid(e.Payload) {
