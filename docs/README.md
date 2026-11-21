@@ -71,6 +71,6 @@ git show <sha>:<path>                                          # 具体某一份
   `check-comment-density`（L12）管**总量**只许降 —— 目录与仓库注释行冻结在基线，
   单文件上限 = max(12, 代码行 × 0.5)。
 - **文档**只留操作手册。`docs/design`、`docs/specs`、`docs/plans` 重建即判红；
-  `docs/v4`、`docs/research`、`docs/perf`、`docs/contracts` 的文件数进了棘轮，只许下调。
+  `docs/v4`、`docs/research`、`docs/perf` 已删（重建即判红）；`docs/contracts` 的文件数进了棘轮，只许下调。
 - 删完同批下调基线：`node scripts/check-comment-density.mjs --update`（只降不升；抬高直接拒）。
 - 逐目录判据与分批计划见 [reports/comment-and-doc-ratchet.md](reports/comment-and-doc-ratchet.md)。

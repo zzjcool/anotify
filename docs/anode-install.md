@@ -174,7 +174,7 @@ shell 启动过程，所以**能对齐、也应该对齐的是安装那一刻服
 anode serve --check --config <tmp>/preflight.yaml --data <tmp>/data   # 脚本内部构造
 ```
 
-语义（`anode` 自己的契约，见 `docs/v4/anode-cli.md` §3）：
+语义（`anode` 自己的契约，见 [`anode-cli.md`](anode-cli.md) §3）：
 
 - **一次性**：握手走到 `welcome` 就退出；不写盘、不监听、不启动 runner/emit。
 - 成功：stdout 一行 `check ok: node=<name>`（不含 token）→ exit 0。
@@ -394,4 +394,4 @@ Dockerfile 独立 CGO=0 Go 二进制，无 SQLite dependency closure，默认 se
 
 具名测试和原始命令/结果见 `teams/anode/N3-TESTS.md`。安装测试全 temp/offline，无宿主 service/binary 修改；脚本测试 fake curl/假 systemctl/假 sudo/假 loginctl + 真 `anode` 二进制，断言下载、sha256、预检、install、`daemon-reload`/`enable`/`restart` 顺序、`is-active` 轮询，并断言 token 不出现在 stdout；另覆盖篡改 sha256 中止（精确 exit 2）、`--token`/`--token-file` 缺失、`--no-preflight`、预检失败不装服务且**恢复升级前停掉的旧服务**（没停过就不 start）、`--service none` 不调 systemctl 但**照样预检**（错令牌 → exit 2）、`--token-file` 轮换自动 `--update-token`、系统服务的 **chown 早于 restart**（假 `systemctl is-active` 只在「config 属主 == unit 的 `User=`」时为 active）、起不来/装不上时**恢复旧服务**并把子进程失败码带进诊断、PATH 抓一次落 `install.json`、重跑复用记录（换 caller PATH / 换登录 shell 都不换 unit，`--refresh-path` 才更新）、`--prefix` + `--service system` / `--service user` 明确拒绝、`auto` 推导出的 `user` 在 `--prefix` 下降级为 `none`（不调 systemctl）、`--dry-run --service user` 不调 `loginctl`、中枢下载路径的令牌只走 `curl --config`（不进 argv）、重跑=升级、`--uninstall`/`--keep-config`/`--purge`/`--dry-run`，以及下发副本与仓库脚本字节一致（`cmp`）。能力脚本测试执行实际构建 anode emit，含跨 attempt 回原 task/pruned、异 body conflict、旧 token 先拒、无 id 不同投递；升级测试复制真实旧 binary，在 fake hub 下替换当前进程的文件、真实重启并上报新 hello，不用空 Restart 冒充。
 
-`make check-anode-skill` 是文档侧的门：`docs/v4/anode-cli.md` 代码块里的每个子命令/flag 都要在真二进制的 `-h` 里存在，`web/install-anode.sh` 必须与 `scripts/install-anode.sh` 字节相同。
+`make check-anode-skill` 是文档侧的门：[`anode-cli.md`](anode-cli.md) 代码块里的每个子命令/flag 都要在真二进制的 `-h` 里存在，`web/install-anode.sh` 必须与 `scripts/install-anode.sh` 字节相同。

@@ -208,7 +208,7 @@ anode: ## 构建节点二进制 anode（带版本信息；输出名 ANODE_OUT，
 
 # 产物对账：issue #334 要求「make build 产物 manifest 可对账」——二进制 sha256、
 # git sha、五份 spec 的合并 hash、前端指纹（dist/manifest.json）各一行，便于和
-# docs/v4/g4a-build-manifest.md 里的记录比对。
+# 随发布记录比对（对账口径以本 target 的输出为准，不再另存清单文档）。
 manifest: build ## 打印构建产物对账信息（二进制 sha256 / 版本 / git sha / spec hash / 前端指纹）
 	@echo "version:  $(VERSION_LABEL)"
 	@echo "git:      $(GIT_SHA)"
@@ -261,14 +261,14 @@ contract: ## CONTRACT.md §9 的静态不变量断言（A2/A4/A5/A6/A7）+ opena
 	@echo "✅ 契约静态断言（A2/A4/A5/A6/A7 + openapi 一致性 + 字段级核对 + anode 可编译）通过"
 
 # 节点 CLI 的可发现面（#334，v3 #317 的等价迁移）：v4 的节点产品是 anode（serve/install/emit），
-# 没有内嵌 skill.md，于是「手册 ↔ 真二进制」的对账落在 docs/v4/anode-cli.md 与
+# 没有内嵌 skill.md，于是「手册 ↔ 真二进制」的对账落在 docs/anode-cli.md 与
 # scripts/install-anode.sh 上：
 #   · 手册代码块里的每个 `anode <sub>` 与 `--flag` 必须能在**真二进制**的 -h 里找到
 #     （不 grep 源码：flag 的注册形状会重构，-h 才是用户/脚本看到的那份事实）；
 #   · `--version` 的单行 JSON 必须与注入值一致，且 install-anode.sh 的版本校验吃得下；
 #   · 边界：anode 只依赖 internal/protocol + internal/artifact，不 import 中枢包、不开数据库。
 # 故意写错一个 flag → 这里红。
-check-anode-skill: ## 校验 anode CLI 与 docs/v4/anode-cli.md / install-anode.sh 一致（防漂移）
+check-anode-skill: ## 校验 anode CLI 与 docs/anode-cli.md / install-anode.sh 一致（防漂移）
 	@python3 scripts/check_anode_skill.py
 
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。

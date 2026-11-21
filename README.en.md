@@ -175,7 +175,7 @@ make docker-anode                           # node image (a container is a node)
 
 The token is issued after registering the node in the hub
 (`POST /v1/nodes` → `POST /v1/nodes/{name}/tokens`, plaintext returned once).
-`anode install` only writes files (no `sudo`, no `systemctl`); see `docs/v4/anode-cli.md` for the
+`anode install` only writes files (no `sudo`, no `systemctl`); see `docs/anode-cli.md` for the
 full CLI (three subcommands and their flags).
 
 ## Public Exposure

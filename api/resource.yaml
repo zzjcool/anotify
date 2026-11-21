@@ -1,8 +1,8 @@
 # anotify v4 · 资源域 HTTP 契约（exact-five 之一，共享组件的家）
 #
-# 本文件是五份 OpenAPI 真源中的 **resource.yaml**：#333 冻结的归属表
-# （docs/v4/g3c-spec-inventory.md §4.1）里的 53 个 operation 在这里，另有 4 条 `/yaml`
-# 端点（共 57，归属表待文档 owner 同步）——其中 2 条只读（`GET …/{name}/yaml`：
+# 本文件是五份 OpenAPI 真源中的 **resource.yaml**：#333 冻结归属表的 53 个 operation 在这里，
+# 另有 4 条 `/yaml` 端点（共 57；归属表已删，本文件的 operation 集合即权威）——其中 2 条只读
+# （`GET …/{name}/yaml`：
 # 能力的正文全文 / 源的脱敏重建），2 条从 YAML 创建（`POST …/capabilities/yaml` /
 # `POST …/sources/yaml`）；其余四份
 # （events/agent/ingress/auth）通过**相对 `$ref`** 引用本文件的 components：

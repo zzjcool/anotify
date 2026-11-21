@@ -26,7 +26,7 @@ v4 把「中枢」和「节点」做成**两个独立产品**；v3 的 `cmd/agen
   升级目标版本，`anode` 的 `main.version` 由 Makefile 注入**同一个串**（`VERSION_LABEL`）；
   两处不等 → 「已是最新」永远判不出来，节点会被反复升级。
 
-CLI 手册：`docs/v4/anode-cli.md`（被 `make check-anode-skill` 机检）。
+CLI 手册：`docs/anode-cli.md`（被 `make check-anode-skill` 机检）。
 v3 的 `skill.md` / `--skill` / `anotify-agent <sub>` 命令全部退役。
 
 ## 1. 项目是什么
@@ -412,7 +412,7 @@ curl -X POST -b "$SESSION" https://<中枢>/v1/nodes/node-a/upgrade
 服务端没带二进制时接口回 `501 agent_binary_unavailable`，控制台按钮会提示「服务端没带二进制」。
 
 > v3 的 `anotify-agent upgrade --check/--restart` 已随节点产品退役：v4 的节点没有 CLI 升级
-> 子命令，升级是**中枢发起**的运维动作。首次安装见 `docs/v4/anode-cli.md` 的
+> 子命令，升级是**中枢发起**的运维动作。首次安装见 `docs/anode-cli.md` 的
 > `anode install`（下载/校验在 `scripts/install-anode.sh`）。
 
 ### 节点本地的执行档案（resultstore）：只在跑它的那台机器上
@@ -430,7 +430,7 @@ v4 的节点把每次执行落在 `<data-dir>/results/<hex(taskId)>/<attempt>/`
 - v3 的 `anotify-agent runs` / `show` 子命令已退役：v4 没有「在节点上用 CLI 翻执行历史」
   这条路径，排障走中枢的日志运维帧 + 节点数据目录。
 
-### 节点 CLI 的可发现面：`-h` / `--version` / `docs/v4/anode-cli.md`
+### 节点 CLI 的可发现面：`-h` / `--version` / `docs/anode-cli.md`
 
 `anode` 是**用户机器上**的二进制：拿到它的人可能没有仓库、没有文档、也没有网络，
 所以「它有什么命令」必须自己答得出来：
@@ -444,7 +444,7 @@ anode --version   # 单行 JSON：{"version":"<version>+<commit>","commit":"<sha
 三道纪律（#334）：
 
 - `-h` 与 `--version` **不读 anode.yaml、不连网、不落盘**：空目录、没有令牌、断网都退 0。
-- 手册在 `docs/v4/anode-cli.md`（v4 没有内嵌 skill.md），flag 的**事实源**是子命令的 `-h`。
+- 手册在 `docs/anode-cli.md`（v4 没有内嵌 skill.md），flag 的**事实源**是子命令的 `-h`。
   改子命令或 flag 必须同步手册与 `scripts/install-anode.sh`：`make ci` 跑
   `scripts/check_anode_skill.py`，拿真二进制的 `-h` / `--version` 对账手册代码块里的每个
   `anode <sub>` 与 `-flag`（写错一个 flag 就红），并守住边界（anode 只依赖
@@ -463,7 +463,7 @@ v4 的能力是**中枢资源**（`POST/PUT /v1/namespaces/{ns}/capabilities`，
 节点只消费中枢下发的产物（内容寻址，按 digest 缓存）。
 
 - v3 的 `anotify-agent check` / `schema` / `run` 随节点产品退役；v4 的 `anode` 只有
-  `serve` / `install` / `emit`（`docs/v4/anode-cli.md`）。
+  `serve` / `install` / `emit`（`docs/anode-cli.md`）。
 - 「拷到别的机器直接跑」的逃生舱在 v4 由 `anode install --prefix` + 产物缓存承担：
   校验器只有中枢一份，不在节点上再造第二份真相。
 
@@ -554,7 +554,7 @@ make ci
 2. `make fe`：sitegen + 指纹，供下一步 `-tags embeddist` 内嵌。默认 `go build` / `go test` / `go run` 不嵌入 dist（开发期设 `ANOTIFY_STATIC` 即可编译）
 3. `go vet ./...`
 4. `go build ./...`，以及两个带版本注入的生产二进制（`anotify` 带 `-tags embeddist`；`anode` 走 `cmd/anode`）
-5. `make check-anode-skill`：`docs/v4/anode-cli.md` 里的子命令 / flag 与真 `anode`
+5. `make check-anode-skill`：`docs/anode-cli.md` 里的子命令 / flag 与真 `anode`
    `-h` 对账，`--version` 的 JSON 与注入值对齐（#334 的防漂移门禁，承接 v3 #317）
 6. `go test ./... -count=1 -shuffle=on`（与 `make test` 相同；`make test-repeat` 再叠 `-count=2`）
 
@@ -598,13 +598,13 @@ iOS 真机 APNs 推送（需真实 iPhone，见 `IOS_TESTING.md`）。其余全�
 2. `make mock-local MOCK_PORT=7799`，Playwright 同视口截 dark/light；或直接看 dev
 3. 若改到 DOM/交互契约，单跑 `./scripts/e2e/run_all.sh --serial frontend`（约 4min）；纯 CSS 可跳过
 4. 预览部署：`make dev-reset`（不要 `WIPE=1`，保留 `anotify-dev-data`）
-5. **push / merge 前**再跑一次全量 `make e2e`（28 套件 = 13 HTTP + 15 Chrome；断言数每轮都在变，以执行器汇总行为准，见 `docs/v4/e2e-inventory.md`）
+5. **push / merge 前**再跑一次全量 `make e2e`（28 套件 = 13 HTTP + 15 Chrome；断言数每轮都在变，以执行器汇总行为准）
 
 `make e2e` 现状（`scripts/e2e/run_all.sh`）：自己构建 `.e2e-bin/anotify` + `devseed` + `anode`
 三个真实二进制，**节点侧只有 `cmd/anode`**（`cmd/agent` / `AGENT_BIN` 已随协议 v4 退役，
 不再有第二套节点 CLI）；不跑 `go test`（单测在 `make test`），也不要求先 `make build`。
 
-红线不变：改 Go/API/schema/DOM 契约或新功能，仍按 §5 跑相关测试 + 全量。常见失败：check-classes 的死类（加到 ui.css 或换 Tailwind）；light 截图出现脏阴影（`sl-under` opacity、卡片 `backdrop-filter`、trigger 光晕）；`i18n_coverage` 偶发（单跑确认后再全量）。`real_backend` 已在 #338 删文件（既不在注册表也没有套件脚本），它「跑不起来」是预期，不是失败（见 `docs/v4/e2e-inventory.md` §4）。
+红线不变：改 Go/API/schema/DOM 契约或新功能，仍按 §5 跑相关测试 + 全量。常见失败：check-classes 的死类（加到 ui.css 或换 Tailwind）；light 截图出现脏阴影（`sl-under` opacity、卡片 `backdrop-filter`、trigger 光晕）；`i18n_coverage` 偶发（单跑确认后再全量）。`real_backend` 已在 #338 删文件（既不在注册表也没有套件脚本），它「跑不起来」是预期，不是失败（退役理由见 `E2E_TESTING.md`）。
 
 ## 6. 目录结构
 
@@ -705,7 +705,7 @@ Go nil slice 序列化成 `null`，前端 `Array.isArray(null)` 为 false → �
    `truncated` 时把下一轮周期从 1 小时切成 30s（`lease.DefaultRetentionCatchUpInterval`）。
    注意每批仍是独立的 1000 行短事务，写锁持有量不变；放大的是「单轮几批」。
    **记住**：`LIMIT` 只限删除行数、不限扫描/排序行数，单批成本仍 ∝ 该范围已过期行数。
-   实测单轮 20,000 行 / 242ms。测量与容量测算见 `docs/perf/capacity-and-backpressure.md`。
+   实测单轮 20,000 行 / 242ms。测量与容量测算见 `docs/reports/capacity-and-backpressure.md`。
 
 ### 背压信号：不要用 pending 行数，也不要过滤 `not_before`
 
@@ -791,7 +791,7 @@ go run ./cmd/devseed -db ./anotify.db -username demo -demo -demo-url http://loca
 
 见 `README.md` 的环境变量表。关键：`ANOTIFY_VAPID_*_KEY`（推送必需）、`ANOTIFY_RP_ID`/`ANOTIFY_RP_ORIGIN`（Passkey，必须=访问域名）、`ANOTIFY_STATIC`（空=embed，`./web`=开发）。
 
-容量相关（#229 / #228，详见 `docs/perf/capacity-and-backpressure.md`）：
+容量相关（#229 / #228，详见 `docs/reports/capacity-and-backpressure.md`）：
 
 | 变量 | 默认 | 语义 |
 | --- | --- | --- |

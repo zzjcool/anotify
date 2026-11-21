@@ -3,7 +3,7 @@ package server
 // testing_fixtures_test.go 是 v4 保留测试的**共用夹具**收口（#331 / D0.1）。
 //
 // 为什么需要这个文件：v3 的资源域 handler 与它们的测试文件在 #331 具名退役
-// （console_test.go / source_handlers_test.go 等，见 docs/v4/g3a-test-inventory.md），
+// （console_test.go / source_handlers_test.go 等；逐名台账已删，归属以本包各测试文件为准），
 // 但仍有几份**与 v3 产品语义无关**的通用夹具被保留测试引用着：
 //
 //   - closeDBForTempDir：收尾竞态断言（#259），auth_cache_wiring_test.go 在用；

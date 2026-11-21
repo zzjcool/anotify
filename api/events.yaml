@@ -1,7 +1,7 @@
 # anotify v4 · 事件 / trace / 控制台读模型与聚合读模型（exact-five 之一）
 #
-# 本文件是五份 OpenAPI 真源中的 **events.yaml**：#333 冻结归属表
-# （docs/v4/g3c-spec-inventory.md §4.2）里的 5 个 operation 在这里，全部是**只读**：
+# 本文件是五份 OpenAPI 真源中的 **events.yaml**：这 5 个 operation（归属表已删，本文件即权威）
+# 全部是**只读**：
 #
 #     GET /v1/namespaces/{namespace}/events                 事件流（EventList 资源列表）
 #     GET /v1/namespaces/{namespace}/traces/{traceId}       一条 trace 的全景（{events,tasks,pruned}）
