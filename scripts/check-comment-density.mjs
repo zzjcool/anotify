@@ -5,8 +5,8 @@
  * 口径：注释行 = 整行都属于注释（行首 `//`、`#`、`--`、`/*`、`<!--` 及其续行，含块内空行）；
  * 代码与注释同行算代码行。`<script>`/`<style>` 里的内容按 JS/CSS 计，不按 HTML 计。
  *
- * 已知边界（都让计数偏松，B 阶段再收）：一行的尾注释算代码行；不解析字符串，所以字符串里
- * 出现块注释开头会被当成开块（偏严），而 `"http://"` 这种行首不是注释（正确）。
+ * 已知边界：一行的尾注释算代码行；字符串与模板串优先于注释（`"http://x"` 里的 `//` 不算注释）。
+ * JS 正则字面量按「本行内能否收尾」认：漏认带反引号的正则，其后整份文件都会被当成字符串。
  *
  * 双向棘轮：目录注释行 / 仓库总量 / 单文件密度 / docs 面文件数与行数 —— 超与降都算不一致。
  *
@@ -25,10 +25,10 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 /* BASELINE-BEGIN（`--init` / `--update` 只改这一段） */
 export const BASELINE = {
 	"schemaVersion": 2,
-	"measuredAt": "2026-11-20",
-	"commentLines": 43411,
-	"codeLines": 263328,
-	"files": 658,
+	"measuredAt": "2026-11-21",
+	"commentLines": 43373,
+	"codeLines": 266224,
+	"files": 664,
 	"dirs": {
 		".": 89,
 		".github/workflows": 108,
@@ -82,7 +82,7 @@ export const BASELINE = {
 		"internal/version": 48,
 		"internal/ws": 669,
 		"internal/yamldoc": 262,
-		"scripts": 3655,
+		"scripts": 3617,
 		"scripts/demo": 16,
 		"scripts/e2e": 634,
 		"scripts/e2e/fixtures": 0,
@@ -279,6 +279,30 @@ const STRING_DELIMS = {
 	html: [],
 };
 
+/**
+ * JS 正则字面量不能跨行：`/` 只有在本行能找到未转义的收尾 `/` 时才算正则，否则是除号。
+ * 漏认带反引号的正则（`/^([A-Za-z_]\w*)\s+(\S+)(?:\s+`([^`]*)`)?$/` 这种）就会把里面的
+ * 反引号当成开串 —— 其后整份文件都被算成代码行（#496 的注释就是这么被吞的）。
+ */
+const REGEX_PREV = "([{,;:=!&|?+-*%~^<>";
+function regexSpanEnd(src, start) {
+	let inClass = false;
+	for (let j = start + 1; j < src.length; j += 1) {
+		const ch = src[j];
+		if (ch === "\n") return -1;
+		if (ch === "\\") j += 1;
+		else if (ch === "[") inClass = true;
+		else if (ch === "]") inClass = false;
+		else if (ch === "/" && !inClass) return j + 1;
+	}
+	return -1;
+}
+function regexMayStart(src, start) {
+	let j = start - 1;
+	while (j >= 0 && (src[j] === " " || src[j] === "\t" || src[j] === "\r")) j -= 1;
+	return j < 0 || src[j] === "\n" || REGEX_PREV.includes(src[j]);
+}
+
 /** HTML 里的 `<script>` / `<style>` 块按 JS / CSS 计，否则内联脚本的注释会被当成代码。 */
 function countHtml(text) {
 	const parts = text.split(/(<script\b[\s\S]*?<\/script\s*>|<style\b[\s\S]*?<\/style\s*>)/i);
@@ -338,7 +362,8 @@ function countTokens(text, langName) {
 		}
 		if (quote) {
 			lineCode = true;
-			if (c === "\\" && !raw) {
+			// 反斜杠转义只对非原始串有效：Go 的反引号是原始串（`\` 不转义），JS 的模板串认转义（`\`` 不是收尾）。
+			if (c === "\\" && !(raw && langName === "go")) {
 				i += 2;
 				continue;
 			}
@@ -362,6 +387,14 @@ function countTokens(text, langName) {
 			blockEnd = blk[1];
 			i += blk[0].length;
 			continue;
+		}
+		if (langName === "js" && c === "/" && regexMayStart(src, i)) {
+			const end = regexSpanEnd(src, i);
+			if (end !== -1) {
+				lineCode = true;
+				i = end;
+				continue;
+			}
 		}
 		if (delims.includes(c)) {
 			lineCode = true;
@@ -889,6 +922,24 @@ export function selfTest() {
 		const sh = "#!/bin/sh\n# 说明\necho hi # 行内\n";
 		const csh = countLines(sh, "hash");
 		check("⑧''' shell：2 注释 / 1 代码（行内 # 不算注释行）", csh.comment === 2 && csh.code === 1, JSON.stringify(csh));
+	}
+	{
+		// #496 反向误判的形态：字符串里的 // 不算注释；反引号只在串外才开串。
+		const url = ['const s = "https://example.com // not a comment";', "// 真注释", ""].join("\n");
+		const cu = countLines(url, "js");
+		check("⑧⁗ 双引号串里的 // 不算注释", cu.comment === 1 && cu.code === 1, JSON.stringify(cu));
+		const trailing = "const a = 1; // 尾注释\n";
+		const ct = countLines(trailing, "js");
+		check("⑧⁗' 代码同行的尾注释算代码行", ct.comment === 0 && ct.code === 1, JSON.stringify(ct));
+		const regex = ["const m = /^([A-Za-z_]\\w*)\\s+`([^`]*)`$/.exec(line);", "// 真注释", "const a = 1;", ""].join("\n");
+		const cr = countLines(regex, "js");
+		check("⑧⁗'' 正则字面量里的反引号不开串（漏认就把其后全当字符串）", cr.comment === 1 && cr.code === 2, JSON.stringify(cr));
+		const escaped = ["const why = `a \\`${m[1]}\\` b`;", "// 真注释", ""].join("\n");
+		const ce = countLines(escaped, "js");
+		check("⑧⁗''' 模板串里的 \\` 是转义而不是收尾", ce.comment === 1 && ce.code === 1, JSON.stringify(ce));
+		const goRaw = ["var s = `a\\`", "// Go 原始串里 \\ 不转义 ⇒ 上一行已收尾", ""].join("\n");
+		const cg = countLines(goRaw, "go");
+		check("⑧⁗'''' Go 反引号仍是原始串（反斜杠不转义）", cg.comment === 1, JSON.stringify(cg));
 	}
 	{
 		const midline = "var x = 1 /* 开头\n * 续1\n * 续2\n */\n";
