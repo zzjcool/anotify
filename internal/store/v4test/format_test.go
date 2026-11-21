@@ -19,8 +19,7 @@ import (
 //   - **布局格式** PRAGMA user_version：表结构是哪一代（v4 = 4）；
 //   - 两者只有在一起、且结构真的完整时才是「v4 库」。
 //
-// 这里全部用真实 SQLite 文件造反例（旧库/坏库/半写库），并且每条拒绝都要验：
-// 拒绝前后**用户数据、DDL、布局标记**一字不差——程序不许自愈、不许补标记、不许删数据。
+// 这里全部用真实 SQLite 文件造反例（旧库/坏库/半写库），并且每条拒绝都要验：拒绝前后**用户数据、DDL、布局标记**一字不差——程序不许自愈、不许补标记、不许删数据。
 // 唯一不比较的是 SQLite 自己的 journal/WAL 字节（父裁决明确排除）。
 
 // TestFormatNewDatabaseWritesLayoutMarker 全新空库：baseline 记账 1 + 布局标记 4， 重开幂等，字段往返一致。
@@ -30,9 +29,9 @@ func TestFormatNewDatabaseWritesLayoutMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open fresh: %v", err)
 	}
-	// 记账 = headVersion：baseline（1）之后还有增量块（2 是 release 身份）。
-	if v, err := db.SchemaVersion(); err != nil || v != 2 {
-		t.Fatalf("SchemaVersion = %d, %v; want 2", v, err)
+	// 记账 = headVersion：baseline（1）之后还有增量块（2 是 release 身份，3 是卸载标记）。
+	if v, err := db.SchemaVersion(); err != nil || v != 3 {
+		t.Fatalf("SchemaVersion = %d, %v; want 3", v, err)
 	}
 	// 布局标记是**独立**的另一件事。
 	if got := rawUserVersion(t, path); got != 4 {
@@ -52,8 +51,8 @@ func TestFormatNewDatabaseWritesLayoutMarker(t *testing.T) {
 	if got := rawUserVersion(t, path); got != 4 {
 		t.Fatalf("重开后 PRAGMA user_version = %d, want 4", got)
 	}
-	if v, err := db2.SchemaVersion(); err != nil || v != 2 {
-		t.Fatalf("重开后 SchemaVersion = %d, %v; want 2", v, err)
+	if v, err := db2.SchemaVersion(); err != nil || v != 3 {
+		t.Fatalf("重开后 SchemaVersion = %d, %v; want 3", v, err)
 	}
 	var name, digest, foldKey string
 	if err := db2.QueryRow(
@@ -67,8 +66,7 @@ func TestFormatNewDatabaseWritesLayoutMarker(t *testing.T) {
 	}
 }
 
-// TestFormatBaselineLedgerWithoutLayoutMarkerRejected 是 G1-6C1 的核心反例：
-// schema_version=1（看起来和 v4 baseline 一模一样）但**没有**布局标记的 v3 库。
+// TestFormatBaselineLedgerWithoutLayoutMarkerRejected 是 G1-6C1 的核心反例：schema_version=1（看起来和 v4 baseline 一模一样）但**没有**布局标记的 v3 库。
 //
 // 旧实现就是这么放过去的：看见 schema_version 已有 1 就跳过 baseline， 然后在业务路径上炸 "no such column"。现在必须在任何写操作**之前**具名拒绝。
 func TestFormatBaselineLedgerWithoutLayoutMarkerRejected(t *testing.T) {
@@ -231,9 +229,7 @@ func TestFormatUnknownLayoutMarkerRejected(t *testing.T) {
 	}
 }
 
-// TestFormatMarkerWithoutLedgerRejected marker=4 但没有记账表：半写的 v4 库。
-//
-// 关键点：**不许**因为「标记是 4」就建 baseline 补齐——那等于把一个半写库 当成新库来用，而它的表可能缺一半。
+// TestFormatMarkerWithoutLedgerRejected marker=4 但没有记账表：半写的 v4 库。关键点：**不许**因为「标记是 4」就建 baseline 补齐——那等于把一个半写库当成新库来用，而它的表可能缺一半。
 func TestFormatMarkerWithoutLedgerRejected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "marker-no-ledger.db")
 	raw := openRawFixture(t, path)
@@ -287,8 +283,8 @@ func TestFormatMarkerContradictoryLedgerRejected(t *testing.T) {
 			name: "ledger_ahead_of_head",
 			stmts: []string{
 				`CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`,
-				// 1..3：第 3 块比本版本代码认识的 headVersion（= schema.sql 的块数）更高。
-				`INSERT INTO schema_version (version, applied_at) VALUES (1, 1), (2, 1), (3, 1)`,
+				// 1..4：第 4 块比本版本代码认识的 headVersion（= schema.sql 的块数）更高。
+				`INSERT INTO schema_version (version, applied_at) VALUES (1, 1), (2, 1), (3, 1), (4, 1)`,
 			},
 			wantHint: "高于",
 		},
@@ -397,9 +393,7 @@ func TestFormatMarkerMissingRequiredColumnRejected(t *testing.T) {
 	}
 }
 
-// TestFormatMarkerRetiredColumnRejected marker=4 却带着 v3 的退役字段。
-//
-// 这种库最危险：列在、v4 代码不读它 →「能写进去、读出来丢」。
+// TestFormatMarkerRetiredColumnRejected marker=4 却带着 v3 的退役字段：列在、v4 代码不读它 →「能写进去、读出来丢」。
 func TestFormatMarkerRetiredColumnRejected(t *testing.T) {
 	cases := []struct{ table, column string }{
 		{"nodes", "namespace_id"},          // v4 节点是集群级
@@ -449,9 +443,7 @@ func TestFormatMarkerRetiredColumnRejected(t *testing.T) {
 	}
 }
 
-// TestFormatMarkerMissingUniqueIndexRejected marker=4 但缺关键唯一约束。
-//
-// emits 的 (task_id, emit_id) 唯一索引是 emit 幂等的唯一落点：没了它， 同一 emit_id 会被重复派发。
+// TestFormatMarkerMissingUniqueIndexRejected marker=4 但缺关键唯一约束：emits 的 (task_id, emit_id) 唯一索引是 emit 幂等的唯一落点，没了它同一 emit_id 会被重复派发。
 func TestFormatMarkerMissingUniqueIndexRejected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing-unique.db")
 	db, err := store.Open(path)
@@ -486,8 +478,7 @@ func TestFormatMarkerMissingUniqueIndexRejected(t *testing.T) {
 	}
 }
 
-// TestFormatCollidingBaselineViewRejectedBeforeInitialization 保留原碰撞夹具，但非空库必须在事务前拒绝。
-// 这不是中途 DDL 回滚证明；真正的注入回滚测试留给旧 inpackage 测试闭包卡。
+// TestFormatCollidingBaselineViewRejectedBeforeInitialization 保留原碰撞夹具，但非空库必须在事务前拒绝。这不是中途 DDL 回滚证明；真正的注入回滚测试留给旧 inpackage 测试闭包卡。
 func TestFormatCollidingBaselineViewRejectedBeforeInitialization(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "baseline-fail.db")
 	raw := openRawFixture(t, path)
@@ -552,9 +543,7 @@ func TestFormatCollidingLedgerViewRejectedBeforeInitialization(t *testing.T) {
 
 // ---------- 夹具工具（全部直接读真实 SQLite 文件，不经过 store.Open） ----------
 
-// openRawFixture 打开一个**不跑迁移**的裸 SQLite 连接（造旧库/坏库夹具用）。
-//
-// 不带 foreign_keys：造夹具时要能删被别的表引用的表（那正是「半写库」的样子）。
+// openRawFixture 打开一个**不跑迁移**的裸 SQLite 连接（造旧库/坏库夹具用）。不带 foreign_keys：造夹具时要能删被别的表引用的表（那正是「半写库」的样子）。
 func openRawFixture(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+path)
@@ -673,11 +662,9 @@ func rawRowCount(t *testing.T, path, table string) int {
 	return n
 }
 
-// snapshotDatabase 把「这个数据目录的可观察状态」拍成一段稳定文本：
-// 布局标记 + sqlite_master 全量（对象集合与 DDL）+ 每张用户表的完整行值。
+// snapshotDatabase 把「这个数据目录的可观察状态」拍成一段稳定文本：布局标记 + sqlite_master 全量（对象集合与 DDL）+ 每张用户表的完整行值。
 //
-// 为什么不用文件字节：SQLite 自己的 journal/WAL 字节不是契约目标（父裁决排除）， 但**用户数据与结构、布局标记**必须原样保留——这三样正好覆盖在快照里。
-// 同数量覆写、NULL/类型变化与重复行也必须被快照捕获。
+// 为什么不用文件字节：SQLite 自己的 journal/WAL 字节不是契约目标（父裁决排除）， 但**用户数据与结构、布局标记**必须原样保留——这三样正好覆盖在快照里。同数量覆写、NULL/类型变化与重复行也必须被快照捕获。
 func snapshotDatabase(t *testing.T, path string) string {
 	t.Helper()
 	db := openRawFixture(t, path)
@@ -914,8 +901,7 @@ func TestFormatMarkerForeignKeysRequired(t *testing.T) {
 	}
 }
 
-// TestFormatMarkerGuttedTaskShapeCheckRejected marker=4 但 tasks 的具名表级 CHECK
-// 被改成恒真（列、主键、外键、唯一索引一个没变，只掏空 CHECK 表达式）。
+// TestFormatMarkerGuttedTaskShapeCheckRejected marker=4 但 tasks 的具名表级 CHECK 被改成恒真（列、主键、外键、唯一索引一个没变，只掏空 CHECK 表达式）。
 //
 // PRAGMA 不暴露 CHECK，所以「结构完整」的旧门禁看不见这条漂移；可这两条 CHECK 正是 tasks 行的唯一形状不变量：掏空它们等于允许「没有解析事实却有 Node/租约」的行、
 // 或「有 UID 但没有 digest/version」的行。两条都要被看见：第二条在 DDL 末尾， 前面隔着大段注释与嵌套括号——只认第一条的解析器会漏掉它。
@@ -966,8 +952,7 @@ func TestFormatMarkerGuttedTaskShapeCheckRejected(t *testing.T) {
 	}
 }
 
-// TestFormatMarkerDroppedColumnCheckRejected marker=4 但 system_config 的单行列级 CHECK
-// 被整条删掉（列类型/主键/非空一模一样）。单行表不变量消失后，配置表能被写成多行。
+// TestFormatMarkerDroppedColumnCheckRejected marker=4 但 system_config 的单行列级 CHECK 被整条删掉（列类型/主键/非空一模一样）；单行表不变量消失后，配置表能被写成多行。
 func TestFormatMarkerDroppedColumnCheckRejected(t *testing.T) {
 	path := seededFormatFixture(t)
 	raw := openRawFixture(t, path)
@@ -982,8 +967,7 @@ func TestFormatMarkerDroppedColumnCheckRejected(t *testing.T) {
 	assertCheckDefect(t, path, "缺 CHECK 约束 system_config.id")
 }
 
-// TestFormatMarkerExtraCheckRejected marker=4 却多了一条 baseline 没有的 CHECK。
-// 「比 baseline 更严」同样拒绝：CHECK 必须逐条等价，不能只是「包含」。
+// TestFormatMarkerExtraCheckRejected marker=4 却多了一条 baseline 没有的 CHECK：「比 baseline 更严」同样拒绝，CHECK 必须逐条等价，不能只是「包含」。
 func TestFormatMarkerExtraCheckRejected(t *testing.T) {
 	path := seededFormatFixture(t)
 	raw := openRawFixture(t, path)
@@ -1049,8 +1033,7 @@ func TestFormatCheckInCommentIsNotAConstraint(t *testing.T) {
 	}
 }
 
-// assertCheckDefect 再开一次坏库，确认拒绝文案里出现 want 这条具名缺陷。
-// 只读：拒绝路径不写任何东西（写不改动由 assertFormatRefusalUnchanged 的全库快照负责）。
+// assertCheckDefect 再开一次坏库，确认拒绝文案里出现 want 这条具名缺陷。只读：拒绝路径不写任何东西（写不改动由 assertFormatRefusalUnchanged 的全库快照负责）。
 func assertCheckDefect(t *testing.T, path, want string) {
 	t.Helper()
 	db, err := store.Open(path)
@@ -1104,8 +1087,7 @@ func TestFormatMarkerDuplicateCheckNameRejected(t *testing.T) {
 }
 
 // TestFormatMarkerPreviousBaselineCheckRejected 上一版 baseline 的
-// tasks_unresolved_failure_shape（未含本轮新增的 summary/artifacts/result_accepted_at
-// 与 finished_at/version 两条谓词）必须被明确拒绝，而不是被自动迁移。
+// tasks_unresolved_failure_shape（未含本轮新增的 summary/artifacts/result_accepted_at 与 finished_at/version 两条谓词）必须被明确拒绝，而不是被自动迁移。
 //
 // 刻意行为：v4 尚未发布、baseline 直接重建（本轮用户授权的 v4 开发期全量切换，见
 // AGENTS.md §3 与 issue #337 卡），所以上一版开发库走 fail-closed 拒绝——这是刻意后果， 不是缺迁移；拒绝时一行数据也不删、CHECK 文本不被改写。
@@ -1137,8 +1119,7 @@ func TestFormatMarkerPreviousBaselineCheckRejected(t *testing.T) {
 	}
 }
 
-// TestFormatCheckValidationReopenIdempotent 正常库（含 baseline 的三条 CHECK）必须能被
-// strict Open 反复重开：新校验只拒绝结构漂移，不能把正常库连数据一起拒掉。
+// TestFormatCheckValidationReopenIdempotent 正常库（含 baseline 的三条 CHECK）必须能被 strict Open 反复重开：新校验只拒绝结构漂移，不能把正常库连数据一起拒掉。
 func TestFormatCheckValidationReopenIdempotent(t *testing.T) {
 	path := seededFormatFixture(t)
 	before := snapshotDatabase(t, path)
