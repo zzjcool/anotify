@@ -156,18 +156,19 @@
 		});
 	}
 
-	/* rowsToVars 把表格行折回「这一层要写的 vars 映射」。
-	 * 只收 owned（属于本层文档）且有值的行：别的层提供的值不抄进本层；
-	 * missing（没有值）与被标记删除的行都不写。 */
-	function rowsToVars(rows) {
+	/* rowsToVars 把表格行折回「这一层要写的 vars 映射」。 */
+	function rowsToVars(rows, base) {
 		var out = {};
+		var source = base && typeof base === 'object' && !Array.isArray(base) ? base : {};
+		Object.keys(source).forEach(function (name) { out[name] = String(source[name]); });
 		var list = Array.isArray(rows) ? rows : [];
 		for (var i = 0; i < list.length; i++) {
 			var row = list[i] || {};
-			if (row.deleted || !row.owned) continue;
-			if (row.value == null || String(row.value) === '') continue;
 			var name = String(row.name == null ? '' : row.name);
 			if (!name) continue;
+			if (row.deleted) { delete out[name]; continue; }
+			if (!row.owned) continue;
+			if (row.value == null || String(row.value) === '') { delete out[name]; continue; }
 			out[name] = String(row.value);
 		}
 		return out;
@@ -205,31 +206,6 @@
 		return 0;
 	}
 
-	/* yamlScalar 把值序列化成合法的 YAML 标量。
-	 * 简单形状（字母数字开头的安全字符）直接写；其余用 JSON 字符串（JSON 的双引号
-	 * 标量本身就是合法 YAML），这样不写解析器也不会写错。 */
-	function yamlScalar(value) {
-		if (value == null) return 'null';
-		var text = String(value);
-		if (typeof value === 'number' || typeof value === 'boolean') return text;
-		var safe = /^[A-Za-z0-9][A-Za-z0-9_./:@+-]*$/.test(text);
-		var reserved = /^(?:true|false|null|yes|no|on|off|y|n|~)$/i.test(text);
-		var numeric = /^[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?$/.test(text);
-		if (safe && !reserved && !numeric) return text;
-		return JSON.stringify(text);
-	}
-
-	/* varsToYAMLLines 把 vars 映射序列化成 `KEY: value` 行（服务端按名字排序，
-	 * 这里也排序：同一份事实永远同一份文本）。 */
-	function varsToYAMLLines(vars, indent) {
-		var pad = ' '.repeat(indent == null ? 2 : indent);
-		var keys = Object.keys(vars || {}).sort();
-		if (!keys.length) return [pad + '{}'];
-		return keys.map(function (key) {
-			return pad + yamlScalar(key) + ': ' + yamlScalar(vars[key]);
-		});
-	}
-
 	/* diffVars 给「保存后告诉我改了什么」用（也用于单测断言只有目标键变化）。 */
 	function diffVars(before, after) {
 		var a = before || {};
@@ -258,8 +234,6 @@
 		rowsToVars: rowsToVars,
 		suggestNames: suggestNames,
 		renameImpact: renameImpact,
-		yamlScalar: yamlScalar,
-		varsToYAMLLines: varsToYAMLLines,
 		diffVars: diffVars,
 	};
 	root.AnotifyVars = api;

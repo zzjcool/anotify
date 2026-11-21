@@ -672,7 +672,7 @@ function yamlMsg(lines){
 /* 一行一条原因：首行只放机器码 reason（e2e 断言它必须可见），后面逐条展开 causes。
    服务端的 cause 是「field 独立 + message 自带『第 N 行』」，所以人话那行拼成
    「字段路径 · 第 N 行：人话」；顶层 Status 的人话就是第一条 cause，不再重复印一遍。 */
-function yamlLines(err){
+function yamlErrorLines(err){
   const out=[],seen=new Set();
   const push=line=>{
     const text=line==null?"":String(line);
@@ -731,7 +731,7 @@ $("src-yaml-submit").onclick=async()=>{
     /* 不自动跳转：留在列表上，新行就是这次创建的回执 */
     await load();
   }catch(err){
-    yamlMsg(yamlLines(err));
+    yamlMsg(yamlErrorLines(err));
   }finally{
     YAML_BUSY=false;
     btn.disabled=false;

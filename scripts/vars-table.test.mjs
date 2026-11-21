@@ -12,7 +12,6 @@
  *      与能力读面（spec.requires.values），断言行的 name/value/source/missing/usedBy。
  *   ② 变异自证：把 `missing` 判据改成恒 false 重新加载，① 的「缺但被要求」断言必须变红
  *      —— 否则绿可能只是断言写松了。
- *   ③ 序列化：rowsToVars / varsToYAMLLines / diffVars 只动目标键，其它键逐字不变。
  *
  * 跑法：`node --test scripts/vars-table.test.mjs`（接线：`make test-frontend`）
  */
@@ -168,6 +167,39 @@ test('rowsToVars：只收有值的行；missing 与 deleted 都不写', () => {
 	assert.deepEqual(plain(V.rowsToVars(rows.map((r) => ({ ...r, owned: false })))), {});
 });
 
+test('rowsToVars：文档里已有、但被上层压住的键不会被表格保存顺手删掉', () => {
+	const V = load();
+	const rows = V.buildRows({
+		effective: { A: { value: 'localA', source: 'local' }, B: { value: 'nodeB', source: 'node' } },
+		machine: { A: 'nodeA', B: 'nodeB' },
+		namespaceVars: {},
+		required: {},
+		layer: 'node',
+	});
+	const a = rows.find((r) => r.name === 'A'), b = rows.find((r) => r.name === 'B');
+	assert.equal(a.owned, false, '被 local 压住 → 不属于本层文档（表格里锁定）');
+	assert.equal(a.locked, true);
+	assert.equal(b.owned, true, '本层的行才是可写的那一份');
+
+	const kept = plain(V.rowsToVars(rows, { A: 'nodeA', B: 'old' }));
+	assert.equal(kept.A, 'nodeA', '保留下来的必须是**文档里**的值，不是表格显示的生效值 localA');
+	assert.equal(kept.B, 'nodeB', 'owned 行用行里的值覆盖');
+
+	const deleted = plain(V.rowsToVars(rows.map((r) => (r.name === 'A' ? { ...r, deleted: true } : r)), { A: 'nodeA', B: 'old' }));
+	assert.deepEqual(deleted, { B: 'nodeB' }, '用户显式删掉一个被压住的键 → 才从文档里去掉');
+
+	const other = V.buildRows({
+		effective: { N: { value: 'nsv', source: 'namespace' } },
+		machine: {},
+		namespaceVars: { N: 'nsv' },
+		required: {},
+		layer: 'node',
+	});
+	assert.deepEqual(plain(V.rowsToVars(other, {})), {}, '别的层才有、文档里没有的名字不许抄进来');
+	assert.deepEqual(plain(V.rowsToVars(rows, { Z: 'stale' })), { Z: 'stale', B: 'nodeB' },
+		'文档里有、表格里根本没有对应行的键也不许丢（表格不是文档的全集）');
+});
+
 test('suggestNames：现有名字 ∪ 能力要求但缺失的名字；删除的行不算', () => {
 	const V = load();
 	const required = V.requiredNames(CAPABILITIES);
@@ -185,21 +217,6 @@ test('renameImpact：改名提示引用它的能力数', () => {
 	assert.equal(V.renameImpact(rows, 'SOURCE_ROOT'), 2);
 	assert.equal(V.renameImpact(rows, 'NS_ONLY'), 0);
 	assert.equal(V.renameImpact(rows, 'NOPE'), 0);
-});
-
-test('varsToYAMLLines / yamlScalar：确定性、合法标量、空映射显式 {}', () => {
-	const V = load();
-	assert.deepEqual(plain(V.varsToYAMLLines({ B: 'x', A: '/srv/repos' }, 4)), [
-		'    A: "/srv/repos"',
-		'    B: x',
-	]);
-	assert.deepEqual(plain(V.varsToYAMLLines({}, 2)), ['  {}']);
-	// 会被 YAML 解释成布尔/数字/空值的字符串必须加引号（往返不能变类型）。
-	assert.equal(V.yamlScalar('true'), '"true"');
-	assert.equal(V.yamlScalar('123'), '"123"');
-	assert.equal(V.yamlScalar(''), '""');
-	assert.equal(V.yamlScalar('a b'), '"a b"');
-	assert.equal(V.yamlScalar('/srv/repos/anotify'), '"/srv/repos/anotify"', '以 / 开头的值用双引号标量（JSON 字符串即合法 YAML）');
 });
 
 test('diffVars：改一个键 / 删一个键的差集口径', () => {

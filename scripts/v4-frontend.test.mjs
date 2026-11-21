@@ -20,6 +20,7 @@ import assert from "node:assert/strict";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PARTIALS_SRC = readFileSync(path.join(ROOT, "web/partials.js"), "utf8");
+const YAMLDOC_SRC = readFileSync(path.join(ROOT, "web/yamldoc.js"), "utf8");
 const MOCK_SRC = readFileSync(path.join(ROOT, "web/mock.js"), "utf8");
 const GRAPHS_SRC = readFileSync(path.join(ROOT, "web/graphs.js"), "utf8");
 const TRACEVIEW_SRC = readFileSync(path.join(ROOT, "web/traceview.js"), "utf8");
@@ -243,6 +244,7 @@ function loadAnotify(opts = {}) {
 	const ctx = vm.createContext(base.sandbox);
 	vm.runInContext("globalThis.window = globalThis; globalThis.self = globalThis;", ctx);
 	vm.runInContext(PARTIALS_SRC, ctx, { filename: "web/partials.js" });
+	vm.runInContext(YAMLDOC_SRC, ctx, { filename: "web/yamldoc.js" });
 
 	return {
 		A: base.sandbox.Anotify,
@@ -264,6 +266,7 @@ function loadMock(opts = {}) {
 	const ctx = vm.createContext(base.sandbox);
 	vm.runInContext("globalThis.window = globalThis; globalThis.self = globalThis;", ctx);
 	vm.runInContext(PARTIALS_SRC, ctx, { filename: "web/partials.js" });
+	vm.runInContext(YAMLDOC_SRC, ctx, { filename: "web/yamldoc.js" });
 	vm.runInContext(opts.mockSrc || MOCK_SRC, ctx, { filename: "web/mock.js" });
 	// 图库（可选）：sourceTopology / taskOf 是纯函数，能在没有布局的情况下断言
 	if (opts.graphs) {

@@ -136,14 +136,14 @@ export const SUITE_SURFACES = {
 	// pages 的来源：f3-cases.mjs 里每个注册 case 各自 goto 的页面。
 	// pages: ALL 的来源：矩阵/批次遍历 PAGES（f3-i18n-cases / f3-ui-helper）。
 	frontend: {
-		why: "注册 case 逐个起真 server + 真 Chrome（real authority）",
+		why: "注册 case 逐个起真 server + 真 Chrome（real authority）；web/yamldoc.js 经预览 mock 参与每个页面的文档渲染（它一坏就是页面级 pageerror）",
 		pages: ["admin", "capabilities", "capability", "sources", "source-detail", "events", "trace", "message", "index", "playbooks", "playbook", "nodes", "node", "namespace", "namespaces", "security", "docs", "cli-auth", "login"],
-		paths: ["internal/sitegen/**", "cmd/sitegen/**", "web-src/layouts/**", "web-src/locales/**"],
+		paths: ["internal/sitegen/**", "cmd/sitegen/**", "web-src/layouts/**", "web-src/locales/**", "web/yamldoc.js"],
 	},
 	vars_ui: {
-		why: "#476 节点页/命名空间页的可视化 vars：表格数据 = effectiveVars + requires.values，保存只走 PUT …/yaml（真 server + 真 Chrome，零 /config 写）",
+		why: "#476 节点页/命名空间页的可视化 vars：表格数据 = effectiveVars + requires.values，保存只走 PUT …/yaml（真 server + 真 Chrome，零 /config 写）；文档文本的序列化器是 web/yamldoc.js（#473），改它就会改变这两个页面的写面",
 		pages: ["node", "namespace"],
-		paths: ["web/vars-table.js", "internal/server/resource_namespace_yaml.go"],
+		paths: ["web/vars-table.js", "web/yamldoc.js", "internal/server/resource_namespace_yaml.go"],
 	},
 	i18n: {
 		why: "全部页面 × 4 语言的本地化 AC（批次遍历 PAGES）",

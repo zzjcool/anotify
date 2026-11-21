@@ -121,9 +121,41 @@
   // `/config` 只是**读投影**（GET）：拿 CAS 令牌与当前 vars。编辑的唯一写入口是
   // `PUT …/yaml`（#476：YAML 是唯一编辑面；/config 的 PUT 不再被页面使用）。
   const nsPath = ns => '/v1/namespaces/' + encodeURIComponent(ns) + '/config';
-  const nsYamlPath = ns => '/v1/namespaces/' + encodeURIComponent(ns) + '/yaml';
+  const YD = window.AnotifyYamlDoc;
   const VT = window.AnotifyVars;
   let varsRows = [], varsEditing = null, nsRequired = {}, varsDirty = false, varsSeq = 0;
+  /* 本页编辑的是**同一份 Namespace 文档**：`nsDocText` 是 `GET …/yaml` 的原文
+   * （`YD.edit`：读原文 → 只替换 `spec.vars` 与 CAS 令牌 → 重新序列化），原始编辑器与
+   * vars 表格走的是同一个动作。所以表单不认识的字段（含服务端以后加的）不会被保存丢掉。
+   * 原文读不懂 → 保存前拒绝（`yaml_unparsable`）；原文还没拿到 → 保存前先读一次。
+   * 这两条都不允许「从 vars 重建一份最小文档」：那正是 #454 丢字段的形状。 */
+  let nsDocText = '', nsDocScope = '';
+  function adoptNamespaceYAML(scope, text) {
+    if (scope !== selectedNamespace) return;
+    nsDocText = text;
+    nsDocScope = scope;
+  }
+  function namespaceYAMLDoc(scope, vars, resourceVersion) {
+    if (nsDocScope !== scope || !nsDocText) return null;
+    const patch = { metadata: { name: scope, resourceVersion: resourceVersion }, spec: { vars: vars || {} } };
+    const res = YD.edit('Namespace', nsDocText, patch);
+    return res.problems.length ? null : res.text;
+  }
+  function namespaceDocVars(scope) {
+    if (nsDocScope !== scope || !nsDocText) return (nsConfig && nsConfig.vars) || {};
+    const parsed = YD.parse('Namespace', nsDocText);
+    if (parsed.problems.length) return null;
+    return (parsed.model.spec && parsed.model.spec.vars) || {};
+  }
+  async function saveNamespaceVars(scope, vars, resourceVersion) {
+    if (nsDocScope !== scope || !nsDocText) await loadNamespaceYAML(scope);
+    const text = namespaceYAMLDoc(scope, vars, resourceVersion);
+    if (text === null) throw new Error(n('yaml_unparsable'));
+    const value = await write(YD.path('Namespace', scope), { yaml: text });
+    if (typeof value?.yaml !== 'string') throw new Error('Invalid ResourceYAML');
+    if (scope === selectedNamespace) { nsDocText = ''; nsDocScope = ''; adoptNamespaceYAML(scope, value.yaml); }
+    return value;
+  }
 
   function paintHead() {
     $('ns-name').textContent = selectedNamespace || t('title');
@@ -200,21 +232,6 @@
   function varsButton(label, act, onclick) {
     const button = make('button', 'btn btn-ghost btn-sm', label);
     button.type = 'button'; button.dataset.act = act; button.onclick = onclick; return button;
-  }
-  /* 命名空间文档的 YAML 文本：apiVersion / kind / metadata / spec.vars。
-     `resourceVersion` = GET /config 给的同一个 CAS 令牌（写 vars 用的就是它）。 */
-  function namespaceYAMLText(scope, vars, resourceVersion) {
-    const lines = ['apiVersion: anotify/v1', 'kind: Namespace', 'metadata:', '  name: ' + VT.yamlScalar(scope)];
-    if (resourceVersion) lines.push('  resourceVersion: ' + VT.yamlScalar(resourceVersion));
-    lines.push('spec:');
-    if (Object.keys(vars || {}).length) { lines.push('  vars:'); lines.push(...VT.varsToYAMLLines(vars, 4)); }
-    else lines.push('  vars: {}');
-    return lines.join('\n') + '\n';
-  }
-  async function saveNamespaceVars(scope, vars, resourceVersion) {
-    const value = await write(nsYamlPath(scope), { yaml: namespaceYAMLText(scope, vars, resourceVersion) });
-    if (typeof value?.yaml !== 'string') throw new Error('Invalid ResourceYAML');
-    return value;
   }
   function varsPlainRow(row) {
     const tr = make('tr');
@@ -325,7 +342,9 @@
   $('namespace-vars-save').onclick = async () => {
     if (varsEditing) return varsSetState(n('vars_finish_edit'), true);
     if (!nsConfig || nsLoaded !== selectedNamespace) return;
-    const vars = VT.rowsToVars(varsRows);
+    const baseVars = namespaceDocVars(selectedNamespace);
+    if (baseVars === null) return varsSetState(n('yaml_unparsable'), true);
+    const vars = VT.rowsToVars(varsRows, baseVars);
     const diff = VT.diffVars(nsConfig.vars || {}, vars);
     if (!diff.added.length && !diff.removed.length && !diff.changed.length) return varsSetState(n('vars_no_changes'));
     const saveScope = nsLoaded, saveRV = nsConfig.metadata.resourceVersion, saveEpoch = nsEditEpoch;
@@ -468,14 +487,15 @@
     } catch (e) { $('namespace-effective-vars').replaceChildren(A.loadErrorNode(e, loadNodes)); }
   }
   /* 只读 Namespace YAML：服务端重建的规范化文档（GET /v1/namespaces/{name}/yaml）。
-     只刷新文本、不碰 CAS 编辑器 —— 两者读的是同一份事实但写入路径只有表单那一条。 */
+     文本同时是本页的**文档模型来源**（`adoptNamespaceYAML`）：两个编辑器都从它出发。 */
   async function loadNamespaceYAML(scope = selectedNamespace) {
     msg('namespace-yaml-state', n('loading'));
     try {
-      const value = await A.api('/v1/namespaces/' + encodeURIComponent(scope) + '/yaml');
+      const value = await A.api(YD.path('Namespace', scope));
       if (scope !== selectedNamespace) return;
       if (typeof value?.yaml !== 'string') throw new Error('Invalid ResourceYAML');
       $('namespace-yaml-text').textContent = value.yaml;
+      adoptNamespaceYAML(scope, value.yaml);
       msg('namespace-yaml-state', n('loaded'));
     } catch (e) { if (scope === selectedNamespace) msg('namespace-yaml-state', errorText(e), true); }
   }
