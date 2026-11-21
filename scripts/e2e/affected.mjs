@@ -1,17 +1,15 @@
 #!/usr/bin/env node
 /* affected.mjs — 按改动文件选择「要跑的 Go 包 / e2e 套件」并（可选）执行它们
  *
- * 为什么：CI 与本地 agent 反复跑 `make ci` + 全量 e2e，而一页 HTML 的改动与
- * 一个协议帧的改动风险面完全不同。本脚本把「这次到底需要跑什么」算出来，
- * 并且**必须**把「为什么选它 / 跳过了谁 / 为什么跳过」全部打印出来 ——
+ * 为什么：一页 HTML 与一个协议帧的改动风险面完全不同。本脚本把「这次到底需要跑什么」
+ * 算出来，并且**必须**打印「为什么选它 / 跳过了谁 / 为什么跳过」——
  * 静默少跑等于静默降低覆盖，那比慢更贵。
  *
  * 三条不可协商的判据：
  *   ① fail-closed：映射表（affected-map.mjs）里没登记的路径 ⇒ 全量。表腐烂的
  *      代价是**多跑**，不是漏跑。
  *   ② 全量必须永远可达：`PI_E2E_FULL=1` 或 `--full` 强制全跑，CI 的 nightly 用它。
- *   ③ Go 包用 import 图反向闭包（`go list`），不拍脑袋；e2e 套件用显式表，
- *      并用 `affected.test.mjs` 反向对账套件源码里的页面字面量。
+ *   ③ Go 包用 import 图反向闭包（`go list`）；e2e 套件用显式表 + `affected.test.mjs` 反向对账。
  *
  * 用法：
  *   node scripts/e2e/affected.mjs                     # 打印计划（默认）
@@ -104,9 +102,8 @@ export const HTTP_SUITES = [
 ];
 
 /**
- * 「矩阵类」Chrome 套件：它们各自遍历全页面（× 全语言 / 主题 / 视口），
- * 单次 150–350s，per-suite 预算本就贴着实测 ×2。选中它们时给一句提示：
- * 机器被别的 e2e 抢核时，它们会先撞自己的预算（false red 方向，但会浪费一轮）。
+ * 「矩阵类」Chrome 套件：各自遍历全页面（× 语言 / 主题 / 视口），单次 150–350s，
+ * per-suite 预算本就贴着实测 ×2 —— 被别的 e2e 抢核时会先撞自己的预算。
  */
 export const HEAVY_SUITES = ["frontend", "ui_shift", "i18n", "i18n_coverage"];
 
@@ -115,12 +112,8 @@ export const ANODE_ONLY_SUITES = ["deploy", "live_agent", "node_v4"];
 
 /**
  * 执行顺序 = 注册表顺序（HTTP 类在前，Chrome 类按 parallel_runner 的声明顺序）。
- *
- * 为什么不是字母序：Chrome 类走信号量（并发 4），**谁先拿到信号量谁先跑**。
- * 全量运行时 i18n/i18n_coverage/frontend 先上，四个 f3 矩阵套件被"错峰"开；
- * 如果子集按字母序（frontend, i18n, i18n_coverage, ui_shift 一起开始），
- * 四个多进程 Chrome 套件同时抢 8 核 —— 实测 ui_shift 会撞到自己的 300s 预算
- * （全量跑里从没超过 256s）。按注册表顺序跑 = 与全量完全相同的调度形状。
+ * 为什么不是字母序：Chrome 类走信号量，谁先提交谁先跑；矩阵类套件要错峰开，
+ * 否则几个多进程 Chrome 同时抢核会撞穿 per-suite 预算（实测见 docs/reports）。
  */
 export function registryOrder(root = ROOT) {
 	try {
