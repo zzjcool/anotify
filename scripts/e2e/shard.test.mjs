@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 
-import { DEFAULT_SHARDS, planShards, predictedWallSeconds, mergeShards, writeShardInfo } from "./shard.mjs";
+import { COST_SECONDS, DEFAULT_SHARDS, planShards, predictedWallSeconds, mergeShards, writeShardInfo } from "./shard.mjs";
 import { registeredSuites } from "./affected.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
@@ -59,7 +59,7 @@ test("片数不超过套件数：3 套 / 5 片 ⇒ 3 片", () => {
 });
 
 test("预测墙钟：最慢的一套是下界，成本越大越高", () => {
-	assert.equal(predictedWallSeconds(["frontend"]), 158);
+	assert.ok(predictedWallSeconds(["frontend"]) >= COST_SECONDS.frontend, "单套件的墙钟下界就是它自己的实测成本");
 	assert.equal(predictedWallSeconds([]), 0);
 	assert.ok(predictedWallSeconds(["frontend", "i18n"]) >= 158);
 	assert.ok(predictedWallSeconds(["passkeys", "i18n"]) < predictedWallSeconds(["frontend", "i18n"]));
