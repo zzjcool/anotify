@@ -752,7 +752,7 @@ func TestUpsertInstancesPreservesOccupiedHistory(t *testing.T) {
 			if err := db.AssignTask(ctx, task.ID, node.ID, "asg-old", 1); err != nil {
 				t.Fatal(err)
 			}
-			lease, _, attempt, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-old", 1, 2, store.Now())
+			lease, _, _, attempt, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-old", 1, 2, store.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -800,7 +800,7 @@ func TestUpsertInstancesPreservesOccupiedHistory(t *testing.T) {
 			if err := db.AssignTask(ctx, fresh.ID, node.ID, "asg-new", 1); err != nil {
 				t.Fatal(err)
 			}
-			if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), fresh.ID, "asg-new", 1, 2, store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
+			if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), fresh.ID, "asg-new", 1, 2, store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
 				t.Fatalf("occupied slot must reject new grant: %v", err)
 			}
 			if reaped, err := db.ReapTaskAttempt(ctx, store.ReapedInputs{TaskID: task.ID, Attempt: attempt, NodeID: node.ID, NodeTokenHash: node.TokenHash, LeaseID: lease, Slot: 2, InstanceID: old.InstanceID}); err != nil || !reaped {
@@ -809,7 +809,7 @@ func TestUpsertInstancesPreservesOccupiedHistory(t *testing.T) {
 			if err := db.AssignTask(ctx, fresh.ID, node.ID, "asg-new2", 1); err != nil {
 				t.Fatal(err)
 			}
-			if _, _, got, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), fresh.ID, "asg-new2", 1, 2, store.Now()); err != nil || got != 1 {
+			if _, _, _, got, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), fresh.ID, "asg-new2", 1, 2, store.Now()); err != nil || got != 1 {
 				t.Fatalf("only exact reap should free slot: attempt=%d err=%v", got, err)
 			}
 		})

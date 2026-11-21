@@ -123,7 +123,7 @@ func (e *dispatchEnv) fire(tb testing.TB, ctx context.Context) (string, string, 
 	if err := e.db.AssignTask(ctx, taskID, e.nodeID, assignmentID, 1); err != nil {
 		tb.Fatalf("assign %s: %v", taskID, err)
 	}
-	leaseID, _, attempt, _, err := e.db.GrantLeaseAuthorized(ctx, e.auth, taskID, assignmentID, 1, 0, store.Now())
+	leaseID, _, _, attempt, _, err := e.db.GrantLeaseAuthorized(ctx, e.auth, taskID, assignmentID, 1, 0, store.Now())
 	if err != nil {
 		tb.Fatalf("grant %s: %v", taskID, err)
 	}

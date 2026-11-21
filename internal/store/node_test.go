@@ -844,7 +844,7 @@ func TestNodeAuthorizationGrant(t *testing.T) {
 	}
 	// 错的 token hash：身份不成立，一行业务写都不该发生
 	bad := NodeAuthorization{NodeID: node.ID, NodeTokenHash: "not-the-hash"}
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, bad, task.ID, "asg-1", 1, 0, Now()); err == nil {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, bad, task.ID, "asg-1", 1, 0, Now()); err == nil {
 		t.Fatal("错 token hash 的 grant 应被拒")
 	}
 	insts, err := db.ListInstances(ctx, node.ID)
@@ -855,7 +855,7 @@ func TestNodeAuthorizationGrant(t *testing.T) {
 		t.Fatalf("被拒的 grant 不该占用 slot: %+v", insts[0])
 	}
 
-	leaseID, token, attempt, expiresAt, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
+	leaseID, token, _, attempt, expiresAt, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
 		task.ID, "asg-1", 1, 0, Now())
 	if err != nil {
 		t.Fatalf("grant: %v", err)
@@ -885,7 +885,7 @@ func TestNodeAuthorizationGrant(t *testing.T) {
 	if err := db.AssignTask(ctx, task2.ID, node.ID, "asg-2", 1); err != nil {
 		t.Fatalf("assign 2: %v", err)
 	}
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
 		task2.ID, "asg-2", 1, 0, Now()); !errors.Is(err, ErrSlotUnavailable) {
 		t.Fatalf("占满的 slot 应 ErrSlotUnavailable, got %v", err)
 	}

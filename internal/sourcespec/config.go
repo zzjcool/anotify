@@ -184,8 +184,7 @@ func MergeConfig(kind string, existing, patch json.RawMessage) (json.RawMessage,
 // ValidateSpec 校验一份源 spec（kind / config / targets）。
 //
 // forWrite 区分时机：true = 创建/更新（webhook 的 token **可以**为空，服务端随后生成）；
-// false = 读/比对（webhook 的 token 必须已存在——没有 token 的源在外面对不上任何 URL）。
-// **空 targets 合法**（§5：先建入口再接能力是正常顺序，触发时留一条 no_target 剪枝痕）。
+// false = 读/比对（webhook 的 token 必须已存在——没有 token 的源在外面对不上任何 URL）。**空 targets 合法**（§5：先建入口再接能力是正常顺序，触发时留一条 no_target 剪枝痕）。
 func ValidateSpec(spec Spec, forWrite bool) error {
 	if !IsKind(spec.Kind) {
 		return errKind(spec.Kind)
@@ -225,6 +224,7 @@ func ValidateTargets(targets []Target) error {
 		if err := ValidateParamsTemplate(t.Params); err != nil {
 			return errf("targets[%d]（%s）：%v", i, t.Capability, err)
 		}
+		causes = append(causes, ValidateOutcomes(t.Outcomes, fmt.Sprintf("targets[%d]", i))...)
 	}
 	if len(causes) > 0 {
 		return &CausesError{Causes: causes}

@@ -24,17 +24,19 @@ import (
 type Attempt struct {
 	r *Runner
 
-	taskID       string
-	attempt      int
-	leaseID      string
-	token        string
-	assignmentID string
-	namespace    string
-	ref          protocol.CapabilityRef
-	art          *artifact.Artifact
-	params       []byte
-	nsVars       map[string]string
-	slot         int
+	taskID  string
+	attempt int
+	leaseID string
+	token   string
+
+	decisionToken string
+	assignmentID  string
+	namespace     string
+	ref           protocol.CapabilityRef
+	art           *artifact.Artifact
+	params        []byte
+	nsVars        map[string]string
+	slot          int
 
 	startedAt  time.Time
 	finishedAt time.Time
@@ -86,20 +88,21 @@ type Attempt struct {
 func newAttempt(r *Runner, res *reservation, grant *protocol.LeaseGrantFrame) *Attempt {
 	uploadCtx, cancelUpload := context.WithCancel(context.Background())
 	return &Attempt{
-		uploadCtx:    uploadCtx,
-		cancelUpload: cancelUpload,
-		r:            r,
-		taskID:       res.taskID,
-		attempt:      grant.Attempt,
-		leaseID:      grant.LeaseID,
-		token:        grant.AttemptToken,
-		assignmentID: res.assignmentID,
-		namespace:    res.namespace,
-		ref:          res.ref,
-		art:          res.art,
-		params:       res.params,
-		nsVars:       res.nsVars,
-		slot:         res.slot,
+		uploadCtx:     uploadCtx,
+		cancelUpload:  cancelUpload,
+		r:             r,
+		taskID:        res.taskID,
+		attempt:       grant.Attempt,
+		leaseID:       grant.LeaseID,
+		token:         grant.AttemptToken,
+		decisionToken: grant.DecisionToken,
+		assignmentID:  res.assignmentID,
+		namespace:     res.namespace,
+		ref:           res.ref,
+		art:           res.art,
+		params:        res.params,
+		nsVars:        res.nsVars,
+		slot:          res.slot,
 		// No process group exists before a successful spawn. Deterministic preparation
 		// failures must release the slot, unlike an actually spawned unreaped group.
 		groupReaped: true,

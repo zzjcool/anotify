@@ -115,7 +115,7 @@ func TestTaskInputsMachineLayerReparsedPerNode(t *testing.T) {
 	if _, err := db.Exec(`UPDATE tasks SET next_attempt_at = NULL WHERE id = ?`, task.ID); err != nil {
 		t.Fatalf("clear backoff: %v", err)
 	}
-	if _, _, attempt2, _, err := func() (string, string, int, int64, error) {
+	if _, _, _, attempt2, _, err := func() (string, string, string, int, int64, error) {
 		if aerr := db.AssignTask(ctx, task.ID, nodeB.ID, "asg-b", attempt+1); aerr != nil {
 			t.Fatalf("re-assign on node B: %v", aerr)
 		}

@@ -263,7 +263,7 @@ func v4Grant(t *testing.T, db *DB, taskID, nodeID, assignmentID string) (leaseID
 	if err := db.AssignTask(ctx, taskID, nodeID, assignmentID, 1); err != nil {
 		t.Fatalf("assign task %s: %v", taskID, err)
 	}
-	leaseID, attemptToken, attempt, _, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, nodeID),
+	leaseID, attemptToken, _, attempt, _, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, nodeID),
 		taskID, assignmentID, 1, slot, Now())
 	if err != nil {
 		t.Fatalf("grant lease %s: %v", taskID, err)

@@ -231,7 +231,7 @@ func grant(t *testing.T, db *store.DB, taskID, nodeID, assignmentID string) (lea
 	if err := db.AssignTask(ctx, taskID, nodeID, assignmentID, 1); err != nil {
 		t.Fatalf("assign task %s: %v", taskID, err)
 	}
-	leaseID, token, attempt, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, nodeID),
+	leaseID, token, _, attempt, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, nodeID),
 		taskID, assignmentID, 1, slot, store.Now())
 	if err != nil {
 		t.Fatalf("grant lease %s: %v", taskID, err)

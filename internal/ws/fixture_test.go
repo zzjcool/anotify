@@ -176,7 +176,7 @@ func (e *env) directGrant(t *testing.T, task *store.Task) (leaseID, attemptToken
 	if err := e.db.AssignTaskAt(ctx, task.ID, e.node.ID, "asg_direct", 1, e.now); err != nil {
 		t.Fatalf("派发候选: %v", err)
 	}
-	leaseID, attemptToken, _, _, err := e.db.GrantLeaseAuthorized(ctx,
+	leaseID, attemptToken, _, _, _, err := e.db.GrantLeaseAuthorized(ctx,
 		store.NodeAuthorization{NodeID: e.node.ID, NodeTokenHash: e.tokenHash},
 		task.ID, "asg_direct", 1, 0, e.now)
 	if err != nil {

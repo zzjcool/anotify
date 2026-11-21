@@ -190,7 +190,7 @@ func (e *artifactEnv) seedGrantedTask(t *testing.T) {
 	if err := e.db.AssignTask(ctx, task.ID, node.ID, "asg-artifact", 1); err != nil {
 		t.Fatalf("assign task: %v", err)
 	}
-	lease, token, attempt, _, err := e.db.GrantLeaseAuthorized(ctx,
+	lease, token, _, attempt, _, err := e.db.GrantLeaseAuthorized(ctx,
 		store.NodeAuthorization{NodeID: node.ID, NodeTokenHash: node.TokenHash},
 		task.ID, "asg-artifact", 1, 0, store.Now())
 	if err != nil {

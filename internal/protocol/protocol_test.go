@@ -186,8 +186,8 @@ func frameFixtures() []frameFixture {
 		},
 		{
 			name:     "lease.grant",
-			frame:    &LeaseGrantFrame{Type: FrameLeaseGrant, TaskID: "tsk_1", Attempt: 2, Node: "node-a", LeaseID: "lease_1", AttemptToken: "tok_1", ExpiresAt: expires, AssignmentID: "asg_1", Slot: intPtrTest(0)},
-			wantKeys: []string{"assignmentId", "attempt", "attemptToken", "expiresAt", "leaseId", "node", "slot", "taskId", "type"},
+			frame:    &LeaseGrantFrame{Type: FrameLeaseGrant, TaskID: "tsk_1", Attempt: 2, Node: "node-a", LeaseID: "lease_1", AttemptToken: "tok_1", DecisionToken: "dec_1", ExpiresAt: expires, AssignmentID: "asg_1", Slot: intPtrTest(0)},
+			wantKeys: []string{"assignmentId", "attempt", "attemptToken", "decisionToken", "expiresAt", "leaseId", "node", "slot", "taskId", "type"},
 		},
 		{
 			name:     "lease.renew",

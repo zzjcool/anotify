@@ -107,6 +107,7 @@ SECURITY_SCHEMES = {
     "session": "控制台登录会话（Cookie `anotify_session`）",
     "consoleKey": "控制台 API key（`Authorization: Bearer <key>`）",
     "nodeToken": "节点身份令牌（`Authorization: Bearer <node token>`）",
+    "taskToken": "任务级决策凭据（`Authorization: Bearer <decision token>`，#522）",
     "adminSession": "登录会话 + 超管权限（两层中间件）",
 }
 
@@ -662,7 +663,7 @@ def path_parameter_errors(
 # --------------------------------------------------------------------------------------
 
 def minimal_docs() -> dict[str, dict]:
-    """最小 fixture：两份文件，跨文件 schema ref + pathItems + 四套 scheme 定义齐全。"""
+    """最小 fixture：两份文件，跨文件 schema ref + pathItems + 五套 scheme 定义齐全。"""
 
     def scheme(kind: str, name: str) -> dict:
         if kind == "cookie":
@@ -674,6 +675,7 @@ def minimal_docs() -> dict[str, dict]:
         "consoleKey": scheme("bearer", ""),
         "nodeToken": scheme("bearer", ""),
         "adminSession": scheme("cookie", "anotify_session"),
+        "taskToken": scheme("bearer", ""),
     }
 
     def op(op_id: str, security: list) -> dict:

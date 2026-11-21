@@ -1,20 +1,16 @@
-// Package runner 是节点上的真实执行运行器：dispatch → accept/reject → lease.grant
-// → 真 shebang exec → renew/ack → result/ack / cancel。
+// Package runner 是节点上的真实执行运行器：dispatch → accept/reject → lease.grant → 真 shebang exec → renew/ack → result/ack / cancel。
 //
 // 硬不变量（capability.md §8.5 / @decision V4-D4 / SLOT-HANDOFF A3）：
 //
-//  1. **派发不是授权**：task.dispatch 只做校验 + 原子预留真实空闲槽（accept），
-//     没有 token、不执行、不计 attempt；只有 lease.grant 才启动进程，且 grant 里的
-//     attempt 是权威 attempt。
-//  2. **只有两种 reject**：stale_config（机器级 revision 真的不一致）与
-//     slot_unavailable（没有真实空槽/预算吃满）。cache/ref/ns 的问题不得伪装成
-//     stale_config；不能 accept 的派发直接不回应（中枢按租约/重派处理），启动前的
-//     确定性错误走 task.result failed（计 attempt）。
-//  3. **历史绑定栅栏**：lease.ack / cancel / result.ack 都按 (taskId, attempt,
-//     leaseId, slot) 精确匹配；旧 attempt 的取消/ACK 不动当前进程、不清新槽。
-//  4. **物理事实优先**：槽位账本记录真实占用；重启按持久记录 + pgid 核查，未确认
-//     reaped 的保持 busy/unknown，不因内存为空/新 hello 就报 idle。缩预算不假释放
-//     存量占用。
+//  1. **派发不是授权**：task.dispatch 只做校验 + 原子预留真实空闲槽（accept），没有 token、
+//     不执行、不计 attempt；只有 lease.grant 才启动进程，grant 里的 attempt 是权威 attempt。
+//  2. **只有两种 reject**：stale_config（机器级 revision 真的不一致）与 slot_unavailable
+//     （没有真实空槽/预算吃满）。cache/ref/ns 的问题不得伪装成 stale_config；不能 accept
+//     的派发直接不回应（中枢按租约/重派处理），启动前的确定性错误走 task.result failed。
+//  3. **历史绑定栅栏**：lease.ack / cancel / result.ack 都按 (taskId, attempt, leaseId, slot)
+//     精确匹配；旧 attempt 的取消/ACK 不动当前进程、不清新槽。
+//  4. **物理事实优先**：槽位账本记录真实占用；重启按持久记录 + pgid 核查，未确认 reaped
+//     的保持 busy/unknown，不因内存为空/新 hello 就报 idle。缩预算不假释放存量占用。
 package runner
 
 import (
@@ -72,6 +68,8 @@ type Options struct {
 	Upload *upload.Client
 	// EmitEndpoint 是注入任务的 ANOTIFY_EMIT_ENDPOINT。
 	EmitEndpoint string
+	// DecisionBase 是中枢 HTTP 根（ws:// → http://）：决策 URL 由它拼出。
+	DecisionBase string
 	// WorkRoot 是系统创建 attempt 目录的父目录（status.workRoot）。
 	WorkRoot string
 	// Clock 是时钟（默认真实时钟；测试注入假时钟推进 20/60/5）。
@@ -168,8 +166,7 @@ type Runner struct {
 // maxHistory 是历史回收账本上限（late cancel/ack 的窗口，不是业务状态）。
 const maxHistory = 1024
 
-// reapWatchWindow / reapWatchInterval 是「终态仍未确认回收」时的后台复核参数。
-// 复核只确认内核事实（进程组真的消失）：确认后补发 reaped=true 的 cancel.ack
+// reapWatchWindow / reapWatchInterval 是「终态仍未确认回收」时的后台复核参数。复核只确认内核事实（进程组真的消失）：确认后补发 reaped=true 的 cancel.ack
 // 并按现有规则释放槽位；不重跑任务、不改 attempt、不续租。窗口有界，且
 // 退出/关闭（recoveryStop）会提前结束，持久记录继续保护重启后的占用。
 const (
@@ -177,7 +174,6 @@ const (
 	reapWatchInterval = 20 * time.Millisecond
 )
 
-// New 构造运行器。
 func New(opts Options) (*Runner, error) {
 	if strings.TrimSpace(opts.NodeName) == "" {
 		return nil, errors.New("runner: 缺少节点名")
@@ -309,8 +305,7 @@ func (r *Runner) Instances() []protocol.HelloInstance {
 
 // Recover 从持久 attempt 记录恢复物理槽位账本（重启/崩溃后调用）。
 //
-// 未确认 reaped 的旧执行保持 busy/unknown：不能因为新进程内存为空就报 idle。
-// pgid 还活着 → 占用该槽；pgid 已消失 → 记录为已回收（安全可释放）。
+// 未确认 reaped 的旧执行保持 busy/unknown：不能因为新进程内存为空就报 idle。pgid 还活着 → 占用该槽；pgid 已消失 → 记录为已回收（安全可释放）。
 func (r *Runner) Recover() error {
 	records, err := r.opts.Results.UnreapedRecords()
 	if err != nil {
@@ -1162,6 +1157,14 @@ func cloneMap(in map[string]string) map[string]string {
 
 func intPtr(v int) *int { return &v }
 
+// decisionURL 拼出决策端点（指向中枢：结局白名单在库里，只有中枢能判定）。
+func decisionURL(base, taskID, token string) string {
+	if base == "" || taskID == "" || token == "" {
+		return ""
+	}
+	return strings.TrimSuffix(base, "/") + protocol.DecisionPath(taskID)
+}
+
 // envInput 组装 attempt 的环境求值输入（快照：启动时取一次）。
 func (r *Runner) envInput(att *Attempt) execenv.Input {
 	_, vars, _, _ := r.opts.Applied()
@@ -1180,5 +1183,8 @@ func (r *Runner) envInput(att *Attempt) execenv.Input {
 		TaskID:        att.taskID,
 		// 导出目录在 results.Begin 之后才创建（A2），prepare 里再补注入。
 		ArtifactDir: att.exportDir,
+		// #522：只有 router 任务拿到凭据；execenv 以「两个都非空」为注入条件。
+		DecisionToken: att.decisionToken,
+		DecisionURL:   decisionURL(r.opts.DecisionBase, att.taskID, att.decisionToken),
 	}
 }
