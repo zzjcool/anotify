@@ -150,8 +150,8 @@ const (
 	// （CapabilityObserved + Emit + Prune + Tasks，CONTRACT-observed）。
 	// 234 → 240：启停/试跑六个具名 schema（CapabilityDisableRequest / CapabilityTestRequest /
 	// CapabilityTestReceipt / CapabilityTestWarning / CapabilityAuditEntry / CapabilityAuditList）；
-	// 240 → 242：#510 卸载响应的结果与 kept 行；242 → 244：#511 版本历史（列表 + 一行）。
-	specSchemaFloor = 244
+	// 240 → 242：#510 卸载响应的结果与 kept 行；242 → 243：#513 的 `SourceMatch`；243 → 245：#511 版本历史两对。
+	specSchemaFloor = 245
 )
 
 // ---------- 测试入口 ----------
