@@ -169,7 +169,7 @@ export const CONTENT_DETECTORS = [
 	{
 		// 覆盖三种落盘形态：`ANOTIFY_VAPID_PRIVATE_KEY=<值>`（env 文件）、
 		// `VAPID_PRIVATE_KEY: <值>`（yaml/compose）、`"privateKey": "<值>"`（vapid.json，
-		// scripts/e2e/run_all.sh:19 读的就是这个文件；本仓 .gitignore 头一行专门禁它）。
+		// scripts/e2e/run_all.sh 的 VAPID 段读的就是这个文件；本仓 .gitignore 头一行专门禁它）。
 		// 阈值 40 字符 = 32 字节私钥的 base64url 真实长度：短占位符天然不命中。
 		id: "VAPID_PRIVATE_VALUE",
 		label: "VAPID/私钥变量带了实际值",

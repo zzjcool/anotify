@@ -604,6 +604,10 @@ iOS 真机 APNs 推送（需真实 iPhone，见 `IOS_TESTING.md`）。其余全�
 三个真实二进制，**节点侧只有 `cmd/anode`**（`cmd/agent` / `AGENT_BIN` 已随协议 v4 退役，
 不再有第二套节点 CLI）；不跑 `go test`（单测在 `make test`），也不要求先 `make build`。
 
+同机有两份 e2e 同时跑会抢端口/DB（随机假红的来源），所以入口有**机器级 flock**：等锁上限
+`E2E_LOCK_WAIT`（默认 900s），超时 exit 75 并打印持锁者；`E2E_LOCK=0` 是显式逃生口。锁的粒度是
+**矩阵**（`--parallel` 的套件照旧并发），口径见 `E2E_TESTING.md`「机器级互斥」。
+
 红线不变：改 Go/API/schema/DOM 契约或新功能，仍按 §5 跑相关测试 + 全量。常见失败：check-classes 的死类（加到 ui.css 或换 Tailwind）；light 截图出现脏阴影（`sl-under` opacity、卡片 `backdrop-filter`、trigger 光晕）；`i18n_coverage` 偶发（单跑确认后再全量）。`real_backend` 已在 #338 删文件（既不在注册表也没有套件脚本），它「跑不起来」是预期，不是失败（退役理由见 `E2E_TESTING.md`）。
 
 ## 6. 目录结构
