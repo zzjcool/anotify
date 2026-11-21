@@ -2,8 +2,7 @@
 //
 // 同一套判据要在三处用（store 写路径 / playbook 安装比较 / 拒绝理由展示），抄两遍必然
 // 漂移（症状是「保存说没问题、安装说不一样」），所以本包只做**纯函数**：不 import 本项目
-// 任何包、不碰 IO/环境/随机数，config 进出都是 `json.RawMessage`（调用方拿到什么就存什么）。
-// 语义基线是 `api/` 与测试，冲突时以它们为准。
+// 任何包、不碰 IO/环境/随机数，config 进出都是 `json.RawMessage`（调用方拿到什么就存什么）。语义基线是 `api/` 与测试，冲突时以它们为准。
 package sourcespec
 
 import (
@@ -56,14 +55,29 @@ func IsKind(kind string) bool {
 
 // Target 是一条「事件送给哪个能力」的声明（source.md §4）。
 //
-// Capability 是**引用**：能力名（跟随 latest）或 `name@version`（钉死某版）。
-// Params 是参数模板：常量、`$(payload.路径)` 引用，或两者混写（§4.1）。
+// Capability 是**引用**：能力名（跟随 latest）或 `name@version`（钉死某版）。Params 是参数模板：常量、`$(payload.路径)` 引用，或两者混写（§4.1）。
 type Target struct {
 	Capability string         `json:"capability"`
 	Params     map[string]any `json:"params,omitempty"`
 	// Match 是条件派：不填 = 恒命中（现状）；写了任意一组（types / all / any）就按它判。
 	Match *Match `json:"match,omitempty"`
+	// Outcomes 是 router 的结局表（#522）：非空 = 只判断、只选一个结局名，平台按表执行。
+	Outcomes map[string][]OutcomeAction `json:"outcomes,omitempty"`
 }
+
+// OutcomeAction 是 outcomes 表里的一条动作；capability 必须是 `spec.next` 里的下游。params 模板可写 `$(payload.路径)`（建任务时求值）与 `$(decision.路径)`（判决执行时求值）。
+type OutcomeAction struct {
+	Capability string         `json:"capability"`
+	Params     map[string]any `json:"params,omitempty"`
+}
+
+// outcomes 表的两条硬上限，与 spec.next 的 32 条同一数量级：白名单要可审查。
+const (
+	// MaxOutcomes 是一个 target 的结局名上限。
+	MaxOutcomes = 32
+	// MaxOutcomeActions 是单个结局的动作上限。
+	MaxOutcomeActions = 16
+)
 
 // Spec 是一份源文档的 spec 段（source.md §2）。
 //
@@ -100,8 +114,7 @@ type Config struct {
 
 // ParseConfig 把 config 字节按 kind 解释成结构化形态（坏字节 → 零值，不报错）。
 //
-// 它是**读侧**入口：库里一条手改坏的数据不该让整个源列表打不开。
-// 校验在 ValidateSpec / NormalizeConfig 里做（写侧）。
+// 它是**读侧**入口：库里一条手改坏的数据不该让整个源列表打不开。校验在 ValidateSpec / NormalizeConfig 里做（写侧）。
 func ParseConfig(kind string, raw json.RawMessage) Config {
 	var cfg Config
 	if len(raw) == 0 {
@@ -149,8 +162,7 @@ func ParseConfig(kind string, raw json.RawMessage) Config {
 	return cfg
 }
 
-// Scheme 返回该源的签名口径（缺省 = anotify-sha256）。调用方不自己解 config：
-// 「用哪种口径」只有一处解释，否则「验签看 A、文档写 B」这种分叉没法查。
+// Scheme 返回该源的签名口径（缺省 = anotify-sha256）。调用方不自己解 config：「用哪种口径」只有一处解释，否则「验签看 A、文档写 B」这种分叉没法查。
 func (c Config) Scheme() string {
 	if c.Signature == nil || c.Signature.Scheme == "" {
 		return SchemeAnotifySHA256
