@@ -2395,6 +2395,12 @@ pb:
     delete_confirm: "¿Eliminar solo el manifiesto? Capacidades, orígenes, recibos y procedencia permanecen. No es desinstalar."
     deleted: "Manifiesto eliminado; contenido conservado a continuación."
     delete_stale: 'La versión está desactualizada. Actualiza para obtener la actual; volver a eliminar requiere otra confirmación.'
+    uninstall: "Desinstalar instancia"
+    uninstall_confirm: "¿Desinstalar la instancia «{release}»? Se eliminan las capacidades y los orígenes que creó esta instalación; los objetos que pertenecen a otras se conservan y el registro de instalación sigue visible."
+    uninstalled_n: "Se desinstaló «{release}»: {c} capacidades / {s} orígenes eliminados."
+    uninstall_kept_n: "Se conservaron {n} objetos que no le pertenecen (detalle abajo)."
+    uninstall_already: "Esta instancia ya estaba desinstalada; ahora no hubo cambios."
+    uninstall_reason: "Motivos en el detalle: creado a mano, pertenece a otra instancia o todavía lo reutiliza otra instancia."
 
 node:
   artifacts:
