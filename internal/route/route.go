@@ -1,18 +1,13 @@
 // Package route 是 v4 中枢运行期的**纯路由投影**：把「一次源事件」或「一次能力
 // emit」解析成「要建哪些下游任务」，并给出每条被剪掉的边的封闭原因码。
 //
-// 三条边界（capability.md §1/§8.1/§8.3）：
+// 三条边界（capability.md §1/§8.1/§8.3）：能力边来自 `spec.next`、入口边来自源的
+// `spec.targets`，两者都是只读派生投影；任务在**建行那一刻**钉住 name/version/digest/params
+// （上游之后改 next 不影响已建任务）；剪枝不是错误——事件已接收、下游没建 task 时回执
+// `taskId:null` + `pruned`，并留一条 `source='route'` 的事件行（§6「剪枝永远留痕」）。
 //
-//   - 一个能力一个结果：能力边来自 `spec.next`，入口边来自源的 `spec.targets`；
-//     两者都是派生投影（edges 表），本包只读不写；
-//   - 任务钉住目标引用：解析出的 name/version/digest/params 在**建行那一刻**固定，
-//     上游之后改 next 不影响已建任务；
-//   - 剪枝不是错误：事件已接收、下游没建 task 时回执 `taskId:null` + `pruned`，
-//     并留一条 `source='route'` 的事件行（source.md §6「剪枝永远留痕」）。
-//
-// 本包不做 WS、不执行代码、不写 edges：它是 store 之上的**读投影 + 参数对齐**，
-// 供 internal/source（入口触发）、internal/ws（emit / 派发编排）与 G3 的 HTTP 层复用。
-// 独立写一份参数/解析逻辑是错的——同一份语义在 emit 与源两条入口上必须一致。
+// 本包不做 WS、不执行代码、不写 edges：它是 store 之上的**读投影 + 参数对齐**，供
+// internal/source（入口触发）、internal/ws（emit）与 HTTP 层复用；两份逻辑必然分叉。
 package route
 
 import (
@@ -189,10 +184,12 @@ func (r *Router) resolveCapability(ctx context.Context, namespaceID, ref string)
 
 // PlanFromSource 按源声明的 targets 求值一次事件载荷。
 //
-// 每一行**独立**求值、独立校验（source.md §4.2）：模板取不到路径 → param_missing；
-// 目标能力解析不到 → downstream_missing + state=missing；源没有 targets →
-// 单条 no_target（事件照常接收，只是不派发）。
-func (r *Router) PlanFromSource(ctx context.Context, src *store.Source, traceID string, payload map[string]any) (*Plan, error) {
+// 每一行**独立**求值、独立校验（source.md §4.2），顺序是
+// `match → resolve → params → 开关 → ready`：
+// match 不命中 → no_match；参数取不到 → param_missing；目标能力解析不到 →
+// downstream_missing + state=missing；源没有 targets → 单条 no_target
+// （事件照常接收，只是不派发）。
+func (r *Router) PlanFromSource(ctx context.Context, src *store.Source, traceID, eventType string, payload map[string]any) (*Plan, error) {
 	if src == nil {
 		return nil, fmt.Errorf("route: nil source")
 	}
@@ -207,6 +204,12 @@ func (r *Router) PlanFromSource(ctx context.Context, src *store.Source, traceID 
 	for _, declared := range src.Targets {
 		ref := strings.TrimSpace(declared.Capability)
 		if ref == "" {
+			continue
+		}
+		// ★ 条件派（#513）：match 是“这条边要不要看这次事件”的闸，排在 resolve **之前**。
+		// 为一条永远不会派发的边去查库没有意义，也不该把 no_match 报成 downstream_missing。
+		if !declared.Match.Matches(eventType) {
+			plan.pruneNoMatch(ref, eventType, declared.Match)
 			continue
 		}
 		capability, err := r.resolveCapability(ctx, src.NamespaceID, ref)
@@ -272,6 +275,20 @@ func (r *Router) capabilityAccepting(ctx context.Context, namespaceID, name stri
 		return false, fmt.Errorf("读能力开关 %q: %w", name, err)
 	}
 	return enabled, nil
+}
+
+// pruneNoMatch 把「事件 type 不在 match.types 里」记成一条剪枝（#513）。
+//
+// capability 用声明里的名字（`name@version` 取 `name`）：此时还没解析，没有真身份可给；
+// detail 带事件 type 与声明的 types，让「为什么没派发」在回执里直接可读。
+func (p *Plan) pruneNoMatch(ref, eventType string, match *sourcespec.Match) {
+	name := refName(ref)
+	detail := fmt.Sprintf("事件 type %q 不在 match.types %v 里", eventType, match.Types)
+	p.Targets = append(p.Targets, Target{
+		Ref: ref, Capability: name, State: StatePruned,
+		Reason: protocol.ReasonNoMatch, Detail: detail,
+	})
+	p.Pruned = append(p.Pruned, Prune{Capability: name, Reason: protocol.ReasonNoMatch, Detail: detail})
 }
 
 // pruneDisabled 把「下游能力已停用」记成一条剪枝（target + 事实），两条入口共用。
@@ -379,16 +396,12 @@ func (r *Router) PlanFromEmit(ctx context.Context, parent *store.Task, to string
 	return plan, nil
 }
 
-// declaredRef 把一次 emit 的 `to` 解析到父 next 的**声明引用**上。
+// declaredRef 把一次 emit 的 `to` 解析到父 next 的**声明引用**上（R1-C6）：
+//   - 裸 `to=name` 必须在同 basename 的**唯一**声明里命中（裸声明 = 跟随 latest，唯一
+//     `name@v` = 用 v）；同名多钉版或裸名与钉版混写 → 无法唯一选择 → 未声明（不偷偷 latest）。
+//   - 显式 `to=name@v` 只能匹配精确声明的 `name@v`，不能因 next 里有裸 `name` 就放行。
 //
-// 父已裁决的语义（R1-C6）：
-//   - 裸 `to=name`：必须在同 basename 的声明里**唯一**命中；命中裸声明 = 跟随
-//     latest（返回 "name"），命中唯一 `name@v` 钉版 = 用 v（返回 "name@v"）。
-//     同名多条不同钉版（或裸名 + 钉版混写）→ 无法唯一选择 → 未声明（不偷偷 latest）。
-//   - 显式 `to=name@v`：只能匹配**已声明的精确引用** `name@v`；不能仅因 next 里
-//     有裸 `name` 就允许任意指定旧/新版。
-//
-// 不扩大错误码：唯一失败结论仍是 target_not_declared（ErrNotDeclared）。
+// 唯一失败结论仍是 target_not_declared（ErrNotDeclared），不扩错误码。
 func declaredRef(next []string, to string) (string, bool) {
 	toName, toVer, toPinned := splitRef(to)
 	if toName == "" {

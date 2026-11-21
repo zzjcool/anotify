@@ -33,27 +33,23 @@ import (
 //	POST   /v1/namespaces/{ns}/sources/dry-run               未保存草稿试运行 → 预览文档
 //	POST   /v1/hooks/{token}                                 外部投递（无会话；token 即凭据）
 //
-// namespace 作用域只有一份判据（`namespace_scope.go` 的 authorizePathNamespace）：
-// 未登录 401 / 缺 ns 400 / ns 不存在 404，**绝不回退默认命名空间**。
+// namespace 作用域只有一份判据（`authorizePathNamespace`）：未登录 401 / 缺 ns 400 /
+// ns 不存在 404，**绝不回退默认命名空间**。
 //
-// 敏感字段纪律（source.md §3.1 / api-conventions §7.2，硬约束）：
+// 敏感字段纪律（§3.1 / api-conventions §7.2，硬约束）：
 //
-//	读：GET **不回显** `spec.config.token` / `spec.config.secret`，只给只读投影
-//	    `spec.config.hookUrl`（真实 token 拼出的授权读 URL）与 `spec.config.secretSet`；
-//	    同两个投影也进 `status.hookUrl`（非 webhook 的源为空串）。
-//	写：请求体出现 `spec.config.hookUrl` / `spec.config.secretSet` → 400 unknown_field
-//	    （客户端编辑前必须先剥掉读投影，否则会「把投影当配置写回去」）。
-//	存：`PATCH` 省略 `config.token` / `config.secret` = 保持原值（store 的
-//	    sourcespec.MergeConfig 负责合并；本文件传 nil 表示「本次不改 config」）。
-//
-// 凭据原文不进入日志、不进入错误文本：本文件的错误只走 writeAPIError 的映射文本
-// （store/sourcespec 的错误消息只点字段名，不含值），也不额外 slog 请求体。
+//	读：GET **不回显** `config.token`/`config.secret`，只给 `config.hookUrl`（真实 token
+//	    拼出的授权读 URL）与 `config.secretSet`；同两个投影也进 `status.hookUrl`。
+//	写：请求体出现 `config.hookUrl`/`config.secretSet` → 400 unknown_field（客户端必须先
+//	    剥掉读投影，否则会「把投影当配置写回去」）。
+//	存：`PATCH` 省略 `config.token`/`config.secret` = 保持原值（MergeConfig 负责合并；
+//	    本文件传 nil 表示「本次不改 config」）。凭据原文不进日志、不进错误文本。
 
 // kindSourceDoc 是 Source 资源在信封里的 kind 字面（List 是 kindSourceDoc+"List"）。
 const kindSourceDoc = "Source"
 
-// srcHookPathPrefix 是授权读 hookUrl 的路径前缀（相对路径，不带 host：hub 的对外
-// 域名属于部署事实，不该被 handler 编进资源文档）。
+// srcHookPathPrefix 是授权读 hookUrl 的路径前缀（相对路径：对外域名属于部署事实，
+// 不该被 handler 编进资源文档）。
 const srcHookPathPrefix = "/v1/hooks/"
 
 // 请求体上限：资源写 1 MiB（表单体量级），外部 hook 投递 4 MiB（source.md §6）。
@@ -63,10 +59,8 @@ const (
 )
 
 // status.health 的三个可取词（playbook.md §6.2 的封闭词表的行内可派生项）。
-//
-// `unapplied` 故意不在这里：它是「安装包声明与库里不一致」的**比对结论**，需要
-// playbook 的声明做输入；单看一行 sources 无从判定（W-src 契约：status 全部从行事实
-// 派生）。等 playbook 的体检聚合接进来时由那边给 unapplied，不由这里猜。
+// `unapplied` 故意不在这里：它是「声明与库里不一致」的**比对结论**，需要 playbook 的声明
+// 做输入，单看一行 sources 无从判定——等体检聚合接进来时由那边给，不由这里猜。
 const (
 	srcHealthOK       = "ok"
 	srcHealthBlocked  = "blocked"
@@ -430,7 +424,7 @@ func (a *sourceAPI) previewSaved(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	preview, err := a.d.Sources.Preview(r.Context(), ns, srcPathName(r), srcPayloadBytes(body.Payload))
+	preview, err := a.d.Sources.Preview(r.Context(), ns, srcPathName(r), body.Type, srcPayloadBytes(body.Payload))
 	if err != nil {
 		a.writeSourceError(w, err)
 		return
@@ -491,7 +485,7 @@ func (a *sourceAPI) previewInline(w http.ResponseWriter, r *http.Request) {
 		Targets:     srcTargets(spec.Targets),
 		Enabled:     enabled,
 	}
-	preview, err := a.d.Sources.PreviewSource(r.Context(), draft, srcPayloadBytes(body.Payload))
+	preview, err := a.d.Sources.PreviewSource(r.Context(), draft, body.Type, srcPayloadBytes(body.Payload))
 	if err != nil {
 		a.writeSourceError(w, err)
 		return
@@ -503,20 +497,17 @@ func (a *sourceAPI) previewInline(w http.ResponseWriter, r *http.Request) {
 
 // hook 处理 POST /v1/hooks/{token}。
 //
-// 这个端点**没有会话**：鉴权就是 URL 里的 token（谁拿到 URL 谁就能往里发事件，
-// 所以 token 不可枚举、可轮换）。token 定位源 → 源行自带 namespace_id，后续写事件 /
-// 建任务全部用它的命名空间，不看任何请求参数（要求外部系统先知道 namespaceId 是没道理的）。
+// 这个端点**没有会话**：鉴权就是 URL 里的 token（不可枚举、可轮换）。token 定位源 → 源行
+// 自带 namespace_id，后续写事件/建任务全用它的命名空间，不看任何请求参数。不区分「token
+// 不存在」与「源已停用」：对外同码同文案（§5）。
 //
-// 不区分「token 不存在」与「源已停用」：对外同码同文案（source.md §5）。
-//
-// 顺序是**刻意的**（每一格都有契约依据）：
+// 顺序是**刻意的**：
 //
 //	限流（429） → token 定源（404） → 读原始字节（413） → 验签（401） → 解 JSON（400） → 接收（200）
 //
-// 验签必须在解 JSON **之前**、且在落事件之前：契约要的是「缺失 / 不合法 → 401 且不产生
-// 事件」（§3.3 / §5.2），所以先判定、后解析。反过来的顺序会给未签名方留下「用 400 还是
-// 200 探测 body 形状」的旁路，也容易让人把校验写进已落库的路径里。
-// 签名对着**原始字节**算（不是解析后再序列化），见 source.VerifyHookSignature。
+// 验签必须在解 JSON **之前**且在落事件之前（「缺失 / 不合法 → 401 且不产生事件」§3.3/§5.2）：
+// 反过来的顺序会给未签名方留下「用 400 还是 200 探测 body 形状」的旁路。签名对着**原始
+// 字节**算（不是解析后再序列化），见 source.VerifyHookSignature。
 func (a *sourceAPI) hook(w http.ResponseWriter, r *http.Request) {
 	// 限流放在查 token **之前**：这是唯一免登录写入口，先限流能顺带保护 DB 查询，
 	// 也不给「用响应时间探测 token 是否存在」留窗口（见 ratelimit.go 的 rateLimitedHook）。
@@ -544,19 +535,30 @@ func (a *sourceAPI) hook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 配了 secret 就必须带合法签名；没有 secret 的源直接放行（契约：空 = 不校验）。
-	// 错误体只有一句固定文案：不带 secret、不区分「缺失 / 格式错 / 不匹配」。
-	if err := source.VerifyHookSignature(source.HookSecret(src), raw, r.Header.Get(source.HookSignatureHeader)); err != nil {
+	// 错误体只有一句固定文案：不带 secret、不区分「缺失 / 格式错 / 不匹配」——区分它们
+	// 只会告诉攻击者「你猜的格式对了」。
+	//
+	// 头名由 scheme 决定（#513）：两个分支都写**常量**，parity 的 `in: header` 对账按
+	// 「常量/字面量」认出「谁在读这个头」——传变量会让它判成「声明的头没人读」（假红）。
+	sigValue := r.Header.Get(source.HookSignatureHeader)
+	if source.HookScheme(src) == sourcespec.SchemeGitHubSHA256 {
+		sigValue = r.Header.Get(source.HookSignatureGitHub)
+	}
+	if err := source.VerifyHookSignature(source.HookSecret(src), raw, sigValue); err != nil {
 		writeStatus(w, http.StatusUnauthorized, reasonUnauthorized, "webhook signature missing or invalid", nil)
 		return
 	}
-	// 投递体不做严格白名单：调用方是外部系统，它们会在包装体旁边带自己的字段
-	// （签名头、平台自己的 metadata）。资源写请求的 unknown_field 纪律针对的是
-	// **我们自己发的写请求**，不是外部投递。
+	// 投递体不做严格白名单：调用方是外部系统，它们会在包装体旁边带自己的字段（平台
+	// metadata 之类）。资源写请求的 unknown_field 纪律针对的是**我们自己发的写请求**。
 	var body source.HookBody
 	if err := srcDecodeJSON(raw, &body, false); err != nil {
 		writeAPIError(w, err)
 		return
 	}
+	// 原始字节与头读取一起带下去：`payload: {whole: true}` 要整个投递体，`header` 来源要
+	// 请求头，两者都不可能从解完的三段里还原（envelope 的映射在 source.hookInput）。
+	body.Raw = raw
+	body.Header = r.Header.Get
 	// 用**同一次**查表的源接收：token 在验签与落库之间不再查第二次，
 	// 避免「验的是 A 的 secret、写的是 B 的源」这类缝。
 	receipt, err := a.d.Sources.HookSource(r.Context(), src, body)
@@ -953,15 +955,19 @@ func srcPreviewDocOf(preview *source.Preview) srcPreviewDoc {
 
 // ---------- 请求体解码小工具 ----------
 
-// srcPayloadBody 是 fire / 已保存源 dry-run 的请求体（`payload` 可省）。
+// srcPayloadBody 是 fire / 已保存源 dry-run 的请求体（`payload` 可省）。`type` 只对 dry-run
+// 有意义（match 求值用；缺省 = 源名）；fire 忽略它——手动触发的事件类型恒为源名（§5）。
 type srcPayloadBody struct {
 	Payload json.RawMessage `json:"payload"`
+	// Type 只在 dry-run 读取（fire 忽略：手动触发的事件类型恒为源名）。
+	Type string `json:"type,omitempty"`
 }
 
 // srcInlinePreviewBody 是未保存源 dry-run 的请求体：`source` 必填。
 type srcInlinePreviewBody struct {
 	Source  json.RawMessage `json:"source"`
 	Payload json.RawMessage `json:"payload"`
+	Type    string          `json:"type,omitempty"`
 }
 
 // srcDecodeAction 解动作端点的请求体。

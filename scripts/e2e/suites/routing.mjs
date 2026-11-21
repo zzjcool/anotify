@@ -14,35 +14,23 @@
  *   ① 上游没回报（不是剪枝）                  任务留 pending 且回执 pruned=[]（容量/无人两处都钉）
  *   ② no_edge                                源没有 targets → prune `no_target`；
  *                                            引用解析不到的出口 → 建源被拒（见 FINDING）
- *   ③ param_schema                           拆成 v4 的两条：`param_missing`（缺必填）与
- *                                            `param_type`（类型不符）——v4 把这两种情况分开报
- *   ④ no_node                                能力+源都在，但没有节点持有该 digest →
- *                                            任务照建、pending、不剪枝、无人被挑
- *   ⑤ foreign_user                           v4 没有「按用户路由」（用户维度是 ns 授权）；
- *                                            同一条意图改成「源不属于本 ns → fire 404，不跨 ns 泄漏」
- *   ⑥ path（环剪枝）                          v4 没有 path 概念（v3 router 的遗留）。派生边的
- *                                            可解析性由 `status.resolved.next`（digest）与
- *                                            `GET …/edges` 投影证明；下游非法目标由 emit 侧
- *                                            `target_not_declared` 拒（归 node_v4/emit 覆盖）
- *   A5 出口封闭（port 不在 outputs）          v4 没有 port；闭合性 = `spec.next` 逐条解析出
- *                                            digest + PATCH 只接受 `next`（其它 spec 键 400）
- *   P0.3 边字面量（literals 优先）            v4 = `source.spec.targets[].params` 模板：
- *                                            常量字面量 + `$(payload.…)` 引用，常量优先
- *   P0.2 源 resultSchema                      v4 = `source.spec.config.payloadSchema`
- *                                            → prune `event_schema`（入库+留痕，不派发）
+ *   ③ param_schema          v4 拆成 `param_missing`（缺必填）与 `param_type`（类型不符）两条
+ *   ④ no_node               能力+源都在但没有节点持有该 digest → 任务照建、pending、不剪枝
+ *   ⑤ foreign_user          v4 没有「按用户路由」：同一条意图 = 「源不属于本 ns → fire 404」
+ *   ⑥ path（环剪枝）         v4 没有 path；下游非法目标由 emit 侧 `target_not_declared` 拒
+ *   A5 出口封闭（port）       v4 没有 port；闭合性 = `spec.next` 逐条解析出 digest
+ *   P0.3 边字面量            v4 = `source.spec.targets[].params` 模板（常量 + `$(payload.…)`）
+ *   P0.2 源 resultSchema     v4 = `source.spec.config.payloadSchema` → prune `event_schema`
  *
- * 做法（真实 HTTP + 真实协议）：
- *   - 配置（能力 / 源）走真实 HTTP API；
- *   - 节点用共享 MockNode（lib/nodes.mjs）：**两段式 v4 握手**（hello → welcome →
- *     带 appliedRevision 重连）+ 部署回执（capability.deploy → capability.deployed）；
- *     真产物的拉取/真脚本执行由 node_v4 覆盖（那边是零 mock 的真 anode）。
- *   - 不断言 sleep 出来的时序：一律「轮询 + 上限」，超时把最后一帧原样带出来。
+ * 做法：配置（能力/源）走真实 HTTP API；节点用共享 MockNode（lib/nodes.mjs，两段式 v4 握手
+ * + 部署回执；真产物/真脚本由 node_v4 覆盖）；不断言 sleep 时序（一律轮询 + 上限）。
  *
- *   已修复：#352 把未包装的普通 error 改为 `ErrSourceTargetInvalid` 哨兵，`writeAPIError`
- *   映射为 400 `invalid_source_config`，message 点名目标能力；POST/PATCH 两条写路径都有单测。
- *   本套件因此把断言收紧为 **精确 400 + reason**（不接受 5xx 蒙混过关）。
+ * 已修复 #352：未包装的普通 error 改为 `ErrSourceTargetInvalid` 哨兵 → 400
+ * `invalid_source_config`；本套件因此把断言收紧为 **精确 400 + reason**（不接受 5xx 蒙混）。
  * ==============================================================================
  */
+import { createHmac } from "node:crypto";
+
 import * as H from "../lib/harness.mjs";
 import * as V from "../lib/v4.mjs";
 import * as N from "../lib/nodes.mjs";
@@ -68,11 +56,9 @@ async function connectNode(name, { slots = 2, declared = [] } = {}) {
 	return node;
 }
 
-// deployToNode 触发**真实**人工部署，并让 mock 节点按 v4 帧协议回执 applied。
-//
-// 这条路径不是「造一个 deployment 行」：中枢发 capability.deploy 帧、节点回
-// capability.deployed，deployment 行才从 pending 收敛成 applied（store 侧唯一入口）。
-// 真节点还会先 GET /v1/node/capabilities/{digest} 校验字节 —— 那段由 node_v4 覆盖。
+// deployToNode 触发**真实**人工部署，并让 mock 节点按 v4 帧协议回执 applied（不是造
+// deployment 行：中枢发 capability.deploy、节点回 capability.deployed 才收敛；真节点还会先
+// GET /v1/node/capabilities/{digest} 校验字节 —— 那段由 node_v4 覆盖）。
 async function deployToNode(node, capName) {
 	const res = await H.req(server.base, V.P.capabilityDeploy(NS, capName), {
 		session,
@@ -136,12 +122,40 @@ async function defineCap(name, opts = {}) {
 	return r.json;
 }
 
-// capRef 把能力信封折成 hello.capabilities[] 的一条（name+version+digest）。
-//
-// v4 的 hello 申报的是「这台机器持有哪一版」（带 digest），不是整份信封；把信封
-// 直接塞进去会在 handshake 校验里报 caps[0].name undefined —— 那正是这里的类型边界。
+// capRef 把能力信封折成 hello.capabilities[] 的一条（name+version+digest）。v4 申报的是
+// 「这台机器持有哪一版」，不是整份信封（直接塞信封会报 caps[0].name undefined）。
 function capRef(doc) {
 	return { name: doc?.metadata?.name, version: doc?.metadata?.version, digest: doc?.status?.digest };
+}
+
+// ---------- #513 webhook 信封：投递侧 helper（mkHookSource 返回含 token 的 hookUrl）----------
+async function mkHookSource(name, { config = {}, targets = [] } = {}) {
+	const r = await V.createSource(server.base, session, NS, V.sourceBody({ name, kind: "webhook", config, targets }));
+	V.expectStatus(`建 webhook 源 ${name} → 201`, r, 201);
+	const hookUrl = r.json?.spec?.config?.hookUrl || "";
+	H.check(`webhook 源 ${name} 的读投影带 hookUrl`, /^\/v1\/hooks\//.test(hookUrl), hookUrl);
+	return { doc: r.json, hookUrl };
+}
+
+// deliver 投递一次 webhook（body 是 string 时按**原始字节**发出，签名对着它算）。
+function deliver(hookUrl, headers, body) {
+	return H.req(server.base, hookUrl, { method: "POST", headers, body });
+}
+
+// hmacHex = 契约 §4 的口径：HMAC-SHA256(secret, 原始字节) 的小写 hex。
+function hmacHex(secret, raw) {
+	return createHmac("sha256", secret).update(raw).digest("hex");
+}
+
+// taskParamsOf 取任务信封里渲染后的参数（回执只给 taskId）。
+async function taskParamsOf(taskId) {
+	return (await H.req(server.base, V.P.task(NS, taskId), { session })).json?.spec?.params;
+}
+
+// eventOf 按 eventId 在 trace 里找事件行（入站事件的 type 只在这里看得见）。
+async function eventOf(traceId, eventId) {
+	const trace = (await H.req(server.base, V.P.trace(NS, traceId), { session })).json;
+	return (trace?.events || []).find((e) => e?.metadata?.uid === eventId) || null;
 }
 
 async function main() {
@@ -361,9 +375,8 @@ async function main() {
 	H.eq("no_target 不建任务", (nt.json?.tasks || []).length, 0);
 	expectPrune("no_target 留痕", nt, "no_target");
 
-	// 4.4 出口能力解析不到：v4 在**建源**时就拒（引用必须在本 ns 内可解析）
-	//
-	// FINDING：当前回 500（见文件头）。这里只钉「被拒 + 消息点名」，不把 5xx 固化成契约。
+	// 4.4 出口能力解析不到：v4 在**建源**时就拒（引用必须在本 ns 内可解析）。FINDING：当前回
+	// 500（见文件头）。这里只钉「被拒 + 消息点名」，不把 5xx 固化成契约。
 	const brokenSrc = await V.createSource(
 		server.base,
 		session,
@@ -750,6 +763,227 @@ async function main() {
 	).json;
 	H.eq("常量赢：payload 里 env=dev，任务 params 里是 prod", litTask?.spec?.params?.env, "prod");
 	H.eq("引用取到值：to 来自 payload", litTask?.spec?.params?.to, "u_1");
+
+	// ---------- 11. #513 A1：webhook 信封 / 签名 scheme / match.types ----------
+	// 逐条对着 .pi-legion/contract.md；用例名本身写清了语义，这里只留索引。
+	console.log("--- 11. webhook 信封 / 签名 scheme / match.types ---");
+
+	// 11.1 老契约对照（§8）：不写 envelope/signature/match 的源行为逐字不变
+	await defineCap("wh.legacy", { params: { type: "object", properties: { env: { type: "string" } } } });
+	const legacyHook = await mkHookSource("wh.legacy", {
+		targets: [{ capability: "wh.legacy", params: { env: "$(payload.env)" } }],
+	});
+	const legacy = await deliver(legacyHook.hookUrl, {}, { type: "t-old", id: "old-1", payload: { env: "prod" } });
+	V.expectStatus("老契约：无 envelope / 无签名头的投递 → 200", legacy, 200);
+	H.eq("老契约：回执 duplicate=false（首次投递）", legacy.json?.duplicate, false);
+	H.eq("老契约：建 1 个任务", (legacy.json?.tasks || []).length, 1);
+	H.eq(
+		"老契约：任务参数 env=prod（body.payload 仍是载荷）",
+		(await taskParamsOf(legacy.json?.tasks?.[0]?.taskId))?.env,
+		"prod",
+	);
+	H.eq(
+		"老契约：事件行 type 恰为 t-old（body.type 仍是类型来源）",
+		(await eventOf(legacy.json?.traceId, legacy.json?.eventId))?.spec?.eventType,
+		"t-old",
+	);
+
+	// 11.2 GitHub issues.opened：type = 头值 + joinFrom，载荷 = 整个投递体
+	await defineCap("wh.issue", {
+		params: { type: "object", properties: { event: { type: "string" }, issueTitle: { type: "string" } } },
+	});
+	const ghHook = await mkHookSource("wh.github", {
+		config: {
+			envelope: {
+				type: { header: "x-github-event", joinFrom: "$.action" },
+				deliveryId: { header: "x-github-delivery" },
+				payload: { whole: true },
+			},
+		},
+		targets: [
+			{
+				capability: "wh.issue",
+				params: { event: "$(payload.action)", issueTitle: "$(payload.issue.title)" },
+				match: { types: ["issues.opened"] },
+			},
+		],
+	});
+	const deliveryId = "gh-delivery-" + Date.now();
+	const ghHeaders = { "X-GitHub-Event": "issues", "X-GitHub-Delivery": deliveryId };
+	const ghBody = { action: "opened", issue: { title: "hello" } };
+	const gh1 = await deliver(ghHook.hookUrl, ghHeaders, ghBody);
+	V.expectStatus("GitHub issues.opened → 200", gh1, 200);
+	H.eq("GitHub issues.opened 建 1 个任务", (gh1.json?.tasks || []).length, 1);
+	const ghParams = await taskParamsOf(gh1.json?.tasks?.[0]?.taskId);
+	H.eq("issues.opened：参数 event 来自 payload.action（whole 载荷）", ghParams?.event, "opened");
+	H.eq("issues.opened：参数 issueTitle 来自 payload.issue.title（两层指针）", ghParams?.issueTitle, "hello");
+	H.eq(
+		"事件行 type 恰为 issues.opened（头值拼 joinFrom）",
+		(await eventOf(gh1.json?.traceId, gh1.json?.eventId))?.spec?.eventType,
+		"issues.opened",
+	);
+
+	// 11.3 不命中 match.types → no_match（issue.title 取不到也证明「先 match 后 params」）
+	const ghPr = await deliver(
+		ghHook.hookUrl,
+		{ "X-GitHub-Event": "pull_request", "X-GitHub-Delivery": deliveryId + "-pr" },
+		{ action: "opened" },
+	);
+	V.expectStatus("GitHub pull_request 不被命中 → 200（不是错误码）", ghPr, 200);
+	H.eq("pull_request：0 任务（match 不命中不建任务）", (ghPr.json?.tasks || []).length, 0);
+	H.eq("pull_request：回执 pruned[0].reason 恰为 no_match", ghPr.json?.pruned?.[0]?.reason, "no_match");
+	H.check(
+		"pull_request：剪枝证据带事件 type 与声明的 types（§5）",
+		/pull_request\.opened/.test(String(ghPr.json?.pruned?.[0]?.detail || "")),
+		JSON.stringify(ghPr.json?.pruned),
+	);
+
+	// 11.4 ping：payloadSchema 不合规也不该变成 400（否则外部系统会丢掉事件）
+	const pingHook = await mkHookSource("wh.github-ping", {
+		config: {
+			envelope: {
+				type: { header: "x-github-event", joinFrom: "$.action" },
+				deliveryId: { header: "x-github-delivery" },
+				payload: { whole: true },
+			},
+			payloadSchema: { type: "object", required: ["issue"], properties: { issue: { type: "object" } } },
+		},
+		targets: [{ capability: "wh.issue", match: { types: ["issues.opened"] } }],
+	});
+	const ping = await deliver(
+		pingHook.hookUrl,
+		{ "X-GitHub-Event": "ping", "X-GitHub-Delivery": "gh-ping-" + Date.now() },
+		{ zen: "Keep it simple." },
+	);
+	V.expectStatus("GitHub ping → 200（不是 400：schema 不合规只剪枝）", ping, 200);
+	H.eq("ping：0 任务", (ping.json?.tasks || []).length, 0);
+	H.check(
+		"ping：pruned 非空（event_schema 或 no_match 都算）",
+		(ping.json?.pruned || []).length > 0,
+		JSON.stringify(ping.json?.pruned),
+	);
+
+	// 11.5 幂等：同一个 X-GitHub-Delivery 再投一次（回执回原事件，不新建任务行）
+	const gh2 = await deliver(ghHook.hookUrl, ghHeaders, ghBody);
+	V.expectStatus("幂等：同一个 X-GitHub-Delivery 再投一次 → 200", gh2, 200);
+	H.eq("幂等：第二次 duplicate=true", gh2.json?.duplicate, true);
+	H.eq(
+		"幂等：taskId 与首次逐字相同（没有重复派发）",
+		gh2.json?.tasks?.[0]?.taskId,
+		gh1.json?.tasks?.[0]?.taskId,
+	);
+	const ghTraceAfter = (await H.req(server.base, V.P.trace(NS, gh1.json?.traceId), { session })).json;
+	H.eq("幂等：该 trace 的任务总数不变（仍是 1）", (ghTraceAfter?.tasks || []).length, 1);
+	H.eq("幂等：该 trace 的事件总数不变（仍是 1）", (ghTraceAfter?.events || []).length, 1);
+
+	// 11.6 github-sha256：X-Hub-Signature-256，对**实际发出的原始字节**算 HMAC
+	const sigHook = await mkHookSource("wh.github-sig", {
+		config: { secret: "s3cr3t", signature: { scheme: "github-sha256" } },
+		targets: [{ capability: "wh.legacy", params: { env: "signed" } }],
+	});
+	const sigRaw = JSON.stringify({ type: "sig.test", id: "sig-1", payload: { x: 1 } });
+	const sigHeader = { "X-Hub-Signature-256": "sha256=" + hmacHex("s3cr3t", sigRaw) };
+	const sigOK = await deliver(sigHook.hookUrl, sigHeader, sigRaw);
+	V.expectStatus("github-sha256：对原始字节签名 → 200", sigOK, 200);
+	H.eq("github-sha256：签名正确时建 1 个任务", (sigOK.json?.tasks || []).length, 1);
+	const tamperedRaw = sigRaw.replace('"x":1', '"x":2'); // 只改一个字节，签名头不变
+	const sigBad = await deliver(sigHook.hookUrl, sigHeader, tamperedRaw);
+	V.expectStatus("github-sha256：body 改一个字节（签名不变）→ 401", sigBad, 401);
+
+	// 11.7 不填 scheme：旧头 X-Anotify-Signature 逐字仍是今天的口径；无头 → 401
+	const oldSigHook = await mkHookSource("wh.anotify-sig", {
+		config: { secret: "s3cr3t" },
+		targets: [{ capability: "wh.legacy", params: { env: "legacy" } }],
+	});
+	const oldRaw = JSON.stringify({ type: "sig.old", id: "sig-old", payload: { y: 1 } });
+	const oldOK = await deliver(oldSigHook.hookUrl, { "X-Anotify-Signature": "sha256=" + hmacHex("s3cr3t", oldRaw) }, oldRaw);
+	V.expectStatus("不填 scheme：旧头 X-Anotify-Signature → 200", oldOK, 200);
+	const oldMissing = await deliver(oldSigHook.hookUrl, {}, oldRaw);
+	V.expectStatus("不填 scheme：不带签名头 → 401（secret 非空就必须签）", oldMissing, 401);
+
+	// 11.8 config.payload 对 webhook 真生效：静态打底 + 入站覆盖（冲突时入站赢）
+	await defineCap("wh.pay", {
+		params: { type: "object", properties: { tenant: { type: "string" }, env: { type: "string" } } },
+	});
+	const payHook = await mkHookSource("wh.payload", {
+		config: { payload: { tenant: "acme", env: "static" } },
+		targets: [
+			{ capability: "wh.pay", params: { tenant: "$(payload.tenant)", env: "$(payload.env)" } },
+		],
+	});
+	const pay = await deliver(payHook.hookUrl, {}, { payload: { env: "inbound" } });
+	V.expectStatus("webhook config.payload：投递 → 200", pay, 200);
+	const payParams = await taskParamsOf(pay.json?.tasks?.[0]?.taskId);
+	H.eq("静态打底：tenant 来自 config.payload", payParams?.tenant, "acme");
+	H.eq("入站覆盖静态：env=inbound（不是 static）", payParams?.env, "inbound");
+
+	// 11.9 payloadSchema 仍在：入口校验整条事件，0 任务 + event_schema 留痕
+	const schHook = await mkHookSource("wh.schema", {
+		config: {
+			payloadSchema: { type: "object", required: ["environment"], properties: { environment: { type: "string" } } },
+		},
+		targets: [{ capability: "wh.pay", params: { env: "x" } }],
+	});
+	const sch = await deliver(schHook.hookUrl, {}, { payload: { x: 1 } });
+	V.expectStatus("webhook payloadSchema 不合规 → 200（事件照收）", sch, 200);
+	H.eq("payloadSchema 不合规：0 任务", (sch.json?.tasks || []).length, 0);
+	H.eq("payloadSchema 不合规：pruned[0].reason 恰为 event_schema", sch.json?.pruned?.[0]?.reason, "event_schema");
+
+	// 11.10 写入期 400：坏信封 / 坏签名 / 坏 match 一律当场拒（不静默保留）
+	for (const [i, [label, config]] of [
+		["envelope 出现未知键 typo", { envelope: { typo: 1 } }],
+		["envelope.type 同时给 header 与 pointer", { envelope: { type: { header: "x-a", pointer: "$.b" } } }],
+		["envelope.payload 同时给 whole 与 pointer", { envelope: { payload: { whole: true, pointer: "$.b" } } }],
+		["signature.scheme 非法值 md5", { signature: { scheme: "md5" } }],
+	].entries()) {
+		V.expectReason(
+			`${label} → 400`,
+			await V.createSource(
+				server.base,
+				session,
+				NS,
+				V.sourceBody({ name: `wh.bad-config-${i}`, kind: "webhook", config, targets: [{ capability: "wh.legacy" }] }),
+			),
+			400,
+			"invalid_source_config",
+		);
+	}
+	for (const [i, [label, match, reason]] of [
+		// 未知键在**写请求解码**层被拒（unknown_field），不是归一化层（invalid_source_config）
+		["targets[0].match 出现未知键 type", { type: ["issues.opened"] }, "unknown_field"],
+		["targets[0].match.types 是空数组", { types: [] }, "invalid_source_config"],
+	].entries()) {
+		V.expectReason(
+			`${label} → 400`,
+			await V.createSource(
+				server.base,
+				session,
+				NS,
+				V.sourceBody({ name: `wh.bad-match-${i}`, kind: "webhook", targets: [{ capability: "wh.legacy", match }] }),
+			),
+			400,
+			reason,
+		);
+	}
+
+	// 11.11 读投影不回退：凭据仍只写不读，但 envelope / signature / match 原样可见（§7）
+	const sigCfg = (await H.req(server.base, V.P.source(NS, "wh.github-sig"), { session })).json?.spec?.config || {};
+	H.check(
+		"读投影没有 token / secret 键（凭据只写不读）",
+		!("token" in sigCfg) && !("secret" in sigCfg),
+		JSON.stringify(sigCfg),
+	);
+	H.eq("读投影 secretSet=true（掩码事实可见）", sigCfg.secretSet, true);
+	H.check("读投影字节里没有 secret 原文", !JSON.stringify(sigCfg).includes("s3cr3t"), JSON.stringify(sigCfg));
+	H.eq("读投影原样回显 signature.scheme", sigCfg.signature?.scheme, "github-sha256");
+	const ghCfg = (await H.req(server.base, V.P.source(NS, "wh.github"), { session })).json;
+	H.eq("读投影原样回显 envelope.type.header", ghCfg?.spec?.config?.envelope?.type?.header, "x-github-event");
+	H.eq(
+		"读投影原样回显 envelope.type.joinFrom（指针 $.action 与 action 等价）",
+		String(ghCfg?.spec?.config?.envelope?.type?.joinFrom || "").replace(/^\$\./, ""),
+		"action",
+	);
+	H.eq("读投影原样回显 match.types", ghCfg?.spec?.targets?.[0]?.match?.types, ["issues.opened"]);
 
 	for (const n of nodes) n.conn.close();
 	server.stop();

@@ -26,7 +26,7 @@ func TestPlanFromSourceMapsTemplatesAndKeepsOrder(t *testing.T) {
 		Enabled: true,
 	}
 	router := New(db)
-	plan, err := router.PlanFromSource(testCtx(), src, "trace-1", map[string]any{"env": "prod"})
+	plan, err := router.PlanFromSource(testCtx(), src, "trace-1", "", map[string]any{"env": "prod"})
 	if err != nil {
 		t.Fatalf("PlanFromSource: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestPlanFromSourceNoTargets(t *testing.T) {
 		NamespaceID: ns.ID, Name: "manual-1", Kind: sourcespec.KindManual,
 		Enabled: true,
 	}
-	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-1", map[string]any{})
+	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-1", "", map[string]any{})
 	if err != nil {
 		t.Fatalf("PlanFromSource: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestPlanFromSourceMissingCapability(t *testing.T) {
 		Targets: []sourcespec.Target{{Capability: "ghost"}},
 		Enabled: true,
 	}
-	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-1", map[string]any{})
+	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-1", "", map[string]any{})
 	if err != nil {
 		t.Fatalf("PlanFromSource: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestPlanFromSourceMissingKeepsDeclaredVersion(t *testing.T) {
 		Targets: []sourcespec.Target{{Capability: "ghost@2"}},
 		Enabled: true,
 	}
-	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-1", map[string]any{})
+	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-1", "", map[string]any{})
 	if err != nil {
 		t.Fatalf("PlanFromSource: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestPlanFromSourceParamMissing(t *testing.T) {
 		Targets: []sourcespec.Target{{Capability: "analyze", Params: map[string]any{"env": "$(payload.env)"}}},
 		Enabled: true,
 	}
-	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-1", map[string]any{})
+	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-1", "", map[string]any{})
 	if err != nil {
 		t.Fatalf("PlanFromSource: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestPlanTasksArePendingWithoutAuthority(t *testing.T) {
 		Targets: []sourcespec.Target{{Capability: "analyze"}},
 		Enabled: true,
 	}
-	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-42", map[string]any{})
+	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-42", "", map[string]any{})
 	if err != nil {
 		t.Fatalf("PlanFromSource: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestPlanFromSourceTemplatesSinglePassAndKeepTypes(t *testing.T) {
 		"flag":  true,
 		"meta":  map[string]any{"a": "b"},
 	}
-	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-tpl", payload)
+	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-tpl", "", payload)
 	if err != nil {
 		t.Fatalf("PlanFromSource: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestPlanFromSourceBadPinnedVersionIsNotAVersionFact(t *testing.T) {
 		Targets: []sourcespec.Target{{Capability: "ghost@3junk"}},
 		Enabled: true,
 	}
-	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-1", map[string]any{})
+	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-1", "", map[string]any{})
 	if err != nil {
 		t.Fatalf("PlanFromSource: %v", err)
 	}

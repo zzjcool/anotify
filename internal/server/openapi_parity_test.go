@@ -5039,7 +5039,9 @@ var undeclaredQueryParamWhitelist = map[string]schemaWitness{}
 //
 // 与 parityPairsFloor / bareMountFloor 同一个纪律：把一个 header 声明删掉，对账就少一项，
 // 而剩下的全绿。数量掉了必须显式改这个常量 —— 那是一次有人看过 diff 的动作。
-const headerParamFloor = 7
+//
+// 8 = 7 + `X-Hub-Signature-256`（#513 的可选验签口径：github-sha256）。
+const headerParamFloor = 8
 
 // headerParamException 是「契约声明了、实现没读」的 header 例外登记。
 //

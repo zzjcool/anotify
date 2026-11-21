@@ -2,20 +2,13 @@ package source
 
 // webhook_sign.go 是 webhook 投递的**签名口径**（source.md §3.3 / D7）。
 //
-// 契约：配了 `config.secret` 的源，投递必须带
+//	X-Anotify-Signature: sha256=<hex>      # 缺省 / scheme: anotify-sha256
+//	X-Hub-Signature-256: sha256=<hex>      # scheme: github-sha256（GitHub 的原生口径）
 //
-//	X-Anotify-Signature: sha256=<hex>
-//
-// 值等于 `HMAC-SHA256(secret, 原始 body 字节)` 的小写十六进制；校验对**原始字节**做
-// （不是解析后的 JSON），因为「签名 → 再序列化」与「解析 → 重新序列化」两条路径都会
-// 因空白 / 键序差异产生假失败（契约点名了这个坑）。缺失 / 格式错 / 不匹配 → 401，
-// 且**不产生事件**——所以校验必须在落库与派发之前完成。
-//
-// 两个设计约束：
-//
-//  1. 不引入任何「某个外部平台的签名格式」知识：这里的协议与调用方无关（§3.3）。
-//  2. 比较走 `hmac.Equal`（常量时间）：逐字节短路比较会把「前几个 hex 对了」变成
-//     可测量的时间差，等于把 secret 变成可爆破的预言机。
+// 值 = `HMAC-SHA256(secret, 原始 body 字节)` 的小写十六进制。校验对**原始字节**做（不是解析
+// 后的 JSON：那会因空白/键序差异假失败）；缺失/格式错/不匹配 → 401 且**不产生事件**，
+// 所以校验必须在落库与派发之前完成。算法只有一种：平台差异只到**头名**（不做摘要/拼串
+// 变体，那会把验签变成一张猜不完的表）；比较走 `hmac.Equal`（逐字节短路 = 可爆破的预言机）。
 
 import (
 	"crypto/hmac"
@@ -23,10 +16,16 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
+
+	"github.com/zzjcool/anotify/internal/sourcespec"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
-// HookSignatureHeader 是签名头的名字（契约里逐字冻结）。
+// HookSignatureHeader 是缺省口径（anotify-sha256）的头名（契约里逐字冻结）。
 const HookSignatureHeader = "X-Anotify-Signature"
+
+// HookSignatureGitHub 是 `config.signature.scheme: github-sha256` 的头名（算法同缺省口径）。
+const HookSignatureGitHub = "X-Hub-Signature-256"
 
 // HookSignatureScheme 是签名值的算法前缀（`sha256=<hex>`）。
 //
@@ -49,14 +48,18 @@ func SignHookBody(secret string, body []byte) string {
 	return HookSignatureScheme + hex.EncodeToString(mac.Sum(nil))
 }
 
-// VerifyHookSignature 校验一次投递的签名头。
-//
-// secret 为空（源没配 secret）→ 直接放行，**不看**签名头：没配就是没配，
-// 此时一个乱写的头不该让投递失败（契约：`secret` 空 = 不校验）。
-//
-// 非空 secret 时的判据（任何一条不满足 → ErrHookSignature）：
-//   - 头存在且形如 `sha256=<64 个小写 hex>`（前缀大小写、裸 hex、截断/超长、大写 hex 都拒）；
-//   - `hmac.Equal` 与 `HMAC-SHA256(secret, body)` 相等（body 是**原始字节**）。
+// Scheme 返回该源的签名口径（github-sha256 / 缺省 anotify-sha256）。只有一处解释
+// （sourcespec 的归一化形态）：handler 据此选头名，本包据此验签。
+func HookScheme(src *store.Source) string {
+	if src == nil || src.Kind != sourcespec.KindWebhook {
+		return sourcespec.SchemeAnotifySHA256
+	}
+	return sourcespec.ParseConfig(src.Kind, src.Config).Scheme()
+}
+
+// VerifyHookSignature 校验一次投递的签名头。secret 为空 → 放行且**不看**头（契约：空 =
+// 不校验，乱写的头不该让投递失败）。非空时任何一条不满足 → ErrHookSignature：头形如
+// `sha256=<64 个小写 hex>`（前缀大小写、裸 hex、截断/超长、大写都拒），且 `hmac.Equal`。
 func VerifyHookSignature(secret string, body []byte, header string) error {
 	if secret == "" {
 		return nil
@@ -81,11 +84,8 @@ func VerifyHookSignature(secret string, body []byte, header string) error {
 	return nil
 }
 
-// isLowerHex 判断是否全为小写十六进制字符。
-//
-// 为什么不 `strings.ToLower` 后放行：契约写的是 `<hex>`（小写），而一个「大小写都收」
-// 的实现会让轮换时的**手工排错**变得含糊（`sha256=5F1D…` 到底算不算同一把？）。
-// 严格一种形态，错就 401，调用方看文档即可。
+// isLowerHex 判断是否全为小写十六进制字符。不 `ToLower` 后放行：大小写都收会让轮换时的
+// 手工排错变含糊（`sha256=5F1D…` 算不算同一把？）。
 func isLowerHex(s string) bool {
 	for i := 0; i < len(s); i++ {
 		c := s[i]

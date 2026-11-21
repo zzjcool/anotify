@@ -1,15 +1,10 @@
 // Package sourcespec 是 Anotify v4 **源（Source / 触发器）**文档与配置的唯一纯校验源。
 //
-// 为什么单独一个包：源的校验要在三个地方用同一套判据——store 的写路径（建/改源）、
-// playbook 的 12 格安装比较（G1-5）、以及将来的拒绝理由展示。把它们抄两遍必然漂移
-// （症状是「保存说没问题、安装说不一样」），所以本包只做**纯函数**：
-//
-//   - 不 import 任何本项目包（store/route/server 都不行）：校验规则不依赖数据库；
-//   - 不碰 IO、不读环境、不生成随机数（token 的生成是 store 的事，本包只判「空 = 待生成」）；
-//   - 输入的 config 一律是 `json.RawMessage`，输出也是——调用方拿到的字节就是落库的字节。
-//
-// 语义基线是本包的校验函数与 `api/ingress.yaml`（kind 注册表、文档形状、config 字段、
-// targets 与模板语法、校验与错误）。实现与文档冲突时以 `api/` 与测试为准。
+// 为什么单独一个包：同一套判据要在三处用——store 的写路径（建/改源）、playbook 的安装
+// 比较（G1-5）、拒绝理由展示。抄两遍必然漂移（症状是「保存说没问题、安装说不一样」），
+// 所以本包只做**纯函数**：不 import 本项目任何包、不碰 IO / 环境 / 随机数（token 的生成
+// 是 store 的事，这里只判「空 = 待生成」）、config 进出都是 `json.RawMessage`（调用方拿到的
+// 字节就是落库的字节）。语义基线是 `api/` 与测试，冲突时以它们为准。
 package sourcespec
 
 import (
@@ -66,6 +61,8 @@ func IsKind(kind string) bool {
 type Target struct {
 	Capability string         `json:"capability"`
 	Params     map[string]any `json:"params,omitempty"`
+	// Match 是条件派：不填 = 恒命中（现状）；写了 types 则事件 type 必须精确命中。
+	Match *Match `json:"match,omitempty"`
 }
 
 // Spec 是一份源文档的 spec 段（source.md §2）。
@@ -81,8 +78,8 @@ type Spec struct {
 
 // Config 是按 kind 解释后的 config（归一化形态）。
 //
-// 未在本 kind 上有意义的字段恒为零值：`payload` 只有 cron/manual 保留，
-// `token`/`secret` 只有 webhook 有（source.md §3.1/§3.2）。
+// 未在本 kind 上有意义的字段恒为零值：`token`/`secret`/`envelope`/`signature` 只有
+// webhook 有，`expr`/`tz` 只有 cron 有（source.md §3.1/§3.2）。
 type Config struct {
 	// Expr / TZ 是 kind=cron 的调度参数（tz 空 = Local）。
 	Expr string
@@ -90,12 +87,15 @@ type Config struct {
 	// Token / Secret 是 kind=webhook 的入口凭据（token 空 = 待服务端生成）。
 	Token  string
 	Secret string
-	// Payload 是 cron/manual 的静态打底数据（webhook 的载荷来自投递体，这里恒为 nil）。
+	// Payload 是静态打底数据（三个 kind 同语义：入站载荷一层覆盖它）。
 	Payload map[string]any
 	// PayloadSchema 是载荷契约（缺省/null = 不校验）。
 	PayloadSchema json.RawMessage
 	// Sample 是编辑器提示用的示意载荷（不参与派发）。
 	Sample map[string]any
+	// Envelope / Signature 是 webhook 的适配层（#513）：从哪取三元组、用哪种签名口径。
+	Envelope  *Envelope
+	Signature *Signature
 }
 
 // ParseConfig 把 config 字节按 kind 解释成结构化形态（坏字节 → 零值，不报错）。
@@ -128,7 +128,7 @@ func ParseConfig(kind string, raw json.RawMessage) Config {
 			cfg.PayloadSchema = append(json.RawMessage(nil), v...)
 		}
 	}
-	if v, ok := fields["payload"]; ok && keepsPayload(kind) {
+	if v, ok := fields["payload"]; ok {
 		if obj, isObj := decodeObject(v); isObj {
 			cfg.Payload = obj
 		}
@@ -138,14 +138,25 @@ func ParseConfig(kind string, raw json.RawMessage) Config {
 			cfg.Sample = obj
 		}
 	}
+	if kind == KindWebhook {
+		if env, err := normalizeEnvelope(fields); err == nil {
+			cfg.Envelope = env
+		}
+		if sig, err := normalizeSignature(fields); err == nil {
+			cfg.Signature = sig
+		}
+	}
 	return cfg
 }
 
-// keepsPayload 报告该 kind 是否把 `config.payload` 当「静态打底数据」保留。
-//
-// cron/manual 的载荷由配置/人给，要存；webhook 的载荷是投递进来的请求体，
-// 存在 config 里没有意义（source.md §3.2：给了也丢弃）。
-func keepsPayload(kind string) bool { return kind == KindCron || kind == KindManual }
+// Scheme 返回该源的签名口径（缺省 = anotify-sha256）。调用方不自己解 config：
+// 「用哪种口径」只有一处解释，否则「验签看 A、文档写 B」这种分叉没法查。
+func (c Config) Scheme() string {
+	if c.Signature == nil || c.Signature.Scheme == "" {
+		return SchemeAnotifySHA256
+	}
+	return c.Signature.Scheme
+}
 
 // isNull 判断 raw 是否就是 JSON 的 null（显式 null 与「没写」在配置期同义）。
 func isNull(raw json.RawMessage) bool {

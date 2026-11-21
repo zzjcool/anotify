@@ -2539,6 +2539,27 @@ components:
           type: object
           description: "该下游的固定入参（JSON 对象，可省）"
           additionalProperties: true
+        match:
+          $ref: '#/components/schemas/SourceMatch'
+    SourceMatch:
+      type: object
+      description: |
+        条件派（#513）：`types` 是精确、大小写敏感的事件类型白名单。
+
+        - 不写 `match` → 全部命中（现状）。
+        - 写了 `types` → 只给命中的那次事件建任务；不命中时事件**照常入库**、
+          回执 `pruned[].reason = no_match`、HTTP 仍 200、不建任务。
+        - `types` 必须是非空数组，元素非空且不重复（空数组 = 永不派发的死声明，
+          写路径 400 `invalid_source_config`）。
+
+        求值顺序在解析下游**之前**：不命中的边不会去查目标能力，也不会报
+        `downstream_missing`（那条边本来就不该看这次事件）。
+      required: [types]
+      properties:
+        types:
+          type: array
+          description: 精确、大小写敏感的事件类型白名单（如 `issues.opened`）
+          items: {type: string}
     SourceSpec:
       type: object
       description: |
@@ -2555,6 +2576,25 @@ components:
           description: |
             kind 相关的配置。读形态含只读投影 `hookUrl`（webhook）与 `secretSet`（bool）；
             `token`/`secret` 只写不读。
+
+            写路径按 kind 封闭校验（`internal/sourcespec/config.go`），未知键 →
+            400 `invalid_source_config`。webhook 额外两个适配键（#513）：
+
+              envelope:   # 从哪取 {type, deliveryId, payload}；三个维度各自可缺省
+                type:       { header: "x-github-event", joinFrom: "$.action" }
+                deliveryId: { header: "x-github-delivery" }
+                payload:    { whole: true }        # 或 { pointer: "$.data.object" }
+              signature: { scheme: "github-sha256" }  # 或 anotify-sha256 / 省略
+
+            规则：`type`/`deliveryId` 的 `header` 与 `pointer` 二选一（`joinFrom` 只
+            `type` 支持）；`payload` 的 `whole: true` 与 `pointer` 二选一；缺省的
+            维度回落今天的语义（`body.type` / `body.id` / `body.payload`），所以不写
+            `envelope` = 逐字等价于今天的契约。指针是点号路径（`$.a.b` 与 `a.b` 同义，
+            数字段表示数组下标，不支持通配/函数）。任一指针取不到时：`type` 回落源名、
+            `deliveryId` 不去重、`payload` → 400。
+
+            `config.payload` 对三个 kind **同语义**（静态打底 + 入站一层覆盖，冲突时
+            入站覆盖静态）；webhook 以前接受但静默丢弃，本版起真生效。
           additionalProperties: true
         targets:
           type: array

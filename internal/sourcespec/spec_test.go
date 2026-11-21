@@ -89,10 +89,13 @@ func TestNormalizeCron(t *testing.T) {
 	}
 }
 
-// TestNormalizeWebhook 验 webhook：token 空保留（由 store 生成）、payload 丢弃、secret 保留。
+// TestNormalizeWebhook 验 webhook：token 空保留（由 store 生成）、payload **真保留**、secret 保留。
+//
+// payload 曾经是被接受但丢弃的（#513 修掉了）：写进 config 的人以为它生效了，
+// 而实际永远不会进投递载荷——静默不生效比拒掉坏得多。
 func TestNormalizeWebhook(t *testing.T) {
 	cfg, err := NormalizeConfig(KindWebhook, json.RawMessage(
-		`{"payload":{"ignored":true},"sample":{"environment":"prod"},"secret":"s3cr3t"}`))
+		`{"payload":{"tenant":"acme"},"sample":{"environment":"prod"},"secret":"s3cr3t"}`))
 	if err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
@@ -100,8 +103,8 @@ func TestNormalizeWebhook(t *testing.T) {
 	if parsed.Token != "" {
 		t.Fatalf("空 token 应原样保留（生成是 store 的事）：%q", parsed.Token)
 	}
-	if parsed.Payload != nil {
-		t.Fatalf("webhook 的 config.payload 应被丢弃：%v", parsed.Payload)
+	if parsed.Payload["tenant"] != "acme" {
+		t.Fatalf("webhook 的 config.payload 应原样保留：%v", parsed.Payload)
 	}
 	if parsed.Secret != "s3cr3t" || parsed.Sample["environment"] != "prod" {
 		t.Fatalf("secret/sample 应保留：%+v", parsed)

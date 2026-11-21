@@ -86,7 +86,7 @@ func TestSourceWebhookToken(t *testing.T) {
 		Name:        "hook",
 		Kind:        store.SourceKindWebhook,
 		Enabled:     true,
-		Config:      json.RawMessage(`{"payload":{"ignored":true},"payloadSchema":{"type":"object"}}`),
+		Config:      json.RawMessage(`{"payload":{"tenant":"acme"},"payloadSchema":{"type":"object"}}`),
 	}
 	if err := db.CreateSource(ctx, s); err != nil {
 		t.Fatalf("create webhook source: %v", err)
@@ -95,8 +95,8 @@ func TestSourceWebhookToken(t *testing.T) {
 	if cfg.Token == "" {
 		t.Fatalf("空 token 应由服务端生成")
 	}
-	if cfg.Payload != nil {
-		t.Fatalf("webhook 的 config.payload 应被丢弃：%v", cfg.Payload)
+	if cfg.Payload["tenant"] != "acme" {
+		t.Fatalf("webhook 的 config.payload 应原样保留：%v", cfg.Payload)
 	}
 	found, err := db.LookupHook(ctx, cfg.Token)
 	if err != nil {
