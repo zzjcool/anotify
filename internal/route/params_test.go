@@ -80,6 +80,82 @@ func TestValidatePayloadSchema(t *testing.T) {
 	}
 }
 
+func assertPayloadPrune(t *testing.T, prune *Prune, detail, field string) {
+	t.Helper()
+	if detail == "" {
+		if prune != nil {
+			t.Fatalf("应通过，得到剪枝 %+v", prune)
+		}
+		return
+	}
+	if prune == nil || prune.Reason != protocol.ReasonEventSchema {
+		t.Fatalf("应剪枝 event_schema，得到 %+v", prune)
+	}
+	if prune.Detail != detail || prune.Field != field {
+		t.Fatalf("剪枝 = %q / %q，want %q / %q", prune.Detail, prune.Field, detail, field)
+	}
+}
+
+// TestValidatePayloadPropertiesOnlyUnchanged 是对照组：#516 的修正不许动既有输出（在旧实现上必须同样绿）。
+func TestValidatePayloadPropertiesOnlyUnchanged(t *testing.T) {
+	withRequired := `{"type":"object","properties":{"environment":{"type":"string"}},"required":["environment"]}`
+	withoutRequired := `{"type":"object","properties":{"environment":{"type":"string"}}}`
+	cases := []struct {
+		name    string
+		schema  string
+		payload map[string]any
+		detail  string
+	}{
+		{"没有 required 时缺字段放行", withoutRequired, map[string]any{}, ""},
+		{"没有 required 时多余字段放行", withoutRequired, map[string]any{"environment": "prod", "extra": true}, ""},
+		{"properties 声明的必填缺失照旧剪枝", withRequired, map[string]any{"other": 1}, "载荷缺 environment"},
+		{"类型不符照旧剪枝", withRequired, map[string]any{"environment": json.Number("3")}, "参数 environment 类型应为 string，实际 number"},
+		{"多个缺失按名字排序", `{"properties":{"b":{"type":"string"},"a":{"type":"string"}},"required":["b","a"]}`, map[string]any{}, "载荷缺 a, b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prune := ValidatePayload(json.RawMessage(tc.schema), tc.payload)
+			if prune == nil {
+				if tc.detail != "" {
+					t.Fatalf("应剪枝 %q，实际通过", tc.detail)
+				}
+				return
+			}
+			if prune.Reason != protocol.ReasonEventSchema || prune.Detail != tc.detail {
+				t.Fatalf("剪枝 = %q / %q，want event_schema / %q", prune.Reason, prune.Detail, tc.detail)
+			}
+		})
+	}
+}
+
+// TestValidatePayloadRequiredWithoutProperties 是 #516 的主用例：required 独立于 properties。
+func TestValidatePayloadRequiredWithoutProperties(t *testing.T) {
+	cases := []struct {
+		name    string
+		schema  string
+		payload map[string]any
+		detail  string
+		field   string
+	}{
+		{"只写 required 缺字段", `{"required":["action"]}`, map[string]any{}, "载荷缺 action", "payload.action"},
+		{"键存在即通过（null 也算存在）", `{"required":["action"]}`, map[string]any{"action": nil}, "", ""},
+		{"键存在即通过（任意值）", `{"required":["action"]}`, map[string]any{"action": 1}, "", ""},
+		{"required 一半在 properties 里", `{"properties":{"a":{"type":"string"}},"required":["a","b"]}`, map[string]any{"a": "x"}, "载荷缺 b", "payload.b"},
+		{"properties 里的必填缺失也落到 payload.<名>", `{"properties":{"a":{"type":"string"}},"required":["a"]}`, map[string]any{}, "载荷缺 a", "payload.a"},
+		{"properties 的类型判定不受影响", `{"properties":{"a":{"type":"string"}},"required":["b"]}`, map[string]any{"a": json.Number("1")}, "参数 a 类型应为 string，实际 number", "payload.a"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertPayloadPrune(t, ValidatePayload(json.RawMessage(tc.schema), tc.payload), tc.detail, tc.field)
+		})
+	}
+
+	merged := json.RawMessage(`{"properties":{"a":{"type":"string"}},"required":["c","b","a"]}`)
+	for i := 0; i < 32; i++ {
+		assertPayloadPrune(t, ValidatePayload(merged, map[string]any{}), "载荷缺 a, b, c", "payload.a")
+	}
+}
+
 func TestDeclaredRef(t *testing.T) {
 	cases := []struct {
 		name string
