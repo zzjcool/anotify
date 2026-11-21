@@ -1,6 +1,7 @@
 package route
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/protocol"
@@ -46,6 +47,65 @@ func TestPlanFromSourceMatchGate(t *testing.T) {
 	// ghost 这条匹配的类型是 pull_request.opened，本次不命中 → 0 条失败事实。
 	if failures := plan.FailureInputs(); len(failures) != 0 {
 		t.Fatalf("被 match 挡掉的边不该报 downstream_missing: %+v", failures)
+	}
+}
+
+func TestPlanFromSourceCombinatorGate(t *testing.T) {
+	db := testDB(t)
+	ns := testNamespace(t, db)
+	testCapability(t, db, ns.ID, "issues", 1, capOpts{})
+	prGate := sourcespec.MatchLeaf{Field: "issue.pull_request", Op: sourcespec.MatchOpExists, Negate: true}
+	src := &store.Source{
+		NamespaceID: ns.ID, Name: "gh-combinator", Kind: sourcespec.KindWebhook,
+		Targets: []sourcespec.Target{{
+			Capability: "issues",
+			Match: &sourcespec.Match{
+				Types: []string{"issues.labeled"},
+				All:   []sourcespec.MatchLeaf{prGate},
+				Any: []sourcespec.MatchLeaf{
+					{Field: "issue.labels.0.name", Op: sourcespec.MatchOpIn, Value: []any{"bug"}},
+				},
+			},
+		}},
+		Enabled: true,
+	}
+	prPayload := map[string]any{"issue": map[string]any{
+		"pull_request": map[string]any{"url": "u"},
+		"labels":       []any{map[string]any{"name": "bug"}},
+	}}
+	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-pr", "issues.labeled", prPayload)
+	if err != nil {
+		t.Fatalf("PlanFromSource: %v", err)
+	}
+	if len(plan.Ready()) != 0 || len(plan.FailureInputs()) != 0 {
+		t.Fatalf("PR-as-issue 不该派发也不该报失败: %+v", plan.Targets)
+	}
+	if len(plan.Pruned) != 1 || plan.Pruned[0].Reason != protocol.ReasonNoMatch {
+		t.Fatalf("应恰一条 no_match 剪枝: %+v", plan.Pruned)
+	}
+	if !strings.Contains(plan.Pruned[0].Detail, "match.all[0]") {
+		t.Fatalf("detail 应点名 all 的第几行: %q", plan.Pruned[0].Detail)
+	}
+	issuePayload := map[string]any{"issue": map[string]any{
+		"labels": []any{map[string]any{"name": "bug"}},
+	}}
+	plan, err = New(db).PlanFromSource(testCtx(), src, "trace-issue", "issues.labeled", issuePayload)
+	if err != nil {
+		t.Fatalf("PlanFromSource: %v", err)
+	}
+	if len(plan.Ready()) != 1 {
+		t.Fatalf("非 PR + any 命中应 ready: %+v %+v", plan.Targets, plan.Pruned)
+	}
+	blockedPayload := map[string]any{"issue": map[string]any{
+		"pull_request": map[string]any{"url": "u"},
+		"labels":       []any{map[string]any{"name": "bug"}},
+	}}
+	plan, err = New(db).PlanFromSource(testCtx(), src, "trace-and", "issues.labeled", blockedPayload)
+	if err != nil {
+		t.Fatalf("PlanFromSource: %v", err)
+	}
+	if len(plan.Ready()) != 0 {
+		t.Fatalf("any 命中不能替代 all 的 AND: %+v", plan.Targets)
 	}
 }
 

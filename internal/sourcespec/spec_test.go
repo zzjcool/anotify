@@ -241,11 +241,8 @@ func TestSameTargets(t *testing.T) {
 	}
 }
 
-// TestSameTargetsNilAndEmptyParams 钉住「省略 params」与「params: {}」是同一件事。
-//
-// 这不是学术差别：包里写 `params: {}`（YAML 里很自然）、库里的行省略 params，反序列化
-// 一个是空 map、一个是 nil。规范化后成了 "{}" 与 "null" 两个键 → 同一份 targets 被判成
-// targets_unapplied → 回执里 declared 与 actual 打印出来一模一样，体检永远不绿。
+// TestSameTargetsNilAndEmptyParams 钉住「省略 params」与「params: {}」是同一件事（否则
+// 同一份 targets 被判成 targets_unapplied，而回执里 declared 与 actual 一模一样）。
 func TestSameTargetsNilAndEmptyParams(t *testing.T) {
 	none := []Target{{Capability: "hello-node"}}
 	empty := []Target{{Capability: "hello-node", Params: map[string]any{}}}

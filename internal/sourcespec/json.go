@@ -15,10 +15,8 @@ func marshal(v any) (json.RawMessage, error) {
 	return json.RawMessage(b), nil
 }
 
-// marshalCanonical 编 JSON：encoding/json 对 map 键排序，所以字节形态是确定的。
-//
-// 为什么不用一个自己的 canonical JSON 实现：本包只需要「同一份值 → 同一串字节」，
-// 用来做落库与比较，不需要跨语言/跨版本的可复现性（那才要自造 canonicalizer）。
+// marshalCanonical 编 JSON：encoding/json 对 map 键排序，字节形态因此确定。不需要跨语言
+// 可复现性（那才要自造 canonicalizer），只要「同一份值 → 同一串字节」。
 func marshalCanonical(v any) ([]byte, error) {
 	b, err := json.Marshal(v)
 	if err != nil {

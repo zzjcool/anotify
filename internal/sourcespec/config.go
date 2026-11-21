@@ -3,6 +3,8 @@ package sourcespec
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,12 +50,9 @@ type manualConfig struct {
 	Sample        map[string]any  `json:"sample,omitempty"`
 }
 
-// NormalizeConfig 归一化 config：只保留该 kind 认得的字段、补默认值。
-//
-// 意义是「库里存的就是规范形态」（创建与 PATCH 都过它）：同语义的两份 config 落库字节
-// 一致（比较不假阴性），坏形状（数组/标量/未知字段/坏 cron 表达式/payload 不是对象）在
-// 写路径当场拒。**不做**：不生成 token（空 = 待生成，由 store 的创建路径补）、不校验
-// targets（那是 ValidateTargets 的事）。
+// NormalizeConfig 归一化 config：只保留该 kind 认得的字段、补默认值——「库里存的就是规范
+// 形态」，同语义两份 config 落库字节一致，坏形状在写路径当场拒。**不做**：不生成 token
+// （空 = 待 store 补）、不校验 targets（那是 ValidateTargets 的事）。
 func NormalizeConfig(kind string, raw json.RawMessage) (json.RawMessage, error) {
 	if !IsKind(kind) {
 		return nil, errKind(kind)
@@ -148,12 +147,9 @@ func NormalizeConfig(kind string, raw json.RawMessage) (json.RawMessage, error) 
 	return nil, errKind(kind)
 }
 
-// MergeConfig 把 PATCH 语义应用到已有 config 上：**凭证字段「省略 = 保留已有」**。
-//
-// 为什么只有 token/secret 例外：GET 永不回显它们的原文（§3.1 只给 hookUrl/secretSet），
-// 客户端在 PATCH 里拿不到旧值可发；按「省略 = 清空」处理会让任何一次「只改 payloadSchema」
-// 的 PATCH 顺手换掉 webhook 的 URL、把签名失效——那是数据丢失，不是编辑。其它字段
-// （payload / payloadSchema / sample / envelope / signature）省略即清空/缺省。
+// MergeConfig 把 PATCH 语义应用到已有 config 上：**凭证字段「省略 = 保留已有」**。GET 永不
+// 回显 token/secret 原文（§3.1），按「省略 = 清空」处理会让一次「只改 payloadSchema」的 PATCH
+// 顺手换掉 webhook 的 URL——那是数据丢失。其它字段省略即清空/缺省。
 func MergeConfig(kind string, existing, patch json.RawMessage) (json.RawMessage, error) {
 	if !IsKind(kind) {
 		return nil, errKind(kind)
@@ -205,21 +201,33 @@ func ValidateSpec(spec Spec, forWrite bool) error {
 	return ValidateTargets(spec.Targets)
 }
 
-// ValidateTargets 校验出口声明：引用非空、match 合法、参数模板语法成立。
-//
-// 模板只校**语法**（`$(payload.a.b)` 的形状、被禁的根名），不校「这个路径取不取得到」——
-// 那需要一条真实载荷，属于运行期（取不到 → param_missing 剪枝，§4.1）。
+// ValidateTargets 校验出口声明：引用非空、match 合法、参数模板语法成立。模板只校**语法**
+// （不校路径取不取得到，那要真实载荷，§4.1）；match 的问题**一次性全报**（带
+// `targets[i].match…` 路径），模板错误仍按既有形状逐条报（它没有位置信息可给）。
 func ValidateTargets(targets []Target) error {
+	causes := []Cause{}
 	for i, t := range targets {
 		if strings.TrimSpace(t.Capability) == "" {
-			return errf("targets[%d].capability 不能为空", i)
+			causes = append(causes, Cause{
+				Field: fmt.Sprintf("targets[%d].capability", i), Reason: CauseReasonValueInvalid, Message: "不能为空",
+			})
 		}
-		if err := normalizeMatch(t.Match); err != nil {
-			return errf("targets[%d]（%s）：%v", i, t.Capability, err)
+		if err := normalizeMatch(t.Match, fmt.Sprintf("targets[%d].match", i)); err != nil {
+			var collected *CausesError
+			if errors.As(err, &collected) {
+				causes = append(causes, collected.Causes...)
+			} else {
+				causes = append(causes, Cause{
+					Field: fmt.Sprintf("targets[%d].match", i), Reason: CauseReasonValueInvalid, Message: err.Error(),
+				})
+			}
 		}
 		if err := ValidateParamsTemplate(t.Params); err != nil {
 			return errf("targets[%d]（%s）：%v", i, t.Capability, err)
 		}
+	}
+	if len(causes) > 0 {
+		return &CausesError{Causes: causes}
 	}
 	return nil
 }
@@ -305,10 +313,9 @@ func SameTargets(a, b []Target) bool {
 func targetKeySet(targets []Target) ([]string, bool) {
 	keys := make([]string, 0, len(targets))
 	for _, t := range targets {
-		// nil 与空 map 都是「没有 params」：JSON 里省略 params 与写 `params: {}` 解出来
-		// 一个是 nil、一个是零长度 map，而规范化后是 "null" / "{}" 两个不同键。
-		// 当成差异的后果很具体：同一份 targets 被判成 `targets_unapplied`，回执里
-		// declared 与 actual 打印出来一模一样，体检却永远不绿（真实故障）。
+		// nil 与空 map 都是「没有 params」：省略 params 与写 `params: {}` 解出来一个是 nil、
+		// 一个零长度 map，规范化后是 "null"/"{}" 两个键——判成差异的症状是「declared 与
+		// actual 一模一样，体检却永远不绿」（真实故障）。
 		raw := t.Params
 		if len(raw) == 0 {
 			raw = map[string]any{}

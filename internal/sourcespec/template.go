@@ -6,18 +6,15 @@ import (
 	"strings"
 )
 
-// 参数模板（source.md §4.1 / D1 / D11）。
-//
-// 唯一合法形态是 `$(payload)` 或 `$(payload.点号路径)`：
+// 参数模板（source.md §4.1 / D1 / D11）：唯一合法形态是 `$(payload)` 或 `$(payload.点号路径)`。
 //
 //	env:    $(payload.environment)                       # 整值只有一个引用 → 保留原类型
 //	report: reports/$(payload.environment)/$(payload.x)  # 掺了常量 → 结果一定是字符串
 //
-// 设计边界（照抄 §4.1，别在这里放宽）：没有算术/函数/条件/默认值/管道；根名只认
-// `payload`（其它根名一律字面文本，`$(event.x)` 不是错误）；`$(vars.…)`/`$(params.…)`
-// 直接拒（那两个根名只在能力 `workDir` 里有意义，写在这里是弄错了上下文）；
-// 以 `payload` 开头却写不完整（`$(payload.a-b)` / `$(payload.` / `$(payload..x)`）创建期拒；
-// 路径取不到 → 剪枝 `param_missing`，**不静默给空**（默认值归能力参数 schema）。
+// 设计边界（照抄 §4.1，别在这里放宽）：没有算术/函数/条件/默认值/管道；根名只认 `payload`；
+// `$(vars.…)`/`$(params.…)` 直接拒（那两个根名只在能力 `workDir` 里有意义）；以 `payload`
+// 开头却写不完整（`$(payload.a-b)`）创建期拒；路径取不到 → 剪枝 `param_missing`，**不静默
+// 给空**（默认值归能力参数 schema）。
 
 // templateToken 是一段模板里的一个原子：要么是字面量，要么是一个 payload 引用。
 type templateToken struct {
@@ -73,11 +70,8 @@ func walkTemplate(v any, path string) error {
 	}
 }
 
-// parseTemplate 把一串参数值拆成字面量与引用的序列。
-//
-// 只认 `$(`…`)`；`{{…}}` 是包层模板的定界符（装包时一次性组装），在这里就是普通文本
-// ——不解析、不报错（§4.1）。闭合缺失的 `$(` 只有在**看起来像 payload 引用**时才拒：
-// 为避免把 `echo $(date` 这类普通文本判错，判据是「`$(` 之后紧邻 payload 或 payload.」。
+// parseTemplate 把一串参数值拆成字面量与引用：只认 `$(`…`)`，`{{…}}` 在这里是普通文本
+// （§4.1）。闭合缺失的 `$(` 只有看起来像 payload 引用时才拒（`echo $(date` 不该判错）。
 func parseTemplate(s string) ([]templateToken, error) {
 	out := []templateToken{}
 	var lit strings.Builder
@@ -124,20 +118,13 @@ func parseTemplate(s string) ([]templateToken, error) {
 	return out, nil
 }
 
-// startsLikePayloadRef 报告 `$(` 之后的内容是否**看起来是**一个 payload 引用。
-//
-// 判据取「以 payload 开头」：`$(payload.` 与 `$(payloadx)` 都会命中——后者是
-// 以 payload 开头的普通文本，但闭合缺失时把它当字面量又会掩盖真实的笔误，
-// 所以宁可在创建期报一句「引用没有闭合」（比静默留下一个永不解析的串好）。
+// startsLikePayloadRef 报告 `$(` 之后的内容是否看起来是 payload 引用：判据取「以 payload
+// 开头」，宁可在创建期报「引用没有闭合」，也不静默留下一个永不解析的串。
 func startsLikePayloadRef(rest string) bool {
 	return strings.HasPrefix(rest, payloadRoot)
 }
 
-// classifyRef 判一个 `$(…)` 的内容该怎么处理：
-//
-//	("payload" / "payload.a.b", true, nil)   → 引用
-//	("", false, nil)                          → 字面量（别的根名/普通文本）
-//	(err)                                     → 形状错误（被禁根名、坏路径）
+// classifyRef 判一个 `$(…)` 的内容：引用 / 字面量（别的根名） / 形状错误（被禁根名、坏路径）。
 func classifyRef(inner string) (string, bool, error) {
 	name := strings.TrimSpace(inner)
 	if name == payloadRoot {
@@ -197,15 +184,9 @@ func validPathSegment(seg string) bool {
 	return true
 }
 
-// RenderParams 按一条载荷求值参数模板。
-//
-// 返回：
-//   - params：求值后的参数（**只含取得到的项**）；
-//   - missing：求值失败**参数名**（升序、去重）。缺任何一个引用的参数整条丢弃，
-//     调用方据此留一条 param_missing 剪枝痕——不静默给空串（§4.1）。
-//
-// 类型规则只由一件事决定（§4.1）：整个值**恰好只有一个引用** → 保留原类型；
-// 其余（掺了任何常量，哪怕只是首尾空格）→ 字符串拼接。
+// RenderParams 按一条载荷求值参数模板：params 只含取得到的项，missing 是失败参数名（升序、
+// 去重）。缺任何一个引用的参数整条丢弃，调用方据此留一条 param_missing 剪枝痕（§4.1）。
+// 类型规则：整个值**恰好只有一个引用** → 保留原类型；其余 → 字符串拼接。
 func RenderParams(target Target, payload map[string]any) (map[string]any, []string) {
 	out := make(map[string]any, len(target.Params))
 	missing := []string{}
