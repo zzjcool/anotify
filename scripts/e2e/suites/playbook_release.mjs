@@ -12,6 +12,7 @@ const PB = {
 	install: (slug) => `${V.P.playbook(NS, slug)}/install`,
 	render: (slug) => `${V.P.playbook(NS, slug)}/render`,
 	installs: (slug) => `${V.P.playbook(NS, slug)}/installs`,
+	versions: (slug) => `${V.P.playbook(NS, slug)}/versions`,
 	installById: (slug, id) => `${V.P.playbook(NS, slug)}/installs/${encodeURIComponent(id)}`,
 	release: (slug, rel) => `${V.P.playbook(NS, slug)}/releases/${encodeURIComponent(rel)}`,
 };
@@ -21,17 +22,18 @@ const VALUES_BLOCK = `    type: object
     properties:
       project: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,20}$' }`;
 
-function entryDoc(slug, caps, srcs) {
+function entryDoc(slug, caps, srcs, version = 0) {
 	const list = (key, paths) =>
 		paths.length === 0
 			? `  ${key}: []`
 			: `  ${key}:\n${paths.map((p) => `    - ${p}`).join("\n")}`;
+	const declared = version > 0 ? `  version: ${version}\n` : "";
 	return `apiVersion: anotify/v1
 kind: Playbook
 metadata:
   name: ${slug}
   displayName: 安装 release 身份 E2E
-spec:
+${declared}spec:
   values:
 ${VALUES_BLOCK}
 ${list("capabilities", caps)}
@@ -344,6 +346,170 @@ async function partInvalidRelease(ctx) {
 	H.eq("坏 release 不留回执（实例组数 0）", list.total, 0);
 }
 
+// pbVersionRows 读版本历史（只取本套件关心的三列）。
+function pbVersionRows(ctx, slug) {
+	return dbRows(
+		ctx,
+		`SELECT v.version, v.digest, v.created_at, v.created_by
+		   FROM playbook_versions v
+		   JOIN playbooks p ON p.id = v.playbook_id
+		  WHERE p.slug = ? ORDER BY v.version`,
+		[slug],
+	);
+}
+
+// installPinned 是带 version 的 install（version 为空 = 不传，即老包行为）。
+function installPinned(ctx, slug, release, version, values = VALUES) {
+	const body = { values };
+	if (release !== undefined) body.release = release;
+	if (version !== undefined) body.version = version;
+	return H.req(ctx.base, PB.install(slug), { session: ctx.session, method: "POST", body });
+}
+
+// capabilityRunBody 读某个能力行落库的脚本正文（「装的是哪一版」的实物判据）。
+function capabilityRunBody(ctx, name) {
+	const rows = dbRows(ctx, "SELECT spec FROM capability_versions WHERE name = ?", [name]);
+	if (rows.length === 0) return null;
+	const spec = JSON.parse(rows[0].spec || "{}");
+	return spec?.run?.files?.["run.sh"] ?? null;
+}
+
+async function readVersions(ctx, slug, what) {
+	const r = await H.req(ctx.base, PB.versions(slug), { session: ctx.session });
+	V.expectStatus(`${what}的版本历史 → 200`, r, 200);
+	const list = Array.isArray(r.json?.versions) ? r.json.versions : null;
+	H.check(`${what}的版本历史 versions 是数组（空列表也要 []）`, list !== null, JSON.stringify(r.json).slice(0, 200));
+	return { total: r.json?.total, currentVersion: r.json?.currentVersion, versions: list || [] };
+}
+
+async function putPackage(ctx, slug, files, why) {
+	const got = await H.req(ctx.base, `${V.P.playbook(NS, slug)}?includeBody=true`, { session: ctx.session });
+	V.expectStatus(`${why}：读取当前版本令牌 → 200`, got, 200);
+	const rv = got.json?.metadata?.resourceVersion;
+	H.check(`${why}：resourceVersion 非空`, typeof rv === "string" && rv.length > 0, String(rv));
+	const r = await H.req(ctx.base, V.P.playbook(NS, slug), {
+		session: ctx.session,
+		method: "PUT",
+		body: { apiVersion: V.API_VERSION, kind: "Playbook", metadata: { name: slug, resourceVersion: rv }, spec: { files } },
+	});
+	V.expectStatus(`${why}：替换包体 → 200`, r, 200);
+	return r;
+}
+
+async function partVersions(ctx) {
+	console.log("--- 10. 包版本历史 + 按版本安装（#511）---");
+	const slug = "pb-versions";
+	// 名字带 release：三份实例各自一行（release va/vb/vc 是本段专有，不与其他段撞名）。
+	const names = {
+		capability: "{{release.name}}-{{values.project}}-review",
+		source: "{{release.name}}-{{values.project}}-on-push",
+	};
+	const bundle = (version, script) => ({
+		"playbook.yaml": entryDoc(slug, ["capabilities/review.yaml"], ["sources/on-push.yaml"], version),
+		"capabilities/review.yaml": capabilityDoc(names.capability, ["#!/bin/sh", script]),
+		"sources/on-push.yaml": sourceDoc(names.source, [names.capability]),
+	});
+	const byVersion = (list, version) => (list.versions || []).find((v) => v.version === version) || {};
+
+	await createPackage(ctx, slug, bundle(1, "echo v1"));
+
+	// 建包时就在历史里写出第一条。
+	let list = await readVersions(ctx, slug, "建包后");
+	H.eq("建包后历史行数 = 1", list.total, 1);
+	H.eq("建包后当前版本 = 1", list.currentVersion, 1);
+	const v1 = byVersion(list, 1);
+	H.check("历史行带 current = true", v1.current === true, JSON.stringify(v1));
+	H.check(
+		"历史行的 filesDigest 是 sha256（与回执同一个算法）",
+		typeof v1.filesDigest === "string" && v1.filesDigest.startsWith("sha256:"),
+		JSON.stringify(v1.filesDigest),
+	);
+	const v1Digest = v1.filesDigest;
+
+	// 老包不回归：不传 version = 装当前版本。
+	const first = await installPinned(ctx, slug, "va", undefined);
+	V.expectStatus("按当前版本装 release va → 200", first, 200);
+	H.eq("回执 playbook.version = 当前版本", first.json?.playbook?.version, 1);
+	H.eq("回执 playbook.filesDigest = v1 的指纹", first.json?.playbook?.filesDigest, v1Digest);
+	H.eq("release va 装出 v1 的能力", first.json?.created?.capabilities, ["va-demo-review@1"]);
+	H.check(
+		"release va 的能力行脚本正文是 v1",
+		(capabilityRunBody(ctx, "va-demo-review") || "").includes("echo v1"),
+		String(capabilityRunBody(ctx, "va-demo-review")),
+	);
+
+	// 改包成 v2（内容变化）。
+	await putPackage(ctx, slug, bundle(2, "echo v2"), "改包成 v2");
+	list = await readVersions(ctx, slug, "改包后");
+	H.eq("内容变了之后历史行数 = 2", list.total, 2);
+	H.eq("当前版本 = 2", list.currentVersion, 2);
+	const v1After = byVersion(list, 1);
+	const v2 = byVersion(list, 2);
+	H.eq("v1 那一行的指纹没被改写", v1After.filesDigest, v1Digest);
+	const v2Digest = v2.filesDigest;
+	H.check("v2 的指纹与 v1 不同", typeof v2Digest === "string" && v2Digest !== v1Digest, `${v1Digest} vs ${v2Digest}`);
+	H.check("只有 v2 那一行带 current", v2.current === true && v1After.current === false, JSON.stringify(list.versions));
+
+	// 按 v1 再装另一份 release：v1/v2 两份实例并存，各自拿到自己那一版。
+	const pinned = await installPinned(ctx, slug, "vb", 1);
+	V.expectStatus("按 v1 装 release vb → 200", pinned, 200);
+	H.eq("按 v1 装的回执 playbook.version = 1", pinned.json?.playbook?.version, 1);
+	H.eq("按 v1 装的回执 filesDigest = v1 指纹", pinned.json?.playbook?.filesDigest, v1Digest);
+	H.eq("release vb 装出自己的能力（不是复用 va 的）", pinned.json?.created?.capabilities, ["vb-demo-review@1"]);
+	H.check(
+		"release vb 的能力行脚本正文是 v1（按版本装拿到了旧那一版）",
+		(capabilityRunBody(ctx, "vb-demo-review") || "").includes("echo v1"),
+		String(capabilityRunBody(ctx, "vb-demo-review")),
+	);
+
+	const fresh = await installPinned(ctx, slug, "vc", undefined);
+	V.expectStatus("不传版本再装 release vc → 200", fresh, 200);
+	H.eq("不传版本装的是当前版本 2", fresh.json?.playbook?.version, 2);
+	H.eq("不传版本的回执 filesDigest = v2 指纹", fresh.json?.playbook?.filesDigest, v2Digest);
+	H.check(
+		"release vc 的能力行脚本正文是 v2",
+		(capabilityRunBody(ctx, "vc-demo-review") || "").includes("echo v2"),
+		String(capabilityRunBody(ctx, "vc-demo-review")),
+	);
+	H.check(
+		"两份回执的包版本与文件指纹都不同（可追溯）",
+		pinned.json?.playbook?.version !== fresh.json?.playbook?.version &&
+			pinned.json?.playbook?.filesDigest !== fresh.json?.playbook?.filesDigest,
+		JSON.stringify([pinned.json?.playbook, fresh.json?.playbook]),
+	);
+
+	// 单回执 GET 也能看出装的是哪一版。
+	const one = await H.req(ctx.base, PB.installById(slug, pinned.json?.install?.id), { session: ctx.session });
+	V.expectStatus("按 v1 装的单回执 → 200", one, 200);
+	H.eq("单回执 playbook.version = 1", one.json?.playbook?.version, 1);
+	H.eq("单回执 playbook.filesDigest = v1 指纹", one.json?.playbook?.filesDigest, v1Digest);
+
+	// 内容相同的重复 PUT 不追加历史行，也不重写已有那一行（createdAt 是写入时刻，不是「最后保存时刻」）。
+	const before = pbVersionRows(ctx, slug).length;
+	const stampBefore = byVersion(await readVersions(ctx, slug, "重复保存前"), 2).createdAt;
+	await new Promise((resolve) => setTimeout(resolve, 1100));
+	await putPackage(ctx, slug, bundle(2, "echo v2"), "同内容重复保存");
+	const after = pbVersionRows(ctx, slug).length;
+	H.eq("内容相同的重复保存不追加历史行（行数不变）", after, before);
+	const again = await readVersions(ctx, slug, "同内容保存后");
+	H.eq("同内容保存后仍只有 2 版", again.total, 2);
+	H.eq("同内容保存不重写历史行（createdAt 不变）", byVersion(again, 2).createdAt, stampBefore);
+
+	// 版本不存在的错误面：404 + 0 写。
+	const capsBefore = V.countRows(ctx.dbPath, "capability_versions");
+	const missing = await installPinned(ctx, slug, "vd", 9);
+	V.expectReason("按不存在的版本装 → 404 version_not_found", missing, 404, "version_not_found");
+	H.eq("版本不存在的安装 0 写（能力行数不变）", V.countRows(ctx.dbPath, "capability_versions"), capsBefore);
+	const zero = await installPinned(ctx, slug, "vd", 0);
+	V.expectReason("version=0 → 400 invalid_playbook", zero, 400, "invalid_playbook");
+	const ghostRender = await H.req(ctx.base, PB.render(slug), {
+		session: ctx.session,
+		method: "POST",
+		body: { values: VALUES, version: 9 },
+	});
+	V.expectReason("渲染不存在的版本 → 404 version_not_found", ghostRender, 404, "version_not_found");
+}
+
 async function partUninstallRemovesReleaseOnly(ctx) {
 	console.log("--- 6. 卸载一个 release 只撤它装出的行（#510）---");
 	const slug = "pb-uninstall";
@@ -524,7 +690,7 @@ async function partUninstallErrors(ctx) {
 
 async function main() {
 	H.startTimer();
-	console.log("=== SUITE: playbook_release（#505 安装 release 身份 / #510 按 release 卸载）===");
+	console.log("=== SUITE: playbook_release（#505 安装 release 身份 / #510 按 release 卸载 / #511 包版本历史）===");
 	const server = await H.startServer({ suiteName: SUITE, rpId: "localhost" });
 	try {
 		const seeded = H.seed(server.dbPath, "e2e");
@@ -538,6 +704,7 @@ async function main() {
 		await partUninstallKeepsManualRow(ctx);
 		await partUninstallIdempotent(ctx);
 		await partUninstallErrors(ctx);
+		await partVersions(ctx);
 	} finally {
 		server.stop();
 	}

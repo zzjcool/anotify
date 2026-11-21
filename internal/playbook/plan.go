@@ -20,9 +20,7 @@ const (
 	ActionReuse Action = "reuse"
 )
 
-// Conflict 是 400 响应体里的 `conflicts[]` 一项（§9.2 的 playbook_conflict 形状）。
-//
-// 每个字段都不得丢（W3 冻结）：`kind` / `ref` / `reason`，能力冲突再给
+// Conflict 是 400 响应体里的 `conflicts[]` 一项（§9.2 的 playbook_conflict 形状）。 每个字段都不得丢（W3 冻结）：`kind` / `ref` / `reason`，能力冲突再给
 // `declaredDigest` / `actualDigest`，源冲突再给 `fields`（字段名，**不给值**——token 脱敏）。
 type Conflict struct {
 	Kind           string   `json:"kind"`
@@ -217,7 +215,7 @@ func PlanForRelease(pkg *Package, values map[string]any, release string, existin
 		return nil, err
 	}
 	plan := &PlanResult{
-		Playbook:     PlaybookRef{Name: pkg.Name, Version: pkg.Version},
+		Playbook:     PlaybookRef{Name: pkg.Name, Version: pkg.Version, FilesDigest: FilesDigest(pkg.Files)},
 		Release:      rel,
 		Values:       rendered.Values,
 		ValuesDigest: rendered.ValuesDigest,

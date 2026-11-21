@@ -2401,6 +2401,18 @@ pb:
     uninstall_kept_n: "このインスタンスに属さない {n} 個のオブジェクトを保持しました（明細は下）。"
     uninstall_already: "このインスタンスはすでにアンインストール済みです。今回は何も変わっていません。"
     uninstall_reason: "明細の理由：手動作成、別のインスタンスに属する、別のインスタンスがまだ再利用中。"
+    versions: "バージョン履歴"
+    versions_hint: "内容が変わる保存のたびに 1 版残ります。同じ内容の保存では増えません。どの版からでもインストールできます。"
+    current_version: "現在のバージョン {n}"
+    version_n: "バージョン {n}"
+    version_current_badge: "現在"
+    version_digest: "内容ダイジェスト"
+    install_version: "このバージョンでインストール"
+    installing_version: "バージョン {n} でインストール中…"
+    version_installed: "バージョン {n} でインストールしました。受領書は下にあります。"
+    version_empty: "バージョン履歴はまだありません（最初の保存で作成されます）。"
+    version_load_failed: "バージョン履歴を読み込めませんでした"
+    version_unknown: "そのバージョンは存在しないか、現在のバージョンではありません。再読み込みしてください。"
 
 node:
   artifacts:

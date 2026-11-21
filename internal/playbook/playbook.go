@@ -1,15 +1,11 @@
-// Package playbook 实现 v4 的**目录安装包**（Playbook）：解析、渲染、安装计划与回执。
-// 语义基线见 `docs/contracts/console-declares/CONTRACT-artifact.md`；本包只做纯领域计算。
-//
-//	Parse  包入库前的**值无关**校验（文件集合：入口 / 闭合 / 路径 / 计数 / 槽位形状）
-//	Render (包, values) → 普通文档（默认值填充 + JSON Schema 校验 + 结构内插值 + 单建校验）
-//	Plan   (包, values, 库快照) → 12 格动作矩阵（纯函数；有冲突时调用方整包 0 写）
-//
+// Package playbook 实现 v4 的**目录安装包**（Playbook）：解析、渲染、安装计划与回执。 语义基线见 `docs/contracts/console-declares/CONTRACT-artifact.md`；本包只做纯领域计算。
+// Parse  包入库前的**值无关**校验（文件集合：入口 / 闭合 / 路径 / 计数 / 槽位形状）
+// Render (包, values) → 普通文档（默认值填充 + JSON Schema 校验 + 结构内插值 + 单建校验）
+// Plan   (包, values, 库快照) → 12 格动作矩阵（纯函数；有冲突时调用方整包 0 写）
 // 三条硬边界：① 渲染严格只读包体（`render` 是 helm template，`dryRun` 才读库）；
 // ② 包层模板只认 `{{values.点号路径}}` 与 `{{release.name}}`，其余 `{{…}}` / `$NAME` /
 // `${…}` / `$(…)` 原样透传（只渲染值，不渲染键）；③ 安装只做加法，想改已有东西的差异
 // 一律进 `unapplied[]` 回执，不进数据库。
-//
 // 库依赖只有 `Existing` 这一个只读快照接口（store 在当前事务内实现），所以 `Plan` 是
 // 纯函数，`dryRun` 与真实 install 走同一条代码路径。
 package playbook
@@ -238,9 +234,14 @@ type RenderResult struct {
 }
 
 // PlaybookRef 是回执里的包身份（§4.5）。
+//
+// Version 是**这次实际用的那份包体**的版本（按版本安装时是被钉住的那一版，不是当前版），
+// FilesDigest 是那份包体自己的 canonical sha256（见 FilesDigest）：两个字段一起回答
+// 「这次装的是哪一版」，不必回头再比文件。
 type PlaybookRef struct {
-	Name    string `json:"name"`
-	Version int    `json:"version"`
+	Name        string `json:"name"`
+	Version     int    `json:"version"`
+	FilesDigest string `json:"filesDigest"`
 }
 
 // InstallRef 是回执里的本次安装标识（id 由 store 生成；dryRun 不进库）。
@@ -301,9 +302,9 @@ type Note struct {
 // Receipt 是安装回执（playbook.md §4.5，D15）。
 //
 // 形状硬约束：
-//   - `created` / `skipped` 都是 `{capabilities: [], sources: []}` 对象；
-//   - `values` 是**打码后**的有效 values（writeOnly → `"***"`），`valuesDigest` 对**打码前**算；
-//   - **没有 `conflicts` 字段**：冲突只在 400 错误体里（`Error.Details`）。
+// - `created` / `skipped` 都是 `{capabilities: [], sources: []}` 对象；
+// - `values` 是**打码后**的有效 values（writeOnly → `"***"`），`valuesDigest` 对**打码前**算；
+// - **没有 `conflicts` 字段**：冲突只在 400 错误体里（`Error.Details`）。
 type Receipt struct {
 	APIVersion   string           `json:"apiVersion"`
 	Kind         string           `json:"kind"`

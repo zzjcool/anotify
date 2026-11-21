@@ -9,7 +9,6 @@ import (
 )
 
 // 统一错误体 Status（api-conventions §4.1 / §4.2）。
-//
 // 为什么要有这一层：v3 各 handler 各自写 `{"error": "..."}`，错误码只体现在 HTTP 码
 // 上，客户端无法稳定分支。v4 契约把机器可读 reason 收敛成封闭集合，并规定
 // CAS 冲突要在 details.current.resourceVersion 里回当前令牌——这两件事必须只有一份
@@ -190,6 +189,9 @@ func writeAPIError(w http.ResponseWriter, err error) {
 	// #510：release 不在这个包名下 → 404；installId 与本次 release 对不上 ⇒ 客户端视图过期（409，不删不猜）。
 	case errors.Is(err, store.ErrPlaybookReleaseNotFound):
 		writeStatus(w, http.StatusNotFound, "release_not_found", err.Error(), nil)
+	// #511：钉住的包版本既不在历史里、也不是当前版本 → 404（不回退成「装当前版」：那就成了静默装错）。
+	case errors.Is(err, store.ErrPlaybookVersionNotFound):
+		writeStatus(w, http.StatusNotFound, "version_not_found", err.Error(), nil)
 	case errors.Is(err, store.ErrPlaybookInstallMismatch):
 		writeStatus(w, http.StatusConflict, "install_conflict", err.Error(), nil)
 	case errors.Is(err, store.ErrEmitIDConflict):
