@@ -179,9 +179,15 @@ type Task struct {
 	// below are projections, never the source for result equality or retention.
 	ResultJSON       json.RawMessage `json:"-"`
 	ResultAcceptedAt *int64          `json:"-"`
-	CreatedAt        int64           `json:"createdAt"`
-	StartedAt        *int64          `json:"startedAt"`
-	FinishedAt       *int64          `json:"finishedAt"`
+	// 结局表快照与判决事实（内部事实，空 = 不是 router / 还没判决）。
+	Outcomes          json.RawMessage `json:"-"`
+	Decision          json.RawMessage `json:"-"`
+	DecisionAt        *int64          `json:"-"`
+	DecisionTokenHash string          `json:"-"`
+	DecisionExpiresAt *int64          `json:"-"`
+	CreatedAt         int64           `json:"createdAt"`
+	StartedAt         *int64          `json:"startedAt"`
+	FinishedAt        *int64          `json:"finishedAt"`
 }
 
 // taskColumns 是统一的列顺序，scanTask 依赖它。
@@ -190,7 +196,8 @@ const taskColumns = `id, namespace_id, trace_id, parent_task_id, capability_id, 
 	attempt, max_attempts, assignment_id, proposed_attempt, assignment_expires_at, idempotent,
 	lease_id, lease_until, lease_instance_id, attempt_token_hash, waiting_reason, next_attempt_at,
 	cancel_reason, cancel_requested_at, stop_intent, reported, summary, artifacts, error,
-	created_at, started_at, finished_at, namespace_vars, namespace_vars_revision, result_json, result_accepted_at`
+	created_at, started_at, finished_at, namespace_vars, namespace_vars_revision, result_json, result_accepted_at,
+	outcomes, decision, decision_at, decision_token_hash, decision_expires_at`
 
 // scanTask 从一行结果解析 Task（三处 JSON 列在这里一次解完）。
 func scanTask(rows *sql.Rows) (*Task, error) {
@@ -203,6 +210,8 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 		capability sql.NullString
 		idempotent int
 		reported   int
+		outcomes   string
+		decision   string
 	)
 	if err := rows.Scan(
 		&t.ID, &t.NamespaceID, &t.TraceID, &t.ParentTaskID, &capability, &t.Capability,
@@ -211,6 +220,7 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 		&t.LeaseID, &t.LeaseUntil, &t.LeaseInstanceID, &t.AttemptTokenHash, &t.WaitingReason, &t.NextAttemptAt,
 		&t.CancelReason, &t.CancelRequestedAt, &t.StopIntent, &reported, &t.Summary, &artifacts, &t.Error,
 		&t.CreatedAt, &t.StartedAt, &t.FinishedAt, &nsVars, &t.NamespaceVarsRevision, &rawResult, &t.ResultAcceptedAt,
+		&outcomes, &decision, &t.DecisionAt, &t.DecisionTokenHash, &t.DecisionExpiresAt,
 	); err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)
 	}
@@ -239,6 +249,12 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 		if t.NamespaceVars == nil {
 			t.NamespaceVars = map[string]string{}
 		}
+	}
+	if outcomes != "" {
+		t.Outcomes = json.RawMessage(outcomes)
+	}
+	if decision != "" {
+		t.Decision = json.RawMessage(decision)
 	}
 	t.Artifacts = []protocol.TaskArtifact{}
 	if err := json.Unmarshal([]byte(artifacts), &t.Artifacts); err != nil {
@@ -362,11 +378,11 @@ func (d *DB) createTasksTx(ctx context.Context, tx *sql.Tx, ts []*Task) error {
 			`INSERT INTO tasks
 			   (id, namespace_id, trace_id, parent_task_id, capability_id, capability,
 			    version, digest, params, phase, max_attempts, idempotent, created_at, artifacts,
-			    namespace_vars, namespace_vars_revision)
-			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			    namespace_vars, namespace_vars_revision, outcomes)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			t.ID, t.NamespaceID, t.TraceID, t.ParentTaskID, t.CapabilityID, t.Capability,
 			t.Version, t.Digest, string(t.Params), t.Phase, t.MaxAttempts, boolToInt(t.Idempotent),
-			t.CreatedAt, string(artifactsJSON), nsVarsJSON, pin.revision,
+			t.CreatedAt, string(artifactsJSON), nsVarsJSON, pin.revision, string(t.Outcomes),
 		); err != nil {
 			return fmt.Errorf("insert task %d (%s): %w", i, t.Capability, err)
 		}
@@ -1156,6 +1172,7 @@ func (d *DB) recoverOne(ctx context.Context, t *Task, now int64) (requeued bool,
 			`UPDATE tasks SET phase = ?, waiting_reason = ?, next_attempt_at = ?,
 			        node_id = NULL, node_name = '', lease_id = '', lease_until = NULL,
 			        lease_instance_id = '', attempt_token_hash = '',
+			        decision = '', decision_at = NULL, decision_token_hash = '', decision_expires_at = NULL,
 			        assignment_id = '', proposed_attempt = 0, assignment_expires_at = NULL
 			  WHERE id = ? AND phase = ? AND attempt = ? AND cancel_requested_at IS NULL`,
 			TaskPending, WaitingRetryBackoff, now+RetryBackoff(t.Attempt),
@@ -1319,6 +1336,12 @@ func (d *DB) finishTxGuarded(ctx context.Context, tx *sql.Tx, taskID, fromPhase,
 	// reason 的落点是 error 列（由调用方按语义写）：相位已经表达了终态类别，
 	// 具体原因（script_failed / cancelled_by_user / …）必须留在 error 里才可判别。
 	return n > 0, nil
+}
+
+// GetTaskByID 是不带命名空间的读（决策端点与结局执行只有 taskId）；上层的作用域读
+// 必须继续走 GetTask。
+func (d *DB) GetTaskByID(ctx context.Context, taskID string) (*Task, error) {
+	return d.getTaskByID(ctx, taskID)
 }
 
 // getTaskByID 是不带命名空间的读（内部路径用：taskID 全局唯一）。

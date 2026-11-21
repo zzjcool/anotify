@@ -40,7 +40,6 @@ const defaultMaxOpenConns = 8
 // maxConnsEnv 覆盖连接池上限（正整数；缺失/非法回落到 defaultMaxOpenConns）。
 const maxConnsEnv = "ANOTIFY_DB_MAX_CONNS"
 
-// DB 包装 *sql.DB。
 type DB struct {
 	*sql.DB
 	// stmts 是只读路径的 per-DB 语句缓存（#242，见 stmt.go）。

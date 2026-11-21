@@ -249,8 +249,8 @@ func grantBudgetOn(ctx context.Context, ex queryExec, nodeID, taskID, assignment
 // 的窗口。事务内顺序：
 //
 //  1. 当前节点身份（nodes.token_hash == auth.NodeTokenHash）；
-//  2. 任务当前候选：assignmentId + node 归属 + proposedAttempt **三项精确匹配**，
-//     且窗口未过；stale 请求只被拒绝，不改当前候选；
+//  2. 任务当前候选：assignmentId + node 归属 + proposedAttempt **三项精确匹配**且窗口未过
+//     （stale 请求只被拒绝，不改当前候选）；
 //  3. namespace 交集（node 声明 ∩ 授权覆盖任务 ns）；
 //  4. attempt 预算（maxAttempts，超了直接终态）；
 //  5. 机器配置 applied 事实；
@@ -258,23 +258,23 @@ func grantBudgetOn(ctx context.Context, ex queryExec, nodeID, taskID, assignment
 //  7. 把节点 accept 回报的真实 slot 绑到 (task, attempt, lease)；
 //  8. 落 attempt 机器快照（vars/limits/来源/revision/hash）+ 写任务执行授权事实。
 //
-// 任何失败都不消耗 attempt、不占槽、不伪造 lease；容量拒绝回 pending +
-// waiting_for_slot（有界退避）。
+// 任何失败都不消耗 attempt、不占槽、不伪造 lease；容量拒绝回 pending + waiting_for_slot。
+// decisionToken 只对声明了 outcomes 的 router 任务非空（#522）。
 func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 	taskID, assignmentID string, proposedAttempt, slot int, now int64) (
-	leaseID, attemptToken string, attempt int, expiresAt int64, err error) {
+	leaseID, attemptToken, decisionToken string, attempt int, expiresAt int64, err error) {
 	if taskID == "" {
-		return "", "", 0, 0, fmt.Errorf("grant lease: taskID required")
+		return "", "", "", 0, 0, fmt.Errorf("grant lease: taskID required")
 	}
 	if err := auth.validate(); err != nil {
-		return "", "", 0, 0, err
+		return "", "", "", 0, 0, err
 	}
 	if proposedAttempt <= 0 {
-		return "", "", 0, 0, fmt.Errorf("%w: grant 必须带候选的 proposedAttempt", ErrNoAssignment)
+		return "", "", "", 0, 0, fmt.Errorf("%w: grant 必须带候选的 proposedAttempt", ErrNoAssignment)
 	}
 	if slot < 0 {
 		// presence 缺失：没有真实 slot 的 grant 一律不授权（不猜另一个槽）。
-		return "", "", 0, 0, fmt.Errorf("%w: grant 必须带节点 accept 回报的 slot", ErrSlotUnavailable)
+		return "", "", "", 0, 0, fmt.Errorf("%w: grant 必须带节点 accept 回报的 slot", ErrSlotUnavailable)
 	}
 	if now == 0 {
 		now = Now()
@@ -287,7 +287,7 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
-		return "", "", 0, 0, fmt.Errorf("grant lease %s: begin: %w", taskID, err)
+		return "", "", "", 0, 0, fmt.Errorf("grant lease %s: begin: %w", taskID, err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	ex := txExec{tx: tx}
@@ -295,12 +295,13 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 	// ① 当前节点身份（令牌轮换后旧 session 立刻失效）。
 	rawDeclared, err := authorizeNodeOn(ctx, ex, auth)
 	if err != nil {
-		return "", "", 0, 0, err
+		return "", "", "", 0, 0, err
 	}
 
 	// 事务内重读任务（BEGIN IMMEDIATE 下读—写原子），并把 lifecycle 钉在同一事务里。
 	var (
 		phase                 string
+		rowOutcomes           string
 		rowAssign             string
 		rowAssignExpires      sql.NullInt64
 		rowNode               sql.NullString
@@ -316,28 +317,28 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 	err = tx.QueryRowContext(ctx,
 		`SELECT phase, assignment_id, assignment_expires_at, node_id, proposed_attempt,
 		        attempt, max_attempts, capability_id, capability, namespace_id,
-		        cancel_requested_at, namespace_vars_revision
+		        cancel_requested_at, namespace_vars_revision, outcomes
 		   FROM tasks WHERE id = ?`, taskID).
 		Scan(&phase, &rowAssign, &rowAssignExpires, &rowNode, &rowProposedAttempt,
 			&rowAttempt, &maxAttempts, &capabilityID, &capability, &namespaceID,
-			&cancelReq, &namespaceVarsRevision)
+			&cancelReq, &namespaceVarsRevision, &rowOutcomes)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", 0, 0, ErrNotFound
+		return "", "", "", 0, 0, ErrNotFound
 	}
 	if err != nil {
-		return "", "", 0, 0, fmt.Errorf("grant lease %s: read: %w", taskID, err)
+		return "", "", "", 0, 0, fmt.Errorf("grant lease %s: read: %w", taskID, err)
 	}
 	if phase != TaskPending {
-		return "", "", 0, 0, fmt.Errorf("%w: task %s is %s", ErrInvalidTransition, taskID, phase)
+		return "", "", "", 0, 0, fmt.Errorf("%w: task %s is %s", ErrInvalidTransition, taskID, phase)
 	}
 	// 未解析派发失败行（capability_id IS NULL）不是可执行任务：即使有人把它改回 pending
 	// 也不能拿到租约（表上的形状 CHECK 会先拒绝这种回写，这里是同一语义的入口护栏）。
 	if !capabilityID.Valid || capabilityID.String == "" {
-		return "", "", 0, 0, fmt.Errorf("%w: task %s 没有解析出的能力行，不能再授执行权", ErrInvalidTransition, taskID)
+		return "", "", "", 0, 0, fmt.Errorf("%w: task %s 没有解析出的能力行，不能再授执行权", ErrInvalidTransition, taskID)
 	}
 	if cancelReq.Valid {
 		// 取消已经发出：永不再授新执行权（即使它又变回了 pending）。
-		return "", "", 0, 0, fmt.Errorf("%w: task %s 已请求取消，不再授权", ErrInvalidTransition, taskID)
+		return "", "", "", 0, 0, fmt.Errorf("%w: task %s 已请求取消，不再授权", ErrInvalidTransition, taskID)
 	}
 
 	// 节点存在/状态必须在授予事务内重查（身份已在 ① 校验过）。
@@ -345,22 +346,22 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 	if qerr := tx.QueryRowContext(ctx, `SELECT name, status FROM nodes WHERE id = ?`, auth.NodeID).
 		Scan(&nodeName, &nodeStat); qerr != nil {
 		if errors.Is(qerr, sql.ErrNoRows) {
-			return "", "", 0, 0, fmt.Errorf("%w: node %s", ErrNotFound, auth.NodeID)
+			return "", "", "", 0, 0, fmt.Errorf("%w: node %s", ErrNotFound, auth.NodeID)
 		}
-		return "", "", 0, 0, fmt.Errorf("grant lease %s: read node: %w", taskID, qerr)
+		return "", "", "", 0, 0, fmt.Errorf("grant lease %s: read node: %w", taskID, qerr)
 	}
 	if nodeStat != NodeStatusOnline {
-		return "", "", 0, 0, fmt.Errorf("%w: node %s is %s（不再接新任务）", ErrInvalidTransition, auth.NodeID, nodeStat)
+		return "", "", "", 0, 0, fmt.Errorf("%w: node %s is %s（不再接新任务）", ErrInvalidTransition, auth.NodeID, nodeStat)
 	}
 
 	// ② 候选身份必须精确匹配（assignment + node + proposedAttempt）。
 	// 旧/空/错 proposed 的 grant 绝不能清掉新候选，也不能耗尽预算推进终态。
 	if rowAssign == "" || rowAssign != assignmentID || !rowNode.Valid || rowNode.String != auth.NodeID {
-		return "", "", 0, 0, fmt.Errorf("%w: task %s 的 assignment %q 不匹配当前候选 %q（node %s）",
+		return "", "", "", 0, 0, fmt.Errorf("%w: task %s 的 assignment %q 不匹配当前候选 %q（node %s）",
 			ErrNoAssignment, taskID, assignmentID, rowAssign, auth.NodeID)
 	}
 	if rowProposedAttempt != proposedAttempt {
-		return "", "", 0, 0, fmt.Errorf("%w: task %s 的 proposedAttempt %d != %d",
+		return "", "", "", 0, 0, fmt.Errorf("%w: task %s 的 proposedAttempt %d != %d",
 			ErrNoAssignment, taskID, proposedAttempt, rowProposedAttempt)
 	}
 	if !rowAssignExpires.Valid || rowAssignExpires.Int64 <= now {
@@ -369,21 +370,21 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 			        node_id = NULL, node_name = ''
 			  WHERE id = ? AND phase = ? AND assignment_id = ? AND node_id = ? AND proposed_attempt = ?`,
 			taskID, TaskPending, assignmentID, auth.NodeID, proposedAttempt); uerr != nil {
-			return "", "", 0, 0, fmt.Errorf("grant lease %s: clear expired assignment: %w", taskID, uerr)
+			return "", "", "", 0, 0, fmt.Errorf("grant lease %s: clear expired assignment: %w", taskID, uerr)
 		}
 		if cerr := tx.Commit(); cerr != nil {
-			return "", "", 0, 0, fmt.Errorf("grant lease %s: commit expired assignment: %w", taskID, cerr)
+			return "", "", "", 0, 0, fmt.Errorf("grant lease %s: commit expired assignment: %w", taskID, cerr)
 		}
-		return "", "", 0, 0, fmt.Errorf("%w: task %s 的 assignment %q 已过期", ErrNoAssignment, taskID, assignmentID)
+		return "", "", "", 0, 0, fmt.Errorf("%w: task %s 的 assignment %q 已过期", ErrNoAssignment, taskID, assignmentID)
 	}
 	// ③ namespace 交集在授予事务内重查（assign 之后撤销授权必须生效）。
 	if err := namespaceAllowedOn(ctx, ex, auth.NodeID, rawDeclared, namespaceID); err != nil {
-		return "", "", 0, 0, err
+		return "", "", "", 0, 0, err
 	}
 
 	lc, lerr := lifecycleOn(ctx, ex, capabilityID.String)
 	if lerr != nil {
-		return "", "", 0, 0, fmt.Errorf("grant lease %s: %w", taskID, lerr)
+		return "", "", "", 0, 0, fmt.Errorf("grant lease %s: %w", taskID, lerr)
 	}
 	nextAttempt := rowAttempt + 1
 	maxAttempts = lc.EffectiveMaxAttempts()
@@ -395,28 +396,28 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 			`UPDATE tasks SET assignment_id = '', proposed_attempt = 0, assignment_expires_at = NULL,
 			        node_id = NULL, node_name = ''
 			  WHERE id = ?`, taskID); uerr != nil {
-			return "", "", 0, 0, fmt.Errorf("grant lease %s: clear assignment: %w", taskID, uerr)
+			return "", "", "", 0, 0, fmt.Errorf("grant lease %s: clear assignment: %w", taskID, uerr)
 		}
 		if ok, ferr := d.finishTxGuarded(ctx, tx, taskID, TaskPending, TaskAbandoned, "", nil, now); ferr != nil {
-			return "", "", 0, 0, ferr
+			return "", "", "", 0, 0, ferr
 		} else if !ok {
-			return "", "", 0, 0, fmt.Errorf("%w: task %s changed phase concurrently", ErrInvalidTransition, taskID)
+			return "", "", "", 0, 0, fmt.Errorf("%w: task %s changed phase concurrently", ErrInvalidTransition, taskID)
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE tasks SET error = ? WHERE id = ?`, protocol.ReasonMaxAttemptsExceeded, taskID); err != nil {
-			return "", "", 0, 0, fmt.Errorf("grant lease %s: write reason: %w", taskID, err)
+			return "", "", "", 0, 0, fmt.Errorf("grant lease %s: write reason: %w", taskID, err)
 		}
 		if err := tx.Commit(); err != nil {
-			return "", "", 0, 0, fmt.Errorf("grant lease %s: commit terminal: %w", taskID, err)
+			return "", "", "", 0, 0, fmt.Errorf("grant lease %s: commit terminal: %w", taskID, err)
 		}
-		return "", "", 0, 0, fmt.Errorf("%w: task %s used %d/%d attempts",
+		return "", "", "", 0, 0, fmt.Errorf("%w: task %s used %d/%d attempts",
 			ErrMaxAttemptsExceeded, taskID, rowAttempt, maxAttempts)
 	}
 
 	// 校验节点机器配置已 apply（同事务，另一处读机器值的地方不存在）。
 	snap, serr := loadMachineSnapshotOn(ctx, ex, auth.NodeID)
 	if serr != nil {
-		return "", "", 0, 0, fmt.Errorf("grant lease %s: %w", taskID, serr)
+		return "", "", "", 0, 0, fmt.Errorf("grant lease %s: %w", taskID, serr)
 	}
 	if snap.needsAppliedFact() && !snap.appliedMatches() {
 		// 配置尚未生效：这不是执行失败（不计 attempt、不占槽）。语义与 task.reject 的
@@ -429,23 +430,23 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 			        waiting_reason = ?, next_attempt_at = ?
 			  WHERE id = ? AND phase = ? AND cancel_requested_at IS NULL`,
 			WaitingForConfig, now+StaleConfigBackoff(rowAttempt), taskID, TaskPending); uerr != nil {
-			return "", "", 0, 0, fmt.Errorf("grant lease %s: write waiting config: %w", taskID, uerr)
+			return "", "", "", 0, 0, fmt.Errorf("grant lease %s: write waiting config: %w", taskID, uerr)
 		}
 		if cerr := tx.Commit(); cerr != nil {
-			return "", "", 0, 0, fmt.Errorf("grant lease %s: commit waiting config: %w", taskID, cerr)
+			return "", "", "", 0, 0, fmt.Errorf("grant lease %s: commit waiting config: %w", taskID, cerr)
 		}
-		return "", "", 0, 0, fmt.Errorf("%w: 节点 %s 的机器配置尚未 apply（revision %d, applied %d, hash %q != %q）",
+		return "", "", "", 0, 0, fmt.Errorf("%w: 节点 %s 的机器配置尚未 apply（revision %d, applied %d, hash %q != %q）",
 			ErrConfigNotApplied, auth.NodeID, snap.revision, snap.appliedRevision, snap.appliedHash, snap.hash)
 	}
 
 	// ⑤ 三层执行预算（同事务内统计 + 拒绝；缩小预算不假释放存量 busy）。
 	typedLimits, terr := TypedMachineLimits(snap.limits)
 	if terr != nil {
-		return "", "", 0, 0, fmt.Errorf("grant lease %s: %w", taskID, terr)
+		return "", "", "", 0, 0, fmt.Errorf("grant lease %s: %w", taskID, terr)
 	}
 	pinnedMaxPerNode, merr := maxPerNodeOn(ctx, ex, capabilityID.String)
 	if merr != nil {
-		return "", "", 0, 0, fmt.Errorf("grant lease %s: %w", taskID, merr)
+		return "", "", "", 0, 0, fmt.Errorf("grant lease %s: %w", taskID, merr)
 	}
 	if berr := grantBudgetOn(ctx, ex, auth.NodeID, taskID, assignmentID, proposedAttempt, slot,
 		namespaceID, capability, pinnedMaxPerNode, typedLimits); berr != nil {
@@ -455,12 +456,12 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 			        node_id = NULL, node_name = '', waiting_reason = ?, next_attempt_at = ?
 			  WHERE id = ? AND phase = ? AND cancel_requested_at IS NULL`,
 			WaitingForSlot, now+SlotUnavailableBackoff(rowAttempt), taskID, TaskPending); uerr != nil {
-			return "", "", 0, 0, fmt.Errorf("grant lease %s: write waiting slot: %w", taskID, uerr)
+			return "", "", "", 0, 0, fmt.Errorf("grant lease %s: write waiting slot: %w", taskID, uerr)
 		}
 		if cerr := tx.Commit(); cerr != nil {
-			return "", "", 0, 0, fmt.Errorf("grant lease %s: commit waiting slot: %w", taskID, cerr)
+			return "", "", "", 0, 0, fmt.Errorf("grant lease %s: commit waiting slot: %w", taskID, cerr)
 		}
-		return "", "", 0, 0, berr
+		return "", "", "", 0, 0, berr
 	}
 	// slot 上限仍按机器总量判定（真实槽位编号必须落在当前预算内）。
 	effectiveTotal := typedLimits.Total
@@ -474,12 +475,12 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 			        node_id = NULL, node_name = '', waiting_reason = ?, next_attempt_at = ?
 			  WHERE id = ? AND phase = ? AND cancel_requested_at IS NULL`,
 			WaitingForSlot, now+SlotUnavailableBackoff(rowAttempt), taskID, TaskPending); uerr != nil {
-			return "", "", 0, 0, fmt.Errorf("grant lease %s: write waiting slot: %w", taskID, uerr)
+			return "", "", "", 0, 0, fmt.Errorf("grant lease %s: write waiting slot: %w", taskID, uerr)
 		}
 		if cerr := tx.Commit(); cerr != nil {
-			return "", "", 0, 0, fmt.Errorf("grant lease %s: commit waiting slot: %w", taskID, cerr)
+			return "", "", "", 0, 0, fmt.Errorf("grant lease %s: commit waiting slot: %w", taskID, cerr)
 		}
-		return "", "", 0, 0, fmt.Errorf("%w: node %s slot %d 超出预算（slot=%d/%d）",
+		return "", "", "", 0, 0, fmt.Errorf("%w: node %s slot %d 超出预算（slot=%d/%d）",
 			ErrSlotUnavailable, auth.NodeID, slot, slot, effectiveTotal)
 	}
 
@@ -495,15 +496,24 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 			        node_id = NULL, node_name = '', waiting_reason = ?, next_attempt_at = ?
 			  WHERE id = ? AND phase = ? AND cancel_requested_at IS NULL`,
 			WaitingForSlot, now+SlotUnavailableBackoff(rowAttempt), taskID, TaskPending); uerr != nil {
-			return "", "", 0, 0, fmt.Errorf("grant lease %s: write waiting slot: %w", taskID, uerr)
+			return "", "", "", 0, 0, fmt.Errorf("grant lease %s: write waiting slot: %w", taskID, uerr)
 		}
 		if cerr := tx.Commit(); cerr != nil {
-			return "", "", 0, 0, fmt.Errorf("grant lease %s: commit waiting slot: %w", taskID, cerr)
+			return "", "", "", 0, 0, fmt.Errorf("grant lease %s: commit waiting slot: %w", taskID, cerr)
 		}
-		return "", "", 0, 0, lerr
+		return "", "", "", 0, 0, lerr
 	}
 	if lerr != nil {
-		return "", "", 0, 0, fmt.Errorf("grant lease %s: %w", taskID, lerr)
+		return "", "", "", 0, 0, fmt.Errorf("grant lease %s: %w", taskID, lerr)
+	}
+
+	// 决策凭据（#522）：只有声明了结局表的任务才铸。
+	decisionHash := ""
+	decisionExpiresAt := sql.NullInt64{}
+	if strings.TrimSpace(rowOutcomes) != "" {
+		decisionToken = NewTaskToken()
+		decisionHash = hashAttemptToken(decisionToken)
+		decisionExpiresAt = sql.NullInt64{Int64: now + int64(protocol.DecisionTokenTTL.Seconds()), Valid: true}
 	}
 
 	// attempt 快照与任务当前授权事实**同一事务**落盘：两者要么同时存在，要么都不存在。
@@ -526,7 +536,7 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 		Phase:                 AttemptPhaseRunning,
 		StartedAt:             &now,
 	}); err != nil {
-		return "", "", 0, 0, fmt.Errorf("grant lease %s: %w", taskID, err)
+		return "", "", "", 0, 0, fmt.Errorf("grant lease %s: %w", taskID, err)
 	}
 
 	res, err := tx.ExecContext(ctx,
@@ -535,21 +545,22 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 		        assignment_expires_at = NULL,
 		        idempotent = ?, max_attempts = ?, node_id = ?, node_name = ?, config_revision = ?,
 		        lease_id = ?, lease_until = ?, lease_instance_id = ?, attempt_token_hash = ?,
+		        decision_token_hash = ?, decision_expires_at = ?,
 		        waiting_reason = '', next_attempt_at = NULL,
 		        started_at = COALESCE(started_at, ?)
 		  WHERE id = ? AND phase = ? AND cancel_requested_at IS NULL`,
 		TaskRunning, nextAttempt, boolToInt(lc.Idempotent), maxAttempts, auth.NodeID, nodeName, snap.revision,
-		leaseID, expiresAt, instanceID, tokenHash, now, taskID, TaskPending)
+		leaseID, expiresAt, instanceID, tokenHash, decisionHash, decisionExpiresAt, now, taskID, TaskPending)
 	if err != nil {
-		return "", "", 0, 0, fmt.Errorf("grant lease %s: write: %w", taskID, err)
+		return "", "", "", 0, 0, fmt.Errorf("grant lease %s: write: %w", taskID, err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return "", "", 0, 0, fmt.Errorf("%w: task %s changed phase concurrently", ErrInvalidTransition, taskID)
+		return "", "", "", 0, 0, fmt.Errorf("%w: task %s changed phase concurrently", ErrInvalidTransition, taskID)
 	}
 	if err := tx.Commit(); err != nil {
-		return "", "", 0, 0, fmt.Errorf("grant lease %s: commit: %w", taskID, err)
+		return "", "", "", 0, 0, fmt.Errorf("grant lease %s: commit: %w", taskID, err)
 	}
-	return leaseID, attemptToken, nextAttempt, expiresAt, nil
+	return leaseID, attemptToken, decisionToken, nextAttempt, expiresAt, nil
 }
 
 // RenewLeaseAuthorized 续租（**当前认证身份** + 当前执行事实）。
@@ -631,11 +642,16 @@ func (d *DB) RenewLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 		return 0, err
 	}
 
+	// 决策凭据的 TTL 跟着租约走（router 可能跑得比 10 分钟久）；已判决的不再续。
+	decisionExpiresAt := now + int64(protocol.DecisionTokenTTL.Seconds())
 	res, err := tx.ExecContext(ctx,
-		`UPDATE tasks SET lease_until = ?
+		`UPDATE tasks SET lease_until = ?,
+		        decision_expires_at = CASE
+		          WHEN decision_token_hash <> '' AND decision = '' THEN ?
+		          ELSE decision_expires_at END
 		  WHERE id = ? AND phase = ? AND attempt = ? AND lease_id = ? AND node_id = ?
 		    AND cancel_requested_at IS NULL AND lease_until > ?`,
-		expiresAt, taskID, TaskRunning, attempt, leaseID, auth.NodeID, now)
+		expiresAt, decisionExpiresAt, taskID, TaskRunning, attempt, leaseID, auth.NodeID, now)
 	if err != nil {
 		return 0, fmt.Errorf("renew lease %s: %w", taskID, err)
 	}

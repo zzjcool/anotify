@@ -41,7 +41,7 @@ func TestTaskGrantAttemptOnlyOnGrant(t *testing.T) {
 		t.Fatalf("assign 不该占槽位")
 	}
 
-	leaseID, token, attempt, expiresAt, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-1", 1, 0, store.Now())
+	leaseID, token, _, attempt, expiresAt, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-1", 1, 0, store.Now())
 	if err != nil {
 		t.Fatalf("grant: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestTaskGrantAttemptOnlyOnGrant(t *testing.T) {
 		t.Fatalf("grant 必须占槽位")
 	}
 	// 同一任务不能被授权两次（唯一执行权）。
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "", 1, 0, store.Now()); !errors.Is(err, store.ErrInvalidTransition) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "", 1, 0, store.Now()); !errors.Is(err, store.ErrInvalidTransition) {
 		t.Fatalf("第二次 grant 应被拒（ErrInvalidTransition），得到 %v", err)
 	}
 }
@@ -79,7 +79,7 @@ func TestTaskGrantRejectsStaleAssignment(t *testing.T) {
 	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-new", 1); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	_, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-old", 1, 0, store.Now())
+	_, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-old", 1, 0, store.Now())
 	if !errors.Is(err, store.ErrNoAssignment) {
 		t.Fatalf("旧 assignment 的 grant 应被拒（ErrNoAssignment），得到 %v", err)
 	}
@@ -370,7 +370,7 @@ func TestTaskRecoverIdempotentRequeues(t *testing.T) {
 	if _, err := db.UpsertInstances(ctx, node.ID, []store.InstanceSpec{{Slot: 0}, {Slot: 1}}); err != nil {
 		t.Fatalf("re-declare instances: %v", err)
 	}
-	if _, _, attempt, _, err := func() (string, string, int, int64, error) {
+	if _, _, _, attempt, _, err := func() (string, string, string, int, int64, error) {
 		if err := db.AssignTask(ctx, idemTask.ID, node.ID, "asg-3", 2); err != nil {
 			t.Fatalf("re-assign: %v", err)
 		}
@@ -798,7 +798,7 @@ func TestTaskOldAckCannotReleaseNewAttemptSlot(t *testing.T) {
 	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-2", attempt1+1); err != nil {
 		t.Fatalf("re-assign: %v", err)
 	}
-	lease2, _, attempt2, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-2", 2, freeSlot(t, db, node.ID), store.Now())
+	lease2, _, _, attempt2, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-2", 2, freeSlot(t, db, node.ID), store.Now())
 	if err != nil {
 		t.Fatalf("re-grant: %v", err)
 	}
@@ -917,7 +917,7 @@ func TestTaskCancelInFlightNeverRegranted(t *testing.T) {
 	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-2", 2); !errors.Is(err, store.ErrInvalidTransition) {
 		t.Fatalf("取消后 assign 应被拒，得到 %v", err)
 	}
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "", 1, 0, now); !errors.Is(err, store.ErrInvalidTransition) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "", 1, 0, now); !errors.Is(err, store.ErrInvalidTransition) {
 		t.Fatalf("取消后 grant 应被拒，得到 %v", err)
 	}
 	// 再巡检一轮也不会有新动作。
@@ -968,7 +968,7 @@ func TestTaskCancelGrantRace(t *testing.T) {
 				grantErr = aerr
 				return
 			}
-			_, _, attempt, _, grantErr = db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, assignID, 1, 0, store.Now())
+			_, _, _, attempt, _, grantErr = db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, assignID, 1, 0, store.Now())
 		}()
 		close(start)
 		wg.Wait()
@@ -1041,7 +1041,7 @@ func TestTaskGrantBudgetExhaustedReleasesSlot(t *testing.T) {
 	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-1", 2); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-1", 2, 0, store.Now()); !errors.Is(err, store.ErrMaxAttemptsExceeded) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-1", 2, 0, store.Now()); !errors.Is(err, store.ErrMaxAttemptsExceeded) {
 		t.Fatalf("预算用尽应 ErrMaxAttemptsExceeded，得到 %v", err)
 	}
 	dead := mustPhase(t, db, ns, task.ID, store.TaskAbandoned)
@@ -1093,7 +1093,7 @@ func TestTaskDrainingNotLost(t *testing.T) {
 	if err := db.AssignTask(ctx, next.ID, node.ID, "asg-2", 1); !errors.Is(err, store.ErrInvalidTransition) {
 		t.Fatalf("draining 节点不该接受新 assign，得到 %v", err)
 	}
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), next.ID, "", 1, 0, store.Now()); !errors.Is(err, store.ErrInvalidTransition) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), next.ID, "", 1, 0, store.Now()); !errors.Is(err, store.ErrInvalidTransition) {
 		t.Fatalf("draining 节点不该接受新 grant，得到 %v", err)
 	}
 	if busySlots(t, db, node.ID) != 1 {
@@ -1114,7 +1114,7 @@ func TestTaskDrainingNotLost(t *testing.T) {
 	if err := db.AssignTask(ctx, next.ID, node.ID, "asg-3", 1); err != nil {
 		t.Fatalf("online 后应可 assign：%v", err)
 	}
-	if _, _, got, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), next.ID, "asg-3", 1, freeSlot(t, db, node.ID), store.Now()); err != nil || got != 1 {
+	if _, _, _, got, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), next.ID, "asg-3", 1, freeSlot(t, db, node.ID), store.Now()); err != nil || got != 1 {
 		t.Fatalf("online 后应可 grant：attempt=%d err=%v", got, err)
 	}
 }
@@ -1128,7 +1128,7 @@ func TestTaskCompleteRejectsOldAttemptLeaseAndExpiry(t *testing.T) {
 	c := createCap(t, db, testCap(ns, "analyze", 1, nil))
 	node := newNode(t, db, "node-a", 1)
 	task := newTask(t, db, ns, c, "trace-1", "")
-	leaseID, token, attempt, expiresAt, err := func() (string, string, int, int64, error) {
+	leaseID, token, _, attempt, expiresAt, err := func() (string, string, string, int, int64, error) {
 		if aerr := db.AssignTask(ctx, task.ID, node.ID, "asg-1", 1); aerr != nil {
 			t.Fatalf("assign: %v", aerr)
 		}
@@ -1316,7 +1316,7 @@ func TestGrantRechecksNodeAuthorization(t *testing.T) {
 			if n, nerr := db.GetNode(ctx, grantNode); nerr == nil {
 				authForNode.NodeTokenHash = n.TokenHash
 			}
-			if lease, token, attempt, until, err := db.GrantLeaseAuthorized(ctx, authForNode, task.ID, "asg-auth", 1, 0, store.Now()); err == nil || lease != "" || token != "" || attempt != 0 || until != 0 {
+			if lease, token, _, attempt, until, err := db.GrantLeaseAuthorized(ctx, authForNode, task.ID, "asg-auth", 1, 0, store.Now()); err == nil || lease != "" || token != "" || attempt != 0 || until != 0 {
 				t.Fatalf("revoked grant must fail without authorization: lease=%q attempt=%d until=%d err=%v", lease, attempt, until, err)
 			}
 			after, err := db.GetTask(ctx, ns, task.ID)
@@ -1366,7 +1366,7 @@ func TestStaleGrantAndRejectPreserveNewAssignment(t *testing.T) {
 				assignment = ""
 			}
 			if operation == "grant-old" || operation == "grant-empty" || operation == "grant-budget-spent" {
-				_, _, _, _, err = db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, assignment, 1, 0, now+2)
+				_, _, _, _, _, err = db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, assignment, 1, 0, now+2)
 			} else {
 				err = db.RejectAssignment(ctx, task.ID, assignment, "stale_config", now+2)
 			}
@@ -1378,7 +1378,7 @@ func TestStaleGrantAndRejectPreserveNewAssignment(t *testing.T) {
 				t.Fatalf("stale request changed newer assignment: before=%+v after=%+v err=%v", before, after, err)
 			}
 			if operation != "grant-budget-spent" && operation != "reject-no-current" {
-				if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-new", 2, 0, now+3); err != nil {
+				if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-new", 2, 0, now+3); err != nil {
 					t.Fatalf("new assignment must remain grantable: %v", err)
 				}
 			}
@@ -1410,7 +1410,7 @@ func TestExpiredAssignmentCannotRefreshDeadline(t *testing.T) {
 			if err != nil || !reflect.DeepEqual(before, after) {
 				t.Fatalf("expired assign mutated deadline: before=%+v after=%+v err=%v", before, after, err)
 			}
-			if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-expired", 1, 0, *before.AssignmentExpiresAt+delta); !errors.Is(err, store.ErrNoAssignment) {
+			if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-expired", 1, 0, *before.AssignmentExpiresAt+delta); !errors.Is(err, store.ErrNoAssignment) {
 				t.Fatalf("expired assignment was granted: %v", err)
 			}
 			if busySlots(t, db, node.ID) != 0 {

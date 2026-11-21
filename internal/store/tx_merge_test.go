@@ -136,7 +136,7 @@ func TestReportResultRejectsTerminalTaskWithoutTouchingSlot(t *testing.T) {
 	if err := db.AssignTaskAt(ctx, task.ID, node.ID, "asg-tx-new", 2, Now()+1); err != nil {
 		t.Fatalf("assign new attempt: %v", err)
 	}
-	newLease, _, newAttempt, _, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
+	newLease, _, _, newAttempt, _, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
 		task.ID, "asg-tx-new", 2, 0, Now()+1)
 	if err != nil {
 		t.Fatalf("grant new attempt: %v", err)

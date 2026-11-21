@@ -325,7 +325,7 @@ func TestGrantMovesToRunning(t *testing.T) {
 	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-grant", 1); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	leaseID, token, attempt, expiresAt, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
+	leaseID, token, _, attempt, expiresAt, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
 		task.ID, "asg-grant", 1, slot, Now())
 	if err != nil {
 		t.Fatalf("grant: %v", err)
@@ -367,7 +367,7 @@ func TestGrantRejectsStaleAssignment(t *testing.T) {
 	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-new", 1); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	_, _, _, _, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID), task.ID, "asg-old", 1, 0, Now())
+	_, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID), task.ID, "asg-old", 1, 0, Now())
 	if !errors.Is(err, ErrNoAssignment) {
 		t.Fatalf("旧 assignment 应报 ErrNoAssignment，得到 %v", err)
 	}
@@ -523,7 +523,7 @@ func TestTerminalPhaseIsImmutable(t *testing.T) {
 	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-after", 1); err == nil {
 		t.Fatal("终态任务还能 assign")
 	}
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID), task.ID, "asg-after", 1, slot, Now()); !errors.Is(err, ErrInvalidTransition) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID), task.ID, "asg-after", 1, slot, Now()); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("终态任务 grant 应报 ErrInvalidTransition，得到 %v", err)
 	}
 	if err := db.RequestCancel(ctx, task.ID, "again", Now()); !errors.Is(err, ErrInvalidTransition) {
@@ -776,7 +776,7 @@ func TestRecoverLostLeasesCancelIntentHumanReasonIsCancelled(t *testing.T) {
 	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-lost-cancel", 1); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	_, _, _, expiresAt, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
+	_, _, _, _, expiresAt, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
 		task.ID, "asg-lost-cancel", 1, slot, Now())
 	if err != nil {
 		t.Fatalf("grant: %v", err)
@@ -816,7 +816,7 @@ func TestRecoverLostLeasesAbandonIntentHumanReasonIsAbandoned(t *testing.T) {
 	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-lost-abandon", 1); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	_, _, _, expiresAt, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
+	_, _, _, _, expiresAt, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
 		task.ID, "asg-lost-abandon", 1, slot, Now())
 	if err != nil {
 		t.Fatalf("grant: %v", err)
@@ -912,7 +912,7 @@ func TestRecoverLostLeasesRequeues(t *testing.T) {
 			if err := db.AssignTask(ctx, task.ID, node.ID, "asg-"+tc.name, 1); err != nil {
 				t.Fatalf("assign: %v", err)
 			}
-			_, _, _, expiresAt, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
+			_, _, _, _, expiresAt, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
 				task.ID, "asg-"+tc.name, 1, slot, Now())
 			if err != nil {
 				t.Fatalf("grant: %v", err)
@@ -1323,7 +1323,7 @@ func TestCompleteSuccessorAttemptClearsProjectionAndKeepsSubmittedError(t *testi
 		t.Fatalf("assign second attempt: %v", err)
 	}
 	slot2 := v4FreeSlot(t, db, node.ID)
-	lease2, _, attempt2, _, gerr := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
+	lease2, _, _, attempt2, _, gerr := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
 		task.ID, "asg-projection-2", 2, slot2, Now())
 	if gerr != nil {
 		t.Fatalf("grant second attempt: %v", gerr)

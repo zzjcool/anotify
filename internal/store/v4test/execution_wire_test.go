@@ -82,7 +82,7 @@ func grantWireTask(t *testing.T, db *store.DB, auth store.NodeAuthorization, tas
 	if err := db.AssignTaskAt(ctx, taskID, auth.NodeID, assignment, proposed, now); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	lease, token, attempt, expiry, err := db.GrantLeaseAuthorized(ctx, auth, taskID, assignment, proposed, slot, now)
+	lease, token, _, attempt, expiry, err := db.GrantLeaseAuthorized(ctx, auth, taskID, assignment, proposed, slot, now)
 	if err != nil || lease == "" || token == "" || attempt <= 0 {
 		t.Fatalf("grant: lease=%q attempt=%d expiry=%d err=%v", lease, attempt, expiry, err)
 	}
@@ -105,7 +105,7 @@ func TestCompleteTaskActualResultWireAuthority(t *testing.T) {
 	if err := db.AssignTaskAt(ctx, task.ID, node.ID, "asg-wire", 1, now); err != nil {
 		t.Fatal(err)
 	}
-	lease, uploadToken, attempt, _, err := db.GrantLeaseAuthorized(ctx, oldAuth, task.ID, "asg-wire", 1, 0, now)
+	lease, uploadToken, _, attempt, _, err := db.GrantLeaseAuthorized(ctx, oldAuth, task.ID, "asg-wire", 1, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestGrantTotalShrinkCountsOldHigherSlotOnly(t *testing.T) {
 		t.Fatalf("assign fresh: %v", err)
 	}
 	freeBefore := wireRows(t, db, `SELECT * FROM node_instances WHERE node_id = ? AND slot = 0`, node.ID)
-	_, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, fresh.ID, "asg-fresh", 1, 0, now+1)
+	_, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, fresh.ID, "asg-fresh", 1, 0, now+1)
 	assertTotalGrantRejected(t, db, ns, fresh.ID, node.ID, 0, err)
 	assertWireFacts(t, oldFacts, wireExecutionFacts(t, db, old.ID, node.ID))
 	if !reflect.DeepEqual(freeBefore, wireRows(t, db, `SELECT * FROM node_instances WHERE node_id = ? AND slot = 0`, node.ID)) || busySlots(t, db, node.ID) != 1 {
@@ -297,7 +297,7 @@ func TestConcurrentTotalShrinkGrantsExactlyOne(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, _, _, _, results[i] = db.GrantLeaseAuthorized(ctx, auth, tasks[i].ID, assignments[i], 1, i, now+1)
+			_, _, _, _, _, results[i] = db.GrantLeaseAuthorized(ctx, auth, tasks[i].ID, assignments[i], 1, i, now+1)
 		}(i)
 	}
 	close(start)

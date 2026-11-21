@@ -354,7 +354,7 @@ func TestDispatchFailureNotDispatchable(t *testing.T) {
 		t.Fatal("AssignTask 接受了未解析失败任务")
 	}
 	node := v4Node(t, e.db, "fail-node", 1)
-	_, _, _, _, err := e.db.GrantLeaseAuthorized(ctx, v4Auth(t, e.db, node.ID), ids[0], "asg_x", 1, 0, Now())
+	_, _, _, _, _, err := e.db.GrantLeaseAuthorized(ctx, v4Auth(t, e.db, node.ID), ids[0], "asg_x", 1, 0, Now())
 	if err == nil {
 		t.Fatal("GrantLeaseAuthorized 给未解析失败任务授了执行权")
 	}
