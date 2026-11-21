@@ -133,9 +133,9 @@ A/B 全绿说明「偶发」这条证据不可靠，于是直接测根因条件�
 
 | 门 | 结果 |
 | --- | --- |
-| `make ci` | **exit 0**（2m34s；43 个包 `ok`，`internal/ws` 10.655s；契约 48/48；注释密度「与基线完全一致」；临时目录零残留） |
-| `make e2e-affected` | 见 PR 正文的实测行（本改动被判为「二进制风险面 ⇒ 全量 e2e 30/30 套」） |
-| `scripts/e2e/known-env-failures.json` | `entries` 保持 `[]`，本 PR 未动 |
+| `make ci` | **exit 0** —— 在干净副本（detached `5375f830`，`/tmp/ws525/verify`）上跑，4m53s；43 个包 `ok`（`internal/ws` 14.5s）、契约 48/48、注释密度「与基线完全一致」、临时目录零残留（143.6s） |
+| `make e2e-affected` | 本改动被判为「二进制风险面（server←cmd/server）⇒ 全量 e2e 30/30 套」。本机两次全量跑都是 **29/30**，且**每次红的套件不同**（routing 2 条断言 / vars_ui 1 条断言），各自的单套复跑都 0 失败（routing 295/0、vars_ui 74/0）→ 与本改动无关的环境性假红（本机同时有别的 worktree 在跑全量 e2e：`/proc` 里 `anotify-522-router` 的 `run_all.sh`）。**权威判据是 PR #526 的 CI**：同一份 affected 计划分 4 片跑，全部 pass（quick（make ci）3m45s / 4 个 e2e 分片 3m23s–4m9s / `e2e（affected）` gate pass） |
+| `scripts/e2e/known-env-failures.json` | `entries` 保持 `[]`，本 PR 未动、也**不**把上面两条环境性假红登记进去 |
 | 注释密度棘轮（双向） | 新增 `settle_test.go` 的注释行由同批压缩抵消；净 −1 行 ⇒ 同批 `--update`（`internal/ws` 669→668） |
 
 ## 6. 边界（别把这份报告读多）
@@ -146,13 +146,23 @@ A/B 全绿说明「偶发」这条证据不可靠，于是直接测根因条件�
 - **`internal/server` 的同类夹具**（`hub_fixture_test.go`）已经有屏障，本 PR 没碰它。
 - 本 PR **不**处理其它包的 `TempDir` 收尾（`internal/route` 等夹具不挂 WebSocket，没有这条竞态）。
 
-## 7. 交付过程中的一次外部改动（如实记录）
+## 7. 交付过程中的外部改动（如实记录）
 
-核对阶段（`make ci` 已 exit 0 之后），本 worktree 的 `internal/ws/fixture_test.go` 被**从外部**
-改写过一次：收尾块被换成 `e.settle.wait(0)` + `t.Logf("MUTATION: …")`（等待上限 0 = 立即返回，
-且把断言降成日志）。发现方式很直接：紧接着跑包级 `-count=10 -shuffle=on` 时它红了（§4.2 的
-那个样本），失败行里的 `MUTATION:` 字样不属于本 PR 的任何脚本。
+核对期间，本 worktree 的 `internal/ws/fixture_test.go` **两次**被从外部改写成变异体：
 
-处置：把该文件恢复到本 PR 的版本（`sha256 05ccd033…`），对三个交付文件重核 sha256，并在
-恢复后的树上重跑全部证据（§3 的两条 + §4 的变异）。之后**没有再发生**外部改动。
-这一段保留在报告里而不是悄悄抹掉：`make ci` 的绿属于恢复后的树，读者需要知道中间发生过什么。
+| 时间 | 注入的变异 | 发现方式 |
+| --- | --- | --- |
+| 02:55（`make ci` exit 0 之后） | 收尾块换成 `e.settle.wait(0)` + `t.Logf("MUTATION: …")`（等待上限 0 = 立即返回，断言降成日志） | 紧接着的包级 `-count=10 -shuffle=on` 直接变红，失败行里带 `MUTATION:`（§4.2 的样本） |
+| 03:07（commit `5375f830` 之后） | 收尾块换成「只读 `pending` 打日志、完全不等待」 | 重跑 `make ci` 时 `staticcheck U1000` 报 `wait` / `sessionCount` 未使用（变异体绕过了它们） |
+
+两次都不是本 PR 的脚本产生的（本 PR 的变异只用 `/tmp` 下的脚本，且每次都 `revert` + `diff -q` 自检）。
+处置：
+
+1. 从 `HEAD` 恢复被改的文件，重核 sha256（`fixture_test.go` = `05ccd033…`，`settle_test.go` = `ddcffd7f…`）；
+2. 把交付分支先推到远端，让「分支」这个交付物与本地工作区解耦；
+3. 门禁改在**干净副本**上跑：`git worktree add --detach /tmp/ws525/verify 5375f830`，
+   在那里跑 `make ci` / `make e2e-affected`（跑前跑后各核一次 sha256）。
+
+这一段保留在报告里而不是悄悄抹掉：读者需要知道 `make ci` 的绿是在**哪个树**上跑出来的。
+副作用：第二个变异体被 `staticcheck` 的 `U1000` 抓出来，等于额外证了一次
+「交付版本真的在用那个等待」——把等待拆掉，编译期就能看见两个函数变成死代码。
