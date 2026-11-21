@@ -121,6 +121,9 @@ func Assemble(opts Options) (*App, error) {
 		return nil, err
 	}
 
+	// 决策通道的中枢 HTTP 根（#522，与 upload/fetcher 同一换算）；换算失败只是不注入 URL。
+	decisionBase, _ := capability.HTTPBaseURL(opts.Config.Server)
+
 	r, err := runner.New(runner.Options{
 		NodeName:        n.Name(),
 		LocalVars:       cloneVars(opts.Config.Vars),
@@ -133,6 +136,7 @@ func Assemble(opts Options) (*App, error) {
 		Results:         results,
 		Upload:          uploadClient,
 		EmitEndpoint:    listener.Endpoint(),
+		DecisionBase:    decisionBase,
 		WorkRoot:        workRoot,
 		Clock:           opts.Clock,
 		Logf:            logf,
@@ -142,8 +146,7 @@ func Assemble(opts Options) (*App, error) {
 		return nil, err
 	}
 
-	// A3：hello/config.applied 的槽位事实来自运行器真实账本。
-	// （Recover 在 Run 里调用：先恢复重启前的物理占用，再对外申报。）
+	// A3：hello/config.applied 的槽位事实来自运行器真实账本。（Recover 在 Run 里调用：先恢复重启前的物理占用，再对外申报。）
 	n.SetInstanceSource(r.Instances)
 
 	gw := emitgw.New(nil, r)
