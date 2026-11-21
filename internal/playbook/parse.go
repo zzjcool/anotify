@@ -24,8 +24,7 @@ var slugPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 //	metadata.namespace 禁止、计数与体积上界。
 //
 // **刻意不做**的事（写了就是 bug，见 §9.1 的硬约束）：不跑单建校验、不判名字正则、
-// 不解析 next ——此刻能力名可能还是 `{{values.project}}-review`，任何"当文档校验"的
-// 逻辑都会让**所有**参数化包存不进来。
+// 不解析 next ——此刻能力名可能还是 `{{values.project}}-review`，任何"当文档校验"的 逻辑都会让**所有**参数化包存不进来。
 //
 // files 的语义是 `{相对路径: 正文}`；返回的 Package 保留 Files 原文（store 直接落库）。
 func Parse(files map[string]string) (*Package, error) {
@@ -61,8 +60,7 @@ func Parse(files map[string]string) (*Package, error) {
 
 // checkBundleLimits 是 §1.5 的体积与文件数上界。
 //
-// 体积超限没有专属错误码（§9.2 没有"文件太大"这一行），统一报 `invalid_playbook`
-// 并在消息里点名文件与建议（拆能力 / 拆包）——比杜撰一个新码好。
+// 体积超限没有专属错误码（§9.2 没有"文件太大"这一行），统一报 `invalid_playbook` 并在消息里点名文件与建议（拆能力 / 拆包）——比杜撰一个新码好。
 func checkBundleLimits(files map[string]string) error {
 	if len(files) > MaxFiles {
 		return errf(CodeTooManyItems, "包内有 %d 个文件，上限 %d（含 %s）",
@@ -249,8 +247,7 @@ func checkReferences(pkg *Package) error {
 
 // checkSlots 校验每个被引用文件的**形状**（不跑单建校验，见 Parse 的说明）。
 //
-// 槽位由清单决定：`capabilities[]` 里的文件必须是 Capability 文档，`sources[]` 里的必须是
-// Source 文档——放错槽位 = `invalid_playbook`（消息指向路径）。
+// 槽位由清单决定：`capabilities[]` 里的文件必须是 Capability 文档，`sources[]` 里的必须是 Source 文档——放错槽位 = `invalid_playbook`（消息指向路径）。
 func checkSlots(pkg *Package) error {
 	for _, p := range pkg.CapabilityPaths {
 		tree, err := decodeDoc(pkg.Files[p], p)
@@ -279,8 +276,7 @@ func checkSlots(pkg *Package) error {
 		if err != nil {
 			return err
 		}
-		// source.md §2：spec.kind 必填。这里只看"有没有这个键、是不是字符串"，
-		// 值是不是注册表里的 kind 由渲染期（sourcespec.ValidateSpec）判。
+		// source.md §2：spec.kind 必填。这里只看"有没有这个键、是不是字符串"， 值是不是注册表里的 kind 由渲染期（sourcespec.ValidateSpec）判。
 		if _, ok := spec["kind"].(string); !ok {
 			return errf(CodeInvalidPlaybook,
 				"%s 放在 sources 槽位，但 spec.kind 缺失或不是字符串（cron / webhook / manual）", p)
@@ -291,8 +287,7 @@ func checkSlots(pkg *Package) error {
 
 // checkDocShell 校验被引用文档的公共外壳：metadata.name 存在、metadata.namespace 禁止、spec 是映射。
 //
-// 这些是"与 values 无关"的形状：name 可以是模板（`{{values.project}}-review`），
-// 所以这里只要求"有个非空字符串"，不判正则（正则属于渲染期）。
+// 这些是"与 values 无关"的形状：name 可以是模板（`{{values.project}}-review`）， 所以这里只要求"有个非空字符串"，不判正则（正则属于渲染期）。
 func checkDocShell(tree map[string]any, where string) error {
 	meta, err := mappingField(tree, "metadata", where)
 	if err != nil {
@@ -483,8 +478,7 @@ func toInt(v any) (int, bool) {
 // pathProblem 校验引用路径的形状，返回空串表示合法。
 //
 // 规则照 §1.3：相对包根、`/` 分隔、不以 `/` 开头、不含 `..` 段、≤255 字符、不含 NUL。
-// 另外拒反斜杠、空段与 `.` 段——它们在不同操作系统上会指向同一个名字以外的东西，
-// 让"包里有哪几个文件"这件事变得不可审计（D27：路径是寻址）。
+// 另外拒反斜杠、空段与 `.` 段——它们在不同操作系统上会指向同一个名字以外的东西， 让"包里有哪几个文件"这件事变得不可审计（D27：路径是寻址）。
 func pathProblem(p string) string {
 	if p == "" {
 		return "路径不能为空"

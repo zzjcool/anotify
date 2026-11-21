@@ -5,7 +5,8 @@
 -- 本文件同时是**迁移脚本**：按 `-- +migration N name` 切块，
 -- store.migrateWith 逐块应用，schema_version 记账（见 migrate.go）。
 --
--- v4 开发期直接重建：只有一块 `-- +migration 1 baseline`，没有历史增量块。
+-- 块序列：`1 baseline`（v4 的全新结构）+ 之后按编号追加的增量块（`2 …`）。
+-- 每追加一块都要把 migrate.go 的 headVersion 一起 +1，并在 schema_version 里记账。
 -- 旧库（有 schema_version 记账却没有 v4 布局标记、有未知布局标记、或没有记账但已有用户 schema 对象）
 -- 在应用 baseline **之前**被明确拒绝；视图/触发器/索引也意味着非空。
 -- 只排除字面 sqlite_ 内部前缀（sqliteXkeep 是用户对象），程序不会自动删数据（见 migrate.go）。
@@ -706,3 +707,18 @@ CREATE TABLE IF NOT EXISTS task_artifact_manifests (
 );
 CREATE INDEX IF NOT EXISTS idx_task_artifact_objects ON task_artifact_manifests(object_id);
 CREATE INDEX IF NOT EXISTS idx_task_artifact_upload_expiry ON task_artifact_uploads(expires_at);
+
+-- 安装级身份：一个预案可以释放出多份互不影响的实例（一个 release 一套名字与 values）。
+--
+-- release 是**隔离边界**，不是标签：一条能力行 / 源行是被某次安装（installed_from）
+-- 带出来的，那次安装的 release 就是这行的 owner。规划期若复用命中一行、而它是**另一个
+-- release** 装出来的，安装必须整包拒绝（application 层 409 release_conflict），
+-- 绝不静默认领别人的行。
+--
+-- 存量回填成 playbook_slug：历史回执都是「用默认 release 装的」，而默认 release 就是
+-- 包名；回填成空串会让它们既归不了组，也与默认 release 对不上。
+-- +migration 2 playbook_release
+ALTER TABLE playbook_installs ADD COLUMN release TEXT NOT NULL DEFAULT '';
+UPDATE playbook_installs SET release = playbook_slug WHERE release = '';
+CREATE INDEX IF NOT EXISTS idx_playbook_installs_release
+    ON playbook_installs(namespace_id, playbook_id, release, created_at);

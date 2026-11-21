@@ -15,8 +15,7 @@ import (
 
 // 本文件是 Playbook 安装的**事务内实现细节**（playbook.go 是公开面）。
 //
-// 为什么单独一个文件：安装路径上所有读都必须走当前事务（txExec），而 store 里
-// 「事务外读」的既有方法是 `*DB` 方法（走 per-DB 语句缓存）。混用会读到**另一个快照**：
+// 为什么单独一个文件：安装路径上所有读都必须走当前事务（txExec），而 store 里 「事务外读」的既有方法是 `*DB` 方法（走 per-DB 语句缓存）。混用会读到**另一个快照**：
 //
 //	① 看不到本事务刚写的行（新源 targets 指向同包刚建的能力）；
 //	② 与提交之间出现「检查时成立、提交后不成立」的窗口（把读错当空库 → 多建一批行）。
@@ -79,8 +78,7 @@ type sourceTargetRow struct {
 
 // listSourceTargetsOn 读出命名空间内所有源的 targets（只读两列，不碰调度字段）。
 //
-// 坏 JSON 是**读错误**（不是空列表）：调用方（installSnapshot）必须让安装失败，
-// 而不是把一条损坏的源当成「没有 targets」继续装。
+// 坏 JSON 是**读错误**（不是空列表）：调用方（installSnapshot）必须让安装失败， 而不是把一条损坏的源当成「没有 targets」继续装。
 func listSourceTargetsOn(ctx context.Context, ex queryExec, namespaceID string) ([]sourceTargetRow, error) {
 	rows, err := ex.queryContext(ctx,
 		`SELECT id, targets FROM sources WHERE namespace_id = ?`, namespaceID)
@@ -113,18 +111,64 @@ func listSourceTargetsOn(ctx context.Context, ex queryExec, namespaceID string) 
 
 // installSnapshot 是 `playbook.Existing` 的**事务内**实现：六个只读查询 + 错误账本。
 //
-// 接口本身没有 error（纯包要保持纯），所以这里把每个查询的错误记下来；Plan 结束后
-// 调用方先看 snap.err：读失败时 Plan 得到的「空库」判断不可信，整次安装必须回滚失败。
+// 接口本身没有 error（纯包要保持纯），所以这里把每个查询的错误记下来；Plan 结束后 调用方先看 snap.err：读失败时 Plan 得到的「空库」判断不可信，整次安装必须回滚失败。
 type installSnapshot struct {
 	ctx         context.Context
 	ex          queryExec
 	namespaceID string
 	// err 是第一个读错误（后续查询直接短路，不再产生误导性的 false）。
 	err error
+	// owners 是「回执 id → (release, 有无主)」的缓存：行的认领信息只在回执上 （installed_from → playbook_installs.release），同一批行常常指向同几次安装。
+	owners map[string]ownerRef
+}
+
+// ownerRef 是一条行的认领结果（release + 是否真的有主）。
+type ownerRef struct {
+	release string
+	found   bool
 }
 
 func newInstallSnapshot(ctx context.Context, ex queryExec, namespaceID string) *installSnapshot {
-	return &installSnapshot{ctx: ctx, ex: ex, namespaceID: namespaceID}
+	return &installSnapshot{ctx: ctx, ex: ex, namespaceID: namespaceID, owners: map[string]ownerRef{}}
+}
+
+// ownerOn 取 installed_from 指向的那次安装的 release——「这一行是谁装出来的」的答案。
+//
+// 返回 found=false 表示**无主**，两种来源都算：空 installed_from（手工创建的行）、
+// 悬挂引用（回执被清理过）。悬挂引用刻意不报错：schema 上没有 FK 允许它存在 （回执是审计，删包不删回执），而把一条脏引用当成「别人的 release」会让一次正常 安装莫名 409 —— 报错的代价比「当无主」更大。
+func (s *installSnapshot) ownerOn(installID string) ownerRef {
+	if installID == "" {
+		return ownerRef{}
+	}
+	if ref, ok := s.owners[installID]; ok {
+		return ref
+	}
+	var release string
+	err := s.ex.queryRowContext(s.ctx,
+		`SELECT release FROM playbook_installs WHERE namespace_id = ? AND id = ?`,
+		s.namespaceID, installID).Scan(&release)
+	ref := ownerRef{}
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// 悬挂引用：当无主（见函数注释）。
+	case err != nil:
+		s.fail(fmt.Errorf("install %s release: %w", installID, err))
+		return ownerRef{}
+	default:
+		ref = ownerRef{release: release, found: true}
+	}
+	s.owners[installID] = ref
+	return ref
+}
+
+// withCapOwner 把认领信息贴到能力快照上（无主 = 两个字段都留空，不参与 release 判定）。
+func withCapOwner(snap *playbook.CapabilitySnapshot, installID string, ref ownerRef) *playbook.CapabilitySnapshot {
+	if snap == nil || !ref.found {
+		return snap
+	}
+	snap.OwnerRelease = ref.release
+	snap.OwnerInstallID = installID
+	return snap
 }
 
 // fail 记下第一个错误（后续错误不覆盖：根因比后缀有用）。
@@ -137,8 +181,7 @@ func (s *installSnapshot) fail(err error) {
 // getCapabilityByFoldKeyLatestOn 按 foldKey 取**最高版本**那一行（安装快照专用）。
 //
 // 为什么必须 ORDER BY version DESC：同一个 foldKey 可以有多行（显式 v1 与 v3 正文相同）。
-// 省略 version 的安装（12 格第 2 行）必须确定性地复用最高版本——否则「复用哪一行」
-// 取决于 SQLite 的返回顺序，skipped 的版本号与 unapplied 的比较对象都会漂移。
+// 省略 version 的安装（12 格第 2 行）必须确定性地复用最高版本——否则「复用哪一行」 取决于 SQLite 的返回顺序，skipped 的版本号与 unapplied 的比较对象都会漂移。
 // 直写路径的 getCapabilityByFoldKeyOn 保持原样（本函数只服务安装快照）。
 func getCapabilityByFoldKeyLatestOn(ctx context.Context, ex queryExec, namespaceID, name, foldKey string) (*CapabilityVersion, error) {
 	return scanCapabilityOn(ctx, ex,
@@ -175,7 +218,7 @@ func (s *installSnapshot) CapabilityByFoldKey(name, foldKey string) (*playbook.C
 		s.fail(fmt.Errorf("capability %q by fold key: %w", name, err))
 		return nil, false
 	}
-	return capabilitySnapshot(c), true
+	return withCapOwner(capabilitySnapshot(c), c.InstalledFrom, s.ownerOn(c.InstalledFrom)), true
 }
 
 func (s *installSnapshot) CapabilityByNameVersion(name string, version int) (*playbook.CapabilitySnapshot, bool) {
@@ -190,7 +233,7 @@ func (s *installSnapshot) CapabilityByNameVersion(name string, version int) (*pl
 		s.fail(fmt.Errorf("capability %q@%d: %w", name, version, err))
 		return nil, false
 	}
-	return capabilitySnapshot(c), true
+	return withCapOwner(capabilitySnapshot(c), c.InstalledFrom, s.ownerOn(c.InstalledFrom)), true
 }
 
 func (s *installSnapshot) CapabilityMaxVersion(name string) (int, bool) {
@@ -220,13 +263,19 @@ func (s *installSnapshot) SourceByName(name string) (*playbook.SourceSnapshot, b
 		s.fail(fmt.Errorf("source %q: %w", name, err))
 		return nil, false
 	}
-	return &playbook.SourceSnapshot{
+	owner := s.ownerOn(src.InstalledFrom)
+	snap := &playbook.SourceSnapshot{
 		Name:    src.Name,
 		Kind:    src.Kind,
 		Enabled: src.Enabled,
 		Config:  append(json.RawMessage(nil), src.Config...),
 		Targets: append([]sourcespec.Target{}, src.Targets...),
-	}, true
+	}
+	if owner.found {
+		snap.OwnerRelease = owner.release
+		snap.OwnerInstallID = src.InstalledFrom
+	}
+	return snap, true
 }
 
 // BareNameRefs 返回库里**裸名**引用 name 的边数与源数（upgraded[].affects 的两个计数）。
@@ -313,13 +362,10 @@ func (s *installSnapshot) HasUpstream(name string) bool {
 
 // insertInstalledCapabilityOn 落一条**本次新建**的能力行（计划已定 version / digest）。
 //
-// 只处理 Action=create：reuse（skipped）条目一行都不写，也不调用任何「折叠更新」
-// 入口（CreateCapability / UpdateNext / SetCapabilityDisplayName）——那些会改已存行的
-// next / displayName，违反安装只做加法（I-P1）。所以这里不复用 insertCapabilityOn
-// （它的唯一冲突分支会回查复用），而是严格 INSERT：撞唯一约束就是错误。
+// 只处理 Action=create：reuse（skipped）条目一行都不写，也不调用任何「折叠更新」 入口（CreateCapability / UpdateNext / SetCapabilityDisplayName）——那些会改已存行的
+// next / displayName，违反安装只做加法（I-P1）。所以这里不复用 insertCapabilityOn （它的唯一冲突分支会回查复用），而是严格 INSERT：撞唯一约束就是错误。
 //
-// 边投影只属于**该名字的 latest**：显式低版本新建（已有 v3，再装 v1）不改变裸名解析
-// 到的版本，因此也**不能**重建这个名字的边（否则边指向 v1 的 next、派发却落到 v3）。
+// 边投影只属于**该名字的 latest**：显式低版本新建（已有 v3，再装 v1）不改变裸名解析 到的版本，因此也**不能**重建这个名字的边（否则边指向 v1 的 next、派发却落到 v3）。
 func insertInstalledCapabilityOn(ctx context.Context, ex queryExec, namespaceID, installID string, pc playbook.PlannedCapability) error {
 	if pc.Artifact == nil {
 		return fmt.Errorf("planned capability is nil")
@@ -416,11 +462,10 @@ func (d *DB) createInstalledSourceOn(ctx context.Context, ex queryExec, namespac
 
 // insertPlaybookInstallOn 写一行安装回执（dryRun 也会走到这里，然后随事务回滚）。
 //
-// 落库内容（§4.5 / D21）：
-//   - `values` 是**打码后**的有效 values（writeOnly → "***"），digest 对打码前算；
+// 落库内容（§4.5 / D21）： - `values` 是**打码后**的有效 values（writeOnly → "***"），digest 对打码前算；
 //   - `receipt` 是回执原文（响应文档，不是资源信封）；
-//   - `namespace_slug` / `playbook_slug` / `playbook_id` 是快照：删包之后回执仍可读，
-//     同 slug 重建的新包也不会把旧回执认成自己的实例。
+//
+// - `namespace_slug` / `playbook_slug` / `playbook_id` 是快照：删包之后回执仍可读， 同 slug 重建的新包也不会把旧回执认成自己的实例。
 func insertPlaybookInstallOn(ctx context.Context, ex queryExec, namespaceID string, row *PlaybookRow, receipt *playbook.Receipt, now int64) error {
 	valuesJSON, err := json.Marshal(receipt.Values)
 	if err != nil {
@@ -430,13 +475,18 @@ func insertPlaybookInstallOn(ctx context.Context, ex queryExec, namespaceID stri
 	if err != nil {
 		return fmt.Errorf("marshal install receipt: %w", err)
 	}
+	// release 是列而不是只在 receipt JSON 里：实例清单按 (release, valuesDigest) 折叠、 认领判定按 release 比较，都要能在 SQL 侧看见它（receipt 只给单次回执读）。
+	if strings.TrimSpace(receipt.Install.Release) == "" {
+		return fmt.Errorf("insert install receipt: release 为空（调用方必须归一化，缺省 = 包名）")
+	}
 	if _, err := ex.execContext(ctx,
 		`INSERT INTO playbook_installs
 		   (id, namespace_id, namespace_slug, playbook_id, playbook_slug,
-		    "values", values_digest, receipt, source, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		    "values", values_digest, receipt, source, release, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		receipt.Install.ID, namespaceID, receipt.Namespace, row.ID, row.Slug,
-		string(valuesJSON), receipt.ValuesDigest, string(receiptJSON), receipt.Source, now); err != nil {
+		string(valuesJSON), receipt.ValuesDigest, string(receiptJSON), receipt.Source,
+		receipt.Install.Release, now); err != nil {
 		return fmt.Errorf("insert install receipt: %w", err)
 	}
 	return nil
@@ -499,8 +549,7 @@ func keptPlaybookObjectsOn(ctx context.Context, ex queryExec, namespaceID, playb
 
 // playbookInstallValuesOn 汇总一组「装过哪些 values」（DELETE 响应的 values）。
 //
-// 按 valuesDigest 去重（同一组 values 装 N 次只报一次），保留首次出现的顺序；
-// values 本身就是回执行里的**打码后**形态，这里不再二次处理。
+// 按 valuesDigest 去重（同一组 values 装 N 次只报一次），保留首次出现的顺序； values 本身就是回执行里的**打码后**形态，这里不再二次处理。
 func playbookInstallValuesOn(ctx context.Context, ex queryExec, namespaceID, playbookID string) ([]map[string]any, error) {
 	rows, err := ex.queryContext(ctx,
 		`SELECT "values", values_digest FROM playbook_installs

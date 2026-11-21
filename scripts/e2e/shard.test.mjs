@@ -20,9 +20,10 @@ const tmp = () => {
 	return dir;
 };
 
-test("全量 29 套：并集等于注册表、片间互斥、每片非空", () => {
+test("全量清单：并集等于注册表、片间互斥、每片非空", () => {
 	const suites = registeredSuites();
-	assert.equal(suites.length, 29);
+	assert.ok(suites.length >= 30, `注册表缩了：${suites.length} 套（下限 30）；新增套件请同批抬下限`);
+	assert.equal(new Set(suites).size, suites.length, "注册表有重复套件名");
 	const plan = planShards({ selected: suites, shards: 3 });
 	assert.equal(plan.shards.length, 3);
 	const all = plan.shards.flatMap((s) => s.suites);

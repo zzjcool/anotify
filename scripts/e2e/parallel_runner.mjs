@@ -89,6 +89,7 @@ const HTTP_SUITES = [
 	// v4 hello/配置对齐 → 人工部署 + 节点真拉产物 → 事件→task→lease.grant→真执行
 	// → task.result → 日志 / 产物上传与私有下载 / 两种取消。
 	"node_v4",
+	"playbook_release",
 ];
 const CHROME_SUITES = [
 	"i18n",
@@ -131,7 +132,7 @@ const ALL_SUITES = [...HTTP_SUITES, ...CHROME_SUITES];
 // 为什么这四个是显式 mock：它们验收的是 locale / DOM 锚点 / 几何 / 交互契约，不含真实 API 语义；
 // 它们的 real 模式缺 session/seed bootstrap（症状是 `guest index redirected to password login`
 // 这类系统性失败），补那套底座属新底座工作，不在本轮范围。真实 API/节点覆盖由
-// frontend(real) + node_v4 + 13 个 HTTP 套件 + 7 个迁移后的 legacy Chrome 套件承担
+// frontend(real) + node_v4 + 14 个 HTTP 套件 + 7 个迁移后的 legacy Chrome 套件承担
 // （分工表：本文件的 AUTHORITY 清单）。
 //
 // 不静默 fallback 的三条硬纪律：
@@ -160,7 +161,7 @@ function suiteAuthority(name) {
 // 清单自检：写进常量就是契约。frontend 混进 mock 清单，门禁会对着 mock 判「前端 real 通过」⇒ 直接 exit 2。
 function assertAuthorityContract() {
 	const problems = [];
-	// 注册表冻结（#338）：全量 e2e = 29 个套件（#476 新增 vars_ui）；判定在 assertAuthorityContract。
+	// 注册表冻结（#338）：全量 e2e = 30 个套件（#476 vars_ui，#505 playbook_release）；判定在 assertAuthorityContract。
 	if (ALL_SUITES.length !== SUITE_REGISTRY_SIZE) {
 		problems.push(
 			`注册套件 ${ALL_SUITES.length} 个，冻结值是 ${SUITE_REGISTRY_SIZE}` +
@@ -222,9 +223,9 @@ const SUITE_TIMEOUT_OVERRIDE = {
 	// capacity（#336）：保留期清理挂 30s 租约巡检 tick，三轮 ≈150s；默认 120s 会 SIGKILL。
 	capacity: 300_000,
 };
-// 注册套件数冻结（#338）：一次全量 = 29 个套件（#476 新增 vars_ui）。
-// 增删套件必须同时改这里 + AUTHORITY 清单（离线核对 --authority-plan），否则启动即 exit 2。
-const SUITE_REGISTRY_SIZE = 29;
+// 注册套件数冻结（#338）：一次全量 = 30 个套件（#476 vars_ui，#505 playbook_release）；
+// 增删套件要同步 AUTHORITY 清单（离线核对 --authority-plan），否则启动即 exit 2。
+const SUITE_REGISTRY_SIZE = 30;
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");
 const CONCURRENCY = parseInt(process.env.E2E_CONCURRENCY || "4", 10);
@@ -489,7 +490,7 @@ async function runParallel(suites, runStartedAt) {
 //   ② 从不校验断言数：没有 results/<suite>.json、或 0通过/0失败，都照样计入汇总。
 //      现在：必须落盘结果、assertions[] 与 passed+failed 自洽，且 passed>0
 //      （真存在 0 断言套件就进 ZERO_ASSERTION_ALLOW 具名白名单并写理由）。
-//   ③ 不校验集合：请求了 29 个套件，结果里少一个 / 多一个未注册的都不报。
+//   ③ 不校验集合：请求了 30 个套件，结果里少一个 / 多一个未注册的都不报。
 //      现在：结果集合必须等于请求集合（缺失/多余/未注册全部 fail）。
 const ZERO_ASSERTION_ALLOW = new Map(); // `套件名 → 为什么合法地 0 断言`（现在是空：不允许）
 
@@ -990,7 +991,7 @@ async function main() {
 		console.log("❌ E2E 未全绿");
 		process.exit(1);
 	}
-	// 绿灯也要能自证「验了多少」：全量运行必须 29/29 覆盖。
+	// 绿灯也要能自证「验了多少」：全量运行必须 30/30 覆盖。
 	console.log(
 		`✅ E2E 全绿：${agg.suiteSummary.length}/${suitesToRun.length} 个请求套件均达标` +
 			`（断言 ${agg.totalPass} 通过 / ${agg.totalFail} 失败，authority 清单覆盖 ${agg.suiteSummary.length} 个）`,

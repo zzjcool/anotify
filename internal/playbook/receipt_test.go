@@ -144,19 +144,20 @@ func TestBuildReceiptPlacement(t *testing.T) {
 	}
 }
 
-// TestInstallsFoldKey 验 §4.10 的折叠键：同 (ns, 包, valuesDigest) 折叠成一套实例。
+// TestInstallsFoldKey 验 §4.10 的折叠键：同 (ns, 包, release, valuesDigest) 折叠成一套实例。
 func TestInstallsFoldKey(t *testing.T) {
-	a := InstallsFoldKey("ns1", "pb1", "sha256:aa")
-	if a != InstallsFoldKey("ns1", "pb1", "sha256:aa") {
+	a := InstallsFoldKey("ns1", "pb1", "prod", "sha256:aa")
+	if a != InstallsFoldKey("ns1", "pb1", "prod", "sha256:aa") {
 		t.Fatalf("同一个折叠键必须稳定")
 	}
 	for _, other := range []string{
-		InstallsFoldKey("ns2", "pb1", "sha256:aa"),
-		InstallsFoldKey("ns1", "pb2", "sha256:aa"),
-		InstallsFoldKey("ns1", "pb1", "sha256:bb"),
+		InstallsFoldKey("ns2", "pb1", "prod", "sha256:aa"),
+		InstallsFoldKey("ns1", "pb2", "prod", "sha256:aa"),
+		InstallsFoldKey("ns1", "pb1", "staging", "sha256:aa"),
+		InstallsFoldKey("ns1", "pb1", "prod", "sha256:bb"),
 	} {
 		if other == a {
-			t.Fatalf("折叠键必须区分 ns / 包 / valuesDigest: %q", other)
+			t.Fatalf("折叠键必须区分 ns / 包 / release / valuesDigest: %q", other)
 		}
 	}
 }

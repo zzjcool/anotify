@@ -223,7 +223,7 @@ func pbReplace(t *testing.T, db *store.DB, nsID string, p *pbPackage, rv string)
 
 func pbInstall(t *testing.T, db *store.DB, nsID, slug string, values map[string]any) *playbook.Receipt {
 	t.Helper()
-	r, err := db.InstallPlaybook(context.Background(), nsID, slug, values, false)
+	r, err := db.InstallPlaybook(context.Background(), nsID, slug, "", values, false)
 	if err != nil {
 		t.Fatalf("install playbook %s: %v", slug, err)
 	}
@@ -233,7 +233,7 @@ func pbInstall(t *testing.T, db *store.DB, nsID, slug string, values map[string]
 // pbInstallErr 调一次安装并返回错误（不 Fatal：冲突/失败路径要用它）。
 func pbInstallErr(t *testing.T, db *store.DB, nsID, slug string, values map[string]any, dryRun bool) (*playbook.Receipt, error) {
 	t.Helper()
-	return db.InstallPlaybook(context.Background(), nsID, slug, values, dryRun)
+	return db.InstallPlaybook(context.Background(), nsID, slug, "", values, dryRun)
 }
 
 // pbLatestCap 取某名字的最新能力行。
@@ -429,7 +429,7 @@ func TestRenderPlaybookReadOnlyAndConflictFree(t *testing.T) {
 
 	before := pbTableCounts(t, db)
 	rvBefore := pbLatestCap(t, db, ns, "a-review").ResourceVersion
-	res, err := db.RenderPlaybook(ctx, ns, "project-chain", pbValues("a"))
+	res, err := db.RenderPlaybook(ctx, ns, "project-chain", "", pbValues("a"))
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -453,10 +453,10 @@ func TestRenderPlaybookReadOnlyAndConflictFree(t *testing.T) {
 	}
 
 	// 不存在 / values 非法：错误原样（不落任何行）。
-	if _, err := db.RenderPlaybook(ctx, ns, "ghost", pbValues("a")); !errors.Is(err, store.ErrNotFound) {
+	if _, err := db.RenderPlaybook(ctx, ns, "ghost", "", pbValues("a")); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("render 不存在的包应 ErrNotFound，得到 %v", err)
 	}
-	if _, err := db.RenderPlaybook(ctx, ns, "project-chain", map[string]any{}); playbook.Code(err) != playbook.CodeValuesMissing {
+	if _, err := db.RenderPlaybook(ctx, ns, "project-chain", "", map[string]any{}); playbook.Code(err) != playbook.CodeValuesMissing {
 		t.Fatalf("缺 required values 应 values_missing，得到 %v", err)
 	}
 }
@@ -943,7 +943,7 @@ func TestInstallConcurrentSamePackage(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, err := db.InstallPlaybook(context.Background(), ns, "project-chain", pbValues("a"), false)
+			_, err := db.InstallPlaybook(context.Background(), ns, "project-chain", "", pbValues("a"), false)
 			mu.Lock()
 			errs = append(errs, err)
 			mu.Unlock()
@@ -979,7 +979,7 @@ func TestInstallDryRunWritesNothing(t *testing.T) {
 	pbCreate(t, db, ns, newPBPackage("project-chain").withDefault())
 
 	before := pbTableCounts(t, db)
-	r, err := db.InstallPlaybook(ctx, ns, "project-chain", pbValues("a"), true)
+	r, err := db.InstallPlaybook(ctx, ns, "project-chain", "", pbValues("a"), true)
 	if err != nil {
 		t.Fatalf("dryRun: %v", err)
 	}
@@ -1012,11 +1012,11 @@ func TestInstallDryRunWritesNothing(t *testing.T) {
 	pbReplace(t, db, ns, p, pbCreateRV(t, db, ns, "project-chain"))
 
 	before = pbTableCounts(t, db)
-	_, dryErr := db.InstallPlaybook(ctx, ns, "project-chain", pbValues("a"), true)
+	_, dryErr := db.InstallPlaybook(ctx, ns, "project-chain", "", pbValues("a"), true)
 	if playbook.Code(dryErr) != playbook.CodePlaybookConflict {
 		t.Fatalf("dryRun 冲突码不对：%v", dryErr)
 	}
-	_, realErr := db.InstallPlaybook(ctx, ns, "project-chain", pbValues("a"), false)
+	_, realErr := db.InstallPlaybook(ctx, ns, "project-chain", "", pbValues("a"), false)
 	if playbook.Code(realErr) != playbook.CodePlaybookConflict {
 		t.Fatalf("真实安装冲突码不对：%v", realErr)
 	}
@@ -1079,7 +1079,7 @@ func TestInstallSnapshotReadErrorFails(t *testing.T) {
 			t.Fatalf("insert corrupt source: %v", err)
 		}
 		before := pbTableCounts(t, db)
-		_, err := db.InstallPlaybook(ctx, ns, "project-chain", pbValues("a"), false)
+		_, err := db.InstallPlaybook(ctx, ns, "project-chain", "", pbValues("a"), false)
 		if err == nil {
 			t.Fatalf("损坏的源行应让安装失败（不能当空库）")
 		}
@@ -1111,7 +1111,7 @@ func TestInstallSnapshotReadErrorFails(t *testing.T) {
 			t.Fatalf("insert corrupt capability: %v", err)
 		}
 		before := pbTableCounts(t, db)
-		if _, err := db.InstallPlaybook(ctx, ns, p.slug, pbValues("a"), false); err == nil {
+		if _, err := db.InstallPlaybook(ctx, ns, p.slug, "", pbValues("a"), false); err == nil {
 			t.Fatalf("损坏的能力行应让安装失败（不能当空库）")
 		}
 		pbRequireCounts(t, before, pbTableCounts(t, db), "能力快照读错误")
@@ -1130,7 +1130,7 @@ func TestInstallValuesWriteOnlyMaskedDigestOnRaw(t *testing.T) {
 
 	const secret = "super-secret-slack-token"
 	values := map[string]any{"project": "a", "slackToken": secret}
-	rendered, err := db.RenderPlaybook(ctx, ns, "project-chain", values)
+	rendered, err := db.RenderPlaybook(ctx, ns, "project-chain", "", values)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -1242,10 +1242,10 @@ func TestInstallMissingPlaybookAndNamespace(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 	ns := newNS(t, db, "pb-missing")
-	if _, err := db.InstallPlaybook(ctx, ns, "ghost", pbValues("a"), false); !errors.Is(err, store.ErrNotFound) {
+	if _, err := db.InstallPlaybook(ctx, ns, "ghost", "", pbValues("a"), false); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("不存在的包应 ErrNotFound，得到 %v", err)
 	}
-	if _, err := db.InstallPlaybook(ctx, "", "ghost", pbValues("a"), false); !errors.Is(err, store.ErrNamespaceRequired) {
+	if _, err := db.InstallPlaybook(ctx, "", "ghost", "", pbValues("a"), false); !errors.Is(err, store.ErrNamespaceRequired) {
 		t.Fatalf("空 ns 应 ErrNamespaceRequired，得到 %v", err)
 	}
 	if _, err := db.GetPlaybook(ctx, ns, "ghost"); !errors.Is(err, store.ErrNotFound) {
@@ -1397,7 +1397,7 @@ func TestInstallWriteOnlyCompositeMasked(t *testing.T) {
 		"secrets": []any{"arr-secret-one", "arr-secret-two"},
 		"auth":    map[string]any{"key": "obj-secret-three"},
 	}
-	rendered, err := db.RenderPlaybook(ctx, ns, p.slug, values)
+	rendered, err := db.RenderPlaybook(ctx, ns, p.slug, "", values)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}

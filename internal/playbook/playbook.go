@@ -1,26 +1,17 @@
 // Package playbook 实现 v4 的**目录安装包**（Playbook）：解析、渲染、安装计划与回执。
-//
-// 语义基线是本包的实现与 `docs/contracts/console-declares/CONTRACT-artifact.md`
-// （一个目录 + values 参数化 + 只做加法），
-// 本包只做**纯领域**计算，不碰数据库、不碰网络、不写任何东西：
+// 语义基线见 `docs/contracts/console-declares/CONTRACT-artifact.md`；本包只做纯领域计算。
 //
 //	Parse  包入库前的**值无关**校验（文件集合：入口 / 闭合 / 路径 / 计数 / 槽位形状）
 //	Render (包, values) → 普通文档（默认值填充 + JSON Schema 校验 + 结构内插值 + 单建校验）
 //	Plan   (包, values, 库快照) → 12 格动作矩阵（纯函数；有冲突时调用方整包 0 写）
-//	BuildReceipt 把计划拼成回执行（values 打码、valuesDigest 对打码前值）
 //
-// 三条硬边界（写代码时不要越过去）：
+// 三条硬边界：① 渲染严格只读包体（`render` 是 helm template，`dryRun` 才读库）；
+// ② 包层模板只认 `{{values.点号路径}}` 与 `{{release.name}}`，其余 `{{…}}` / `$NAME` /
+// `${…}` / `$(…)` 原样透传（只渲染值，不渲染键）；③ 安装只做加法，想改已有东西的差异
+// 一律进 `unapplied[]` 回执，不进数据库。
 //
-//  1. **渲染严格只读包体**：不读库、不判冲突、不写库、不产生回执（§2.4 / D19）。
-//     `render` 是 `helm template`，`dryRun` 才读库。
-//  2. **包层模板只有 `{{values.点号路径}}` 一种**：其余 `{{…}}`、`$NAME`、`${…}`、
-//     `$(…)` 全是普通文本，原样透传（§1.4 / D3）。只渲染值，不渲染键。
-//  3. **安装只做加法**：本包算出"哪一格"，写入由 store 在单事务里执行（G1-5b）；
-//     任何"想改已有东西"的差异一律进回执（`unapplied[]`），不进数据库（I-P1）。
-//
-// 本包的库依赖只有 `Existing` 这一个**只读快照接口**：store 在**当前事务内**实现它
-// （按 name/version/foldKey 查能力、按 name 查源、算引用计数），本包既不知道表名，
-// 也不私开连接。这样 `Plan` 是纯函数，`dryRun` 与真实 install 走同一条代码路径。
+// 库依赖只有 `Existing` 这一个只读快照接口（store 在当前事务内实现），所以 `Plan` 是
+// 纯函数，`dryRun` 与真实 install 走同一条代码路径。
 package playbook
 
 import (
@@ -95,6 +86,9 @@ const (
 	CodePlaybookConflict        = "playbook_conflict"
 	CodeVersionContentImmutable = "version_content_immutable"
 	CodeNotFound                = "not_found"
+	// CodeReleaseConflict 是「这条要复用的行是**另一个 release** 装出来的」：
+	// 认领别人的行会让两份实例共用一个能力 / 源，所以整包拒绝、0 写入（409）。
+	CodeReleaseConflict = "release_conflict"
 
 	// 分发期（OCI）。本包不做网络拉取，只留码位给将来的一致口径（§11）。
 	CodeOCIUnsupported    = "oci_unsupported"
@@ -250,10 +244,14 @@ type PlaybookRef struct {
 }
 
 // InstallRef 是回执里的本次安装标识（id 由 store 生成；dryRun 不进库）。
+//
+// Release 是**安装级身份**（Helm 语义）：同一个包在同一个命名空间里可以有多个 release，
+// 它们各自一套名字与 values、互不干扰。缺省的 release 就是包名（slug）。
 type InstallRef struct {
-	ID     string `json:"id"`
-	At     string `json:"at"`
-	DryRun bool   `json:"dryRun"`
+	ID      string `json:"id"`
+	At      string `json:"at"`
+	DryRun  bool   `json:"dryRun"`
+	Release string `json:"release"`
 }
 
 // Created 是"这次建了什么"：能力写 `name@version`，源写名字。
@@ -327,10 +325,12 @@ type Receipt struct {
 // emptyCreated 保证 created / skipped 的列表序列化成 `[]` 而不是 `null`（空列表纪律）。
 func emptyCreated() Created { return Created{Capabilities: []string{}, Sources: []string{}} }
 
-// InstallsFoldKey 是实例清单（§4.10）的折叠键：`(namespace_id, playbook_id, values_digest)`。
+// InstallsFoldKey 是实例清单（§4.10）的折叠键：
+// `(namespace_id, playbook_id, release, values_digest)`。
 //
-// 纯函数部分（拼键）留在这里，一次 `GROUP BY` 的聚合由 store 做（G1-5b）：同一组 values
-// 装 3 次 = 1 个折叠组 + attempts=3，不是 3 个实例。
-func InstallsFoldKey(namespaceID, playbookID, valuesDigest string) string {
-	return namespaceID + "\x00" + playbookID + "\x00" + valuesDigest
+// 纯函数部分（拼键）留在这里，一次 `GROUP BY` 的聚合由 store 做（G1-5b）：同一个
+// release 用同一组 values 装 3 次 = 1 个折叠组 + attempts=3，不是 3 个实例；
+// 换一个 release（哪怕 values 一模一样）是**另一套实例**，单独立组。
+func InstallsFoldKey(namespaceID, playbookID, release, valuesDigest string) string {
+	return namespaceID + "\x00" + playbookID + "\x00" + release + "\x00" + valuesDigest
 }

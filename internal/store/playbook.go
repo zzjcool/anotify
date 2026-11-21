@@ -34,8 +34,7 @@ var (
 	ErrSlugTaken = errors.New("store: playbook slug already used")
 	// ErrPlaybookSlugMismatch 表示路径里的 slug 与包内 metadata.name 不一致。
 	//
-	// 包名就在入口文档里（D8：slug 不渲染、不依赖 values），路径只是它的寻址。
-	// 两者不一致时若照写，`GET /playbooks/<slug>` 读出来的包会自称另一个名字。
+	// 包名就在入口文档里（D8：slug 不渲染、不依赖 values），路径只是它的寻址。 两者不一致时若照写，`GET /playbooks/<slug>` 读出来的包会自称另一个名字。
 	ErrPlaybookSlugMismatch = errors.New("store: playbook slug does not match package metadata.name")
 )
 
@@ -81,10 +80,12 @@ type PlaybookDeleteResult struct {
 	Note   string           `json:"note"`
 }
 
-// PlaybookInstallGroup 是实例清单（§4.10）的一个折叠组：`(ns, 原包 id, valuesDigest)`。
+// PlaybookInstallGroup 是实例清单（§4.10）的一个折叠组： `(ns, 原包 id, release, valuesDigest)`。
 //
-// 一个组 = 一套 values；`attempts` 是这组 values 装了几次（组内回执行数），不是版本号。
+// 一个组 = 一个 release 的一套 values；`attempts` 是这组 values 装了几次（组内回执行数）， 不是版本号。换一个 release（哪怕 values 一样）是另一套实例，单独立组。
 type PlaybookInstallGroup struct {
+	// Release 是这组的安装级身份（Helm 语义：一个 release 一套实例）。
+	Release      string `json:"release"`
 	ValuesDigest string `json:"valuesDigest"`
 	// Values 是打码后的有效 values（与回执行一致：writeOnly → "***"）。
 	Values map[string]any `json:"values"`
@@ -185,8 +186,7 @@ func (d *DB) CreatePlaybook(ctx context.Context, namespaceID, slug string, files
 	return row, nil
 }
 
-// ListPlaybooksPage 是 ListPlaybooks 的 keyset 分页版（#377）：同一排序
-// (created_at ASC, id ASC)。`afterID == ""` 表示第一页。
+// ListPlaybooksPage 是 ListPlaybooks 的 keyset 分页版（#377）：同一排序 (created_at ASC, id ASC)。`afterID == ""` 表示第一页。
 func (d *DB) ListPlaybooksPage(ctx context.Context, namespaceID string, afterAt int64, afterID string, limit int) ([]*PlaybookRow, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -323,9 +323,10 @@ func (d *DB) ReplacePlaybook(ctx context.Context, namespaceID, slug string, expe
 
 // RenderPlaybook 是 `render` 端点（§2.4）：只读包体 → Parse → Render。
 //
-// **纯只读**：不读安装冲突库、不写库、不产生回执（D19：render 是 helm template，
-// dryRun 才读库）。所以它不可能因为库里已有同名能力而失败，也不会留下任何行。
-func (d *DB) RenderPlaybook(ctx context.Context, namespaceID, slug string, values map[string]any) (*playbook.RenderResult, error) {
+// **纯只读**：不读安装冲突库、不写库、不产生回执（D19：render 是 helm template， dryRun 才读库）。所以它不可能因为库里已有同名能力而失败，也不会留下任何行。
+//
+// release 只影响模板渲染（`{{release.name}}`）；它不读库，所以 render 不判 release 冲突。
+func (d *DB) RenderPlaybook(ctx context.Context, namespaceID, slug, release string, values map[string]any) (*playbook.RenderResult, error) {
 	row, err := d.GetPlaybook(ctx, namespaceID, slug)
 	if err != nil {
 		return nil, err
@@ -334,10 +335,13 @@ func (d *DB) RenderPlaybook(ctx context.Context, namespaceID, slug string, value
 	if err != nil {
 		return nil, err
 	}
-	return playbook.Render(pkg, values)
+	return playbook.RenderForRelease(pkg, values, release)
 }
 
 // InstallPlaybook 在**一个 BEGIN IMMEDIATE 事务**里完成一次安装（§4.4 / §4.6）。
+//
+// release 是安装级身份（Helm 语义）：空串 = 缺省 = 包名。同一个包可以有多个 release，
+// 各是一套实例；**要复用的行是别的 release 装出来的**时 Plan 会给出 release_conflict， 本函数在写之前就返回（0 写）。
 //
 // 顺序固定：
 //
@@ -348,18 +352,21 @@ func (d *DB) RenderPlaybook(ctx context.Context, namespaceID, slug string, value
 //	⑤ INSERT 回执行（masked values + digest + 回执原文 + ns/原 slug/原包 id 快照）
 //	⑥ COMMIT；dryRun 在 ⑤ 之后 Rollback（同一路径，0 持久写）
 //
-// 边界（卡上红线，写代码时不要越过去）：
-//   - Plan 说 reuse 的条目**一行都不碰**：不能调 CreateCapability / UpdateSource 的折叠更新路径，
-//     否则会偷改已存行的 next / displayName / targets（I-P1）。
-//   - 事务内的读错误必须让整次安装失败：把查询失败当「空库」会装出一批本不该存在的行。
+// 边界（卡上红线，写代码时不要越过去）： - Plan 说 reuse 的条目**一行都不碰**：不能调 CreateCapability / UpdateSource 的折叠更新路径，
+// 否则会偷改已存行的 next / displayName / targets（I-P1）。 - 事务内的读错误必须让整次安装失败：把查询失败当「空库」会装出一批本不该存在的行。
 //   - 不写 deployments / tasks / events dispatch：安装不部署，保留人工部署动作。
-func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, slug string, values map[string]any, dryRun bool) (*playbook.Receipt, error) {
+func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, slug, release string, values map[string]any, dryRun bool) (*playbook.Receipt, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
 	slug = strings.TrimSpace(slug)
 	if slug == "" {
 		return nil, ErrNotFound
+	}
+	// release 的归一化放在事务之前：形状错是调用方输入错误（400），不必开事务。
+	rel, err := playbook.NormalizeRelease(release, slug)
+	if err != nil {
+		return nil, err
 	}
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
@@ -383,7 +390,7 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, slug string, valu
 
 	// ② 快照：每个查询的 error 都记录在 installSnapshot 里，Plan 之后统一裁决。
 	snap := newInstallSnapshot(ctx, ex, namespaceID)
-	plan, planErr := playbook.Plan(pkg, values, snap)
+	plan, planErr := playbook.PlanForRelease(pkg, values, rel, snap)
 	if snap.err != nil {
 		// 读失败优先于「冲突」：快照不可信时任何判定都不作数（更不能写）。
 		return nil, fmt.Errorf("install playbook %q: read snapshot: %w", slug, snap.err)
@@ -423,6 +430,7 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, slug string, valu
 		At:        time.Unix(now, 0).UTC().Format(time.RFC3339),
 		DryRun:    dryRun,
 		Namespace: nsSlug,
+		Release:   plan.Release,
 		Source:    row.Source,
 	})
 	if err := insertPlaybookInstallOn(ctx, ex, namespaceID, row, &receipt, now); err != nil {
@@ -441,8 +449,7 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, slug string, valu
 
 // DeletePlaybook 只删清单（§7）：CAS 校验在同一事务里，回执 / 已装对象一行不动。
 //
-// 响应告诉用户留下了什么：`kept` 由 installed_from 反查，`values` 从回执历史汇总
-// （都是**打码后**的有效 values，按 valuesDigest 去重）。
+// 响应告诉用户留下了什么：`kept` 由 installed_from 反查，`values` 从回执历史汇总 （都是**打码后**的有效 values，按 valuesDigest 去重）。
 func (d *DB) DeletePlaybook(ctx context.Context, namespaceID, slug string, expectedVersion string) (*PlaybookDeleteResult, error) {
 	if _, _, err := parseResourceVersion(expectedVersion); err != nil {
 		return nil, err
@@ -489,12 +496,10 @@ func (d *DB) DeletePlaybook(ctx context.Context, namespaceID, slug string, expec
 	}, nil
 }
 
-// ListPlaybookInstalls 是实例清单（§4.10）：把回执行按
-// `(namespace_id, 原包 id, valuesDigest)` 折叠成「一套 values 装过几次」。
+// ListPlaybookInstalls 是实例清单（§4.10）：把回执行按 `(namespace_id, 原包 id, release, valuesDigest)` 折叠成「一套 values 装过几次」。
 //
 // currentPlaybookID 是**当前清单**的 id：同 slug 删掉重建后是一份新清单（新 id），
-// 旧回执仍引用旧 id —— 所以新包看不到旧实例，也不会把旧 group 的来源认成自己的。
-// 组数上限 200，按 lastAt 降序截断；Total 是折叠组总数。
+// 旧回执仍引用旧 id —— 所以新包看不到旧实例，也不会把旧 group 的来源认成自己的。 组数上限 200，按 lastAt 降序截断；Total 是折叠组总数。
 func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlaybookID string) (*PlaybookInstallList, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -504,7 +509,7 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 		return out, nil
 	}
 	rows, err := d.cachedQueryContext(ctx,
-		`SELECT id, values_digest, "values", created_at, rowid
+		`SELECT id, release, values_digest, "values", created_at, rowid
 		   FROM playbook_installs
 		  WHERE namespace_id = ? AND playbook_id = ?
 		  ORDER BY created_at, rowid`, namespaceID, currentPlaybookID)
@@ -517,20 +522,23 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 		at  int64
 		seq int64
 	}
-	byDigest := map[string]*PlaybookInstallGroup{}
+	byGroup := map[string]*PlaybookInstallGroup{}
 	order := make([]string, 0)
 	ids := make([]string, 0)
-	idDigest := make(map[string]string)
+	idGroup := make(map[string]string)
 	accs := map[string]*acc{}
 	for rows.Next() {
 		var (
-			id, digest, rawValues string
-			createdAt, seq        int64
+			id, release, digest, rawValues string
+			createdAt, seq                 int64
 		)
-		if err := rows.Scan(&id, &digest, &rawValues, &createdAt, &seq); err != nil {
+		if err := rows.Scan(&id, &release, &digest, &rawValues, &createdAt, &seq); err != nil {
 			return nil, fmt.Errorf("scan playbook install: %w", err)
 		}
-		g, ok := byDigest[digest]
+		// 折叠键 = (release, valuesDigest)：同一个 release 的同一套 values 装 N 次是一组；
+		// 换 release 就是另一套实例（名字由 `{{release.name}}` 决定，行本来就是分开的）。
+		key := release + "\x00" + digest
+		g, ok := byGroup[key]
 		if !ok {
 			parsed := map[string]any{}
 			if trimmed := strings.TrimSpace(rawValues); trimmed != "" {
@@ -542,6 +550,7 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 				}
 			}
 			g = &PlaybookInstallGroup{
+				Release:      release,
 				ValuesDigest: digest,
 				Values:       parsed,
 				FirstAt:      time.Unix(createdAt, 0).UTC().Format(time.RFC3339),
@@ -549,30 +558,31 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 				Capabilities: []string{},
 				Sources:      []string{},
 			}
-			byDigest[digest] = g
-			order = append(order, digest)
-			accs[digest] = &acc{at: createdAt, seq: seq}
+			byGroup[key] = g
+			order = append(order, key)
+			accs[key] = &acc{at: createdAt, seq: seq}
 		}
 		g.Attempts++
-		if createdAt >= accs[digest].at {
-			accs[digest].at = createdAt
-			accs[digest].seq = seq
+		if createdAt >= accs[key].at {
+			accs[key].at = createdAt
+			accs[key].seq = seq
 			g.LastAt = time.Unix(createdAt, 0).UTC().Format(time.RFC3339)
 			g.LastInstallID = id
 		}
 		ids = append(ids, id)
-		idDigest[id] = digest
+		idGroup[id] = key
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate playbook installs: %w", err)
 	}
 
 	groups := make([]PlaybookInstallGroup, 0, len(order))
-	for _, digest := range order {
-		groups = append(groups, *byDigest[digest])
+	for _, key := range order {
+		groups = append(groups, *byGroup[key])
 	}
 	sort.SliceStable(groups, func(i, j int) bool {
-		a, b := accs[groups[i].ValuesDigest], accs[groups[j].ValuesDigest]
+		a := accs[groups[i].Release+"\x00"+groups[i].ValuesDigest]
+		b := accs[groups[j].Release+"\x00"+groups[j].ValuesDigest]
 		if a.at != b.at {
 			return a.at > b.at
 		}
@@ -589,15 +599,16 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 	}
 
 	// 只对本页返回的组反查 installed_from（上限 200 组，量是有界的）。
-	keepDigest := make(map[string]bool, len(groups))
+	keepGroup := make(map[string]bool, len(groups))
 	groupOf := make(map[string]int, len(groups))
 	for i := range groups {
-		keepDigest[groups[i].ValuesDigest] = true
-		groupOf[groups[i].ValuesDigest] = i
+		key := groups[i].Release + "\x00" + groups[i].ValuesDigest
+		keepGroup[key] = true
+		groupOf[key] = i
 	}
 	pageIDs := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if keepDigest[idDigest[id]] {
+		if keepGroup[idGroup[id]] {
 			pageIDs = append(pageIDs, id)
 		}
 	}
@@ -617,7 +628,7 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 			capRows.Close()
 			return nil, fmt.Errorf("scan install capability: %w", err)
 		}
-		if idx, ok := groupOf[idDigest[from]]; ok {
+		if idx, ok := groupOf[idGroup[from]]; ok {
 			groups[idx].Capabilities = append(groups[idx].Capabilities, FormatRef(name, version))
 		}
 	}
@@ -640,7 +651,7 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 			srcRows.Close()
 			return nil, fmt.Errorf("scan install source: %w", err)
 		}
-		if idx, ok := groupOf[idDigest[from]]; ok {
+		if idx, ok := groupOf[idGroup[from]]; ok {
 			groups[idx].Sources = append(groups[idx].Sources, name)
 		}
 	}
@@ -670,17 +681,16 @@ func anyArgs(ss []string) []any {
 
 // GetPlaybookInstall 按「历史 ns + 原 slug + installId」读取一次 install 的完整回执。
 //
-// **不要求当前清单存在**：回执行的 playbook_id / playbook_slug 是快照，删包之后
-// 单条回执仍可按旧 slug 直达（§4.10 / D21）。未命中返回 ErrNotFound。
+// **不要求当前清单存在**：回执行的 playbook_id / playbook_slug 是快照，删包之后 单条回执仍可按旧 slug 直达（§4.10 / D21）。未命中返回 ErrNotFound。
 func (d *DB) GetPlaybookInstall(ctx context.Context, namespaceID, slug, installID string) (*playbook.Receipt, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
-	var raw string
+	var raw, release string
 	err := d.cachedQueryRowContext(ctx,
-		`SELECT receipt FROM playbook_installs
+		`SELECT receipt, release FROM playbook_installs
 		  WHERE namespace_id = ? AND playbook_slug = ? AND id = ?`,
-		namespaceID, strings.TrimSpace(slug), strings.TrimSpace(installID)).Scan(&raw)
+		namespaceID, strings.TrimSpace(slug), strings.TrimSpace(installID)).Scan(&raw, &release)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -690,6 +700,10 @@ func (d *DB) GetPlaybookInstall(ctx context.Context, namespaceID, slug, installI
 	var receipt playbook.Receipt
 	if err := json.Unmarshal([]byte(raw), &receipt); err != nil {
 		return nil, fmt.Errorf("decode playbook install receipt: %w", err)
+	}
+	if receipt.Install.Release == "" {
+		// 迁移前写的回执原文里没有 release；列上已经回填成包名。回执是**审计快照**， 不改它的原文，只在读的时候把「这次安装属于哪个 release」补齐——否则同一次 安装从实例清单（按列分组）点进来会显示成另一个身份。
+		receipt.Install.Release = release
 	}
 	return &receipt, nil
 }

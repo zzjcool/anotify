@@ -10,35 +10,35 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// 迁移机制的外部验收（v4：单块 baseline + 旧库拒绝）。
+// 迁移机制的外部验收（v4：baseline + 按编号追加的增量块 + 旧库拒绝）。
 //
-// 白盒部分（parseMigrations 的编号校验、注入坏迁移后的回滚）需要包内访问，
-// 在 G1-6 内部测试迁移时补；这里用**公开面**验收用户真正会遇到的三件事：
+// 白盒部分（parseMigrations 的编号校验、注入坏迁移后的回滚）需要包内访问， 在 G1-6 内部测试迁移时补；这里用**公开面**验收用户真正会遇到的三件事：
 // 新建库版本正确、重开幂等、旧库被明确拒绝且数据不被删。
 
-// TestMigrationSchemaVersion 新建库只应用 baseline 一块，且版本号 = 1。
+// TestMigrationSchemaVersion 新建库应用 baseline + 全部增量块，每块记一行账。
 func TestMigrationSchemaVersion(t *testing.T) {
 	db := openTestDB(t)
 	v, err := db.SchemaVersion()
 	if err != nil {
 		t.Fatalf("schema version: %v", err)
 	}
-	if v != 1 {
-		t.Fatalf("v4 baseline 版本 = %d, want 1", v)
+	// 2 = baseline（1）+ release 身份（2）。追加块必须同步 +1，否则新块永不应用。
+	if v != 2 {
+		t.Fatalf("v4 库版本 = %d, want 2", v)
 	}
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&n); err != nil {
 		t.Fatalf("count schema_version: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("schema_version 行数 = %d, want 1（baseline 不重复记账）", n)
+	if n != 2 {
+		t.Fatalf("schema_version 行数 = %d, want 2（每块只记账一次）", n)
 	}
 	var version int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+	if err := db.QueryRow(`SELECT max(version) FROM schema_version`).Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 1 {
-		t.Fatalf("记账版本 = %d, want 1", version)
+	if version != 2 {
+		t.Fatalf("记账最高版本 = %d, want 2", version)
 	}
 }
 
@@ -72,8 +72,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db2.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&n); err != nil {
 		t.Fatalf("count after reopen: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("重开后 schema_version 行数 = %d, want 1", n)
+	if n != 2 {
+		t.Fatalf("重开后 schema_version 行数 = %d, want 2（每块一行，不重复记账）", n)
 	}
 	if after := snapshotDatabase(t, path); after != snapshot {
 		t.Fatalf("重开改变了行值/DDL/marker:\n before %s\n after %s", snapshot, after)
@@ -191,8 +191,7 @@ func TestLegacyDatabaseRejectedTables(t *testing.T) {
 // TestSchemaSQLStaticDiscipline 不变量 I1 的静态门禁（契约 A2）：
 // schema.sql 全文（含注释）不得出现可执行命令类概念的那几个英文子串。
 //
-// 为什么在测试里再来一遍：Makefile 的 contract target 是最快的门，但它不在
-// `go test` 的门禁里；schema.sql 是唯一事实源，这条纪律值得两道门。
+// 为什么在测试里再来一遍：Makefile 的 contract target 是最快的门，但它不在 `go test` 的门禁里；schema.sql 是唯一事实源，这条纪律值得两道门。
 func TestSchemaSQLStaticDiscipline(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "schema.sql"))
 	if err != nil {

@@ -386,6 +386,7 @@ export async function tryPoll(fn, { timeoutMs = 8000, intervalMs = 100 } = {}) {
 export function withDB(dbPath, fn) {
 	const db = new DatabaseSync(dbPath);
 	try {
+		db.exec("PRAGMA busy_timeout = 10000");
 		return fn(db);
 	} finally {
 		db.close();

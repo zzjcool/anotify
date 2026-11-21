@@ -42,6 +42,10 @@ type CapabilitySnapshot struct {
 	DisplayName string
 	// Next 是这一行**当前的路由**（行 7 的比较对象）。
 	Next []string
+	// OwnerRelease / OwnerInstallID 是「这一行是谁装出来的」（installed_from 的 release 与
+	// 回执 id）；手建行两者皆空 = 无主。它们是 release 隔离边界的唯一依据。
+	OwnerRelease   string
+	OwnerInstallID string
 }
 
 // SourceSnapshot 是库里一条源行的快照。
@@ -54,6 +58,9 @@ type SourceSnapshot struct {
 	Config json.RawMessage
 	// Targets 是这一行当前的出口声明（行 12 的比较对象，含 params 映射）。
 	Targets []sourcespec.Target
+	// OwnerRelease / OwnerInstallID 与 CapabilitySnapshot 同义（release 认领判据）。
+	OwnerRelease   string
+	OwnerInstallID string
 }
 
 // Existing 是 Plan 需要的**全部**库事实，只有六个只读查询。
@@ -130,6 +137,10 @@ type PlanResult struct {
 	Values       map[string]any
 	ValuesDigest string
 
+	// Release 是本次安装的 release（已归一化）；ReleaseConflicts 非空 ⇒ 整包 0 写（409）。
+	Release          string
+	ReleaseConflicts []ReleaseConflict
+
 	Conflicts []Conflict
 	Created   Created
 	Skipped   Created
@@ -147,7 +158,12 @@ type PlanResult struct {
 	schema map[string]any
 }
 
-// Plan 按 playbook.md §4.2 的 12 格矩阵算出安装动作（**纯函数**）。
+// Plan 是缺省 release（= 包名）的安装计划，等价于 PlanForRelease(pkg, values, "", existing)。
+func Plan(pkg *Package, values map[string]any, existing Existing) (*PlanResult, error) {
+	return PlanForRelease(pkg, values, "", existing)
+}
+
+// PlanForRelease 按 playbook.md §4.2 的 12 格矩阵算出安装动作（**纯函数**）。
 //
 // 12 格 → 代码落点：
 //
@@ -168,15 +184,25 @@ type PlanResult struct {
 // 顺序照 §4.4：① render（values 错就地 400）→ ② 读快照（调用方做）→ ③ 算矩阵
 // （有 conflict 就 400，一行不写）。④⑤（单事务写入 + 回执）是 store 的事（G1-5b）。
 //
-// 返回约定：有 Conflicts 时同时返回 (result, error)——
-//   - error 的 Code 是 `version_content_immutable`（只有能力冲突）或 `playbook_conflict`，
-//     Details 带 `conflicts` / `valuesDigest` / `hint`（§9.2 的 400 形状）；
-//   - result 仍然完整（调用方要展示冲突全貌）。
-func Plan(pkg *Package, values map[string]any, existing Existing) (*PlanResult, error) {
+// release 不是标签：凡是「复用库里已有行」的判定（行 2/5 的能力、行 9 的源）都多一道认领
+// 检查——命中的行属于另一个 release 就整包 0 写（409 release_conflict）；同一个 release 内
+// 仍是「同名同内容 → reuse、同名不同内容 → upgraded」。
+//
+// 返回约定：有冲突时同时返回 (result, error)，Code 是 `release_conflict`（409，Details 带
+// name/kind/ownerRelease/ownerInstallId/conflicts/hint）、`version_content_immutable` 或
+// `playbook_conflict`（400，Details 带 conflicts/valuesDigest/hint）；result 仍完整。
+func PlanForRelease(pkg *Package, values map[string]any, release string, existing Existing) (*PlanResult, error) {
 	if existing == nil {
 		return nil, errf(CodeInvalidPlaybook, "Plan 需要库快照（Existing）；空库请传 EmptyExisting()")
 	}
-	rendered, err := Render(pkg, values)
+	if pkg == nil {
+		return nil, errf(CodeInvalidPlaybook, "Plan 需要一个包（nil 不是空包）")
+	}
+	rel, err := NormalizeRelease(release, pkg.Name)
+	if err != nil {
+		return nil, err
+	}
+	rendered, err := RenderForRelease(pkg, values, rel)
 	if err != nil {
 		return nil, err
 	}
@@ -192,6 +218,7 @@ func Plan(pkg *Package, values map[string]any, existing Existing) (*PlanResult, 
 	}
 	plan := &PlanResult{
 		Playbook:     PlaybookRef{Name: pkg.Name, Version: pkg.Version},
+		Release:      rel,
 		Values:       rendered.Values,
 		ValuesDigest: rendered.ValuesDigest,
 		Created:      emptyCreated(),
@@ -206,8 +233,7 @@ func Plan(pkg *Package, values map[string]any, existing Existing) (*PlanResult, 
 		schema:       sch,
 	}
 
-	// 装完的"有效路由"：新建行按包里写的（会真的写进去），复用行按库里现有的
-	// （install 不改它）。`unreachable` 自检必须用这份，而不是包里声明的——
+	// 装完的"有效路由"：新建行按包里写的（会真的写进去），复用行按库里现有的 （install 不改它）。`unreachable` 自检必须用这份，而不是包里声明的——
 	// 否则行 7 造成的孤儿能力会被"包里明明连着"掩盖掉。
 	effNext := make(map[string][]string, len(rendered.Capabilities))
 	effTargets := make(map[string][]sourcespec.Target, len(rendered.Sources))
@@ -221,7 +247,7 @@ func Plan(pkg *Package, values map[string]any, existing Existing) (*PlanResult, 
 	plan.resolveRefs(rendered, existing)
 	plan.markUnreachable(effNext, effTargets, existing)
 
-	if len(plan.Conflicts) > 0 {
+	if len(plan.Conflicts) > 0 || len(plan.ReleaseConflicts) > 0 {
 		return plan, plan.conflictError()
 	}
 	return plan, nil
@@ -311,8 +337,14 @@ func (p *PlanResult) addCreatedCapability(a *artifact.Artifact, version int, fol
 }
 
 // reuseCapability 记一条"复用"（行 2/5），并做行 7 的路由比较。
+//
+// 先判 release 认领：属于另一个 release 就**不是**复用（记一条冲突，本次 0 写）， 但库里的路由照旧作为有效路由——不认领也不改它。
 func (p *PlanResult) reuseCapability(a *artifact.Artifact, snap *CapabilitySnapshot, effNext map[string][]string) {
 	name := a.Metadata.Name
+	if p.claimedByOtherRelease(snap.OwnerRelease, snap.OwnerInstallID, "capability", name) {
+		effNext[name] = snap.Next
+		return
+	}
 	p.Skipped.Capabilities = append(p.Skipped.Capabilities, capRef(name, snap.Version))
 	p.Capabilities = append(p.Capabilities, PlannedCapability{
 		Artifact:      a,
@@ -400,7 +432,11 @@ func planSources(plan *PlanResult, srcs []Source, existing Existing, effTargets 
 			effTargets[s.Name] = snap.Targets
 			continue
 		}
-		// 行 9：复用（不写 targets、不写入口边）。
+		// 行 9：复用（不写 targets / 入口边）——但属于另一个 release 时先记认领冲突。
+		if plan.claimedByOtherRelease(snap.OwnerRelease, snap.OwnerInstallID, "source", s.Name) {
+			effTargets[s.Name] = snap.Targets
+			continue
+		}
 		plan.Skipped.Sources = append(plan.Skipped.Sources, s.Name)
 		plan.Sources = append(plan.Sources, PlannedSource{
 			Name:   s.Name,
@@ -485,8 +521,7 @@ func (p *PlanResult) existsRef(name, ref string, existing Existing) bool {
 
 // markUnreachable 是装完自检：包内**本次新建**的能力既无上游、也无源指向 → note unreachable。
 //
-// 上游 = 装完后的有效路由（新建行按包里的、复用行按库里的）∪ 库里已有的引用。
-// 行 7（路由未生效）造成的孤儿就在这条 note 里被点名（§4.5 的例子）。
+// 上游 = 装完后的有效路由（新建行按包里的、复用行按库里的）∪ 库里已有的引用。 行 7（路由未生效）造成的孤儿就在这条 note 里被点名（§4.5 的例子）。
 func (p *PlanResult) markUnreachable(effNext map[string][]string, effTargets map[string][]sourcespec.Target, existing Existing) {
 	for _, pc := range p.Capabilities {
 		if pc.Action != ActionCreate {
@@ -525,8 +560,38 @@ func hasPackageUpstream(name string, effNext map[string][]string, effTargets map
 	return false
 }
 
-// conflictError 把冲突拼成 §9.2 的 400 形状（code / conflicts / valuesDigest / hint 一个不丢）。
+// claimedByOtherRelease 判定要复用的行是否属于另一个 release。无主行（手建）不算冲突；
+// 命中时记一条冲突并返回 true（调用方据此不复用、不写）。
+func (p *PlanResult) claimedByOtherRelease(ownerRelease, ownerInstallID, kind, name string) bool {
+	if ownerRelease == "" || ownerRelease == p.Release {
+		return false
+	}
+	p.ReleaseConflicts = append(p.ReleaseConflicts, ReleaseConflict{
+		Name:           name,
+		Kind:           kind,
+		OwnerRelease:   ownerRelease,
+		OwnerInstallID: ownerInstallID,
+	})
+	return true
+}
+
+// conflictError 把冲突拼成响应形状（code / details 一个不丢），且**认领冲突优先**：
+// 一个对象被两个 release 争，先解决它；否则用户改完内容再装还是同一个 409。
 func (p *PlanResult) conflictError() *Error {
+	if len(p.ReleaseConflicts) > 0 {
+		first := p.ReleaseConflicts[0]
+		return errf(CodeReleaseConflict,
+			"%s %q 是另一个 release（%s）装出来的：同一个对象不能被两个 release 认领（整包 0 写入）",
+			kindLabel(first.Kind), first.Name, first.OwnerRelease).
+			withDetails(map[string]any{
+				"name":           first.Name,
+				"kind":           first.Kind,
+				"ownerRelease":   first.OwnerRelease,
+				"ownerInstallId": first.OwnerInstallID,
+				"conflicts":      p.ReleaseConflicts,
+				"hint":           releaseConflictHint,
+			})
+	}
 	code := CodeVersionContentImmutable
 	for _, c := range p.Conflicts {
 		if c.Kind == "source" {
@@ -546,12 +611,14 @@ func (p *PlanResult) conflictError() *Error {
 	})
 }
 
-// InstallMeta 是回执里"这次安装"的元信息（id / 时间 / dryRun / ns / OCI 来源）。
+// InstallMeta 是回执里"这次安装"的元信息。
 type InstallMeta struct {
 	ID        string
 	At        string
 	DryRun    bool
 	Namespace string
+	// Release 是本次安装的 release（已归一化）。
+	Release string
 	// Source 是 OCI 来源（`oci://…@sha256:…`）；手传包体时为空。
 	Source string
 }
@@ -567,7 +634,7 @@ func BuildReceipt(plan *PlanResult, values map[string]any, valuesDigest string, 
 		return Receipt{
 			APIVersion: APIVersion,
 			Kind:       KindInstallReceipt,
-			Install:    InstallRef{ID: meta.ID, At: meta.At, DryRun: meta.DryRun},
+			Install:    InstallRef{ID: meta.ID, At: meta.At, DryRun: meta.DryRun, Release: meta.Release},
 			Namespace:  meta.Namespace,
 			Source:     meta.Source,
 			Values:     map[string]any{},
@@ -591,7 +658,7 @@ func BuildReceipt(plan *PlanResult, values map[string]any, valuesDigest string, 
 		Kind:         KindInstallReceipt,
 		Playbook:     plan.Playbook,
 		Source:       meta.Source,
-		Install:      InstallRef{ID: meta.ID, At: meta.At, DryRun: meta.DryRun},
+		Install:      InstallRef{ID: meta.ID, At: meta.At, DryRun: meta.DryRun, Release: meta.Release},
 		Namespace:    meta.Namespace,
 		Values:       MaskValues(plan.schema, values),
 		ValuesDigest: valuesDigest,
@@ -627,8 +694,7 @@ func filledCreated(c Created) Created {
 //
 // 只有契约明确"服务端生成 / 可省略"的字段走这条规则：`webhook.config.token`
 // （source.md §3.1：空 = 服务端随机生成）。`secret` 不走——它的默认值就是"空 = 不校验签名"，
-// 把它也当"省略 = 保留"会把"这个包不再要求签名"这个真实差异吞掉（§4.2 最后一条：
-// 其它省略字段不能一律当等价）。
+// 把它也当"省略 = 保留"会把"这个包不再要求签名"这个真实差异吞掉（§4.2 最后一条： 其它省略字段不能一律当等价）。
 func inheritServerGenerated(kind string, declared, existing json.RawMessage) (json.RawMessage, error) {
 	if kind != sourcespec.KindWebhook {
 		return declared, nil
@@ -778,6 +844,18 @@ func versionOf(ref string) (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// kindLabel 把 kind 翻成人话（机器码仍是 kind 原文）。
+func kindLabel(kind string) string {
+	switch kind {
+	case "capability":
+		return "能力"
+	case "source":
+		return "源"
+	default:
+		return kind
+	}
 }
 
 // formatRefs 给 note 的人话拼一串引用（空列表写 `[]`）。

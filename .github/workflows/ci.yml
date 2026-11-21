@@ -243,7 +243,7 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          # 空清单绝不退化成全量（run_all.sh 不带套件名 = 29 套全跑），宁可直接红。
+          # 空清单绝不退化成全量（run_all.sh 不带套件名 = 30 套全跑），宁可直接红。
           [ -n "${SHARD_SUITES// /}" ] || { echo "❌ 本分片的套件清单为空"; exit 1; }
           ./scripts/e2e/run_all.sh --parallel $SHARD_SUITES
 
