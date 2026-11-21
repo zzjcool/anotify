@@ -13,21 +13,13 @@ import (
 	"github.com/zzjcool/anotify/internal/protocol"
 )
 
-// 三层配置（config.md §2/§3/§4）：系统保留期、命名空间默认值、节点默认值 + 本机快照。
-//
-// 三种值、三层作用域，但只有**两套版本**（config.md §2.4 / C18）：
-//
+// 三层配置（config.md §2/§3/§4）：系统保留期、命名空间默认值、节点默认值 + 本机快照。三种值、三层作用域，但只有**两套版本**（config.md §2.4 / C18）：
 //	resource_version  写并发令牌（CAS），每次成功写入 +1
 //	revision          配置生效版本；命名空间与节点各有一份，互不混用
 //	applied_revision  节点回报的机器级 revision（只对节点默认值有意义）
-//
-// ns 默认值（namespace_configs）与节点默认值（node_configs）各有自己的 revision；
-// 任务帧同时带 configRevision（机器级）与 namespaceVarsRevision（ns 级），
-// 但两者在库里是两行，绝不共用一个计数器。
-//
-// 本机（anode.yaml）的 vars/limits 不落中枢业务表：它们由 hello 上报，
-// 作为**快照**存在 node_configs.local_vars / local_limits，只用于匹配与展示。
-// 它永远不参与「节点默认值」的 apply 状态（D-I3：ns 默认值不落 applied、不上报；
+// ns 默认值（namespace_configs）与节点默认值（node_configs）各有自己的 revision；任务帧同时带 configRevision（机器级）与 namespaceVarsRevision（ns 级），
+// 但两者在库里是两行，绝不共用一个计数器。本机（anode.yaml）的 vars/limits 不落中枢业务表：它们由 hello 上报，
+// 作为**快照**存在 node_configs.local_vars / local_limits，只用于匹配与展示。它永远不参与「节点默认值」的 apply 状态（D-I3：ns 默认值不落 applied、不上报；
 // 本机快照也不是中枢配置）。
 
 // 配置值校验上限（config.md §3.1 / anode.md §2）。
@@ -355,11 +347,11 @@ func decodeStringList(raw string) ([]string, error) {
 // 一次锁等待就是一次事件投递失败，并且被 ingress 翻成 500。
 //
 // 为什么去掉事务仍然安全：
-//   - 读的是**单行、单语句**（`WHERE id = 1`），一条语句本身就是原子的，不会读到「半个行」；
-//   - 调用方把错误当**可回落**：eventWindow 出错即用默认保留期
-//     （internal/source/source.go:364-367）；RetentionConfig / RunRetention 只是报错，不写库；
-//   - 没有调用方拿它做 check-then-act：改配置一律走 PutSystemConfig 的 CAS，它在自己的
-//     **写事务内**重读 resource_version 再比。
+// - 读的是**单行、单语句**（`WHERE id = 1`），一条语句本身就是原子的，不会读到「半个行」；
+// - 调用方把错误当**可回落**：eventWindow 出错即用默认保留期
+// （internal/source/source.go:364-367）；RetentionConfig / RunRetention 只是报错，不写库；
+// - 没有调用方拿它做 check-then-act：改配置一律走 PutSystemConfig 的 CAS，它在自己的
+// **写事务内**重读 resource_version 再比。
 func (d *DB) GetSystemConfig(ctx context.Context) (*SystemConfig, error) {
 	cfg := &SystemConfig{
 		RetentionEventTTLSec:  DefaultRetentionEventTTLSec,
@@ -503,11 +495,11 @@ func (d *DB) SeedSystemConfigIfEmpty(ctx context.Context, cfg *SystemConfig) (bo
 // busy_timeout(5000ms) 才报 `database is locked`（#008 的 5.006s 500 就是这一步）。
 //
 // 为什么去掉事务仍然安全：这三条读**不是** check-then-act。
-//   - 存在性（namespaceExistsOn）只是把「ns 不存在」翻成具名错误；
-//   - Revision 是调用方带进写事务的「**计划时**钉住的输入版本」，真正的校验发生在
-//     AcceptSourceEvent 的**写事务内**（internal/store/source_event.go:187-196 →
-//     ErrNamespaceInputsChanged，api 侧翻 409，调用方重新计划）；
-//   - namespaces.resource_version 同样只是写侧 CAS 的**前置条件**，写事务内会重读再比。
+// - 存在性（namespaceExistsOn）只是把「ns 不存在」翻成具名错误；
+// - Revision 是调用方带进写事务的「**计划时**钉住的输入版本」，真正的校验发生在
+// AcceptSourceEvent 的**写事务内**（internal/store/source_event.go:187-196 →
+// ErrNamespaceInputsChanged，api 侧翻 409，调用方重新计划）；
+// - namespaces.resource_version 同样只是写侧 CAS 的**前置条件**，写事务内会重读再比。
 //
 // 所以最坏情况是「拿到略旧的快照 → 写事务里被判 409」，不会被伪造成成功。
 func (d *DB) GetNamespaceConfig(ctx context.Context, namespaceID string) (*NamespaceConfig, error) {
@@ -919,9 +911,9 @@ func (d *DB) RecordApplied(ctx context.Context, nodeID string, revision int64, h
 // RecordHello 落一次 hello 上报（config.md §4.2 / anode.md §3.3, D-I3）。
 //
 // 写两处，同一个事务：
-//  1. nodes：facts / declared_capabilities / declared_namespaces / agent 版本 / last_seen_at
-//     —— 都是**节点自报的事实**，中枢只存快照；
-//  2. node_configs：local_vars / local_limits（本机值快照，只用于匹配与展示）。
+// 1. nodes：facts / declared_capabilities / declared_namespaces / agent 版本 / last_seen_at
+// —— 都是**节点自报的事实**，中枢只存快照；
+// 2. node_configs：local_vars / local_limits（本机值快照，只用于匹配与展示）。
 //
 // **不改节点默认值**（vars/limits/namespaces/revision）：默认值是中枢配置，
 // hello 只上报本机那份；两者同名时按 local > node > namespace 逐键解析。

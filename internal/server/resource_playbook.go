@@ -2,7 +2,7 @@ package server
 
 // Playbook 资源域（v4 HTTP 资源层，contract.md D2 / WIRE-HANDOFF.md W3）。三条语义边界决定了这里的形状：
 // 1. **包是清单 + 回执，不是所有权**（playbook.md §7）：DELETE 只删清单行，已装出去的 能力 / 源一行不动，响应必须告诉用户留下了什么（kept / values）；#510 的 uninstall 同理——按 release 撤行、回执只打标记。
-// 2. **默认是摘要**（W3）：包体是 `{相对路径: 正文}` 的整份 map，列表 / 详情默认不回它 （spec 是空投影 `{}`）；只有 `?includeBody=true` 才回原始未渲染的 `spec.files`， 供编辑 / 导出。默认摘要**不能**当完整 PUT 模板。
+// 2. **默认是摘要**（W3）：包体是 `{相对路径: 正文}` 的整份 map，列表 / 详情默认不回它 （spec 是空投影 `{}`）；只有 `?includeBody=true` 才回原始未渲染的 `spec.files`，供编辑 / 导出。默认摘要**不能**当完整 PUT 模板。
 // 3. **安装不部署，冲突 0 写**：install 只在单事务里建能力 / 源 + 写回执；有冲突时整包 一行不写并回 400 `playbook_conflict`，details 里带 valuesDigest / conflicts[] / hint （12 格矩阵明细不能被裁成 causes）。
 
 import (
@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/playbook"
 	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/store"
@@ -48,6 +49,7 @@ func (a *playbookAPI) register(mux *http.ServeMux) {
 		{"DELETE " + base + "/{slug}", a.delete},
 		{"POST " + base + "/{slug}/render", a.render},
 		{"POST " + base + "/{slug}/install", a.install},
+		{"GET " + base + "/{slug}/versions", a.listVersions},
 		{"DELETE " + base + "/{slug}/releases/{release}", a.uninstallRelease},
 		{"GET " + base + "/{slug}/installs", a.listInstalls},
 		{"GET " + base + "/{slug}/installs/{installId}", a.getInstall},
@@ -121,7 +123,7 @@ func (a *playbookAPI) get(w http.ResponseWriter, r *http.Request) {
 
 // listInstalls 处理 GET …/playbooks/{slug}/installs：按 valuesDigest 折叠的实例清单（§4.10）。
 //
-// 响应是**读模型**（total / installs），不是资源列表：一个折叠组不是可寻址对象， 别把它包装成 `PlaybookInstallList` kind 的 items。
+// 响应是**读模型**（total / installs），不是资源列表：一个折叠组不是可寻址对象，别把它包装成 `PlaybookInstallList` kind 的 items。
 func (a *playbookAPI) listInstalls(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -143,6 +145,32 @@ func (a *playbookAPI) listInstalls(w http.ResponseWriter, r *http.Request) {
 	}
 	if list.Installs == nil {
 		list.Installs = []store.PlaybookInstallGroup{}
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// listVersions 处理 GET …/playbooks/{slug}/versions：版本历史读模型（#511）。只回身份与摘要，**不回包体原文**（要文件就 `?includeBody=true` 拿当前版本，历史版本靠 install 取）；当前版本的那一行带 `current: true` —— 但当前版本的真身始终是 `playbooks.files`（本读模型不 join 它）。
+func (a *playbookAPI) listVersions(w http.ResponseWriter, r *http.Request) {
+	ns, err := a.d.authorizePathNamespace(r)
+	if err != nil {
+		writePlaybookAPIError(w, err)
+		return
+	}
+	row, err := a.row(r, ns)
+	if err != nil {
+		writePlaybookAPIError(w, err)
+		return
+	}
+	list, err := a.d.DB.ListPlaybookVersions(r.Context(), ns, row.ID, row.Version)
+	if err != nil {
+		writePlaybookAPIError(w, err)
+		return
+	}
+	if list == nil {
+		list = &store.PlaybookVersionList{Versions: []store.PlaybookVersionEntry{}}
+	}
+	if list.Versions == nil {
+		list.Versions = []store.PlaybookVersionEntry{}
 	}
 	writeJSON(w, http.StatusOK, list)
 }
@@ -202,7 +230,7 @@ func (a *playbookAPI) create(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, err)
 		return
 	}
-	row, err := a.d.DB.CreatePlaybook(r.Context(), ns, slug, files, source)
+	row, err := a.d.DB.CreatePlaybookAs(r.Context(), ns, slug, files, source, auth.UserIDFromContext(r.Context()))
 	if err != nil {
 		writePlaybookAPIError(w, err)
 		return
@@ -236,7 +264,7 @@ func (a *playbookAPI) replace(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, err)
 		return
 	}
-	// namespace 由路径给出（写请求的 metadata 白名单不含它）；这里仍走共享校验， 一旦骨架允许 metadata.namespace，冲突会就地报 namespace_mismatch 而不是被忽略。
+	// namespace 由路径给出（写请求的 metadata 白名单不含它）；这里仍走共享校验，一旦骨架允许 metadata.namespace，冲突会就地报 namespace_mismatch 而不是被忽略。
 	if err := checkMetaNamespace(meta, r.PathValue("ns")); err != nil {
 		writePlaybookAPIError(w, err)
 		return
@@ -257,7 +285,7 @@ func (a *playbookAPI) replace(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, err)
 		return
 	}
-	row, err := a.d.DB.ReplacePlaybook(r.Context(), ns, slug, rv, files, source)
+	row, err := a.d.DB.ReplacePlaybookAs(r.Context(), ns, slug, rv, files, source, auth.UserIDFromContext(r.Context()))
 	if err != nil {
 		writePlaybookAPIError(w, err)
 		return
@@ -324,7 +352,12 @@ func (a *playbookAPI) render(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// release 在这里不归一化：store 的 RenderForRelease 用包名做缺省、并按同一套正则校验 （错误码 invalid_playbook 由 writePlaybookAPIError 翻成 400）。
-	res, err := a.d.DB.RenderPlaybook(r.Context(), ns, slug, body.Release, body.Values)
+	version, err := body.pinnedVersion()
+	if err != nil {
+		writePlaybookAPIError(w, err)
+		return
+	}
+	res, err := a.d.DB.RenderPlaybookVersion(r.Context(), ns, slug, body.Release, version, body.Values)
 	if err != nil {
 		writePlaybookAPIError(w, err)
 		return
@@ -351,7 +384,12 @@ func (a *playbookAPI) install(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, err)
 		return
 	}
-	rcpt, err := a.d.DB.InstallPlaybook(r.Context(), ns, slug, body.Release, body.Values, body.DryRun)
+	version, err := body.pinnedVersion()
+	if err != nil {
+		writePlaybookAPIError(w, err)
+		return
+	}
+	rcpt, err := a.d.DB.InstallPlaybookVersion(r.Context(), ns, slug, body.Release, version, body.Values, body.DryRun)
 	if err != nil {
 		writePlaybookAPIError(w, err)
 		return
@@ -360,10 +398,7 @@ func (a *playbookAPI) install(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rcpt)
 }
 
-// uninstallRelease 处理 DELETE …/playbooks/{slug}/releases/{release}：按 release 撤掉它装出的行（#510）。
-//
-// 动作文档（不套信封）：它回答「删了什么、留下了什么、为什么留」。`?installId=` 是可选的
-// 钉桩——对不上就 409 而不是照删（客户端据的是过期的回执视图）。
+// uninstallRelease 处理 DELETE …/playbooks/{slug}/releases/{release}：按 release 撤掉它装出的行（#510）。动作文档（不套信封）：它回答「删了什么、留下了什么、为什么留」。`?installId=` 是可选的 钉桩——对不上就 409 而不是照删（客户端据的是过期的回执视图）。
 func (a *playbookAPI) uninstallRelease(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -410,10 +445,8 @@ type playbookWriteSpec struct {
 	Source string `json:"source"`
 }
 
-// packageBody 校验 files / source 二选一，并返回要交给 store 的实参。
-//
-// 三个拒绝分支都是 400，但 reason 不同（封闭词表 playbook.md §9.2）： - 两个都给 / 都不给 → invalid_playbook；
-// - 只给 source：W3 要求服务端拉取一次并以解析后的完整 files 存储，而 v4 一期没有 网络拉取实现（playbook.md §11 只留了码位）→ oci_unsupported。这里明确拒绝， 而不是让 store 的 Parse 报一个会误导人的 entry_missing（"包缺入口文件"）。
+// packageBody 校验 files / source 二选一，并返回要交给 store 的实参。三个拒绝分支都是 400，但 reason 不同（封闭词表 playbook.md §9.2）： - 两个都给 / 都不给 → invalid_playbook；
+// - 只给 source：W3 要求服务端拉取一次并以解析后的完整 files 存储，而 v4 一期没有 网络拉取实现（playbook.md §11 只留了码位）→ oci_unsupported。这里明确拒绝，而不是让 store 的 Parse 报一个会误导人的 entry_missing（"包缺入口文件"）。
 func (s playbookWriteSpec) packageBody() (map[string]string, string, error) {
 	files := s.Files
 	if len(files) == 0 {
@@ -434,21 +467,31 @@ func (s playbookWriteSpec) packageBody() (map[string]string, string, error) {
 	return files, source, nil
 }
 
-// playbookActionBody 是 render / install 的动作请求体。
-//
-// 它不是资源信封（动作 POST 不套 CAS、不套 status 只读检查），所以用一个宽松的 小结构：`{values, dryRun, release}`。render 忽略 dryRun（render 永远只读）；
-// 两个动作都吃 release——render 要用它渲染 `{{release.name}}`，install 还用它判认领。
-//
-// release 是**动作参数**，不是资源写路径：它不落在 playbook 清单上，也不会因此 多出一条 `PUT …/config`（YAML 仍是模板的唯一编辑面）。
+// playbookActionBody 是 render / install 的动作请求体。 它不是资源信封（动作 POST 不套 CAS、不套 status 只读检查），所以用一个宽松的 小结构：`{values, dryRun, release}`。render 忽略 dryRun（render 永远只读）；
+// 两个动作都吃 release——render 要用它渲染 `{{release.name}}`，install 还用它判认领。 release 是**动作参数**，不是资源写路径：它不落在 playbook 清单上，也不会因此 多出一条 `PUT …/config`（YAML 仍是模板的唯一编辑面）。
 type playbookActionBody struct {
 	Values  map[string]any `json:"values"`
 	DryRun  bool           `json:"dryRun"`
 	Release string         `json:"release"`
+	// Version 钉住**哪一个包版本**（nil = 当前版本，也就是老包的行为）。 用指针而不是 0：显式给 0/负数要报 400，而不是被当成「没给」。
+	Version *int `json:"version"`
 }
 
-// decodePlaybookAction 解码动作 POST 的请求体。
+// pinnedVersion 把动作请求里的 version 归一成 store 的入参（0 = 当前版本）。
 //
-// 空 body 合法（render / install 都可以不带 values：包的 values 可以全有默认值）；
+// 非法值（< 1）当场 400：静默当「没给」会让用户以为装的是历史版本，装的却是当前版本。
+func (b playbookActionBody) pinnedVersion() (int, error) {
+	if b.Version == nil {
+		return 0, nil
+	}
+	if *b.Version < 1 {
+		return 0, errStatus(http.StatusBadRequest, playbook.CodeInvalidPlaybook,
+			"version 必须 >= 1（缺省 = 当前版本）")
+	}
+	return *b.Version, nil
+}
+
+// decodePlaybookAction 解码动作 POST 的请求体。 空 body 合法（render / install 都可以不带 values：包的 values 可以全有默认值）；
 // 非法 JSON / 未知字段仍按写请求的严格口径回 400（静默忽略会让人以为字段生效了）。
 func decodePlaybookAction(r *http.Request) (playbookActionBody, error) {
 	var body playbookActionBody
@@ -476,12 +519,12 @@ func decodePlaybookAction(r *http.Request) (playbookActionBody, error) {
 // playbookStatus 是 Playbook 的 status 读模型（playbook.md §6.1）。
 //
 // 每一项都必须是**真实派生**，派不出来就给空（宁少不编）：
-//   - items / sources / lastInstallId / unapplied 来自回执历史：`ListPlaybookInstalls` 的
-//     installed_from 反查给出「这个包历史上装出来的行」，最近一组的 lastInstallId 给出 该组最新回执（`unapplied[]` 就从这份回执读，它才是「差异没生效」的原始记录）。
-//   - conditions 是**成员能力的四条 condition** 聚合（playbook.md §6.1）：成员行按 installed_from 反查出来（`ListPlaybookInstalls` 的 groups[].capabilities），再逐行
-//     取该能力自己的 status 派生（与 get capability 同一份实现）。任一成员 False ⇒ 该 type 聚合后 False，reason/message 取第一个失败成员，members 列出失败者。
-//     **不编造**：反查不到行（能力被删）就不参与，四种 type 都聚不出来时 conditions 仍是 []。
-//   - ready 由 conditions + unapplied 派生（四条全 True 且 unapplied 为空）。
+// - items / sources / lastInstallId / unapplied 来自回执历史：`ListPlaybookInstalls` 的
+// installed_from 反查给出「这个包历史上装出来的行」，最近一组的 lastInstallId 给出 该组最新回执（`unapplied[]` 就从这份回执读，它才是「差异没生效」的原始记录）。
+// - conditions 是**成员能力的四条 condition** 聚合（playbook.md §6.1）：成员行按 installed_from 反查出来（`ListPlaybookInstalls` 的 groups[].capabilities），再逐行
+// 取该能力自己的 status 派生（与 get capability 同一份实现）。任一成员 False ⇒ 该 type 聚合后 False，reason/message 取第一个失败成员，members 列出失败者。
+// **不编造**：反查不到行（能力被删）就不参与，四种 type 都聚不出来时 conditions 仍是 []。
+// - ready 由 conditions + unapplied 派生（四条全 True 且 unapplied 为空）。
 //
 // 刻意**没有** `blocker`：它要求「最该先做的一件事」，来源正是成员能力的四条 condition；条件拿不到时给一个 blocker 就是纯编造，故省略该键（派生出事实时再加）。
 type playbookStatus struct {
@@ -507,7 +550,7 @@ type playbookCondition struct {
 
 // playbookItem 是体检的一行（只有 capability / source 两类，§6.1）。
 //
-// `state` 只有 `ok`：`no_node`（节点池）/ `blocked`（targets 解析）/ `disabled` （enabled:false）/ `unapplied` 都需要能力或源的读模型，本域拿不到（D0.9）， 因此只声明「定义在库里」这一个已知事实。
+// `state` 只有 `ok`：`no_node`（节点池）/ `blocked`（targets 解析）/ `disabled` （enabled:false）/ `unapplied` 都需要能力或源的读模型，本域拿不到（D0.9），因此只声明「定义在库里」这一个已知事实。
 type playbookItem struct {
 	Kind    string `json:"kind"`
 	Name    string `json:"name"`
@@ -524,7 +567,7 @@ const (
 
 // playbookSourceStatus 是 status.sources（§6.1 的四态计数）。
 //
-// 只报两组能派生的数：total（历史上装出来的源个数）与 unapplied（最近回执里 targets 未生效的源数）。enabled / blocked / disabled 需要读源行本身，本域不查库， 所以不出现这些键——比回 0 更诚实（0 会被前端当成"全都停用了"）。
+// 只报两组能派生的数：total（历史上装出来的源个数）与 unapplied（最近回执里 targets 未生效的源数）。enabled / blocked / disabled 需要读源行本身，本域不查库，所以不出现这些键——比回 0 更诚实（0 会被前端当成"全都停用了"）。
 type playbookSourceStatus struct {
 	Total     int `json:"total"`
 	Unapplied int `json:"unapplied"`
@@ -825,7 +868,7 @@ func writePlaybookAPIError(w http.ResponseWriter, err error) {
 		return
 	}
 	if errors.Is(err, store.ErrPlaybookSlugMismatch) {
-		// 路径 slug 与包内 metadata.name 不一致：这是调用方把包和 URL 拼错了， 不是服务端故障（api_status.go 未注册该哨兵，默认会落 500）。
+		// 路径 slug 与包内 metadata.name 不一致：这是调用方把包和 URL 拼错了，不是服务端故障（api_status.go 未注册该哨兵，默认会落 500）。
 		writeStatus(w, http.StatusBadRequest, playbook.CodeInvalidPlaybook, err.Error(), nil)
 		return
 	}
@@ -846,7 +889,7 @@ type playbookReleaseConflictDetails struct {
 
 // playbookReleaseConflictDetailsOf 从 *playbook.Error.Details 里取出认领冲突的形状。
 //
-// 取不到结构化字段时**不编造**：name/kind/owner 留空、conflicts 是 []（空列表纪律）， 至少 message 还在（调用方仍能看到人话）。
+// 取不到结构化字段时**不编造**：name/kind/owner 留空、conflicts 是 []（空列表纪律），至少 message 还在（调用方仍能看到人话）。
 func playbookReleaseConflictDetailsOf(e *playbook.Error) playbookReleaseConflictDetails {
 	d := playbookReleaseConflictDetails{Conflicts: []playbook.ReleaseConflict{}}
 	if e == nil {
@@ -901,7 +944,7 @@ func playbookConflictDetailsOf(e *playbook.Error) playbookConflictDetails {
 	case nil:
 		// 没有明细就保持空数组（空列表纪律）。
 	default:
-		// 兜底：万一将来 Details 换成了 map/list 的泛型形态，仍然按 JSON 形状搬过来， 而不是把结构化明细静默丢掉。
+		// 兜底：万一将来 Details 换成了 map/list 的泛型形态，仍然按 JSON 形状搬过来，而不是把结构化明细静默丢掉。
 		if b, err := json.Marshal(raw); err == nil {
 			_ = json.Unmarshal(b, &d.Conflicts)
 		}

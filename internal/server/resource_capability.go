@@ -1,18 +1,16 @@
 package server
 
 // Capability 资源域（v4 HTTP 资源层，contract.md D2 / api-conventions §7.1 / capability.md §2）。
-//
 // 四条语义边界决定了这里的形状，写代码时不要越过去：
-//
-//  1. **版本就是 capability_versions 的行**（A7）：没有 CapabilityRevision；`metadata.version`
-//     是行身份的一部分，`versions` 子资源只读、按版本整数降序。
-//  2. **status 读时派生、不落库**（A8/S2）：四类 condition 的 reason 取封闭集合，
-//     派生不出来的字段给空数组 / 空对象，绝不编造（伪造状态比缺字段更难排查）。
-//  3. **写 CAS 只有一种承载方式**（A9）：PATCH 走 body `metadata.resourceVersion`，
-//     DELETE 走 `?resourceVersion=`；缺失 400、旧值 409（`details.current` 由 store 的
-//     ResourceVersionConflictError 经 writeAPIError 翻译，这里不重写一遍）。
-//  4. **默认可读面不含脚本正文**：`spec.run.files` 只在 `?includeBody=true` 时回全文
-//     （单文件 256 KiB、合计 1 MiB，列表一次几十条会把页面拖成几百 KB）。
+// 1. **版本就是 capability_versions 的行**（A7）：没有 CapabilityRevision；`metadata.version`
+// 是行身份的一部分，`versions` 子资源只读、按版本整数降序。
+// 2. **status 读时派生、不落库**（A8/S2）：四类 condition 的 reason 取封闭集合，
+// 派生不出来的字段给空数组 / 空对象，绝不编造（伪造状态比缺字段更难排查）。
+// 3. **写 CAS 只有一种承载方式**（A9）：PATCH 走 body `metadata.resourceVersion`，
+// DELETE 走 `?resourceVersion=`；缺失 400、旧值 409（`details.current` 由 store 的
+// ResourceVersionConflictError 经 writeAPIError 翻译，这里不重写一遍）。
+// 4. **默认可读面不含脚本正文**：`spec.run.files` 只在 `?includeBody=true` 时回全文
+// （单文件 256 KiB、合计 1 MiB，列表一次几十条会把页面拖成几百 KB）。
 
 import (
 	"bytes"
@@ -66,12 +64,12 @@ func newCapabilityAPI(d *serverDeps) *capabilityAPI { return &capabilityAPI{d: d
 // 方法不匹配（例如 `PUT …/capabilities/{name}`）本函数**不**兜底：这张表只挂带方法的 pattern，
 // 「路径存在、方法不允许」的答案取决于本 register 被挂到哪里——
 //
-//   - 裸 mux（测试夹具 `http.NewServeMux()` 后逐个 register，如 api_integration_test 的
-//     itEnv）：Go 1.22 ServeMux 自动回 405 + Allow，因为没有任何别的 pattern 能接住这条请求；
-//   - 生产 mux（mux.go 末尾的 `mux.Handle("/", resolveStatic(cfg))`，见那里的「静态资源
-//     （CDN 缓存分级）」段）：那条兜底**接受任意方法**，所以未注册的 method+path 组合全被它
-//     接住 —— 真实二进制回 404、未内嵌前端的测试构建回 503。自动 405 在这里根本不会发生，
-//     客户端看到的是「文件不存在」而不是「方法不允许」。
+// - 裸 mux（测试夹具 `http.NewServeMux()` 后逐个 register，如 api_integration_test 的
+// itEnv）：Go 1.22 ServeMux 自动回 405 + Allow，因为没有任何别的 pattern 能接住这条请求；
+// - 生产 mux（mux.go 末尾的 `mux.Handle("/", resolveStatic(cfg))`，见那里的「静态资源
+// （CDN 缓存分级）」段）：那条兜底**接受任意方法**，所以未注册的 method+path 组合全被它
+// 接住 —— 真实二进制回 404、未内嵌前端的测试构建回 503。自动 405 在这里根本不会发生，
+// 客户端看到的是「文件不存在」而不是「方法不允许」。
 //
 // 能力域接受后者、不为逐条写端点补方法兜底：v4 里能力没有 PUT（内容变化 = 新版本，走 POST），
 // 方法分派只由下面这张表表达。唯一的例外是**完全只读**的 edges（没有任何写端点，写请求的
@@ -204,12 +202,12 @@ func (a *capabilityAPI) get(w http.ResponseWriter, r *http.Request) {
 // 序列化成一份可整份贴回 playbook 包的 YAML 文本（`{"yaml": "<全文>"}`）。
 //
 // 三条边界（CONTRACT-capability-yaml §1.1）：
-//   - 取最高版本与 `get` 同一套判据（ListCapabilities + newestVersionOf），不存在同样回 404；
-//   - 序列化的是**完整** spec（`artifact.MarshalYAML` 会先 Normalize：`run.files` 全文、
-//     `params`、`next`、`requires`、`lifecycle`、`concurrency` 都在），所以默认读面剥正文的
-//     那条纪律**不**适用于这里 —— 这个端点的用途就是把正文拿走；
-//   - 这是「存储定义的规范化重建」，不是用户当初贴的原始字节（用户原文只存在于 playbook
-//     包的 files 里）；键序与默认值由 Normalize 固定，re-Parse 的 digest 与存量一致。
+// - 取最高版本与 `get` 同一套判据（ListCapabilities + newestVersionOf），不存在同样回 404；
+// - 序列化的是**完整** spec（`artifact.MarshalYAML` 会先 Normalize：`run.files` 全文、
+// `params`、`next`、`requires`、`lifecycle`、`concurrency` 都在），所以默认读面剥正文的
+// 那条纪律**不**适用于这里 —— 这个端点的用途就是把正文拿走；
+// - 这是「存储定义的规范化重建」，不是用户当初贴的原始字节（用户原文只存在于 playbook
+// 包的 files 里）；键序与默认值由 Normalize 固定，re-Parse 的 digest 与存量一致。
 func (a *capabilityAPI) yaml(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -639,12 +637,12 @@ func (a *capabilityAPI) deploy(w http.ResponseWriter, r *http.Request) {
 // 先按名查、未命中再按 id 查，每个条目至多两次点查（不引入降解析外的行为变化）。
 //
 // 语义边界三条：
-//   - 空 body / 空数组 = 省略 = 不指定目标 → 返回 nil，交给 hub 的候选策略；
-//   - **显式给了条目却解析不出来 → 404**：静默跳过会把「名字打错」变成「部署成功但一台
-//     都没动」，而把解析失败的条目当成空列表更会把一笔笔误变成「部署到所有节点」；
-//   - 授权（跳 ns / 未授权）**不**在这里判：CreateDeployments 已有唯一一份判据
-//     （declared ∩ authorized 覆盖本 ns），它把未授权翻成 403（ErrEmitNamespaceDenied）。
-//     在这里再拄一份只会在两份凭据刷新时漂移。
+// - 空 body / 空数组 = 省略 = 不指定目标 → 返回 nil，交给 hub 的候选策略；
+// - **显式给了条目却解析不出来 → 404**：静默跳过会把「名字打错」变成「部署成功但一台
+// 都没动」，而把解析失败的条目当成空列表更会把一笔笔误变成「部署到所有节点」；
+// - 授权（跳 ns / 未授权）**不**在这里判：CreateDeployments 已有唯一一份判据
+// （declared ∩ authorized 覆盖本 ns），它把未授权翻成 403（ErrEmitNamespaceDenied）。
+// 在这里再拄一份只会在两份凭据刷新时漂移。
 func (a *capabilityAPI) resolveDeployTargets(ctx context.Context, entries []string) ([]string, error) {
 	if len(entries) == 0 {
 		return nil, nil
@@ -677,12 +675,12 @@ func (a *capabilityAPI) resolveDeployTargets(ctx context.Context, entries []stri
 //
 // 三条语义边界（设计 §1 / §3 / L-D2）：
 //
-//  1. **停用是路由期的闸门**：不建新任务，进行中的任务不取消/不暂停；部署、建版本、
-//     删除都不受影响。所以这里只写开关行（`capability_switches`），不碰任务表。
-//  2. **开关不是 status 落库**：`status.enabled` 仍是读时派生（V4-D1），本文件只写「开关
-//     这个事实」，投影在 `statusFor`。
-//  3. **动作 POST 不套 CAS**（与 deploy 一致）：enable/disable 都不带 resourceVersion，
-//     也不改能力行的 resource_version —— 返回整个信封是为了让页面省一次往返。
+// 1. **停用是路由期的闸门**：不建新任务，进行中的任务不取消/不暂停；部署、建版本、
+// 删除都不受影响。所以这里只写开关行（`capability_switches`），不碰任务表。
+// 2. **开关不是 status 落库**：`status.enabled` 仍是读时派生（V4-D1），本文件只写「开关
+// 这个事实」，投影在 `statusFor`。
+// 3. **动作 POST 不套 CAS**（与 deploy 一致）：enable/disable 都不带 resourceVersion，
+// 也不改能力行的 resource_version —— 返回整个信封是为了让页面省一次往返。
 
 // 停用原因的长度上限（契约 `CapabilityDisableRequest.reason.maxLength`）。
 const capabilitySwitchReasonMax = 200
@@ -701,9 +699,9 @@ type capabilitySwitchRequest struct {
 
 // capabilityTestRequest 是 POST …/test 的动作 body（全部可选）。
 //
-//   - `version` 省略 / 0 = 当前 live 版本（与 PATCH/deploy 同一条解析）；
-//   - `params` 按 `spec.params` 的 JSON Schema 校验（`route.PrepareParams`）；
-//   - `nodes` 限定目标节点名；省略 = 全部持有所需 digest 的在线节点。
+// - `version` 省略 / 0 = 当前 live 版本（与 PATCH/deploy 同一条解析）；
+// - `params` 按 `spec.params` 的 JSON Schema 校验（`route.PrepareParams`）；
+// - `nodes` 限定目标节点名；省略 = 全部持有所需 digest 的在线节点。
 type capabilityTestRequest struct {
 	Version int            `json:"version,omitempty"`
 	Params  map[string]any `json:"params,omitempty"`
@@ -1334,10 +1332,10 @@ func (a *capabilityAPI) downstreamResolved(ctx context.Context, row *store.Capab
 // 部署行钉的是「某一版」，而 status 回答的是「这个能力名在节点上处于什么状态」。
 //
 // 逐节点（每台只出一行）：
-//   - 有 applied 且 digest == 当前行 digest → deployed；
-//   - 没有 deployed，但有 applied 且 digest != 当前行 digest → stale
-//     （节点持有别的版本；升级后旧部署行的 digest 与当前行不同，正是这一格）；
-//   - 其余（从没部署过 / pending / failed）→ missing。
+// - 有 applied 且 digest == 当前行 digest → deployed；
+// - 没有 deployed，但有 applied 且 digest != 当前行 digest → stale
+// （节点持有别的版本；升级后旧部署行的 digest 与当前行不同，正是这一格）；
+// - 其余（从没部署过 / pending / failed）→ missing。
 //
 // 同一节点可能同时挂着指向不同版本行的事实（`CreateDeployments` 的 supersede 只清同一
 // capability_id 的行），所以按 deployed > stale > missing 折叠：这三个投影里最强的一条

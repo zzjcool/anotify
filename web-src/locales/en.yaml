@@ -2401,6 +2401,18 @@ pb:
     uninstall_kept_n: "Kept {n} objects that do not belong to it (details below)."
     uninstall_already: "This instance was already uninstalled; nothing changed now."
     uninstall_reason: "Reasons in the details: created by hand, owned by another instance, or still reused by another instance."
+    versions: "Version history"
+    versions_hint: "Every save that changes the package keeps a version; saving identical content adds nothing. You can install any of them."
+    current_version: "Current version {n}"
+    version_n: "Version {n}"
+    version_current_badge: "Current"
+    version_digest: "Content fingerprint"
+    install_version: "Install this version"
+    installing_version: "Installing version {n}…"
+    version_installed: "Installed version {n}; the receipt is below."
+    version_empty: "No versions yet (the first save creates one)."
+    version_load_failed: "Version history failed to load"
+    version_unknown: "That version does not exist or is no longer current. Refresh and try again."
 
 node:
   artifacts:

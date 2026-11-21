@@ -827,8 +827,7 @@
 	 */
 	// 侧栏顶部的「命名空间」切换器。
 	//
-	// 一个触发器 + 一个分节菜单。**刻意不用原生 <select>**：原生下拉在暗色
-	// 界面里就是系统控件的样子（白底、方角、系统字体、没有悬浮反馈），
+	// 一个触发器 + 一个分节菜单。**刻意不用原生 <select>**：原生下拉在暗色界面里就是系统控件的样子（白底、方角、系统字体、没有悬浮反馈），
 	// 放在侧栏顶部，跟整套设计像两个时代的拼贴。
 	//
 	// 命名空间是侧栏唯一的维度（#203）。组织那一层是幽灵 UI：组织端点
@@ -4088,8 +4087,13 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		const install = isObj(r.install) ? r.install : {};
 		const pb = isObj(r.playbook) ? r.playbook : {};
 		return {
+			// 包身份：按版本安装时 version / filesDigest 记的是**这次真的用的那一份**，回执视图能与版本历史逐字对上。
 			playbook: isObj(r.playbook)
-				? { name: pb.name == null ? null : pb.name, version: pb.version == null ? null : pb.version }
+				? {
+					name: pb.name == null ? null : pb.name,
+					version: pb.version == null ? null : pb.version,
+					filesDigest: pb.filesDigest == null ? null : pb.filesDigest,
+				}
 				: null,
 			// 顶层 source 是安装来源（inline / oci:…），不是资源的 spec.source。
 			source: r.source == null ? null : r.source,

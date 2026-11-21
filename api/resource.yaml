@@ -872,6 +872,34 @@ paths:
         '404': {$ref: '#/components/responses/Status404'}
         '500': {$ref: '#/components/responses/Status500'}
 
+  /v1/namespaces/{namespace}/playbooks/{slug}/versions:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: slug
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      operationId: listPlaybookVersions
+      tags: [playbooks]
+      security: [{session: []}]
+      summary: "包版本历史（读模型：不回包体原文）"
+      description: |
+        每次 PUT 把包体换掉时旧的那一份留在历史里，于是 `install` 可以按 `version`
+        把旧版本再装一份（同一个包的不同版本可以各自有实例）。
+        当前版本的真身仍是 `playbooks.files`：`spec.files` 只回答「现在是什么」，
+        本读模型只回答「历史上有哪几版、每一版的内容摘要是什么」。
+        内容没变的重复 PUT 不产生新的历史行。
+      responses:
+        '200':
+          description: "版本列表（按 version 降序）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PlaybookVersionList'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
   /v1/namespaces/{namespace}/playbooks/{slug}/installs:
     parameters:
       - $ref: '#/components/parameters/NamespacePath'
@@ -2864,6 +2892,33 @@ components:
           type: string
           nullable: true
           description: "OCI 来源的只读投影（`oci://…@sha256:…`）；手传包体时是 `null`"
+    PlaybookVersionEntry:
+      type: object
+      description: "历史里的一版（不含包体原文）"
+      required: [version, filesDigest, createdAt, createdBy, current]
+      properties:
+        version: {type: integer}
+        filesDigest:
+          type: string
+          description: "这一版包体的 canonical sha256；与安装回执的 `playbook.filesDigest` 同一个算法"
+        createdAt: {type: string, format: date-time}
+        createdBy:
+          type: string
+          description: "写入这一版的操作者 id（手传包体时为空串）"
+        current:
+          type: boolean
+          description: "这一版就是当前版本（当前版本的包体在 `spec.files`，本行只是标记）"
+    PlaybookVersionList:
+      type: object
+      required: [total, currentVersion, versions]
+      properties:
+        total: {type: integer}
+        currentVersion:
+          type: integer
+          description: "当前版本号（= `metadata.version`；当前包体仍以 `spec.files` 为准）"
+        versions:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookVersionEntry'}
     Playbook:
       type: object
       required: [apiVersion, kind, metadata, spec, status]
@@ -2938,12 +2993,26 @@ components:
             数字、`.`、`_`、`-`）。缺省 = 包名（slug），也就是老包的行为。
             不同 release 的实例可以并存；要复用的行属于另一个 release 时 install 回
             409 `release_conflict`。`{{release.name}}` 在包模板里展开成它。
+        version:
+          type: integer
+          minimum: 1
+          description: |
+            包版本（`GET …/versions` 里的一行）。缺省 = 当前版本，行为与不传时逐字相同。
+            渲染与安装都用**被钉住版本**的文件；历史里没有这一版且它也不是当前版本时
+            → `404` `version_not_found`（不回退成当前版本）。
     PlaybookRef:
       type: object
-      required: [name, version]
+      description: |
+        回执里的包身份。`version` 是**这次真的用的那一份**（按版本安装时是被钉住的那一版），
+        `filesDigest` 是那份包体自己的 canonical 摘要（`sha256:<64 hex>`）——两个字段
+        一起回答「这次装的是哪一版」，不用回头比文件。
+      required: [name, version, filesDigest]
       properties:
         name: {type: string}
         version: {type: integer}
+        filesDigest:
+          type: string
+          description: "包体 `{路径: 正文}` 的 canonical sha256（排序 + 长度前缀，与版本列表的 digest 同源）"
     PlaybookInstallRef:
       type: object
       description: |

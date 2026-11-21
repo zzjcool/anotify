@@ -149,6 +149,13 @@
       </section>
 
       <section class="card card-pad">
+        <h3 class="card-title" title="{{t "pb.v4.versions_hint"}}">{{t "pb.v4.versions"}}</h3>
+        <p id="pb-current-version" class="mono field-hint"></p>
+        <div id="pb-versions" aria-live="polite"></div>
+        <div id="pb-version-state" class="pb-section" aria-live="polite"></div>
+      </section>
+
+      <section class="card card-pad">
         <div class="card-head">
           {{/* C-5：这里曾经还有一个「重新体检」，与页头那个重复；安装记录跟着页头的
                刷新一起重拉。卡片的说明改成标题上的 tooltip，不再白占一行。 */}}
@@ -409,6 +416,58 @@
         }
       } finally { buttons.forEach(b => b.disabled = false); }
     }
+    /* 版本历史：只显示「有哪几版、每一版的内容指纹」，每行一个「按此版本安装」（用当前表单的 values / 实例名，只把版本钉住）。 */
+    let versionsCache = [];
+    function versionRow(entry) {
+      const row = el("div", "pb-group");
+      row.dataset.version = String(entry.version);
+      row.dataset.digest = entry.filesDigest;
+      const head = el("div", "pb-row");
+      head.append(el("span", "field-label mono", t("pb.v4.version_n").replace("{n}", String(entry.version))));
+      if (entry.current) head.append(el("span", "badge badge-neutral", t("pb.v4.version_current_badge")));
+      row.append(head);
+      row.append(el("p", "field-hint mono", t("pb.v4.version_digest") + ": " + shortDigest(entry.filesDigest)));
+      if (entry.createdAt) row.append(el("p", "field-hint", entry.createdAt));
+      const installButton = el("button", "btn btn-ghost btn-sm", t("pb.v4.install_version"));
+      installButton.type = "button";
+      installButton.dataset.action = "install-version";
+      installButton.dataset.version = String(entry.version);
+      installButton.addEventListener("click", () => installVersion(entry.version, installButton));
+      row.append(installButton);
+      return row;
+    }
+    async function versions() {
+      const host = $("pb-versions");
+      host.textContent = t("pb.v4.loading");
+      try {
+        const data = await api(path("/versions"));
+        if (!Array.isArray(data.versions) || typeof data.currentVersion !== "number") throw new Error(t("pb.v4.version_load_failed"));
+        versionsCache = data.versions;
+        $("pb-current-version").textContent = t("pb.v4.current_version").replace("{n}", String(data.currentVersion));
+        host.replaceChildren();
+        for (const entry of data.versions) host.append(versionRow(entry));
+        if (!data.versions.length) host.append(el("p", "field-hint", t("pb.v4.version_empty")));
+      } catch (error) { host.replaceChildren(loadErrorNode(error, versions)); }
+    }
+    async function installVersion(version, button) {
+      button.disabled = true;
+      $("pb-version-state").textContent = t("pb.v4.installing_version").replace("{n}", String(version));
+      try {
+        const input = values();
+        const release = $("pb-release").value;
+        const body = { values: input, version };
+        if (release !== "") body.release = release;
+        const result = await api(path("/install"), { method: "POST", body: JSON.stringify(body) });
+        receiptView(result);
+        $("pb-version-state").textContent = t("pb.v4.version_installed").replace("{n}", String(version));
+        await refreshSummary(); await installs(); await versions();
+      } catch (error) {
+        const hint = error.reason === "version_not_found" ? el("p", "field-hint", t("pb.v4.version_unknown")) : null;
+        const node = loadErrorNode(error);
+        $("pb-version-state").replaceChildren(...(hint ? [hint, node] : [node]));
+        button.disabled = false;
+      }
+    }
     function shortDigest(digest) {
       const text = String(digest || "");
       return (text.startsWith("sha256:") ? text.slice("sha256:".length) : text).slice(0, 12);
@@ -526,7 +585,7 @@
         $("pb-back").href = scoped("playbooks"); await refreshSummary();
         // Re-check never destroys a user's unsaved whole-map draft.
         if (!draft) await rawTemplate(true);
-        $("pb-content").hidden = false; $("pb-load-state").replaceChildren(); await installs();
+        $("pb-content").hidden = false; $("pb-load-state").replaceChildren(); await Promise.all([installs(), versions()]);
       } catch (error) { failedBadge(); $("pb-load-state").replaceChildren(loadErrorNode(error, load)); }
       finally { loading = false; $("btn-rescan").disabled = false; $("pb-summary").removeAttribute("aria-busy"); }
     }
@@ -542,8 +601,7 @@
        * 删之前留一份值，撤销时把它放回 draft 并重新选中那个文件；不涉及任何 API。 */
       // 这一步之后会弹「已删除 · 撤销」条，所以弹层如实说「5 秒内可以撤销」。
       if (!(await confirmDanger({ body: t("pb.v4.remove_confirm", { path: filePath }), undo: true }))) return;
-      /* 删掉的 key 要先抓成局部量：filePath 是模块级变量，撤销条 5 秒后触发时它已经被
-       * filePicker() 改成了别的文件，用活变量会把内容写回错的文件。 */
+      /* 删掉的 key 要先抓成局部量：filePath 是模块级变量，撤销条 5 秒后触发时它已经被 filePicker() 改成了别的文件。 */
       const removedPath = filePath;
       const removed = draft[removedPath];
       delete draft[removedPath]; filePicker();

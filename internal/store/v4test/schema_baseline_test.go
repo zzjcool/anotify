@@ -11,10 +11,8 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// v4 baseline 的结构门禁：表/列/索引/唯一约束的**终态形状**。
-// 这些断言是「库长什么样」的唯一验收：schema.sql 是唯一事实源，任何一处漏建 / 多建 / 列名漂移
-// 都会让后续 store 代码在运行期才炸（而且是业务路径上）。
-// 所以这里逐条写死，不靠「跑起来没报错」当证据。
+// v4 baseline 的结构门禁：表/列/索引/唯一约束的**终态形状**。 这些断言是「库长什么样」的唯一验收：schema.sql 是唯一事实源，任何一处漏建 / 多建 / 列名漂移
+// 都会让后续 store 代码在运行期才炸（而且是业务路径上）。 所以这里逐条写死，不靠「跑起来没报错」当证据。
 
 // baselineTables 是 v4 baseline 的完整表集合（一个不多一个不少）。
 var baselineTables = []string{
@@ -36,6 +34,7 @@ var baselineTables = []string{
 	"nodes",
 	"passkeys",
 	"playbook_installs",
+	"playbook_versions",
 	"playbooks",
 	"recovery_codes",
 	"sessions",
@@ -187,6 +186,11 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 		"playbooks": {
 			"id", "namespace_id", "slug", "name", "display_name", "descr", "version",
 			"files", "source", "resource_version", "created_at", "updated_at",
+		},
+		"playbook_versions": {
+			// playbook_id 是**历史 id**（无 live-parent 外键）：删包不连带删历史。
+			// digest 与回执的 playbook.filesDigest 同一算法，current 版本仍以 playbooks.files 为准。
+			"playbook_id", "version", "files", "digest", "created_at", "created_by",
 		},
 		"playbook_installs": {
 			// playbook_id 是**历史 id**（无 live-parent 外键），slug/ns 快照让删包后
@@ -582,15 +586,15 @@ func TestSchemaBaselineLayoutMarkerIsSeparateFromLedger(t *testing.T) {
 	if got := rawUserVersion(t, path); got != 4 {
 		t.Fatalf("新库 PRAGMA user_version = %d, want 4（v4 布局格式标记）", got)
 	}
-	if v, err := db.SchemaVersion(); err != nil || v != 3 {
-		t.Fatalf("SchemaVersion = %d, %v; want 3（记账 = 块数，不是布局标记）", v, err)
+	if v, err := db.SchemaVersion(); err != nil || v != 4 {
+		t.Fatalf("SchemaVersion = %d, %v; want 4（记账 = 块数，不是布局标记）", v, err)
 	}
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&n); err != nil {
 		t.Fatalf("count schema_version: %v", err)
 	}
-	if n != 3 {
-		t.Fatalf("schema_version 行数 = %d, want 3（baseline + release + 卸载标记块）", n)
+	if n != 4 {
+		t.Fatalf("schema_version 行数 = %d, want 4（baseline + release + 卸载标记 + 包版本历史块）", n)
 	}
 }
 
