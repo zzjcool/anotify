@@ -45,8 +45,7 @@ type Diag struct {
 
 // Error 是执行前可判别的配置错误（reason 是 protocol 的封闭失败码）。
 //
-// 这些错误都在 lease.grant 之后、真正 spawn 之前发生：attempt 已计，任务 failed，
-// 不自动重试（确定性配置错误）。
+// 这些错误都在 lease.grant 之后、真正 spawn 之前发生：attempt 已计，任务 failed，不自动重试（确定性配置错误）。
 type Error struct {
 	// Reason ∈ workdir_unavailable / home_unavailable / files_escape / missing_requirement。
 	Reason  string
@@ -90,6 +89,9 @@ type Input struct {
 	TaskID    string
 	// ArtifactDir 是本 attempt 的系统导出目录（A2；空 = 尚未创建，不注入）。
 	ArtifactDir string
+	// DecisionToken / DecisionURL 是 router 任务的决策通道（#522，空 = 不注入）。
+	DecisionToken string
+	DecisionURL   string
 }
 
 // Resolved 是求值结果。
@@ -221,7 +223,7 @@ func Resolve(in Input) (*Resolved, error) {
 		set(k, value, source)
 	}
 
-	// 4) 契约变量（只有三个；ANOTIFY_PARAM_* 由参数生成）。
+	// 4) 契约变量（三个恒有 + 按需注入的 ANOTIFY_PARAM_* / 导出目录 / 决策通道）。
 	if in.Endpoint == "" || in.TaskToken == "" || in.TaskID == "" {
 		return nil, &Error{Reason: protocol.ReasonMissingRequirement,
 			Message: "缺少 ANOTIFY_ 契约变量（emit 端点 / 任务令牌 / 任务 id）"}
@@ -231,6 +233,11 @@ func Resolve(in Input) (*Resolved, error) {
 	set(protocol.EnvTaskID, in.TaskID, SourceBuiltin)
 	if in.ArtifactDir != "" {
 		set(protocol.EnvArtifactDir, in.ArtifactDir, SourceBuiltin)
+	}
+	// #522：决策通道只在有结局表时成对注入（半套端点只会 401/no-op）。
+	if in.DecisionToken != "" && in.DecisionURL != "" {
+		set(protocol.EnvDecisionToken, in.DecisionToken, SourceBuiltin)
+		set(protocol.EnvDecisionURL, in.DecisionURL, SourceBuiltin)
 	}
 
 	// 5) 参数（只有 spec.params 声明过的顶层字段；非 string 用原 JSON 文本）。
@@ -411,8 +418,7 @@ var workDirRefPattern = regexp.MustCompile(`\$\((vars|params)\.([A-Za-z_][A-Za-z
 
 // ExpandWorkDir 展开 run.workDir 模板（空模板由调用方决定系统目录）。
 //
-// $(vars.X) 取的是 run.env 里声明的键 X 的**值**（不是 vars.X）；$(params.X) 取参数值。
-// 解析后的路径必须是绝对路径、规范形式、无 ..，并且真实存在、是目录、解软链后仍在
+// $(vars.X) 取的是 run.env 里声明的键 X 的**值**（不是 vars.X）；$(params.X) 取参数值。解析后的路径必须是绝对路径、规范形式、无 ..，并且真实存在、是目录、解软链后仍在
 // 允许的位置（由 ValidateDir 做系统根重叠检查）。
 func ExpandWorkDir(template string, resolved *Resolved) (string, error) {
 	if strings.TrimSpace(template) == "" {
