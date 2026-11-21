@@ -1,7 +1,7 @@
 <!-- snapshot-doc: 2026-11-22 #522 A3 交付时的定格数字（make ci / make e2e-affected 的真实输出），复算命令见 §7 -->
 # router 能力 + outcomes 表（#522 A3「判断用能力，执行留 hub」）交付报告
 
-> 分支 `pi-subagent/hw-nj/anotify-522-router-abc7f88b` · base `main` @ `c23d0c6c`（已 rebase 到含 #523 / #526 / #527 的 main；冲突按并集解）
+> 分支 `pi-subagent/hw-nj/anotify-522-router-abc7f88b` · base `main` @ `b2096466`（已 rebase 到含 #523 / #526 / #527 / #530 的 main；冲突按并集解）
 > 设计记录：#512 · 本阶段范围：#522 · PR 正文 `Fixes #522`
 >
 > 下面每个数字都是**这台机器（hw-nj 迁移后）重新跑出来的**：`make ci`、`make e2e-affected`、
@@ -238,10 +238,10 @@ ok github.com/zzjcool/anotify/…                      43 个包
    契约字段守卫通过（243 个 schema、761 个已知字段）
 ✅ 注解即外键守卫通过（unbacked 298 / 基线 298，unmarked 209 / 基线 209）
 ✅ 注释密度棘轮与基线完全一致（注释行 43330 / 基线 43330，目录 75 个 0 不一致）
-✅ 秘密扫描通过（867 文件 / 17 检测器 / 命中 0 / 放行 3）
+✅ 秘密扫描通过（869 文件 / 17 检测器 / 命中 0 / 放行 3）
 exit=0
 
-$ make e2e-affected          # rebase 到 c23d0c6c 后重跑
+$ make e2e-affected          # rebase 到 b2096466 后重跑
 ✅ E2E 全绿：30/30 个请求套件均达标（断言 2891 通过 / 0 失败，authority 清单覆盖 30 个）
    routing 377通过/0失败 · security 100 · ws_protocol 134 · events_paging 179 · frontend 43 …
 ✅ 临时目录零残留（隔离 TMPDIR 内本次新增 = 0，耗时 433.8s）
@@ -249,7 +249,7 @@ known-env-failures.json: entries [] （未变）
 ```
 
 注释棘轮：本 PR 的注释**净增 0**，`--update` 只做下调（`internal/store/v4test` 1197→1193、
-`env.go` 密集预算 28→25、总量 43334→43330（rebase 到 `c23d0c6c` 后重测）；本轮新增「续租推 TTL」
+`env.go` 密集预算 28→25、总量 43334→43330（rebase 到 `b2096466` 后重测）；本轮新增「续租推 TTL」
 等解释时同批回收了 `store.go` / `orphan.go` 的复述行）。契约静态检查器的
 自测 fixture 补了第五个方案 `taskToken`（白名单与 fixture 必须同步，否则自测当场红）。
 
