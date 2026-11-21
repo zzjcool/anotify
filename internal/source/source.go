@@ -3,16 +3,14 @@
 //
 // 一次触发做四件事：
 //
-//  1. 装配载荷：cron/manual 以 `config.payload` 打底、本次输入一层覆盖；
-//     webhook 的载荷就是投递体里的 `payload`（没有静态打底）。
-//  2. 投递幂等：`(namespace, 源稳定 id, deliveryId)` 在保留窗口内只算一条事件，
-//     重复投递返回**原** event/trace 且不重复派发；窗口外同 id 按新事件接收。
-//  3. 载荷契约：不符合 `config.payloadSchema` → 入库 + `event_schema` 剪枝留痕，不派发。
-//  4. 路由投影：`route.PlanFromSource` 逐行求值 targets，成功的建任务、失败的每条
-//     留一条剪枝事件（`source='route'`）。源没有 targets → 单条 `no_target`。
-//
-// 试运行（dry-run）走**同一条**解析路径但完全不落库：不写事件 / 任务 / 去重表 /
-// 回执，也不需要保存 token（source.md §5.3）。
+//  1. 装配载荷：三个 kind 同语义——`config.payload` 打底、入站载荷一层覆盖（webhook 的入站
+//     载荷来自投递体，可由 `config.envelope` 指定取哪一段）。
+//  2. 投递幂等：`(namespace, 源稳定 id, deliveryId)` 在保留窗口内只算一条事件，重复投递返回
+//     **原** event/trace 且不重复派发；窗口外同 id 按新事件接收。
+//  3. 载荷契约：不符合 `config.payloadSchema` → 入库 + `event_schema` 剪枝，不派发。
+//  4. 路由投影：`route.PlanFromSource` 逐行求值 targets（含 `match.types`），成功的建任务、
+//     其余每条留一条剪枝事件（`source='route'`）；没有 targets → `no_target`。dry-run 走同一
+//     条解析路径但完全不落库（§5.3）。
 package source
 
 import (
@@ -65,20 +63,17 @@ func (s *Service) Now() int64 {
 	return s.now()
 }
 
-// Input 是一次源触发的事实。
+// Input 是一次源触发的事实。Type 空 → 回落源名（§5）；DeliveryID 是可选的外部幂等键；
+// Payload 空 → 只用配置打底。三者都可以由 `config.envelope` 指定来源（见 envelope.go）。
 type Input struct {
-	// Source 是已经解析到的源行（webhook 由 token 定位，manual/API 由名字定位）。
-	Source *store.Source
-	// Type 是事件类型：webhook 取投递体的 type；空 → 回落源名（source.md §5）。
-	Type string
-	// DeliveryID 是外部投递幂等键（可选；webhook 的 `id`）。
+	Source     *store.Source
+	Type       string
 	DeliveryID string
-	// Payload 是投递体里的 payload（原始 JSON；空 → 只用配置打底）。
-	Payload json.RawMessage
+	Payload    json.RawMessage
 }
 
-// TaskRef 是回执里的一条已建任务（含未解析失败任务：真实请求名 + 明确声明的
-// version；没有 digest 事实就不携带 digest 字段）。
+// TaskRef 是回执里的一条已建任务（含未解析失败任务：真实请求名 + 明确声明的 version；
+// 没有 digest 事实就不携带 digest 字段）。
 type TaskRef struct {
 	TaskID     string `json:"taskId"`
 	Capability string `json:"capability"`
@@ -86,10 +81,8 @@ type TaskRef struct {
 	Version int `json:"version,omitempty"`
 }
 
-// Receipt 是三个入口共用的接收回执（source.md §5.1，不是资源信封）。
-//
-// 空列表一律 `[]`（不是 null）：`tasks: []` / `pruned: []` 是「确实没有」，
-// 前端与脚本据此区分「没派发」与「字段缺失」。
+// Receipt 是三个入口共用的接收回执（§5.1，不是资源信封）。空列表一律 `[]`（不是 null）：
+// `tasks: []` / `pruned: []` 是「确实没有」，前端与脚本据此区分「没派发」与「字段缺失」。
 type Receipt struct {
 	EventID   string        `json:"eventId"`
 	TraceID   string        `json:"traceId"`
@@ -98,16 +91,12 @@ type Receipt struct {
 	Pruned    []route.Prune `json:"pruned"`
 }
 
-// Ingest 接收一次事件：单次 store.AcceptSourceEvent 原子落「事件 + 投递窗 + 正常
-// 任务 + 未解析失败 Task/错误事件 + 纯剪枝留痕 + 完整回执」，返回统一回执。
+// Ingest 接收一次事件：单次 store.AcceptSourceEvent 原子落「事件 + 投递窗 + 任务 + 未解析失败
+// Task/错误事件 + 剪枝留痕 + 回执」，返回统一回执。
 //
-// 关键边界：
-//   - 预编译的任务/失败/剪枝事实与「源 resource_version CAS + namespaceVarsRevision
-//     pin」同事务校验：源被改/ns 输入被改 → 明确错误 + 0 写（不是重试同一批陈旧参数）。
-//   - 窗口内重复投递返回第一次持久化的**同一份** receipt 字节（first=false），
-//     不建任务、不重算可变资源。
-//   - downstream_missing 是失败 Task + 错误事件（不是剪枝）；`taskId:null` 不用于它。
-//   - 无 deliveryId 同样原子（只是不去重）；dry-run 不调本入口。
+// 关键边界：预编译事实与「源 resource_version CAS + namespaceVarsRevision pin」同事务校验
+// （源或 ns 输入被改 → 明确错误 + 0 写）；窗口内重复投递返回第一次持久化的**同一份** receipt
+// 字节，不建任务、不重算；downstream_missing 是失败 Task（不是剪枝）；无 deliveryId 同样原子。
 func (s *Service) Ingest(ctx context.Context, in Input) (*Receipt, error) {
 	if in.Source == nil {
 		return nil, fmt.Errorf("source: 缺少源行")
@@ -138,7 +127,7 @@ func (s *Service) Ingest(ctx context.Context, in Input) (*Receipt, error) {
 			Capability: prune.Capability, Reason: prune.Reason, Detail: prune.Detail,
 		})
 	} else {
-		plan, err := s.router.PlanFromSource(ctx, src, traceID, payload)
+		plan, err := s.router.PlanFromSource(ctx, src, traceID, eventType, payload)
 		if err != nil {
 			return nil, err
 		}
@@ -172,11 +161,9 @@ func (s *Service) Ingest(ctx context.Context, in Input) (*Receipt, error) {
 	return receiptFromStore(receiptJSON, first)
 }
 
-// receiptFromStore 把 store 的持久 receipt 投影为公共回执（W6 原字段）。
-//
-// tasks 列**全部真实建立的 task**：正常任务 + 未解析失败任务（真实请求名/明确声明
-// version；没有 digest 事实就不提 digest）。pruned 只含真实纯剪枝；store 内部的
-// failure 事实不新增独立 Resource，也不被当成剪枝。
+// receiptFromStore 把 store 的持久 receipt 投影为公共回执（W6 原字段）。tasks 列**全部真实
+// 建立的任务**（正常 + 未解析失败：真实请求名/声明 version，没有 digest 事实就不提）；
+// pruned 只含真实纯剪枝，store 内部的 failure 事实不新增 Resource、也不当成剪枝。
 func receiptFromStore(raw json.RawMessage, first bool) (*Receipt, error) {
 	var stored store.SourceEventReceipt
 	if err := json.Unmarshal(raw, &stored); err != nil {
@@ -208,9 +195,7 @@ func receiptFromStore(raw json.RawMessage, first bool) (*Receipt, error) {
 }
 
 // Fire 是手动触发（`POST …/sources/{name}/fire`）：省略 payload 时用源配置的打底值。
-//
-// 停用的源按 §5 的停用规则处理：**不**触发（调用方翻 404/409，本函数返回
-// ErrSourceDisabled，避免把「已停用」记成一次真实事件）。
+// 停用的源**不**触发（返 ErrSourceDisabled，避免把「已停用」记成一次真实事件）。
 func (s *Service) Fire(ctx context.Context, namespaceID, name string, payload json.RawMessage) (*Receipt, error) {
 	src, err := s.db.GetSourceByName(ctx, namespaceID, name)
 	if err != nil {
@@ -225,11 +210,25 @@ func (s *Service) Fire(ctx context.Context, namespaceID, name string, payload js
 // ErrSourceDisabled 表示源已停用（webhook 对外 404，fire 拒绝触发）。
 var ErrSourceDisabled = errors.New("source: 源已停用")
 
-// HookBody 是 webhook 投递体（source.md §3.3）。
+// HookBody 是 webhook 投递体（§3.3）。Raw / Header 不是投递体字段，而是 handler 带进来的
+// **原始事实**（`json:"-"`）：`payload: {whole: true}` 要整个投递体、`header` 来源要请求头，
+// 两者都无法从解完的三段里还原（只有配了 envelope 时才必填）。
 type HookBody struct {
 	Type    string          `json:"type"`
 	ID      string          `json:"id"`
 	Payload json.RawMessage `json:"payload"`
+	// Raw 是原始投递体字节（验签也用它）。
+	Raw json.RawMessage `json:"-"`
+	// Header 是大小写不敏感的头读取（`r.Header.Get`）。
+	Header func(string) string `json:"-"`
+}
+
+// header 读一个请求头（Header 未注入时返回空串，不 panic）。
+func (b HookBody) header(name string) string {
+	if b.Header == nil {
+		return ""
+	}
+	return b.Header(name)
 }
 
 // Hook 处理一次 webhook 投递：token 定位源（停用/不存在一律 404，不区分）。
@@ -242,31 +241,29 @@ func (s *Service) Hook(ctx context.Context, token string, body HookBody) (*Recei
 }
 
 // LookupHook 按 token 定位源（停用 / 不存在都是 store.ErrSourceNotFound，不区分）。
-//
-// 单独暴露这一步是因为 handler 必须**先知道 secret 再验签**（source.md §3.3），
-// 而验签要用原始字节、发生在解析与落库之前。定源与接收拆开后，一次投递只查一次表。
+// 单独暴露是因为 handler 必须**先知道 secret 再验签**（§3.3），而定源与接收拆开后
+// 一次投递只查一次表。
 func (s *Service) LookupHook(ctx context.Context, token string) (*store.Source, error) {
 	return s.db.LookupHook(ctx, token)
 }
 
 // HookSource 用**已定位**的源接收一次投递（handler 验签通过后走这里）。
-//
-// 验签不在本函数里：签名要对着原始字节算，而到达这里时 body 已经解成结构体了。
-// 把校验留在传输层（能拿到原始字节的那一层）是有意的分工——这里只负责「接收」
-// 这一件事，两条入口（Hook / HookSource）共用同一份装配与落库逻辑。
+// 验签不在本函数里：签名要对着原始字节算，而到这里时 body 已解成结构体——把校验留在
+// 传输层是有意的分工，两条入口共用同一份装配与落库逻辑。
 func (s *Service) HookSource(ctx context.Context, src *store.Source, body HookBody) (*Receipt, error) {
 	if src == nil {
 		return nil, fmt.Errorf("source: 缺少源行")
 	}
-	return s.Ingest(ctx, Input{
-		Source: src, Type: body.Type, DeliveryID: body.ID, Payload: body.Payload,
-	})
+	in, err := hookInput(src, body)
+	if err != nil {
+		return nil, err
+	}
+	return s.Ingest(ctx, in)
 }
 
 // HookSecret 返回该 webhook 源的签名 secret（非 webhook / 未配置 → 空 = 不校验）。
-//
-// 「这个源的 secret 是什么」只有一处解释（sourcespec 的归一化形态），handler 不自己
-// 解 config：两处解析迟早分叉，而分叉的后果是「验签看得见 A、接收用得着 B」。
+// 「secret 是什么」只有一处解释（sourcespec 的归一化形态），handler 不自己解 config：
+// 两处解析迟早分叉，后果是「验签看得见 A、接收用得着 B」。
 func HookSecret(src *store.Source) string {
 	if src == nil || src.Kind != sourcespec.KindWebhook {
 		return ""
@@ -290,19 +287,20 @@ type Preview struct {
 	Pruned  []route.Prune   `json:"pruned"`
 }
 
-// Preview 对一个**已保存**的源做试运行（0 持久写入）。
-func (s *Service) Preview(ctx context.Context, namespaceID, name string, payload json.RawMessage) (*Preview, error) {
+// Preview 对一个**已保存**的源做试运行（0 持久写入）。eventType 用于 match 求值
+// （空 = 源名，与 ingest 的回落一致）。
+func (s *Service) Preview(ctx context.Context, namespaceID, name, eventType string, payload json.RawMessage) (*Preview, error) {
 	src, err := s.db.GetSourceByName(ctx, namespaceID, name)
 	if err != nil {
 		return nil, err
 	}
-	return s.PreviewSource(ctx, src, payload)
+	return s.PreviewSource(ctx, src, eventType, payload)
 }
 
 // PreviewSource 对任意源文档做试运行（未保存的源也能预览）。
 //
 // 完全不写库：事件、任务、去重记录、剪枝留痕、回执一个都不落（source.md §5.3）。
-func (s *Service) PreviewSource(ctx context.Context, src *store.Source, payload json.RawMessage) (*Preview, error) {
+func (s *Service) PreviewSource(ctx context.Context, src *store.Source, eventType string, payload json.RawMessage) (*Preview, error) {
 	if src == nil {
 		return nil, fmt.Errorf("source: 缺少源行")
 	}
@@ -310,12 +308,15 @@ func (s *Service) PreviewSource(ctx context.Context, src *store.Source, payload 
 	if perr != nil {
 		return nil, perr
 	}
+	if strings.TrimSpace(eventType) == "" {
+		eventType = src.Name
+	}
 	preview := &Preview{Targets: []PreviewTarget{}, Pruned: []route.Prune{}}
 	if prune := route.ValidatePayload(s.payloadSchema(src), assembled); prune != nil {
 		preview.Pruned = append(preview.Pruned, *prune)
 		return preview, nil
 	}
-	plan, err := s.router.PlanFromSource(ctx, src, "preview", assembled)
+	plan, err := s.router.PlanFromSource(ctx, src, "preview", eventType, assembled)
 	if err != nil {
 		return nil, err
 	}
@@ -330,18 +331,15 @@ func (s *Service) PreviewSource(ctx context.Context, src *store.Source, payload 
 	return preview, nil
 }
 
-// assemblePayload 装配载荷：cron/manual 以 config.payload 打底、投递体一层覆盖。
+// assemblePayload 装配载荷：以 `config.payload` 打底、入站载荷一层覆盖。
 //
-// 深合并不做（source.md §5：一层覆盖）；webhook 没有静态打底。
-// 投递体不是 JSON 对象 → ErrBadPayload（400，不产生事件）。
+// 三个 kind 同语义（#513 修掉了 webhook“接受但不合并”的坑）：深合并不做（source.md §5：
+// 一层覆盖），冲突时**入站覆盖静态**。投递体不是 JSON 对象 → ErrBadPayload
+// （400，不产生事件）。
 func (s *Service) assemblePayload(src *store.Source, incoming json.RawMessage) (map[string]any, error) {
 	base := map[string]any{}
-	if src.Kind == sourcespec.KindCron || src.Kind == sourcespec.KindManual {
-		if cfgPayload := sourcespec.ParseConfig(src.Kind, src.Config).Payload; len(cfgPayload) > 0 {
-			for name, value := range cfgPayload {
-				base[name] = value
-			}
-		}
+	for name, value := range sourcespec.ParseConfig(src.Kind, src.Config).Payload {
+		base[name] = value
 	}
 	overlay, ok := route.DecodePayload(incoming)
 	if !ok {
@@ -372,6 +370,7 @@ var _ = func() bool {
 	for _, reason := range []string{
 		protocol.ReasonNoTarget, protocol.ReasonEventSchema, protocol.ReasonParamMissing,
 		protocol.ReasonParamSchema, protocol.ReasonParamType, protocol.ReasonDownstreamMissing,
+		protocol.ReasonNoMatch,
 	} {
 		if !protocol.IsPruneReason(reason) && reason != protocol.ReasonDownstreamMissing {
 			panic("source: 非剪枝原因码 " + reason)

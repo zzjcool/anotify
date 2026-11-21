@@ -204,8 +204,8 @@ func TestPreviewWritesNothing(t *testing.T) {
 	db := testDB(t)
 	ns := testNamespace(t, db)
 	testCapability(t, db, ns.ID, "analyze", `{"type":"object","properties":{"env":{"type":"string"}},"required":["env"]}`)
-	// 未保存的源也能预览（source.md §5.3）：这里刻意在内存里放一个含不可解析
-	// 目标的文档——保存路径会拒它，预览必须能说明「这一条会 missing」。
+	// 未保存的源也能预览（§5.3）：刻意放一个含不可解析目标的文档——保存会拒它，
+	// 预览必须能说明「这一条会 missing」。
 	src := &store.Source{
 		NamespaceID: ns.ID, Name: "manual-preview", Kind: sourcespec.KindManual,
 		Config: json.RawMessage(`{"payload":{"env":"prod"}}`),
@@ -219,7 +219,7 @@ func TestPreviewWritesNothing(t *testing.T) {
 		"events": countRows(t, db, "events"), "tasks": countRows(t, db, "tasks"),
 		"event_deliveries": countRows(t, db, "event_deliveries"),
 	}
-	preview, err := newService(t, db).PreviewSource(testCtx(), src, nil)
+	preview, err := newService(t, db).PreviewSource(testCtx(), src, "", nil)
 	if err != nil {
 		t.Fatalf("PreviewSource: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestPreviewWritesNothing(t *testing.T) {
 	}
 
 	// 坏载荷预览：event_schema 剪枝，同样 0 写入。
-	badPayload, err := newService(t, db).PreviewSource(testCtx(), src, json.RawMessage(`[1,2]`))
+	badPayload, err := newService(t, db).PreviewSource(testCtx(), src, "", json.RawMessage(`[1,2]`))
 	if !errors.Is(err, ErrBadPayload) || badPayload != nil {
 		t.Fatalf("非对象载荷预览应 ErrBadPayload，得到 %v/%v", badPayload, err)
 	}
@@ -354,9 +354,8 @@ func testCapabilityVersion(t *testing.T, db *store.DB, namespaceID, name string,
 	return got
 }
 
-// TestIngestMissingTargetCreatesFailedTaskNotPrune 钉住 R1-C3：已保存源里指向后来被
-// 删除能力的 target 解析不到时，事件接收成功、落**失败 Task（attempt 0）+ 错误事件**，
-// 回执把它列在 tasks（真实请求 ref/声明 version），不是剪枝。
+// TestIngestMissingTargetCreatesFailedTaskNotPrune 钉住 R1-C3：已保存源指向后来被删的能力时，
+// 事件接收成功、落**失败 Task（attempt 0）+ 错误事件**，回执列在 tasks（真实 ref/version）。
 func TestIngestMissingTargetCreatesFailedTaskNotPrune(t *testing.T) {
 	db := testDB(t)
 	ns := testNamespace(t, db)
@@ -409,8 +408,7 @@ func TestIngestMissingTargetCreatesFailedTaskNotPrune(t *testing.T) {
 	}
 }
 
-// TestIngestDuplicateReturnsFirstReceiptWithFailuresAndPrunes duplicate 必须返回第一次
-// 的完整回执（含 failed Task 与纯剪枝），不新建任务/事件。
+// TestIngestDuplicateReturnsFirstReceiptWithFailuresAndPrunes：duplicate 返回第一次的完整回执。
 func TestIngestDuplicateReturnsFirstReceiptWithFailuresAndPrunes(t *testing.T) {
 	db := testDB(t)
 	ns := testNamespace(t, db)
@@ -465,8 +463,7 @@ func TestIngestDuplicateReturnsFirstReceiptWithFailuresAndPrunes(t *testing.T) {
 	}
 }
 
-// TestIngestSourceRevisionMismatchWritesNothing 源在计划与接收之间变了 → 明确错误 +
-// 0 写（不吞错、不用陈旧参数接收）。
+// TestIngestSourceRevisionMismatchWritesNothing：源在计划与接收之间变了 → 明确错误 + 0 写。
 func TestIngestSourceRevisionMismatchWritesNothing(t *testing.T) {
 	db := testDB(t)
 	ns := testNamespace(t, db)
@@ -508,7 +505,7 @@ func TestPreviewPerTargetReasons(t *testing.T) {
 		},
 		Enabled: true,
 	}
-	preview, err := newService(t, db).PreviewSource(testCtx(), src, json.RawMessage(`{"text":"abc"}`))
+	preview, err := newService(t, db).PreviewSource(testCtx(), src, "", json.RawMessage(`{"text":"abc"}`))
 	if err != nil {
 		t.Fatalf("PreviewSource: %v", err)
 	}
@@ -524,5 +521,84 @@ func TestPreviewPerTargetReasons(t *testing.T) {
 	if len(preview.Pruned) != 2 || preview.Pruned[0].Reason != protocol.ReasonParamMissing ||
 		preview.Pruned[1].Reason != protocol.ReasonParamType {
 		t.Fatalf("aggregate pruned 与逐目标原因必须一致: %+v", preview.Pruned)
+	}
+}
+
+// TestHookEnvelopeEndToEnd 走一遍 GitHub 形态：头 + joinFrom 定 type、头定 deliveryId、
+// whole 定 payload，静态 config.payload 打底、match.types 条件派、同 delivery 幂等。
+func TestHookEnvelopeEndToEnd(t *testing.T) {
+	db := testDB(t)
+	ns := testNamespace(t, db)
+	testCapability(t, db, ns.ID, "router", `{"type":"object","properties":{"event":{"type":"string"},"tenant":{"type":"string"}}}`)
+	src := testSource(t, db, ns.ID, "gh-hook", sourceOpts{
+		Kind: sourcespec.KindWebhook,
+		Config: `{"envelope":{"type":{"header":"x-github-event","joinFrom":"$.action"},
+			"deliveryId":{"header":"x-github-delivery"},"payload":{"whole":true}},
+			"payload":{"tenant":"acme"}}`,
+		Targets: []sourcespec.Target{{
+			Capability: "router",
+			Params:     map[string]any{"event": "$(payload.action)", "tenant": "$(payload.tenant)"},
+			Match:      &sourcespec.Match{Types: []string{"issues.opened"}},
+		}},
+		Enabled: true,
+	})
+	service := newService(t, db)
+	issueBody := json.RawMessage(`{"action":"opened","issue":{"title":"hello"}}`)
+	deliver := func(event, deliveryID string, body json.RawMessage) *Receipt {
+		t.Helper()
+		receipt, err := service.HookSource(testCtx(), src, HookBody{
+			Raw: body,
+			Header: func(name string) string {
+				return map[string]string{"x-github-event": event, "x-github-delivery": deliveryID}[name]
+			},
+		})
+		if err != nil {
+			t.Fatalf("投递 %s/%s: %v", event, deliveryID, err)
+		}
+		return receipt
+	}
+
+	first := deliver("issues", "gh-1", issueBody)
+	if first.Duplicate || len(first.Tasks) != 1 {
+		t.Fatalf("issues.opened 应建一条任务: %+v", first)
+	}
+	task, err := db.GetTask(testCtx(), ns.ID, first.Tasks[0].TaskID)
+	if err != nil {
+		t.Fatalf("读任务: %v", err)
+	}
+	var params map[string]any
+	if err := json.Unmarshal(task.Params, &params); err != nil {
+		t.Fatalf("解码 params: %v", err)
+	}
+	if params["event"] != "opened" || params["tenant"] != "acme" {
+		t.Fatalf("whole 载荷 + 静态打底应同时生效: %v", params)
+	}
+	event, err := db.GetEvent(testCtx(), ns.ID, first.EventID)
+	if err != nil {
+		t.Fatalf("读事件: %v", err)
+	}
+	if event.Type != "issues.opened" {
+		t.Fatalf("事件 type 应为头值 + joinFrom, got %q", event.Type)
+	}
+
+	// 同 delivery 重投：duplicate 且不新建任务行（回执带回第一次的 taskId）。
+	again := deliver("issues", "gh-1", issueBody)
+	if !again.Duplicate || len(again.Tasks) != 1 || again.Tasks[0].TaskID != first.Tasks[0].TaskID {
+		t.Fatalf("同 delivery 应幂等（回原 taskId）: first=%+v again=%+v", first, again)
+	}
+	if got := countRows(t, db, "tasks"); got != 1 {
+		t.Fatalf("任务行数 = %d，want 1（幂等不得新建）", got)
+	}
+
+	// 不命中 match.types：事件照收、0 任务、一条 no_match 剪枝。
+	other := deliver("pull_request", "gh-2", json.RawMessage(`{"action":"opened"}`))
+	if len(other.Tasks) != 0 {
+		t.Fatalf("pull_request.opened 不该被命中: %+v", other.Tasks)
+	}
+	if len(other.Pruned) != 1 || other.Pruned[0].Reason != protocol.ReasonNoMatch {
+		t.Fatalf("应恰一条 no_match 剪枝: %+v", other.Pruned)
+	}
+	if got := countRows(t, db, "tasks"); got != 1 {
+		t.Fatalf("不命中不得建任务，任务行数 = %d", got)
 	}
 }

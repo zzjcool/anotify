@@ -13,14 +13,11 @@ import (
 //	env:    $(payload.environment)                       # 整值只有一个引用 → 保留原类型
 //	report: reports/$(payload.environment)/$(payload.x)  # 掺了常量 → 结果一定是字符串
 //
-// 设计边界（照抄 §4.1，别在这里放宽）：
-//   - 没有算术、没有函数、没有条件、没有默认值、没有管道；
-//   - 根名只认 `payload`；**其它根名一律字面文本**（`$(event.x)` 不是错误）；
-//   - `$(vars.…)` / `$(params.…)` 直接拒——那两个根名只在能力 `workDir` 里有意义，
-//     写在这里一定是弄错了上下文，不能静默当字面；
-//   - 以 `payload` 开头却写不完整（`$(payload.a-b)`、`$(payload.`、`$(payload..x)`）
-//     创建期直接拒；
-//   - 路劲取不到 → 剪枝 `param_missing`，**不静默给空**（默认值归能力参数 schema）。
+// 设计边界（照抄 §4.1，别在这里放宽）：没有算术/函数/条件/默认值/管道；根名只认
+// `payload`（其它根名一律字面文本，`$(event.x)` 不是错误）；`$(vars.…)`/`$(params.…)`
+// 直接拒（那两个根名只在能力 `workDir` 里有意义，写在这里是弄错了上下文）；
+// 以 `payload` 开头却写不完整（`$(payload.a-b)` / `$(payload.` / `$(payload..x)`）创建期拒；
+// 路径取不到 → 剪枝 `param_missing`，**不静默给空**（默认值归能力参数 schema）。
 
 // templateToken 是一段模板里的一个原子：要么是字面量，要么是一个 payload 引用。
 type templateToken struct {
@@ -289,16 +286,21 @@ func renderString(s string, payload map[string]any) (any, bool) {
 	return b.String(), true
 }
 
-// lookupPath 按点号路径取值；任一段取不到 → ok=false。
+// lookupPath 按点号路径取值（根名必须是 payload）；任一段取不到 → ok=false。
 //
-// 数字段在数组上当下标用（D11）；在对象上就是普通的数字键。
+// 数字段在数组上当下标用（D11）；在对象上就是普通的数字键。路径走 walkPath，
+// 与 envelope 的指针共用同一份实现。
 func lookupPath(payload map[string]any, path string) (any, bool) {
 	segs := strings.Split(path, ".")
 	if len(segs) == 0 || segs[0] != payloadRoot {
 		return nil, false
 	}
-	var cur any = payload
-	for _, seg := range segs[1:] {
+	return walkPath(payload, segs[1:])
+}
+
+// walkPath 沿段列表下行（数字段在数组上是下标，在对象上是数字键）。
+func walkPath(cur any, segs []string) (any, bool) {
+	for _, seg := range segs {
 		switch node := cur.(type) {
 		case map[string]any:
 			v, ok := node[seg]

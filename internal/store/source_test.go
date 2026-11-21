@@ -537,29 +537,30 @@ func TestUpdateSourceRejectsReservedName(t *testing.T) {
 	}
 }
 
-// TestSourceConfigPayloadOnlyForKeepingKinds：payload 的保留规则按 kind 分——
-// cron/manual 保留（静态打底数据），webhook 直接丢弃（载荷来自投递体）。
-func TestSourceConfigPayloadOnlyForKeepingKinds(t *testing.T) {
-	// 1) webhook：非对象 payload 也**不**报错（它本就会被丢掉），token 原样保留
-	out, err := sourcespec.NormalizeConfig(SourceKindWebhook, json.RawMessage(`{"token":"src_x","payload":[1,2]}`))
+// TestSourceConfigPayloadForAllKinds：`config.payload` 三个 kind **同语义**（#513 修掉的坑：
+// webhook 以前接受但丢弃），坏形状（非对象）三个 kind 同判据拒。
+func TestSourceConfigPayloadForAllKinds(t *testing.T) {
+	// 1) webhook：对象 payload 原样保留（它现在真的会被并进投递载荷），token 原样保留
+	out, err := sourcespec.NormalizeConfig(SourceKindWebhook, json.RawMessage(`{"token":"src_x","payload":{"tenant":"acme"}}`))
 	if err != nil {
-		t.Fatalf("webhook 不该因非对象 payload 被拒（它本就会被丢弃）: %v", err)
+		t.Fatalf("webhook 的对象 payload 不该被拒: %v", err)
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(out, &fields); err != nil {
-		t.Fatalf("webhook 输出 config 不是对象: %v (%s)", err, out)
-	}
-	if raw, ok := fields["payload"]; ok {
-		t.Errorf("webhook 输出不该保留 payload, got %s", raw)
+	if got := sourcespec.ParseConfig(SourceKindWebhook, out).Payload["tenant"]; got != "acme" {
+		t.Errorf("webhook payload 往返不一致, got %v (%s)", got, out)
 	}
 	if got := sourcespec.ParseConfig(SourceKindWebhook, out).Token; got != "src_x" {
 		t.Errorf("token 应原样保留, got %q", got)
 	}
 
-	// 2) cron 仍拒：它是会保留 payload 的 kind，非对象打底数据不许进库
-	if _, err := sourcespec.NormalizeConfig(SourceKindCron,
-		json.RawMessage(`{"expr":"0 3 * * *","payload":[1,2]}`)); !errors.Is(err, ErrInvalidSourceConfig) {
-		t.Fatalf("cron 的非对象 payload 应仍被拒, got %v", err)
+	// 2) 非对象 payload：三个 kind 一律拒（写路径当场说清楚，不留一条永不生效的配置）
+	for _, kind := range []string{SourceKindWebhook, SourceKindCron} {
+		cfg := json.RawMessage(`{"expr":"0 3 * * *","payload":[1,2]}`)
+		if kind == SourceKindWebhook {
+			cfg = json.RawMessage(`{"token":"src_x","payload":[1,2]}`)
+		}
+		if _, err := sourcespec.NormalizeConfig(kind, cfg); !errors.Is(err, ErrInvalidSourceConfig) {
+			t.Fatalf("%s 的非对象 payload 应被拒, got %v", kind, err)
+		}
 	}
 
 	// 3) manual：合法对象 payload 原样保留（往返）
@@ -571,69 +572,39 @@ func TestSourceConfigPayloadOnlyForKeepingKinds(t *testing.T) {
 		t.Errorf("manual payload 往返不一致: %+v (%s)", p, out)
 	}
 
-	// 4) 落到库上：历史行里残留的非对象 payload 不该挡住任何一次 PATCH
+	// 4) 历史行（老版本把非对象 payload 写进了 webhook 的 config）：只改 metadata 仍然能过
+	//    （config 原样保留，不重新归一化）；改 config 则该 config 必须合法——这是这个坑
+	//    的另一面，不为了「让老行永远能改」而在写路径上静默丢字段。
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	sourceFixtureCap(t, db, nsID, "demo.payload-kind")
 	src := &Source{
-		NamespaceID: nsID, Name: "带坏 payload 的钩子", Kind: SourceKindWebhook,
-		Config:  json.RawMessage(`{"token":"src_x","payload":[1,2]}`),
+		NamespaceID: nsID, Name: "历史坏 payload 的钩子", Kind: SourceKindWebhook,
+		Config:  json.RawMessage(`{"token":"src_x","payload":{"a":1}}`),
 		Enabled: true, Targets: []sourcespec.Target{{Capability: "demo.payload-kind"}},
 	}
 	if err := db.CreateSource(ctx, src); err != nil {
-		t.Fatalf("建 webhook 源不该被非对象 payload 挡住: %v", err)
+		t.Fatalf("建源: %v", err)
 	}
-	assertNoStoredPayload := func(when string) {
-		t.Helper()
-		got, err := db.GetSource(ctx, nsID, src.ID)
-		if err != nil {
-			t.Fatalf("%s: 取源: %v", when, err)
-		}
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(got.Config, &fields); err != nil {
-			t.Fatalf("%s: config 不是对象: %v (%s)", when, err, got.Config)
-		}
-		if raw, ok := fields["payload"]; ok {
-			t.Errorf("%s: 库里不该有 payload, got %s", when, raw)
-		}
-		if p := sourcespec.ParseConfig(SourceKindWebhook, got.Config).Payload; p != nil {
-			t.Errorf("%s: 解析出的 payload 应为 nil, got %+v", when, p)
-		}
-	}
-	assertNoStoredPayload("建源后")
-
-	// 模拟历史行：老版本把非对象 payload 写进了 webhook 的 config
 	if _, err := db.ExecContext(ctx,
 		`UPDATE sources SET config = ? WHERE namespace_id = ? AND id = ?`,
 		`{"token":"src_x","payload":[1,2]}`, nsID, src.ID); err != nil {
 		t.Fatalf("造历史行: %v", err)
 	}
-
-	// PATCH 语义：拿到带历史坏 payload 的 config 再存回，不该 400
 	legacy, err := db.GetSource(ctx, nsID, src.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	legacy.DisplayName = "改个名不该 400"
+	legacy.Config = nil // PATCH 省略 config 时的形态（store 原样保留库里的字节）
 	if err := db.UpdateSource(ctx, legacy); err != nil {
-		t.Fatalf("改 webhook 源不该被历史坏 payload 挡住: %v", err)
+		t.Fatalf("只改元数据不该被历史坏 payload 挡住: %v", err)
 	}
-	assertStored := func() {
-		t.Helper()
-		got, err := db.GetSource(ctx, nsID, src.ID)
-		if err != nil {
-			t.Fatalf("取源: %v", err)
-		}
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(got.Config, &fields); err != nil {
-			t.Fatalf("config 不是对象: %v (%s)", err, got.Config)
-		}
-		if raw, ok := fields["payload"]; ok {
-			t.Errorf("PATCH 之后库里仍留着 payload, got %s", raw)
-		}
+	legacy.Config = json.RawMessage(`{"token":"src_x","payload":[1,2]}`)
+	if err := db.UpdateSource(ctx, legacy); !errors.Is(err, ErrInvalidSourceConfig) {
+		t.Fatalf("改 config 时坏 payload 应被拒（不再静默丢弃）, got %v", err)
 	}
-	assertStored()
 }
 
 // TestSourceConfigRoundTrip 建源/改源都不许把已声明的 config 字段抹掉。

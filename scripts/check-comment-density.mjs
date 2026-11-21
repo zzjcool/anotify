@@ -143,7 +143,6 @@ export const BASELINE = {
 		"internal/server/ratelimit.go": 104,
 		"internal/server/resource_yaml.go": 34,
 		"internal/sitegen/template.go": 38,
-		"internal/source/webhook_sign.go": 39,
 		"internal/store/authz.go": 39,
 		"internal/store/bench_writeamp_test.go": 137,
 		"internal/store/identity.go": 44,

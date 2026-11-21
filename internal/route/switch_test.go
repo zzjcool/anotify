@@ -48,7 +48,7 @@ func TestPlanFromSourceDisabledTargetPruned(t *testing.T) {
 		Targets: []sourcespec.Target{{Capability: "review"}},
 		Enabled: true,
 	}
-	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-disabled", map[string]any{})
+	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-disabled", "", map[string]any{})
 	if err != nil {
 		t.Fatalf("PlanFromSource: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestPlanFromSourceDisabledOnlyNamedTarget(t *testing.T) {
 		Targets: []sourcespec.Target{{Capability: "review"}, {Capability: "alert"}},
 		Enabled: true,
 	}
-	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-fanout", map[string]any{})
+	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-fanout", "", map[string]any{})
 	if err != nil {
 		t.Fatalf("PlanFromSource: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestPlanFromSourceEnabledRegression(t *testing.T) {
 	}
 	check := func(when string) {
 		t.Helper()
-		plan, err := New(db).PlanFromSource(testCtx(), src, "trace-enabled", map[string]any{"env": "prod"})
+		plan, err := New(db).PlanFromSource(testCtx(), src, "trace-enabled", "", map[string]any{"env": "prod"})
 		if err != nil {
 			t.Fatalf("%s: PlanFromSource: %v", when, err)
 		}
@@ -173,7 +173,7 @@ func TestPlanFromSourceDisabledStillReportsParamError(t *testing.T) {
 		Targets: []sourcespec.Target{{Capability: "review", Params: map[string]any{"diff": "$(payload.diff)"}}},
 		Enabled: true,
 	}
-	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-order", map[string]any{})
+	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-order", "", map[string]any{})
 	if err != nil {
 		t.Fatalf("PlanFromSource: %v", err)
 	}

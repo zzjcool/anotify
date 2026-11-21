@@ -91,6 +91,16 @@ paths:
         缺失 / 格式不合法 / 不匹配 → 401 `Unauthorized`，**且不产生事件**（不落事件 /
         不落去重窗 / 不建任务）。顺序是验签先于解析：401 优先于 400。没配 secret 的源
         不校验（签名头被忽略）。
+
+        **签名口径由源配置选**（#513）：`spec.config.signature.scheme: github-sha256`
+        时改读 `X-Hub-Signature-256`（同一个 `sha256=<hex>` 形状、同一个 HMAC-SHA256
+        算法，只是 GitHub 自己的头名）；缺省 / `anotify-sha256` 读 `X-Anotify-Signature`。
+        两个头名互斥，不会同时作为判据。
+
+        **信封适配**（#513）：`spec.config.envelope` 决定 `type` / `deliveryId` /
+        `payload` 从哪个请求头或投递体哪个路径取（例如 GitHub 的
+        `X-GitHub-Event` + `$.action` → `issues.opened`）。不写 `envelope` 时就是
+        `HookBody` 的三段（`type` / `id` / `payload`），与之前逐字一致。
       parameters:
         - name: token
           in: path
@@ -106,6 +116,16 @@ paths:
             `HMAC-SHA256(secret, 原始 body 字节)` 的小写十六进制（`source.md` §3.3）。
             只在源配了 secret 时是判据；没配 secret 的源忽略本头。缺失 / 格式不合法 /
             不匹配 → 401（不产生事件）。
+          schema:
+            type: string
+            pattern: '^sha256=[0-9a-f]{64}$'
+        - name: X-Hub-Signature-256
+          in: header
+          required: false
+          description: |
+            `spec.config.signature.scheme: github-sha256` 时**必填**：GitHub 的原生
+            口径，形状与判据与 `X-Anotify-Signature` 完全相同（`sha256=<hex>`，
+            HMAC-SHA256 over 原始字节）。缺省 scheme 的源忽略本头。
           schema:
             type: string
             pattern: '^sha256=[0-9a-f]{64}$'
@@ -399,13 +419,19 @@ components:
     PayloadBody:
       type: object
       description: |
-        fire / 已保存源 dry-run 的请求体（`srcPayloadBody`）：只有 `payload`，且
-        **严格**解码（未知字段 → 400 `unknown_field`）。空 body 合法。
+        fire / 已保存源 dry-run 的请求体（`srcPayloadBody`）：只有 `payload` 与 `type`，
+        且**严格**解码（未知字段 → 400 `unknown_field`）。空 body 合法。
+
+        `type` 只对 dry-run 有意义（`match.types` 求值用；省略 = 源名，与投递侧的
+        回落一致）；`fire` 忽略它——手动触发的事件类型恒为源名。
       properties:
         payload:
           type: object
           additionalProperties: true
           description: 本次输入（一层覆盖源配置的 `payload`，不做深合并）
+        type:
+          type: string
+          description: 试运行用的事件类型（省略 = 源名；仅 dry-run 读取）
       additionalProperties: false
     InlinePreviewBody:
       type: object
@@ -418,6 +444,9 @@ components:
           type: object
           additionalProperties: true
           description: 本次输入（一层覆盖草稿的 `payload`）
+        type:
+          type: string
+          description: 试运行用的事件类型（省略 = 草稿名）
       additionalProperties: false
     InlineSourceDraft:
       type: object
@@ -473,9 +502,11 @@ components:
             kind 相关配置。合法键按 kind 封闭（`internal/sourcespec/config.go`）：
 
               - `cron`：`expr` / `tz` / `payload` / `payloadSchema` / `sample`
-              - `webhook`：`token` / `secret` / `payload` / `payloadSchema` / `sample`
+              - `webhook`：`token` / `secret` / `payload` / `payloadSchema` / `sample` / `envelope` / `signature`
               - `manual`：`payload` / `payloadSchema` / `sample`
 
+            `envelope`（三个维度各自可缺省）与 `signature.scheme`（`github-sha256` 或
+            `anotify-sha256`）的形状与规则见 `resource.yaml` 的 `SourceSpec.config`。
             读投影 `hookUrl` / `secretSet` 在预览里被剥离（不当成未知字段报错）。
         targets:
           type: array

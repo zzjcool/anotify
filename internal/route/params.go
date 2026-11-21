@@ -19,21 +19,16 @@ import (
 //   - 能力 emit：上游 payload 的字段 → 下游 params 的**同名字段**（多余字段忽略）；
 //   - 源事件：源的 `targets[].params` 模板（`$(payload.路径)`）求值结果。
 //
-// 两条来源最终都要过**下游能力的 `spec.params` JSON Schema**：有 default 的字段缺失
-// 用 default；必填且无 default 的字段缺失 → 剪枝 `param_missing`；类型不符 →
-// `param_type`；schema 本身不可用 → `param_schema`。剪枝不是 4xx（capability.md
-// §4.1 / §6.2）：事件已接收、下游不建 task，回执 `taskId:null`。
+// 两条来源都要过**下游能力的 `spec.params` JSON Schema**：有 default 的缺失字段用 default；
+// 必填无 default → 剪枝 `param_missing`；类型不符 → `param_type`；schema 不可用 →
+// `param_schema`。剪枝不是 4xx（§4.1/§6.2）：事件已接收、下游不建 task，回执 `taskId:null`。
 //
-// 实现的 JSON Schema 子集是**显式**的（只支持 type / properties / required / default /
-// pattern；嵌套对象同样按子集校验，数组元素不递归）：剩下的关键字（oneOf / minimum …）
-// 被忽略而不是被当成失败。pattern 是 RE2（Go regexp，线性时间），只约束字符串值。
-// 把子集写进
-// 接口文档比假装支持全部关键字安全。
+// JSON Schema 子集是**显式**的：只支持 type / properties / required / default / pattern，
+// 嵌套对象按子集校验、数组元素不递归；其余关键字（oneOf / minimum …）被忽略而不是当成失败。
+// pattern 是 RE2（线性时间），只约束字符串值——把子集写进接口文档比假装支持全部更安全。
 
-// Prune 是一次「事件/emit 已接收、下游没有建 task」的观察原因（capability.md §8.3）。
-//
-// 它对应落库的 `source='route'` 剪枝事件行与回执 `pruned[]`；reason 取封闭词表，
-// 不新造词（protocol.IsPruneReason / protocol.ReasonDownstreamMissing）。
+// Prune 是一次「事件/emit 已接收、下游没有建 task」的观察原因（§8.3）：落库成
+// `source='route'` 的剪枝事件行 + 回执 `pruned[]`；reason 取封闭词表，不新造词。
 type Prune struct {
 	// Capability 是下游能力（解析得到时用解析名，解析不到时用声明引用）。
 	Capability string `json:"capability,omitempty"`
