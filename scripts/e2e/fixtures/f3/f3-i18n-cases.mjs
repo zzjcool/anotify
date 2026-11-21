@@ -8,7 +8,7 @@ export const LOCALE_OUT = path.join(TEAM, 'screenshots/f3locales');
 const NS = '/v1/namespaces/default';
 // #381：登录页默认 tab 跟实例/浏览器状态走（首跑默认落在「注册」），#login-panel 可能
 // 是 hidden。锚点换成两个 tab 都在里面的容器：仍然证「这一页真的渲染了」，不赌默认态。
-const anchors = {admin:'#kpi-devices',capabilities:'[data-cap]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',login:'.auth-tabs',message:'#task-facts',namespace:'#ns-name',namespaces:'#ns-list [data-ns]',node:'#node-slots',nodes:'[data-node]','passkey-enroll':'#code-input',playbook:'#pb-file-path',playbooks:'#pb-grid [data-slug]',receivers:'#current-device-card',security:'#passkey-list',source:'#src-name',
+const anchors = {admin:'#kpi-devices',capabilities:'[data-cap]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',login:'.auth-tabs',message:'#task-facts',namespace:'#ns-name',namespaces:'#ns-list [data-ns]',node:'#node-slots',nodes:'[data-node]','passkey-enroll':'#code-input',playbook:'#pb-installs',playbooks:'#pb-grid [data-slug]',receivers:'#current-device-card',security:'#passkey-list',source:'#src-name',
   // 源只读详情页：渲染成功后才带 data-source（空态/404 不带），所以它是吊吊的事实锤。
   'source-detail':'#src-detail[data-source]',
   sources:'#src-list [data-name]',trace:'#trace-tasks [data-task]'};
@@ -257,12 +257,18 @@ async function resourceStates(d,lang) {
   await scan(d,lang,f);
   const prior=await d.response(NS+'/capabilities',{apiVersion:'anotify/v1',kind:'Capability',metadata:{name:'f3-locale-cap'},spec:{next:[],run:{entrypoint:'run.sh',files:{'run.sh':'#!/bin/sh\necho locale\n'}}}},'POST');assert.equal(prior.status,201);
   await d.goto('playbook','namespace=default&id='+encodeURIComponent(f.pb),lang);
+  /* #521：值表单与主按钮在抽屉里 —— 先开抽屉再点安装，与真人操作同序。 */
+  await d.page.locator('#pb-install-open').click();
+  await d.page.locator('#pb-install-drawer').waitFor({state:'visible'});
   await d.page.locator('#btn-install').click();await d.page.waitForFunction(()=>__f3Calls.some(c=>c.url.endsWith('/install')&&c.httpStatus===200));
   await d.page.locator('#btn-rescan').click();
   await hasText(d,'#pb-unapplied','pb.v4.unapplied');
   assert.ok((await d.page.locator('#pb-unapplied').innerText()).includes('f3-locale-missing'),'Unapplied next is genuine resource graph, not static heading');
   assert.ok((await d.calls()).some(c=>c.url.endsWith('/install')&&c.result?.install?.id&&c.result?.skipped?.capabilities?.length),'Installed reused resource receipt nonempty');
-  await scan(d,lang,f);d.check('Actual package install receipt and unapplied next graph exact locale');
+  /* 抽屉在 #page-main 之外，它的文案也要进「无残留 / 无裸 key」的扫描面。 */
+  await d.page.locator('#pb-install-open').click();
+  await d.page.locator('#pb-install-drawer').waitFor({state:'visible'});
+  await scan(d,lang,f);d.check('Actual package install receipt and unapplied next graph exact locale, drawer copy included');
 }
 async function taskStates(d,lang) {
   const f=await fixture(d),waiting=f.tasks.find(x=>x.status.waitingReason==='retry_backoff'&&x.status.attempts?.length),expired=f.tasks.find(x=>x.status.result?.artifacts?.length&&x.status.phase==='failed');

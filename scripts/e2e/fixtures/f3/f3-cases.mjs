@@ -319,7 +319,7 @@ const queryFor=(file,d)=>file==='namespace'?'namespace=default&name=default':fil
 // 推送是关闭的 —— 按设计此时页面上不存在 #current-device-card（只在 push 开放分支
 // 创建，ux_regression_19_23 断言 card===null），所以 real 锚点必须是"永远存在"的
 // 真实控制器输出 #push-count（mock 权威下同样存在，两个权威都不放水）。
-const pageAnchors={admin:'#kpi-devices',capabilities:'[data-cap="fixer"]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',message:'#task-facts',namespace:'#namespace-vars:not([disabled])',namespaces:'#ns-list [data-ns]',node:'#node-machine-vars [data-key]',nodes:'[data-node="anode-1"]','passkey-enroll':'#code-input',playbook:'#pb-file-path',playbooks:'#pb-grid [data-slug]',receivers:'#push-count',security:'#passkey-list',source:'#src-name',
+const pageAnchors={admin:'#kpi-devices',capabilities:'[data-cap="fixer"]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',message:'#task-facts',namespace:'#namespace-vars:not([disabled])',namespaces:'#ns-list [data-ns]',node:'#node-machine-vars [data-key]',nodes:'[data-node="anode-1"]','passkey-enroll':'#code-input',playbook:'#pb-installs',playbooks:'#pb-grid [data-slug]',receivers:'#push-count',security:'#passkey-list',source:'#src-name',
   // 源只读详情页：data-source 只在真的读到一个源之后才落盘（空态/404 不带它）。
   'source-detail':'#src-detail[data-source]',
   sources:'#src-list > div[data-name]',trace:'#trace-tasks [data-task]'};

@@ -1,6 +1,20 @@
 // New F3 registered behavior: bootstrap, node ABA, full install matrix and historical recursive masking.
 import assert from 'node:assert/strict';
 import { acceptOpenDialog } from './f3-dialogs.mjs';
+/* #521：安装的输入、主按钮与「高级」折叠都在抽屉里 —— 点控件前先打开（id 未改，改的只是步骤）。 */
+const openDrawer = async page => {
+  const state = await page.evaluate(() => {
+    const drawer = document.getElementById('pb-install-drawer');
+    return { hidden: drawer.classList.contains('hidden'), closing: drawer.classList.contains('is-closing') };
+  });
+  if (state.closing) await page.locator('#pb-install-drawer').waitFor({ state: 'hidden' });
+  if (state.hidden || state.closing) await page.locator('#pb-install-open').click();
+  await page.locator('#pb-install-drawer').waitFor({ state: 'visible' });
+};
+const openAdvanced = async page => {
+  const box = page.locator('details:has(#btn-render)');
+  if (!(await box.evaluate(node => node.open === true))) await page.locator('details:has(#btn-render) > summary').click();
+};
 export async function bootstrap(d) {
   const {page,goto,calls,req,check}=d;
   await goto('sources','namespace=prod');
@@ -104,15 +118,15 @@ export async function matrix(d) {
     }
     if(cell===11){files=matrixFile(name,{source:true,target:'f3-not-present'});const cur=await req(base+'?includeBody=true');await req(base,{method:'PUT',body:JSON.stringify({apiVersion:'anotify/v1',kind:'Playbook',metadata:{name,namespace:'default',resourceVersion:cur.metadata.resourceVersion},spec:{files}})});}
     assert.equal(pb.kind,'Playbook');
-    await goto('playbook','namespace=default&id='+name);await page.locator('#btn-install:not([disabled])').waitFor();
+    await goto('playbook','namespace=default&id='+name);await openDrawer(page);await page.locator('#btn-install:not([disabled])').waitFor();
     const before=await d.snapshot();
-    await page.click('#btn-dry-run');await page.waitForFunction(()=>!document.getElementById('btn-dry-run').disabled);
+    await openAdvanced(page);await page.click('#btn-dry-run');await page.waitForFunction(()=>!document.getElementById('btn-dry-run').disabled);
     assert.equal(await d.snapshot(),before,'matrix '+cell+' dryRun zero resources/receipts');
     const dry=(await calls()).findLast(c=>c.url.endsWith('/install'));
     assert.ok(dry,'Actual dryRun request');
     let old=null;
     if(source){const prior=await response('/v1/namespaces/default/sources/'+name+'-source');assert.ok([200,404].includes(prior.status));if(prior.status===200)old=prior.body;}
-    await page.click('#btn-install');await page.waitForFunction(()=>!document.getElementById('btn-install').disabled);
+    await openDrawer(page);await page.click('#btn-install');await page.waitForFunction(()=>!document.getElementById('btn-install').disabled);
     const call=(await calls()).findLast(c=>c.url.endsWith('/install')),r=call.result;
     if([6,10].includes(cell)) {
       assert.equal(call.httpStatus,400);assert.ok(r.details.conflicts.length);
@@ -156,16 +170,20 @@ export async function historyMask(d) {
   }).map(([p,v])=>[p,JSON.stringify(v)]));
   await goto('playbooks');await req('/v1/namespaces/prod/playbooks',{method:'POST',body:JSON.stringify({apiVersion:'anotify/v1',kind:'Playbook',metadata:{name,namespace:'prod'},spec:{files}})});
   await goto('playbook','namespace=prod&id='+name);
+  await openDrawer(page);
   await page.locator('details:has(#pb-values-json) > summary').click();
   const receipts=[];
   for(const [i,values] of [{pin:77,flag:true,blob:{inner:'F3_PRIVATE_OLD_OBJECT'},list:['F3_PRIVATE_OLD_LIST']},{pin:88,flag:false,blob:{inner:'F3_PRIVATE_NEW_OBJECT'},list:['F3_PRIVATE_NEW_LIST']}].entries()) {
+    // 上一轮装完抽屉会收起（#521），每轮先重开再填值。
+
+    await openDrawer(page);
     await page.fill('#pb-values-json',JSON.stringify(values));await page.click('#pb-use-json');
-    await page.click('#btn-render');await page.waitForFunction(()=>!document.getElementById('btn-render').disabled);
+    await openAdvanced(page);await page.click('#btn-render');await page.waitForFunction(()=>!document.getElementById('btn-render').disabled);
     const render=(await calls()).findLast(c=>c.url.endsWith('/render')).result;
     // /render 的响应是**平铺**的 RenderResult（{values,valuesDigest,files,capabilities,sources}），
     // 没有 mock 私有的一层 `documents` 包装。
     assert.equal(render.sources[0].spec.targets[0].params.pin,values.pin);
-    await page.click('#btn-install');await page.waitForFunction(()=>!document.getElementById('btn-install').disabled);
+    await openDrawer(page);await page.click('#btn-install');await page.waitForFunction(()=>!document.getElementById('btn-install').disabled);
     const r=(await calls()).findLast(c=>c.url.endsWith('/install')).result;
     assert.equal(r.valuesDigest,render.valuesDigest);receipts.push(r);
     if(i){const u=r.unapplied.find(u=>u.field==='targets');assert.ok(u);for(const side of ['declared','actual']){for(const k of ['blob','list','pin','flag','mixed'])assert.equal(u[side][0].params[k],'***');assert.equal(u[side][0].params.fixedNumber,77);assert.equal(u[side][0].params.fixedBoolean,true);}}

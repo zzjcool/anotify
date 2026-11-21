@@ -51,13 +51,37 @@ export async function playbook(d,mode){
     await goto('playbooks');
     await req('/v1/namespaces/default/playbooks', { method: 'POST', body: JSON.stringify(envelope(files)) });
     if (install) await req(basePath + '/install', { method: 'POST', body: JSON.stringify({ values: { project: 'a' } }) });
-    await goto('playbook', 'namespace=default&id=project-chain'); await page.locator('#pb-value-project').waitFor();
+    await goto('playbook', 'namespace=default&id=project-chain'); await openDrawer();
+    await page.locator('#pb-value-project').waitFor(); await closeDrawer();
+  };
+  /* #521：安装的输入与主按钮都在抽屉里（「试装/渲染」还在它的「高级」折叠里）——操作前先打开；id 一个都没改。 */
+  const drawerState = async () => page.evaluate(() => {
+    const el = document.getElementById('pb-install-drawer');
+    return { hidden: el.classList.contains('hidden'), closing: el.classList.contains('is-closing') };
+  });
+  const openDrawer = async () => {
+    const state = await drawerState();
+    if (state.closing) await page.locator('#pb-install-drawer').waitFor({ state: 'hidden' });
+    if (state.hidden || state.closing) await page.locator('#pb-install-open').click();
+    await page.locator('#pb-install-drawer').waitFor({ state: 'visible' });
+  };
+  const closeDrawer = async () => {
+    if ((await drawerState()).hidden) return;
+    await page.locator('#pb-drawer-close').click();
+    await page.locator('#pb-install-drawer').waitFor({ state: 'hidden' });
+  };
+  const openDetails = async id => {
+    if (await page.locator(id).evaluate(node => node.open === true)) return;
+    await page.locator(id + ' > summary').click();
   };
   const fill = async (secret = false) => {
+    await openDrawer();
     await page.locator('#pb-value-project').fill('a');
     if (secret) await page.locator('#pb-value-credential').fill(credential);
   };
   const clickAction = async (id, suffix) => {
+    await openDrawer();
+    if (id !== '#btn-install') await openDetails('details:has(#btn-render)');
     const before = (await calls()).length; await page.locator(id).click();
     await page.waitForFunction(([before, suffix]) => __c1Calls.slice(before).some(c => c.url.endsWith(suffix)), [before, suffix]);
     await page.waitForFunction(id => !document.querySelector(id).disabled, id);
@@ -77,7 +101,9 @@ export async function playbook(d,mode){
     await closeImport();
     await page.locator('#pb-grid [data-slug="project-chain"] a').click();
     await page.waitForURL('**/playbook.html?namespace=default&id=project-chain');
-    await page.locator('#pb-value-project').waitFor();
+    /* #521：值表单在抽屉里、模板编辑在默认折叠的进阶区 —— 各展开一次再操作既有控件。 */
+    await openDrawer(); await page.locator('#pb-value-project').waitFor(); await closeDrawer();
+    await openDetails('#pb-template-section');
     assert.equal(await page.locator('#pb-file-content').inputValue(), files['playbook.yaml']);
     await page.locator('#pb-file-path').selectOption('capabilities/fixer.yaml');
     const edited = files['capabilities/fixer.yaml'] + '# edited via raw-file UI\n';
@@ -101,10 +127,39 @@ export async function playbook(d,mode){
     await clean('upload/edit');
   }
   if (mode === 'install') {
-    await seed(false); await fill(true); const before = await facts();
-    // /render 返回的是平铺 RenderResult（api/playbook.yaml·RenderResult）：能力在
-    // response.capabilities、源在 response.sources，**没有** documents 包装，也从不返回
-    // install（dryRun 才有）。"render 是纯的"因此要断言"响应里根本没有 install 键"。
+    await seed(false);
+    /* #521 首屏 = 状态行 + 安装按钮 + 实例列表；版本历史与体检明细默认折叠，安装输入全在抽屉里。 */
+    await page.waitForFunction(() => document.querySelectorAll('#pb-summary [data-status]').length === 3);
+    const statusFacts = await page.locator('#pb-summary [data-status]').evaluateAll(nodes => nodes.map(n => [n.dataset.status, n.textContent.trim()]));
+    assert.deepEqual(statusFacts.map(f => f[0]), ['version', 'instances', 'checkup'], '状态行三件事：版本 / 实例数 / 体检');
+    for (const [key, text] of statusFacts) assert.ok(text.length > 0, '状态行 ' + key + ' 非空：' + JSON.stringify(text));
+    assert.equal(await page.locator('#pb-install-drawer').isVisible(), false, '抽屉默认关闭');
+    assert.equal(await page.locator('#pb-versions-section').evaluate(n => n.open), false, '版本历史默认折叠');
+    assert.equal(await page.locator('#pb-versions').isVisible(), false, '版本历史明细不在首屏');
+    assert.equal(await page.locator('#pb-checkup-section').evaluate(n => n.open), false, '体检默认折叠');
+    assert.equal(await page.locator('#pb-conditions').isVisible(), false, '体检明细不在首屏');
+    await page.locator('#pb-installs').waitFor();
+    assert.equal(await page.locator('#pb-installs').isVisible(), true, '实例列表在首屏');
+    assert.match(await page.locator('#pb-installs').innerText(), /install groups?/i, '实例列表不是空壳');
+    await shot('first-screen-ia');
+    check('Default IA: one status line + install trigger + instance list on screen; version history and checkup detail stay collapsed');
+    await fill(true);
+    /* 360px（比矩阵的 390 更窄）：抽屉与页面都不许横向滚动。 */
+    const viewport = page.viewportSize();
+    await page.setViewportSize({ width: 360, height: 780 });
+    const narrow = await page.evaluate(() => ({
+      page: document.documentElement.scrollWidth, inner: innerWidth,
+      drawer: document.getElementById('pb-install-drawer').scrollWidth,
+      panel: document.querySelector('.pb-drawer-panel').getBoundingClientRect().width,
+    }));
+    assert.ok(narrow.page <= narrow.inner + 2, '360px 页面不得横向滚动：' + JSON.stringify(narrow));
+    assert.ok(narrow.drawer <= narrow.inner + 2, '360px 抽屉不得横向滚动：' + JSON.stringify(narrow));
+    assert.ok(narrow.panel <= narrow.inner, '360px 抽屉面板不超出视口：' + JSON.stringify(narrow));
+    await shot('drawer-360-no-hscroll');
+    await page.setViewportSize(viewport);
+    const before = await facts();
+    // /render 返回平铺 RenderResult（能力在 response.capabilities、源在 response.sources，
+    // 没有 documents 包装、也从不返回 install）："render 是纯的"就断言响应里没有 install 键。
     const rendered = await clickAction('#btn-render', '/render');
     assert.equal(rendered.response.capabilities.length, 2);
     assert.equal(rendered.response.sources.length, 1);
@@ -112,9 +167,8 @@ export async function playbook(d,mode){
     assert.equal(await facts(), before); await shot('pure-render');
     const dry = await clickAction('#btn-dry-run', '/install'); assert.equal(dry.response.install.dryRun, true); assert.equal(await facts(), before);
     assert.equal(dry.response.values.credential, '***');
-    // 契约里 install.id **required: string**（PlaybookInstallRef）：dryRun 也带一个
-    // ins_ 身份（那是“这一次”的身份），区别只在“不进库”。所以断言是
-    // 「id 是真实身份 + 库里一条实例都没有」——mock 与真实服务同一条路径。
+    // install.id 是 required:string（PlaybookInstallRef）：dryRun 也带真实 ins_ 身份，
+    // 区别只在"不进库"——所以断言「id 是真实身份 + 库里查不到实例」。
     assert.match(String(dry.response.install.id), /^ins_/);
     assert.equal((await req(basePath + '/installs')).total, 0, 'dryRun 不得落任何实例');
     await shot('dry-run-zero-writes');
@@ -157,12 +211,10 @@ export async function playbook(d,mode){
     const oldResources = await resources();
     const installed = await clickAction('#btn-install', '/install');
     assert.deepEqual(installed.response.unapplied.map(u => u.reason), ['routing_unapplied', 'targets_unapplied']);
-    // external / pending 里的 ref 是**包里写的那一串**（plan.go·resolveRefs 原样收集），
-    // 不补 `@版本`；notify 真的在库里存在，future-cap 真的不存在。
+    // external / pending 的 ref 是包里写的那一串（plan.go·resolveRefs 原样收集），不补 @版本。
     assert.ok(installed.response.external.includes('notify'), JSON.stringify(installed.response.external));
     assert.ok(installed.response.pending.includes('future-cap'));
-    // 用宿主侧读（d.api）而不是页面 fetch：这两条是"库里有没有"的事实核对，
-    // 不该在浏览器里造两条无关的网络失败。
+    // 用宿主侧读（d.api）而不是页面 fetch：这是"库里有没有"的事实核对，不该造无关的网络失败。
     if (!d.mock) {
       assert.equal((await d.api('/v1/namespaces/default/capabilities/notify')).status, 200);
       assert.equal((await d.api('/v1/namespaces/default/capabilities/future-cap')).status, 404);
@@ -181,8 +233,7 @@ export async function playbook(d,mode){
     }, current.spec.files);
     await req(basePath, { method: 'PUT', body: JSON.stringify(envelope(clash, current.metadata.resourceVersion)) });
     await goto('playbook', 'namespace=default&id=project-chain'); await fill(); const before = await facts();
-    // render 是纯的：响应只有 values/valuesDigest/files/capabilities/sources（没有 documents
-    // 包装、也没有 install），且一次写都没发生。
+    // render 是纯的：响应只有 values/valuesDigest/files/capabilities/sources，且一次写都没发生。
     const pure = (await clickAction('#btn-render', '/render')).response;
     assert.deepEqual(Object.keys(pure).sort(), ['capabilities', 'files', 'sources', 'values', 'valuesDigest']);
     assert.equal(await facts(), before);
@@ -198,9 +249,8 @@ export async function playbook(d,mode){
   }
   if (mode === 'delete') {
     await seed(true); const raw = await stored();
-    // Cross-document evidence restores facts, not mock's private RV counter.
-    // Two genuine concurrent template edits ensure the current token differs
-    // from the UI's original token; no fake CAS response or dropped assertion.
+    // Cross-document evidence restores facts, not mock's private RV counter. Two genuine
+    // concurrent template edits make the current token differ from the UI's original one.
     const changed = { ...raw.spec.files, 'README.md': raw.spec.files['README.md'] + 'Concurrent edit 1\n' };
     const firstEdit = await req(basePath, { method: 'PUT', body: JSON.stringify(envelope(changed, raw.metadata.resourceVersion)) });
     assert.equal(await page.evaluate(() => __c1Transport.findLast(c => c.method === 'PUT').httpStatus), 200, 'First remote PUT HTTP success');
@@ -214,9 +264,9 @@ export async function playbook(d,mode){
     assert.equal((await stored()).spec.files['README.md'], changedAgain['README.md'], 'Second remote edit is stored in original raw spec.files');
     assert.notEqual(changedAgain['README.md'], changed['README.md']);
     assert.notEqual(current.metadata.resourceVersion, raw.metadata.resourceVersion, 'Concurrent PUT setup must advance CAS before testing DELETE409');
+    await openDetails('#pb-danger-section');
     await acceptDialog(page, () => page.locator('#pb-delete').click());
-    /* 409 的提示文案已经本地化（旧断言钉的是 `Stale CAS` 这串英文，与产品文案无关）。
-       改成从运行时字典取值再断言 —— 四语都对，且改词不会假红。 */
+    /* 409 的提示文案已经本地化：从运行时字典取值再断言 —— 四语都对，改词也不会假红。 */
     const staleHint = await page.evaluate(() => window.AnotifyI18n && window.AnotifyI18n['pb.v4.delete_stale']);
     assert.equal(typeof staleHint, 'string', '字典必须有 pb.v4.delete_stale');
     await page.waitForFunction((hint) => (document.querySelector('#pb-delete-state')?.textContent || '').includes(hint), staleHint);
@@ -232,8 +282,7 @@ export async function playbook(d,mode){
     await acceptDialog(page, () => page.locator('#pb-delete').click());
     await page.waitForFunction(() => document.querySelector('#pb-delete-state').textContent.includes('Manifest deleted'));
     const removed = (await calls()).findLast(c => c.method === 'DELETE'); assert.ok(removed.url.includes('?resourceVersion=')); assert.equal(removed.body, undefined);
-    // `kept` 是删清单后保留的资源引用**集合**（能力钉版本 / 源名）：整体内容相等即可，
-    // 顺序不是契约事实（真实服务按名字排序，mock 保持安装顺序）。
+    // `kept` 是保留的资源引用集合（能力钉版本 / 源名）：整体相等即可，顺序不是契约事实。
     assert.deepEqual(removed.response.kept.capabilities.slice().sort(), ['a-review@1', 'a-fixer@1'].sort());
     assert.deepEqual(removed.response.kept.sources.slice().sort(), ['a-push'].sort());
     assert.equal(removed.response.values[0].project, 'a');
@@ -263,13 +312,13 @@ export async function playbook(d,mode){
     const invalid = await clickAction('#btn-render', '/render'); assert.equal(invalid.status, 400); assert.equal(invalid.reason, 'values_missing');
     await shot('actual-values-error');
     for (const lang of ['zh-CN', 'ja', 'es']) {
-      await goto('playbook', 'namespace=default&id=project-chain', lang); await page.locator('#pb-value-project').waitFor();
+      await goto('playbook', 'namespace=default&id=project-chain', lang);
+      /* #521：体检明细默认折叠 —— 先展开，才读得到渲染出来的 type 文本。 */
+      await openDetails('#pb-checkup-section');
       if (d.mock) assert.equal(await page.locator('#pb-conditions [data-condition]').count(), 4);
       else {
-        /* 真实读模型的 conditions **恒为空数组**：resource_playbook.go·statusFor 明写
-         * 「四条 condition 需要能力读模型按 installed_from 查询，store 没有导出这个入口
-         * （contract D0.9），所以这里恒为空数组——不编造 True」。所以这里断言页面条件区
-         * 与 API 的 conditions 逐条一致（数量 + type 文本），而不是写死 4。 */
+        /* 读模型给几条 condition 由服务端定（可能一条都没有），所以断言页面条件区与 API
+         * 逐条一致（数量 + type 文本），而不是写死条数。 */
         const doc = await d.api(basePath);
         assert.ok(Array.isArray(doc.body.status.conditions));
         assert.equal(await page.locator('#pb-conditions [data-condition]').count(), doc.body.status.conditions.length);
@@ -278,6 +327,10 @@ export async function playbook(d,mode){
         }
       }
       assert.ok(!(await page.locator('#page-main').innerText()).includes('pb.v4.'));
+      await openDrawer(); await page.locator('#pb-value-project').waitFor();
+      // #521：抽屉在 #page-main 之外，它的文案要单独扫一遍裸 key。
+      assert.ok(!(await page.locator('#pb-install-drawer').innerText()).includes('pb.v4.'));
+      assert.match(await page.locator('#pb-install-drawer').innerText(), /\S/, '抽屉不是空壳');
     }
     await goto('playbooks');
     const raw = await stored(); await req(basePath + '?resourceVersion=' + raw.metadata.resourceVersion, { method: 'DELETE' });
