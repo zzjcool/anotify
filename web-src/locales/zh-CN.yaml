@@ -1248,7 +1248,7 @@ events:
   refresh: 刷新
   recent: 最近事件
   loading: 正在加载事件…
-  empty: 还没有事件。用 POST /v1/namespaces/{namespace}/events 提交第一个。
+  empty: '还没有事件。Agent 或脚本按接入文档上报后，事件会实时出现在这里。'
   view_chain: 查看链路
   filter:
     trace: Trace ID
@@ -1297,7 +1297,7 @@ events:
     loading: "正在读取真实数据…"
     more: "加载更多"
     trace: "查看链路"
-    event_uid: "事件 UID（非 deliveryId）"
+    event_uid: '事件 UID（与去重键不同）'
     received: "接收时间"
     dispatched: "已派发任务数"
     details: "派发 / 剪枝 / 载荷明细"
@@ -1609,7 +1609,7 @@ prune:
   param_type: 参数类型不符
   no_node: 目标能力没有在线节点
   foreign_user: 跨命名空间/跨用户
-  event_schema: '事件 payload 不符合源的 resultSchema'
+  event_schema: '事件载荷不符合源声明的载荷契约'
   max_hops: 超出 hop 预算（链路太深）
   budget: 本次 trace 任务数超出预算
   no_impl: 目标是占位实现（noop），中枢不会执行它
@@ -1767,7 +1767,7 @@ nodes:
     pending: '待应用：节点配置尚未生效'
     applied: '节点配置已与中枢一致'
     revision: '配置与应用事实'
-    override_stale: "overrideStale：下层默认值更新，但本机覆盖仍生效"
+    override_stale: '下层默认值已更新，但本机覆盖仍生效'
     context: '有效值的命名空间上下文'
     effective_vars: '有效 vars（本机覆盖 > 节点默认，每键标明来源）'
     machine_vars: '节点实际生效的 vars（不含命名空间默认）'
@@ -1863,7 +1863,7 @@ sources:
     intro: "源产生事件；目标能力接收参数。"
     loading: "加载中…"
     empty: "还没有源。可以先创建无目标的入口。"
-    name: "资源名 metadata.name"
+    name: '资源名'
     display: "显示名（可选）"
     kind: '源种类'
     immutable: "资源名和 kind 创建后不可修改；请删除后重建。"
@@ -1871,12 +1871,12 @@ sources:
     tz: "IANA 时区（默认 Local）"
     token: "新 token（写入，不回显）"
     secret: "新 HMAC secret（写入，不回显）"
-    sample: "提示样例 config.sample（不参与派发）"
-    blank_credentials: "编辑时 token/secret 留空不提交，保留已有凭据；读取只有 hookUrl/secretSet。"
+    sample: '提示样例（不参与派发）'
+    blank_credentials: '编辑时把令牌/密钥留空就不会改动，已有凭据保留；页面上只显示 hook 地址与「签名已设置」。'
     hmac: "外部 POST 使用 {type?, id?, payload?} 包装体。已设置 secret 时必须对原始 body 字节计算 HMAC-SHA256，头名 X-Anotify-Signature: sha256=<hex>；缺失/错误为401，不产生事件。"
-    payload: "静态载荷 config.payload（JSON 对象）"
-    schema: "载荷契约 config.payloadSchema（可选）"
-    schema_hint: "每次投递先检查 payloadSchema；不合规事件仍入库并留下 event_schema 剪枝，不派发。"
+    payload: '静态载荷（JSON 对象）'
+    schema: '载荷契约（可选）'
+    schema_hint: '每次投递都先按它校验：不合规的事件照常入库、但不派发，链路里会标一条「载荷不合契约」。'
     targets: "目标能力 targets"
     add_target: "添加目标行"
     remove_target: "删除目标行"
@@ -1892,14 +1892,14 @@ sources:
     suggestions: "载荷字段提示（点击复制引用）"
     suggest_dry: "来自本次试运行输入"
     suggest_event: "来自最近一条真实事件"
-    suggest_sample: "来自 config.sample（仅提示）"
-    suggest_schema: "来自 payloadSchema.properties"
-    suggest_payload: "来自 config.payload"
+    suggest_sample: '取自示例载荷（仅提示）'
+    suggest_schema: '取自载荷契约里的字段'
+    suggest_payload: '取自静态载荷'
     preview: "试运行结果（零持久写入）"
     receipt: "接收回执"
     accepted: "事件已接收，不代表任务执行成功。"
-    duplicate: "重复 deliveryId：返回原事件/trace，不重新派发，也不保证任务成功。"
-    dedup: "deliveryId 默认去重30天：同源同 id 只表示已接收，不保证下游成功；修改 payload/type 或需要重新执行，请用新 id。窗口过期后同 id 可再次接收。无 replay API。"
+    duplicate: '去重键重复：返回原来的事件与链路，不重新派发，也不保证任务成功。'
+    dedup: '去重键默认保留 30 天：同一来源的同一个键只表示「已接收」，不保证下游执行成功；改了内容或要重新执行，请换一个新键。窗口过后同一个键可以再次接收；不支持重放。'
     no_target: "无目标合法：事件/trace 保留，no_target 剪枝，不派发任务。"
     event_id: "事件 ID"
     fire: "立即运行"
@@ -1913,7 +1913,7 @@ sources:
     yaml_create:
       open: "从 YAML 创建"
       title: "从 YAML 创建源"
-      hint: '粘贴一份 Source 文档。<code>spec.config.token</code> / <code>secret</code> 只写不读，保存后只显示 hookUrl。'
+      hint: '粘贴一份 Source 文档。<code>spec.config.token</code> / <code>secret</code> 只写不读，保存后只显示 hook 地址。'
       submit: "创建"
       cancel: "取消"
       created: "已从 YAML 创建源"
@@ -1922,11 +1922,11 @@ sources:
     namespace: "命名空间"
     rv: '版本令牌'
     health: "健康状态"
-    resolved: "targetsResolved（布尔）"
+    resolved: '目标解析'
     last_fire: "最近触发时间"
     next_fire: "下次触发时间"
     last_error: "最近错误"
-    installed: "安装来源 installedFrom"
+    installed: '安装来源'
     config: "配置与状态"
     edges: "只读的目标能力引用"
     graph: "下游配置图"
@@ -1934,7 +1934,7 @@ sources:
     graph_error: "图组件未加载，请重新加载。"
     recent: "最近事件与触发"
     no_events: "还没有事件。"
-    no_name: "链接缺少 metadata.name。请从源列表打开详情。"
+    no_name: '链接里缺少源名。请从源列表重新打开详情。'
     notfound: "源不存在，可能已被删除。"
     object_required: "必须填写 JSON 对象。"
     name_required: "资源名必填。"
@@ -2019,8 +2019,8 @@ sources:
     name_required: 请填名字
     expr_required: 请填 cron 表达式
     targets_required: '至少要选一个目标能力'
-    result_schema: "事件 payload 契约（resultSchema，可选）"
-    result_schema_hint: "可选。填一份 JSON Schema（如 {\"type\":\"object\",\"required\":[\"action\"]}）后，每次投递都先按它校验：不合规的事件照常入库、但不派发，trace 里留一条 event_schema 剪枝。留空 = 不校验。"
+    result_schema: '事件的载荷契约（可选）'
+    result_schema_hint: '可选。填一份 JSON Schema（如 {"type":"object","required":["action"]}）后，每次投递都先按它校验：不合规的事件照常入库、但不派发，链路里标一条「载荷不合契约」。留空 = 不校验。'
     bad_schema: "payload 契约不是合法 JSON：{e}"
     schema_not_object: 'payload 契约必须是 JSON 对象（数组/标量都不算对象）'
     no_caps: '还没有可用能力。先到「能力」页新建能力。'
@@ -2038,7 +2038,7 @@ sources:
     avail_vars: '这个源能提供哪些字段？（点一下复制）'
     av_fill: "点一下填入变量的来源"
     hook_url: "回调地址"
-    hook_url_pending: "保存后生成（形如 /v1/hooks/src_xxx）"
+    hook_url_pending: '保存后生成（形如 <code>/v1/hooks/src_xxx</code>）'
     hook_github: "GitHub 那边怎么配"
     hook_github_events: "只勾这个就够；其它事件不会派发"
     hook_github_secret: "GitHub 的 Secret 由 GitHub 侧校验；本系统暂不校验签名，建议用长随机 token 的 URL"
@@ -2486,7 +2486,7 @@ uxaudit:
       no_param_title: '没有指定节点'
       none: '无'
     sources:
-      dedup_summary: '投递去重与窗口（deliveryId）'
+      dedup_summary: '投递去重与窗口'
       group_basic: '基本'
       group_basic_hint: '名字与种类创建后不可改'
       group_credentials: '接收凭据'

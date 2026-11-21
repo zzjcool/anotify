@@ -1248,7 +1248,7 @@ events:
   refresh: 更新
   recent: 最近のイベント
   loading: イベントを読み込み中…
-  empty: イベントはまだありません。POST /v1/namespaces/{namespace}/events で送信してください。
+  empty: 'イベントはまだありません。Agent やスクリプトが連携ガイドの手順で送信すると、ここにすぐ表示されます。'
   view_chain: チェーンを表示
   filter:
     trace: Trace ID
@@ -1297,7 +1297,7 @@ events:
     loading: "データ読み込み中…"
     more: "さらに読み込む"
     trace: "トレースを開く"
-    event_uid: "イベント UID（deliveryId とは別）"
+    event_uid: 'イベント UID（重複排除キーとは別）'
     received: "受信時刻"
     dispatched: "送出されたタスク"
     details: "送出 / 枝刈り / ペイロード詳細"
@@ -1609,7 +1609,7 @@ prune:
   param_type: パラメータの型が一致しません
   no_node: 対象の能力にオンラインノードがありません
   foreign_user: ネームスペース/ユーザーをまたいでいます
-  event_schema: 'イベント payload がソースの resultSchema を満たしていません'
+  event_schema: 'イベントのペイロードがソースの宣言した契約に適合していません'
   max_hops: hop 予算を超過（チェーンが深すぎます）
   budget: この trace のタスク数が予算を超過しました
   no_impl: 宛先はプレースホルダー（noop）です — ハブは実行しません
@@ -1765,7 +1765,7 @@ nodes:
     pending: 'ConfigPending: ノードの設定は未適用'
     applied: 'ノード設定は中枢と一致しています'
     revision: '設定と適用の状態'
-    override_stale: "overrideStale: 下位の既定値は更新されましたが本機の値が優先です"
+    override_stale: '下位の既定値が更新されましたが、本機の値が優先です'
     context: '有効値の名前空間コンテキスト'
     effective_vars: '有効な vars（本機の上書き > ノード既定、キーごとに出所）'
     machine_vars: 'このノードで実際に有効な vars（名前空間の既定を除く）'
@@ -1861,7 +1861,7 @@ sources:
     intro: "ソースはイベントを生成し、対象の能力にパラメータを渡します。"
     loading: "読み込み中…"
     empty: "ソースがありません。対象のない入口も作成できます。"
-    name: "リソース名 · metadata.name"
+    name: 'リソース名'
     display: "表示名（任意）"
     kind: 'ソース種別'
     immutable: "作成後は名前と種別を変更できません。削除して再作成してください。"
@@ -1869,12 +1869,12 @@ sources:
     tz: "IANA タイムゾーン（既定 Local）"
     token: "新しい token（書き込み専用）"
     secret: "新しい HMAC secret（書き込み専用）"
-    sample: "ヒント用 config.sample（配信には使用しない）"
-    blank_credentials: "編集時に空の token/secret は送信せず既存の資格情報を保持します。読み取りは hookUrl/secretSet のみ。"
+    sample: 'ヒント用の例（配信には使用しない）'
+    blank_credentials: '編集時にトークン／シークレットを空のままにすると変更されず、既存の資格情報が残ります。画面に表示されるのは hook の URL と「署名あり」だけです。'
     hmac: "外部 POST は {type?, id?, payload?}。secret 設定時は本文の生バイトを HMAC-SHA256 で署名し X-Anotify-Signature: sha256=<hex> を付けます。不正な署名は401、イベントは生成されません。"
-    payload: "静的ペイロード · config.payload（JSON オブジェクト）"
-    schema: "ペイロード契約 · config.payloadSchema（任意）"
-    schema_hint: "配信時に payloadSchema を検証します。不適合なイベントも保存し event_schema で枝刈りし、配信しません。"
+    payload: '静的ペイロード（JSON オブジェクト）'
+    schema: 'ペイロード契約（任意）'
+    schema_hint: '配信のたびにまずこれで検証します：適合しないイベントも保存されますが配信されず、トレースに「ペイロードが契約に適合しません」と残ります。'
     targets: "対象の能力 · targets"
     add_target: "対象の行を追加"
     remove_target: "対象の行を削除"
@@ -1890,14 +1890,14 @@ sources:
     suggestions: "ペイロード候補（クリックで参照をコピー）"
     suggest_dry: "今回のプレビュー入力から"
     suggest_event: "最新の実イベントから"
-    suggest_sample: "config.sample から（ヒントのみ）"
-    suggest_schema: "payloadSchema.properties から"
-    suggest_payload: "config.payload から"
+    suggest_sample: '例のペイロードから（ヒントのみ）'
+    suggest_schema: '契約に書かれたフィールドから'
+    suggest_payload: '静的ペイロードから'
     preview: "プレビュー結果（永続書き込みなし）"
     receipt: "受付結果"
     accepted: "イベントを受け付けました。タスク成功を意味しません。"
-    duplicate: "重複 deliveryId：元のイベント/trace を返し、再配信せずタスク成功も保証しません。"
-    dedup: "deliveryId の既定重複排除期間は30日。同じソース/id は受付済みを示すだけです。変更や再実行には新しい id を使ってください。期限後は同じ id も再受付でき、replay API はありません。"
+    duplicate: '重複排除キーの重複：元のイベントとトレースを返し、再配信せず、タスク成功も保証しません。'
+    dedup: '重複排除キーは既定で 30 日間保持します：同じソースの同じキーは「受信済み」を意味するだけで、下流の実行成功を保証しません。内容を変えた場合や再実行には新しいキーを使ってください。期間を過ぎれば同じキーも再受信できますが、再生はできません。'
     no_target: "対象なしも有効：イベント/trace を保持し no_target で枝刈り、タスクはなし。"
     event_id: "イベント ID"
     fire: "今すぐ実行"
@@ -1911,7 +1911,7 @@ sources:
     yaml_create:
       open: "YAML から作成"
       title: "YAML からソースを作成"
-      hint: 'Source ドキュメントを貼り付けてください。<code>spec.config.token</code> / <code>secret</code> は書き込み専用で、保存後は hookUrl のみ表示されます。'
+      hint: 'Source ドキュメントを貼り付けてください。<code>spec.config.token</code> / <code>secret</code> は書き込み専用で、保存後に表示されるのは hook の URL だけです。'
       submit: "作成"
       cancel: "キャンセル"
       created: "YAML からソースを作成しました"
@@ -1920,11 +1920,11 @@ sources:
     namespace: "名前空間"
     rv: 'バージョントークン'
     health: "健全性"
-    resolved: "targetsResolved（真偽値）"
+    resolved: 'ターゲット解決'
     last_fire: "最終実行"
     next_fire: "次回実行"
     last_error: "最終エラー"
-    installed: "インストール元 · installedFrom"
+    installed: 'インストール元'
     config: "設定と状態"
     edges: "読み取り専用の対象参照"
     graph: "下流の構成図"
@@ -1932,7 +1932,7 @@ sources:
     graph_error: "グラフを読み込めません。再読込してください。"
     recent: "最近のイベントと実行"
     no_events: "イベントがありません。"
-    no_name: "リンクに metadata.name がありません。一覧から開いてください。"
+    no_name: 'リンクにソース名がありません。一覧から開き直してください。'
     notfound: "ソースが見つかりません。削除された可能性があります。"
     object_required: "JSON オブジェクトが必要です。"
     name_required: "リソース名は必須です。"
@@ -2017,8 +2017,8 @@ sources:
     name_required: 名前を入力してください
     expr_required: Cron 式を入力してください
     targets_required: 'ターゲット能力を 1 つ以上選択してください'
-    result_schema: "イベント payload 契約（resultSchema、任意）"
-    result_schema_hint: "任意。JSON Schema（例: {\"type\":\"object\",\"required\":[\"action\"]}）を入れると、配信のたびに検証します：契約に合わないイベントは保存されますが配信されず、trace に event_schema の剪枝が残ります。空 = 検証しない。"
+    result_schema: 'イベントのペイロード契約（任意）'
+    result_schema_hint: '任意。JSON Schema（例：{"type":"object","required":["action"]}）を入れると、配信のたびにまずこれで検証します：適合しないイベントも保存されますが配信されず、トレースに「ペイロードが契約に適合しません」と残ります。空欄 = 検証しない。'
     bad_schema: "payload 契約が正しい JSON ではありません: {e}"
     schema_not_object: 'payload 契約は JSON オブジェクトである必要があります（配列/スカラーはオブジェクトではありません）'
     no_caps: '利用可能な能力がありません。先に「能力」ページで作成してください。'
@@ -2036,7 +2036,7 @@ sources:
     avail_vars: 'このソースが提供するフィールド（クリックでコピー）'
     av_fill: "クリックして変数の取得元を入力"
     hook_url: "ペイロード URL"
-    hook_url_pending: "保存後に生成（/v1/hooks/src_xxx の形式）"
+    hook_url_pending: '保存後に生成（<code>/v1/hooks/src_xxx</code> の形式）'
     hook_github: "GitHub 側の設定方法"
     hook_github_events: "これだけで十分です。他のイベントはディスパッチされません"
     hook_github_secret: "Secret は GitHub 側の検証用です。本システムは署名検証をまだ行わないため、URL には長いランダムトークンを使ってください"
@@ -2482,7 +2482,7 @@ uxaudit:
       no_param_title: 'ノードが指定されていません'
       none: 'なし'
     sources:
-      dedup_summary: '配信の重複排除とその期間（deliveryId）'
+      dedup_summary: '配信の重複排除とその期間'
       group_basic: '基本'
       group_basic_hint: '名前と種類は作成後に変更できません'
       group_credentials: '受信の資格情報'

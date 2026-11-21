@@ -1248,7 +1248,7 @@ events:
   refresh: Refresh
   recent: Recent events
   loading: Loading events…
-  empty: No events yet. Submit one with POST /v1/namespaces/{namespace}/events.
+  empty: 'No events yet. Once an Agent or a script reports one the way the integration guide shows, it shows up here right away.'
   view_chain: View chain
   filter:
     trace: Trace ID
@@ -1297,7 +1297,7 @@ events:
     loading: "Loading data…"
     more: "Load more"
     trace: "Open trace"
-    event_uid: "Event UID (not deliveryId)"
+    event_uid: 'Event UID (not the dedup key)'
     received: "Received at"
     dispatched: "Dispatched tasks"
     details: "Dispatch / pruning / payload details"
@@ -1609,7 +1609,7 @@ prune:
   param_type: param type mismatch
   no_node: target capability has no online node
   foreign_user: crosses namespace/user
-  event_schema: 'event payload does not satisfy the source resultSchema'
+  event_schema: 'The event payload does not match the payload contract the source declares'
   max_hops: hop budget exhausted (chain too deep)
   budget: this trace hit its task budget
   no_impl: the target is a placeholder (noop) — the hub will not run it
@@ -1765,7 +1765,7 @@ nodes:
     pending: 'Pending config: node defaults not in effect yet'
     applied: 'Node config matches the hub'
     revision: 'Configuration and version facts'
-    override_stale: "overrideStale: lower default changed; local override still wins"
+    override_stale: 'The lower default changed; your local override still applies'
     context: 'Namespace context of the effective values'
     effective_vars: 'Effective vars (local override > node default, source per key)'
     machine_vars: 'vars in effect on this node (namespace defaults excluded)'
@@ -1861,7 +1861,7 @@ sources:
     intro: "Sources produce events; target capabilities receive params."
     loading: "Loading…"
     empty: "No sources yet. An entry without targets is legal."
-    name: "Resource name · metadata.name"
+    name: 'Resource name'
     display: "Display name (optional)"
     kind: 'Source kind'
     immutable: "Name and kind are immutable after creation; delete and recreate to change them."
@@ -1869,12 +1869,12 @@ sources:
     tz: "IANA timezone (default Local)"
     token: "New token (write-only)"
     secret: "New HMAC secret (write-only)"
-    sample: "Hint sample · config.sample (not dispatched)"
-    blank_credentials: "Blank token/secret are omitted on edit, preserving credentials. Reads expose only hookUrl/secretSet."
+    sample: 'Hint sample (not dispatched)'
+    blank_credentials: 'Leaving token/secret blank on edit changes nothing and keeps the existing credentials; the page only ever shows the hook URL and whether a signature is set.'
     hmac: "External POST uses {type?, id?, payload?}. With a secret, sign the raw body bytes using HMAC-SHA256 and X-Anotify-Signature: sha256=<hex>. Missing/invalid signatures return 401 without events."
-    payload: "Static payload · config.payload (JSON object)"
-    schema: "Payload contract · config.payloadSchema (optional)"
-    schema_hint: "Every delivery checks payloadSchema. Invalid payloads are stored with an event_schema prune, without dispatch."
+    payload: 'Static payload (JSON object)'
+    schema: 'Payload contract (optional)'
+    schema_hint: 'Every delivery is checked against it first: non-conforming events are still stored but not dispatched, and the trace is marked as a payload/contract mismatch.'
     targets: "Target capabilities · targets"
     add_target: "Add target row"
     remove_target: "Remove target row"
@@ -1890,14 +1890,14 @@ sources:
     suggestions: "Payload suggestions (click to copy reference)"
     suggest_dry: "From this preview payload"
     suggest_event: "From the latest real event"
-    suggest_sample: "From config.sample (hints only)"
-    suggest_schema: "From payloadSchema.properties"
-    suggest_payload: "From config.payload"
+    suggest_sample: 'Taken from the sample payload (hints only)'
+    suggest_schema: 'Taken from the contract''s fields'
+    suggest_payload: 'Taken from the static payload'
     preview: "Preview results (zero persistent writes)"
     receipt: "Acceptance receipt"
     accepted: "Event accepted; this does not mean tasks succeeded."
-    duplicate: "Duplicate deliveryId: original event/trace, no redispatch or guarantee of task success."
-    dedup: "deliveryId deduplicates for 30 days by default. The same source/id means accepted, not downstream success. Use a new id for changed payload/type or reruns. After expiry, the same id can be accepted again. No replay API."
+    duplicate: 'Duplicate dedup key: the original event and trace come back, nothing is re-dispatched, and task success is not guaranteed.'
+    dedup: 'The dedup key is kept for 30 days by default: the same key from the same source only means accepted, not that the downstream work succeeded. Changed content or a rerun needs a new key. After the window the same key is accepted again; replaying is not supported.'
     no_target: "No targets is legal: keep event/trace with no_target prune and no tasks."
     event_id: "Event ID"
     fire: "Fire now"
@@ -1911,7 +1911,7 @@ sources:
     yaml_create:
       open: "Create from YAML"
       title: "Create source from YAML"
-      hint: 'Paste a Source document. <code>spec.config.token</code> / <code>secret</code> are write-only; only hookUrl is shown after save.'
+      hint: 'Paste a Source document. <code>spec.config.token</code> / <code>secret</code> are write-only; after saving only the hook URL is shown.'
       submit: "Create"
       cancel: "Cancel"
       created: "Source created from YAML"
@@ -1920,11 +1920,11 @@ sources:
     namespace: "Namespace"
     rv: 'Version token'
     health: "Health"
-    resolved: "targetsResolved (boolean)"
+    resolved: 'Targets resolved'
     last_fire: "Last fired"
     next_fire: "Next fire"
     last_error: "Last error"
-    installed: "Installed from · installedFrom"
+    installed: 'Installed from'
     config: "Config and status"
     edges: "Read-only target references"
     graph: "Downstream configuration"
@@ -1932,7 +1932,7 @@ sources:
     graph_error: "Graph component failed to load; reload."
     recent: "Recent events and fires"
     no_events: "No events yet."
-    no_name: "Link is missing metadata.name. Open details from the sources list."
+    no_name: 'The link is missing the source name. Open the details from the sources list again.'
     notfound: "Source not found; it may have been deleted."
     object_required: "A JSON object is required."
     name_required: "Resource name is required."
@@ -2017,8 +2017,8 @@ sources:
     name_required: Name is required
     expr_required: Cron expression is required
     targets_required: 'Pick at least one target capability'
-    result_schema: "Event payload contract (resultSchema, optional)"
-    result_schema_hint: "Optional. With a JSON Schema here (e.g. {\"type\":\"object\",\"required\":[\"action\"]}) every delivery is checked before dispatch: non-conforming events are still stored but not dispatched, and an event_schema prune shows up in the trace. Empty = no check."
+    result_schema: 'Event payload contract (optional)'
+    result_schema_hint: 'Optional. With a JSON Schema here (e.g. {"type":"object","required":["action"]}) every delivery is checked first: non-conforming events are still stored but not dispatched, and the trace is marked as a payload/contract mismatch. Empty = no check.'
     bad_schema: "payload contract is not valid JSON: {e}"
     schema_not_object: 'payload contract must be a JSON object (arrays/scalars are not objects)'
     no_caps: 'No usable capabilities yet. Create some on the “Capabilities” page first.'
@@ -2036,7 +2036,7 @@ sources:
     avail_vars: 'Which fields does this source provide? (click to copy)'
     av_fill: "Click to fill the variable source"
     hook_url: "Payload URL"
-    hook_url_pending: "Generated after saving (e.g. /v1/hooks/src_xxx)"
+    hook_url_pending: 'Generated after saving (e.g. <code>/v1/hooks/src_xxx</code>)'
     hook_github: "How to configure it on GitHub"
     hook_github_events: "This one is enough; other events are not dispatched"
     hook_github_secret: "GitHub verifies against its own Secret; this system does not verify signatures yet, so use a long random token in the URL"
@@ -2482,7 +2482,7 @@ uxaudit:
       no_param_title: 'No node specified'
       none: 'None'
     sources:
-      dedup_summary: 'Delivery deduplication and its window (deliveryId)'
+      dedup_summary: 'Delivery deduplication and its window'
       group_basic: 'Basics'
       group_basic_hint: 'Name and kind cannot change after creation'
       group_credentials: 'Ingest credentials'

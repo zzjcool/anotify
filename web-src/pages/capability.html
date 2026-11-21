@@ -2189,7 +2189,7 @@
           showBanner(
             "error",
             t("caps.conflict.title", "资源已被别人改动（409 resource_version_conflict）"),
-            sub(t("caps.conflict.body", "服务端当前的 resourceVersion 是 {rv}；你本地的输入都还在。重新载入最新会丢弃本地修改。"), { rv }),
+            sub(t("caps.conflict.body", "服务端当前的版本令牌是 {rv}；你本地的输入都还在。重新载入最新会丢弃本地修改。"), { rv }),
             [reload],
           );
           return;
@@ -2368,7 +2368,7 @@
           t("caps.delete.body", "确认删除「{name}」？删除只删这个能力本身，不级联改引用方：其它能力或源引用它会解析不到（由 status 报缺失）。"),
           { name: META.name },
         );
-        $("del-rv").textContent = sub(t("caps.delete.rv", "当前 resourceVersion：{rv}"), { rv: META.resourceVersion || "—" });
+        $("del-rv").textContent = sub(t("caps.delete.rv", "当前版本令牌：{rv}"), { rv: META.resourceVersion || "—" });
         $("del-msg").classList.add("hidden");
         openModal($("del-modal"));
       }
@@ -2426,9 +2426,9 @@
               const fresh = await capApi(m.name);
               DEL.res = fresh;
               const fm = model.capability(fresh);
-              $("del-rv").textContent = sub(t("caps.delete.rv", "当前 resourceVersion：{rv}"), { rv: fm.resourceVersion || "—" });
+              $("del-rv").textContent = sub(t("caps.delete.rv", "当前版本令牌：{rv}"), { rv: fm.resourceVersion || "—" });
               msg.textContent = sub(
-                t("caps.delete.conflict", "这个能力刚被别人改过（409）。已重新载入最新 resourceVersion {rv}；请确认后再点一次删除，不会自动重试。"),
+                t("caps.delete.conflict", "这个能力刚被别人改过（409）。已重新载入最新版本令牌 {rv}；请确认后再点一次删除，不会自动重试。"),
                 { rv: e.currentResourceVersion || fm.resourceVersion || "—" },
               );
             } catch (e2) {

@@ -71,7 +71,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { LANGS, ParseError, parseLocale } from "./check-i18n-keys.mjs";
+import { LANGS, ParseError, extractRefs, parseLocale } from "./check-i18n-keys.mjs";
 
 /** 豁免标记（值所在行或上一行的注释里）。理由必填。 */
 export const EXEMPT_MARKER = "ui-copy-ok";
@@ -225,6 +225,7 @@ export const IMPL_WORDS = [
 /** 代码/协议上下文：命在这里面的实现词是「照抄协议」，不是产品文案。 */
 const CODE_TAGS = new Set(["code", "pre", "kbd", "samp"]);
 const CODE_CLASSES = new Set(["dev", "devf", "dev-only", "method", "code-body", "doc-code"]);
+const LITERAL_CLASSES = new Set(["code-body", "doc-code"]);
 
 /** 找出一段文本里 `<code>…</code>` / `<pre>…</pre>` 的区间（含标签本身）。 */
 export function codeRanges(text) {
@@ -259,7 +260,67 @@ export function implWordHit(text, ranges = codeRanges(text)) {
  * 页面数留了删页的余量（真实删页就同步下调）；文本节点数同理，但不允许归零 ——
  * 「扫出空集却报绿」正是这个检查最怕的假绿形态。
  */
-const FLOORS = { files: 4, values: 9000, pages: 20, pageNodes: 160, implNodes: 90 };
+const FLOORS = { files: 4, values: 9000, pages: 20, pageNodes: 160, implNodes: 90, proseNodes: 70 };
+
+export function blankLiterals(text) { // 把字面量区间抹成等长空格：命中下标仍对得上原文，句子里剩下的才算散文
+	const ranges = codeRanges(text);
+	if (!ranges.length) return text;
+	let out = "";
+	let at = 0;
+	for (const [a, b] of ranges) {
+		out += text.slice(at, a) + " ".repeat(b - a);
+		at = b;
+	}
+	return out + text.slice(at);
+}
+
+export function isProse(text) { // #470 的句子判据：中文（含日文假名）一个字符即散文；拉丁文要三个词才算句子（端点路径与 {占位} 不是词）
+	if (/[\u3040-\u30ff\u3400-\u9fff]/.test(text)) return true;
+	const words = text.replace(/[\w{}$.:-]*\/[\w{}$./:-]*/g, " ").match(/[A-Za-z][\w'-]*/g) ?? [];
+	return words.length >= 3;
+}
+
+export const FILE_ALLOWLIST = [ // #470 Q2：显式文件级白名单（禁止通配），只列「整页就是接口说明」的页面
+	{ file: "web-src/pages/docs.html", why: "技术文档页：接入步骤/端点表/参数表就是这一页的正文，方法名与端点属于它要讲的内容" },
+];
+
+export const EXEMPT_KEYS = [ // 面板不是文件，所以按**精确 key** 登记（每条带理由，同样禁止通配）
+	{ key: "nodes.v4.yaml_title", why: "「原始 YAML（高级）」面板标题：这份文档的型别（apiVersion/kind）就是面板里那几行的抬头，删了用户认不出贴的是什么" },
+];
+
+export const PROSE_RULES = [ // #470：三条「散文里讲协议」的窄规则；minHits = 自测红样例里必须命中的条数（正则写坏就立刻红）
+	{
+		id: "method-endpoint-prose",
+		why: "散文里给用户派活：方法名 + 端点只该出现在代码样例或接入文档；界面说「点哪里、会怎样」",
+		re: /(?<![\w-])(?:GET|POST|PUT|PATCH|DELETE)(?![\w-])[^\n]{0,24}?\/[A-Za-z0-9{…]/,
+		minHits: 4,
+	},
+	{
+		id: "cas-prose",
+		why: "CAS / resourceVersion 是协议令牌名：界面说「保存时服务端会校验版本，过期就让你先重载」，409 这类用户真会看到的状态码照留",
+		re: /(?<![\w-])(?:CAS|resourceVersion)(?![\w-])/,
+		minHits: 4,
+	},
+	{
+		id: "wire-token-prose",
+		why: "端点路径与 wire 字段名（spec./metadata./deliveryId…）不进用户说明句：要说的信息用用户视角写出来",
+		re: /\/v\d+\/|(?<![\w-])(?:spec|status|metadata|config)\.[a-z][\w.]*|(?<![\w-])(?:deliveryId|payloadSchema|resultSchema|idemKey|installedFrom|targetsResolved|hookUrl|secretSet|appliedRevision|configRevision|apiVersion|overrideStale|event_schema)(?![\w-])/,
+		minHits: 5,
+	},
+];
+
+export function allowlistedFile(file) {
+	return FILE_ALLOWLIST.find((a) => a.file === file) ?? null;
+}
+
+export function exemptKeyReason(key, keyRefs) { // key 的**全部**引用点都落在白名单文件里 ⇒ 这条语言的用户看不到它（文件级判据，不是 key 名前缀）
+	const exact = EXEMPT_KEYS.find((e) => e.key === key);
+	if (exact) return exact.why;
+	const refs = keyRefs?.get(key);
+	if (!refs || refs.size === 0) return null;
+	for (const f of refs) if (!allowlistedFile(f)) return null;
+	return `引用面全在白名单文件里：${[...refs].join(", ")}`;
+}
 
 /**
  * 取一行的注释部分：第一个「不在引号里的 `#`」到行尾。没有注释返回 ""。
@@ -305,17 +366,25 @@ export function readExemption(comment) {
  * @param {string} text
  * @param {string} file 报错用的文件名
  */
-export function scanLocale(text, file = "<memory>") {
+export function scanLocale(text, file = "<memory>", opts = {}) {
 	const { entries } = parseLocale(text, file);
 	const lines = text.split("\n");
 	/** 每条违规：{ file, line, key, ruleId, why, hit, value, exempted, reason } */
 	const violations = [];
 	let values = 0;
+	const fileWhy = allowlistedFile(file)?.why ?? null;
+	const exempt = (key, comment) => {
+		if (fileWhy) return { marked: true, reason: fileWhy };
+		const keyWhy = exemptKeyReason(key, opts.keyRefs);
+		return comment.marked ? comment : keyWhy ? { marked: true, reason: keyWhy } : comment;
+	};
 
 	for (const [key, { line, value }] of entries) {
 		if (!value.trim()) continue;
 		values += 1;
 		const impl = implWordHit(value);
+		const prose = blankLiterals(value); // #470：散文规则只看字面量外面剩下的那句
+		const isSentence = isProse(prose);
 		for (const rule of RULES) {
 			const m = value.match(rule.re);
 			if (!m) continue;
@@ -337,6 +406,26 @@ export function scanLocale(text, file = "<memory>") {
 				blankReason: ex.marked && ex.reason === "",
 			});
 		}
+		for (const rule of PROSE_RULES) {
+			if (!isSentence) continue;
+			const m = prose.match(rule.re);
+			if (!m) continue;
+			const own = readExemption(commentPart(lines[line - 1] ?? ""));
+			const prev = line >= 2 ? readExemption(commentPart(lines[line - 2] ?? "")) : { marked: false, reason: "" };
+			const ex = exempt(key, own.marked ? own : prev);
+			violations.push({
+				file,
+				line,
+				key,
+				ruleId: rule.id,
+				why: rule.why,
+				hit: m[0],
+				value,
+				exempted: ex.marked && ex.reason !== "",
+				reason: ex.reason,
+				blankReason: ex.marked && ex.reason === "",
+			});
+		}
 		if (impl) {
 			const own = readExemption(commentPart(lines[line - 1] ?? ""));
 			const prev = line >= 2 ? readExemption(commentPart(lines[line - 2] ?? "")) : { marked: false, reason: "" };
@@ -355,7 +444,7 @@ export function scanLocale(text, file = "<memory>") {
 			});
 		}
 	}
-	return { violations, values };
+	return { violations, values, exemptKeys: EXEMPT_KEYS.filter((e) => entries.has(e.key)).map((e) => e.key) };
 }
 
 /* ---------- 页面模板（#458）：只取「会渲染给用户看」的文本节点 ---------- */
@@ -440,6 +529,10 @@ function inCodeContext(stack) {
 	);
 }
 
+function inLiteralContext(stack) { // #470：契约的豁免面是 pre/code 里的示例本身，不含「开发者信息」折叠里的标签文字
+	return stack.some((e) => CODE_TAGS.has(e.tag) || e.classes.some((c) => LITERAL_CLASSES.has(c)));
+}
+
 function parseTag(raw) {
 	const m = /^\/?\s*([a-zA-Z][a-zA-Z0-9-]*)/.exec(raw);
 	if (!m) return null;
@@ -456,11 +549,12 @@ function textNodeLines(masked) {
 	let buf = "";
 	let bufLine = 1;
 	let bufDev = false;
+	let bufLiteral = false;
 	let line = 1;
 	const stack = [];
 	const flush = () => {
 		const v = buf.replace(/\s+/g, " ").trim();
-		if (v) out.push({ line: bufLine, text: v, dev: bufDev });
+		if (v) out.push({ line: bufLine, text: v, dev: bufDev, literal: bufLiteral });
 		buf = "";
 	};
 	const n = masked.length;
@@ -533,6 +627,7 @@ function textNodeLines(masked) {
 		if (!buf) {
 			bufLine = line;
 			bufDev = inCodeContext(stack);
+			bufLiteral = inLiteralContext(stack);
 		}
 		buf += c;
 		i += 1;
@@ -567,9 +662,13 @@ export function scanPage(text, file = "<memory>", opts = {}) {
 	const nodes = textNodeLines(masked);
 	const violations = [];
 	let implNodes = 0;
+	let proseNodes = 0;
+	const fileWhy = allowlistedFile(file)?.why ?? null;
 	for (const node of nodes) {
 		const checked = !node.dev;
 		if (checked) implNodes += 1;
+		const prose = !node.literal && !fileWhy;
+		if (prose) proseNodes += 1;
 		const push = (ruleId, why, hit) => {
 			const own = pageExemption(lines[node.line - 1] ?? "");
 			const prev = node.line >= 2 ? pageExemption(lines[node.line - 2] ?? "") : { marked: false, reason: "" };
@@ -596,8 +695,13 @@ export function scanPage(text, file = "<memory>", opts = {}) {
 			const impl = implWordHit(node.text, []);
 			if (impl) push("impl-word", "实现词（审计 §3.2）：用户界面说「能做什么」，不说协议字段名", impl.word);
 		}
+		if (!prose) continue;
+		for (const rule of PROSE_RULES) {
+			const m = node.text.match(rule.re);
+			if (m && isProse(node.text)) push(rule.id, rule.why, m[0]);
+		}
 	}
-	return { violations, nodes: nodes.length, implNodes, defines };
+	return { violations, nodes: nodes.length, implNodes, proseNodes, defines };
 }
 
 /** 自测用：红样例必须真红（且命中指定规则），绿样例必须完全无违规。 */
@@ -636,6 +740,19 @@ const SELF_TEST = {
 		{ text: `docs:\n  x: "用 PUT 整体替换模板"\n`, rule: "impl-word" },
 		// TODO
 		{ text: `a:\n  b: "TODO: 换成真数据"\n`, rule: "dev-todo" },
+		{ text: `events:\n  empty: "还没有事件。用 POST /v1/namespaces/{namespace}/events 提交第一个。"\n`, rule: "method-endpoint-prose" },  // #470 R1：散文里的「方法名 + 端点」
+		{ text: `pb:\n  intro: "安装是单独的 POST …/install，部署是能力的 POST …/deploy。"\n`, rule: "method-endpoint-prose" },
+		{ text: `pb:\n  hint: "以 PUT /v1/playbooks/{name} 整体替换模板"\n`, rule: "method-endpoint-prose" },
+		{ text: `events:\n  empty: "No events yet. Submit one with POST /v1/namespaces/{namespace}/events."\n`, rule: "method-endpoint-prose" },
+		{ text: `nodes:\n  save: "以当前 CAS 保存"\n`, rule: "cas-prose" },  // #470 R2：CAS / resourceVersion 出现在句子里（409 这类用户真会看到的状态码不在词表里）
+		{ text: `nodes:\n  stale: "409：CAS 已过期，先重载再保存。"\n`, rule: "cas-prose" },
+		{ text: `sources:\n  rv: "当前 resourceVersion 是 {rv}"\n`, rule: "cas-prose" },
+		{ text: `caps:\n  hint: "Saving uses CAS; a stale token comes back as 409."\n`, rule: "cas-prose" },
+		{ text: `sources:\n  name: "资源名 metadata.name"\n`, rule: "wire-token-prose" },  // #470 R3：端点路径与 wire 字段名混进用户说明句
+		{ text: `sources:\n  pending: "保存后生成（形如 /v1/hooks/src_xxx）"\n`, rule: "wire-token-prose" },
+		{ text: `sources:\n  dedup: "deliveryId 默认去重 30 天"\n`, rule: "wire-token-prose" },
+		{ text: `sources:\n  hint: "每次投递先检查 payloadSchema；不合规事件仍入库"\n`, rule: "wire-token-prose" },
+		{ text: `events:\n  uid: "Event UID (not deliveryId)"\n`, rule: "wire-token-prose" },
 	],
 	green: [
 		// 恢复码格式提示：`XXXX-XXXX` 不是 TODO / 不是占位数据
@@ -666,6 +783,10 @@ const SELF_TEST = {
 		`nodes:\n  save: "保存"\n`,
 		// 注解里的 `#` 与值里的普通数字
 		`docs:\n  retain: "默认 604800 秒，最大 2592000 秒"\n`,
+		`docs:\n  toc_events: "POST /v1/namespaces/{namespace}/events"\n`,  // #470 绿侧：纯端点值（表格单元格/TOC）不是散文，两个 token 而已
+		`nodes:\n  dev_delivery: "deliveryId"\n`,  // #470 绿侧：开发者信息折叠里的**标签**就是字段名本身，没有句子
+		`sources:\n  hint: "字段 <code>spec.config.token</code> 只写不读"\n`,  // #470 绿侧：协议词在 <code> 里 = 照抄协议
+		`nodes:\n  stale_ok: "409：你手里的版本旧了，先重载再保存。"\n`,  // #470 绿侧：Q1 的判据 —— 409 + 「先重载再存」是可执行信息，保留且不触发任何规则
 	],
 	// 豁免：上一行带理由 → 绿；行内带理由 → 绿；标记了但没理由 → 仍然红。
 	exempt: [
@@ -691,6 +812,9 @@ const SELF_TEST = {
 			{ html: `{{define "content"}}<p>写给维护者</p>{{end}}\n`, rule: "zh-dev-audience", line: 1, renderedDefines: ["content"] },
 			// 实现词写进可见正文（不是代码块、不是 dev 容器）
 			{ html: `<div>\n  <p>以当前 CAS 保存</p>\n</div>\n`, rule: "impl-word", line: 2 },
+			{ html: `<div>\n  <p>保存时用 PUT /v1/nodes/{name}/yaml 提交整份文档</p>\n</div>\n`, rule: "method-endpoint-prose", line: 2 },  // #470：同一类叙述落在页面 <p> 里照样红（散文规则与 impl-word 是同一条线上的两段）
+			{ html: `<div>\n  <p>两个页面并发写时靠 CAS 判定，版本旧了就报 409</p>\n</div>\n`, rule: "cas-prose", line: 2 },
+			{ html: `<div>\n  <p>目标解析结果放在 metadata.annotations 里</p>\n</div>\n`, rule: "wire-token-prose", line: 2 },
 			{ html: `<div>\n  <p>当前 resourceVersion 已过期</p>\n</div>\n`, rule: "impl-word", line: 2 },
 		],
 		green: [
@@ -710,6 +834,7 @@ const SELF_TEST = {
 			{ html: `<pre>GET /v1/nodes/{name}/config\ncurl -fsSL https://&lt;hub&gt;/install-anode.sh | sh</pre>\n`, nodes: 2 },
 			// 正常散文（真实页面上就有这种）：必须真抽到
 			{ html: `<div>\n  <p>下面这几条是产品行为里最容易误读的地方，出问题时按它们对账。</p>\n</div>\n`, nodes: 1 },
+			{ html: `<pre>\n保存时用 PUT /v1/nodes/{name}/yaml 提交整份文档\n</pre>\n`, nodes: 1 },  // #470 绿侧：同一句话放进 <pre> 就是示例本身（M4 的自测版：不是靠全员变红过关）
 			// 实现词（审计 §3.2）的结构化例外：<pre> / <code> / class 含 dev 的容器 / data-dev / HTML 注释
 			{ html: `<pre>PUT /v1/nodes/{name}/config\nresourceVersion: 3</pre>\n`, nodes: 2 },
 			{ html: `<p>字段名 <code>spec.vars</code> 由服务端管。</p>\n`, nodes: 3 },
@@ -823,6 +948,26 @@ export function selfTest(log = console.log) {
 		expect(pass, `page-exempt-${i + 1} 期望 ${c.ok ? "绿" : "红"}，实际 ${active.length === 0 ? "绿" : `红 ${active.map((v) => v.ruleId).join(",")}`}：${c.html.trim()}`);
 	}
 
+	const proseHits = new Map(PROSE_RULES.map((r) => [r.id, 0]));  // #470：每条散文规则的自测命中数就是它的 minHits 下限 —— 正则写坏成永不命中，这里立刻红。
+	for (const c of SELF_TEST.red) for (const v of scanLocale(c.text, "cover.yaml").violations) if (proseHits.has(v.ruleId) && !v.exempted) proseHits.set(v.ruleId, proseHits.get(v.ruleId) + 1);
+	for (const rule of PROSE_RULES) expect(proseHits.get(rule.id) >= rule.minHits, `散文规则 ${rule.id} 只被 ${proseHits.get(rule.id)} 条样例命中（minHits ${rule.minHits}）：正则写坏了？`);
+	log(`  #470 散文规则命中数（下限 minHits）：${PROSE_RULES.map((r) => `${r.id}=${proseHits.get(r.id)}/${r.minHits}`).join(" · ")}`);
+	for (const a of FILE_ALLOWLIST) expect(!/[*?]/.test(a.file) && a.why.length > 10, `文件白名单 ${a.file} 不许带通配符，且必须写理由`);
+	for (const e of EXEMPT_KEYS) expect(!/[*]/.test(e.key) && e.why.length > 10, `EXEMPT_KEYS 的 ${e.key} 不许带通配符，且必须写理由`);
+
+	const docLine = `<p>保存后会生成形如 /v1/hooks/src_xxx 的地址</p>\n`;  // #470 豁免的判据是**文件**，不是「这句话看着像文档」：同一句话在 docs 页绿、在别的页面红。
+	expect(scanPage(docLine, "web-src/pages/docs.html").violations.filter((v) => !v.exempted).length === 0, "白名单文件（技术文档页）里的端点句必须绿");
+	expect(scanPage(docLine, "web-src/pages/nodes.html").violations.some((v) => v.ruleId === "wire-token-prose"), "非白名单页面里的同一句话必须红");
+	const docsOnly = new Map([["docs.k", new Set(["web-src/pages/docs.html"])]]);
+	const yamlKey = `docs:\n  k: "保存后会生成形如 /v1/hooks/src_xxx 的地址"\n`;
+	expect(scanLocale(yamlKey, "l.yaml", { keyRefs: docsOnly }).violations.filter((v) => !v.exempted).length === 0, "key 只被白名单页面引用 ⇒ 豁免");
+	const mixed = new Map([["docs.k", new Set(["web-src/pages/docs.html", "web-src/pages/nodes.html"])]]);
+	expect(scanLocale(yamlKey, "l.yaml", { keyRefs: mixed }).violations.some((v) => v.ruleId === "wire-token-prose"), "只要有一个引用点不在白名单就要红（豁免不许漏出文档页）");
+	expect(scanLocale(yamlKey, "l.yaml", { keyRefs: new Map() }).violations.filter((v) => !v.exempted).length > 0, "没人引用的 key 不豁免（死文案也得干净，否则删了才敢信）");
+	const segs = EXEMPT_KEYS[0].key.split(".");  // 面板 key 是嵌套的（`nodes.v4.yaml_title` 这类）：按登记表的 key 现场拼出嵌套 YAML，顺带钉住扁平名与嵌套名是同一个 key
+	const panel = `${segs.map((seg, i) => `${"  ".repeat(i)}${seg}:${i === segs.length - 1 ? ' "节点 YAML（apiVersion anotify/v1 · kind Node）"' : ""}`).join("\n")}\n`;
+	expect(scanLocale(panel, "l.yaml", {}).violations.filter((v) => !v.exempted).length === 0, "「原始 YAML（高级）」面板的型别抬头按 EXEMPT_KEYS 豁免");
+
 	// 页面侧反向证明：删掉命中词后转绿（防「页面规则永远红」的假阳性）。
 	const pageStripped = scanPage(`<p>Namespace and system configuration</p>\n`, "page-strip.html");
 	expect(pageStripped.violations.length === 0, "页面删掉命中词后应转绿（否则规则在乱扫）");
@@ -848,8 +993,31 @@ export function selfTest(log = console.log) {
 
 const argOf = (name, def) => process.argv.find((a) => a.startsWith(`--${name}=`))?.split("=")[1] ?? def;
 
+async function keyRefsOf(src) { // key → 引用它的文件集合：只扫静态可判的引用形态（动态拼接的 key 一个都不豁免）
+	const keyRefs = new Map();
+	const roots = [path.resolve(src, "pages"), path.resolve(src, "layouts"), path.resolve("web")];
+	for (const root of roots) {
+		let files;
+		try {
+			files = (await fs.readdir(root)).filter((f) => /\.(html|js)$/.test(f)).sort();
+		} catch {
+			continue;
+		}
+		for (const name of files) {
+			const rel = `${path.relative(process.cwd(), root).split(path.sep).join("/")}/${name}`;
+			const text = await fs.readFile(path.join(root, name), "utf8");
+			for (const r of extractRefs(text, rel).refs) {
+				if (!keyRefs.has(r.key)) keyRefs.set(r.key, new Set());
+				keyRefs.get(r.key).add(rel);
+			}
+		}
+	}
+	return keyRefs;
+}
+
 async function main() {
 	const src = argOf("src", "web-src");
+	const keyRefs = await keyRefsOf(src);
 	const dir = path.resolve(src, "locales");
 	let names;
 	try {
@@ -866,7 +1034,7 @@ async function main() {
 		const text = await fs.readFile(file, "utf8");
 		let got;
 		try {
-			got = scanLocale(text, `${src}/locales/${name}`);
+			got = scanLocale(text, `${src}/locales/${name}`, { keyRefs });
 		} catch (e) {
 			if (e instanceof ParseError) {
 				console.error(`✗ ${e.message}`);
@@ -874,7 +1042,7 @@ async function main() {
 			}
 			throw e;
 		}
-		stats.push({ name, values: got.values, violations: got.violations });
+		stats.push({ name, values: got.values, violations: got.violations, exemptKeys: got.exemptKeys });
 		all.push(...got.violations);
 	}
 
@@ -902,23 +1070,30 @@ async function main() {
 	const rendered = renderedDefineNames([...layoutTexts, ...pageTexts]);
 	let pageNodes = 0;
 	let implNodes = 0;
+	let proseNodes = 0;
 	for (const [i, name] of pageNames.entries()) {
 		const got = scanPage(pageTexts[i], `${src}/pages/${name}`, { renderedDefines: rendered });
 		pageNodes += got.nodes;
 		implNodes += got.implNodes;
+		proseNodes += got.proseNodes;
 		all.push(...got.violations);
 	}
 
-	const counts = `${names.length} 份 locale / ${values} 条值 · ${pageNames.length} 个页面 / ${pageNodes} 个文本节点（实现词检查面 ${implNodes} 个）· ${RULES.length} 条规则 + ${IMPL_WORDS.length} 个实现词`;
-	const floors = `下限 locale≥${FLOORS.files} 份、值≥${FLOORS.values}；页面≥${FLOORS.pages} 个、文本节点≥${FLOORS.pageNodes}、实现词检查面≥${FLOORS.implNodes}`;
+	const counts = `${names.length} 份 locale / ${values} 条值 · ${pageNames.length} 个页面 / ${pageNodes} 个文本节点（实现词检查面 ${implNodes} 个 · 散文检查面 ${proseNodes} 个）· ${RULES.length} 条规则 + ${IMPL_WORDS.length} 个实现词 + ${PROSE_RULES.length} 条散文规则`;
+	const floors = `下限 locale≥${FLOORS.files} 份、值≥${FLOORS.values}；页面≥${FLOORS.pages} 个、文本节点≥${FLOORS.pageNodes}、实现词检查面≥${FLOORS.implNodes}、散文检查面≥${FLOORS.proseNodes}`;
 
 	// 反假绿：扫描面被改窄（少语言、值为空、页面扫不到、文本节点归零）不能算绿。
+	const seenExempt = new Set(stats.flatMap((st) => st.exemptKeys ?? []));
 	const floorBreach = [];
 	if (names.length < FLOORS.files) floorBreach.push(`只解析到 ${names.length} 份 locale（下限 ${FLOORS.files}）`);
 	if (values < FLOORS.values) floorBreach.push(`只解析到 ${values} 条值（下限 ${FLOORS.values}）`);
 	if (pageNames.length < FLOORS.pages) floorBreach.push(`只扫到 ${pageNames.length} 个页面（下限 ${FLOORS.pages}）`);
 	if (pageNodes < FLOORS.pageNodes) floorBreach.push(`只抽到 ${pageNodes} 个页面文本节点（下限 ${FLOORS.pageNodes}）`);
 	if (implNodes < FLOORS.implNodes) floorBreach.push(`实现词检查面只剩 ${implNodes} 个页面文本节点（下限 ${FLOORS.implNodes}）：代码容器标记被写宽了？`);
+	if (proseNodes < FLOORS.proseNodes) floorBreach.push(`散文检查面只剩 ${proseNodes} 个页面文本节点（下限 ${FLOORS.proseNodes}）：字面量判据是不是把整页都当成 <pre> 了？`);
+	for (const e of EXEMPT_KEYS) {
+		if (!seenExempt.has(e.key)) floorBreach.push(`EXEMPT_KEYS 里的 ${e.key} 在 4 份 locale 里都不存在 —— 过期的豁免就是下一次增长的口子，删掉或改名`);
+	}
 	for (const lang of LANGS) {
 		if (!names.includes(`${lang}.yaml`)) floorBreach.push(`缺 ${lang}.yaml`);
 	}
