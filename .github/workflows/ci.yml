@@ -134,6 +134,7 @@ jobs:
     # runner 是 4 vCPU，而每个 Chrome 套件自己还会 spawn 多进程；降到 2 换稳定。
     env:
       E2E_CONCURRENCY: "2"
+      PI_E2E_FULL: "1"
       # runner 比开发机慢 2–3 倍（实测 source-actions/interact-dialogs 在本地 3–5s 通过、
       # 在 runner 上撞 4.5s 默认等待）。这些都是**等待上界**，不是断言：
       #   F3_DEFAULT_TIMEOUT_MS → 页面元素/动作的默认等待
