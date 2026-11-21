@@ -76,6 +76,9 @@ type Target struct {
 	CapabilityID string `json:"-"`
 	// Params 是校验/补默认值后的任务参数（ready 时有效）。
 	Params json.RawMessage `json:"params,omitempty"`
+	// Outcomes 是 router 的**结局表快照**（#522，已按本次事件载荷求值过 payload 段，
+	// decision 段留给判决执行时求值）。空 = 不是 router 任务；不进 wire。
+	Outcomes json.RawMessage `json:"-"`
 	// State ∈ ready / pruned / missing。
 	State string `json:"state"`
 	// Reason / Detail 只在非 ready 时出现，reason 取封闭词表。
@@ -121,6 +124,7 @@ func (p *Plan) Tasks(parentTaskID string) []*store.Task {
 			Version:      t.Version,
 			Digest:       t.Digest,
 			Params:       t.Params,
+			Outcomes:     t.Outcomes,
 			Phase:        store.TaskPending,
 		}
 		if parentTaskID != "" {
@@ -226,7 +230,10 @@ func (r *Router) PlanFromSource(ctx context.Context, src *store.Source, traceID,
 			})
 			continue
 		}
-		rendered, missing := sourcespec.RenderParams(declared, payload)
+		// ★ #522：params 与 outcomes 一次求值（同一个载荷、同一套类型规则）。结局表里
+		// 任何一个 payload 引用取不到都按 param_missing 剪枝整条 target：跑一个「结局表
+		// 少了一半输入」的 router 只会派出一半参数的动作。
+		rendered, outcomes, missing := sourcespec.RenderTarget(declared, payload)
 		if len(missing) > 0 {
 			detail := "需要 " + strings.Join(missing, ", ")
 			plan.Targets = append(plan.Targets, prunedTarget(capability, ref, protocol.ReasonParamMissing, detail))
@@ -234,6 +241,10 @@ func (r *Router) PlanFromSource(ctx context.Context, src *store.Source, traceID,
 				Capability: capability.Name, Reason: protocol.ReasonParamMissing, Detail: detail,
 			})
 			continue
+		}
+		rawOutcomes, oerr := marshalOutcomes(outcomes)
+		if oerr != nil {
+			return nil, oerr
 		}
 		params, prune := PrepareParams(capability.Spec.Params, rendered)
 		if prune != nil {
@@ -255,10 +266,22 @@ func (r *Router) PlanFromSource(ctx context.Context, src *store.Source, traceID,
 		plan.Targets = append(plan.Targets, Target{
 			Ref: ref, Capability: capability.Name, Version: capability.Version,
 			Digest: capability.Digest, CapabilityID: capability.ID,
-			Params: params, State: StateReady,
+			Params: params, Outcomes: rawOutcomes, State: StateReady,
 		})
 	}
 	return plan, nil
+}
+
+// marshalOutcomes 把渲染好的结局表序列化成任务行的快照字节（空表 → nil）。
+func marshalOutcomes(outcomes map[string][]sourcespec.OutcomeAction) (json.RawMessage, error) {
+	if len(outcomes) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(outcomes)
+	if err != nil {
+		return nil, fmt.Errorf("route: 编码 outcomes: %w", err)
+	}
+	return raw, nil
 }
 
 // capabilityAccepting 是「能力能否接受新触发」的唯一判定点（capability-lifecycle §6.1）。
@@ -395,106 +418,16 @@ func (r *Router) PlanFromEmit(ctx context.Context, parent *store.Task, to string
 	return plan, nil
 }
 
-// declaredRef 把一次 emit 的 `to` 解析到父 next 的**声明引用**上（R1-C6）：
-//   - 裸 `to=name` 必须在同 basename 的**唯一**声明里命中（裸声明 = 跟随 latest，唯一
-//     `name@v` = 用 v）；同名多钉版或裸名与钉版混写 → 无法唯一选择 → 未声明（不偷偷 latest）。
-//   - 显式 `to=name@v` 只能匹配精确声明的 `name@v`，不能因 next 里有裸 `name` 就放行。
+// declaredRef 把一次 emit 的 `to` 解析到父 next 的**声明引用**上（R1-C6）。
 //
-// 唯一失败结论仍是 target_not_declared（ErrNotDeclared），不扩错误码。
+// 判据的唯一实现在 sourcespec.DeclaredRef（#522 起 outcome 动作的写入期归属检查
+// 要共用同一份语义：白名单不能有两套）。这里只保留本包的名字，避免调用点改名。
 func declaredRef(next []string, to string) (string, bool) {
-	toName, toVer, toPinned := splitRef(to)
-	if toName == "" {
-		return "", false
-	}
-	if toPinned && toVer < 0 {
-		// 坏版本写法（@3junk/@+3/@ 3/@02/@0）不是精确引用：不匹配任何声明，
-		// 也不能让两个坏写法因「都是 -1」互相命中。
-		return "", false
-	}
-	unique := make(map[string]bool)
-	for _, ref := range next {
-		name, ver, pinned := splitRef(ref)
-		if name != toName {
-			continue
-		}
-		if toPinned {
-			// 显式钉版只认精确声明；坏版本写法（ver<0）永不匹配。
-			if pinned && ver == toVer {
-				return fmt.Sprintf("%s@%d", name, ver), true
-			}
-			continue
-		}
-		if pinned {
-			if ver < 0 {
-				continue // 坏的钉版写法永不匹配（fail closed）
-			}
-			unique[fmt.Sprintf("%s@%d", name, ver)] = true
-		} else {
-			unique[name] = true
-		}
-	}
-	if len(unique) != 1 {
-		return "", false
-	}
-	for ref := range unique {
-		return ref, true
-	}
-	return "", false
+	return sourcespec.DeclaredRef(next, to)
 }
 
 // declaredVersion 取引用里明确声明的版本（裸名 = 0 = 没有声明事实）。
-func declaredVersion(ref string) int {
-	_, ver, pinned := splitRef(ref)
-	if !pinned || ver < 0 {
-		return 0
-	}
-	return ver
-}
+func declaredVersion(ref string) int { return sourcespec.DeclaredVersion(ref) }
 
 // refName 取引用的能力名部分（`name@version` → `name`）。
-func refName(ref string) string {
-	name, _, _ := splitRef(ref)
-	return name
-}
-
-// splitRef 把 `name` / `name@version` 拆成 (name, version, pinned)。
-//
-// 版本只接受**规范十进制正整数**（E1-D2）：`@0` / `@` / `@2junk` / `@+2` / `@ 2` / `@02`
-// 都不是精确引用——旧实现的 `fmt.Sscanf("%d")` 会把它们的数字前缀（或带符号/空格）
-// 当成精确版本，让一个坏引用碰上声明就变成「已声明」。坏写法一律 ver=-1（永不可能
-// 匹配任何声明），仍沿现 not_declared 拒绝，不新 reason。
-func splitRef(ref string) (string, int, bool) {
-	ref = strings.TrimSpace(ref)
-	name, verRaw, found := strings.Cut(ref, "@")
-	if !found {
-		return name, 0, false
-	}
-	version, ok := parsePinnedVersion(verRaw)
-	if !ok {
-		return name, -1, true
-	}
-	return name, version, true
-}
-
-// parsePinnedVersion 严格解析 `@` 后的正整数（不跳空格、不接受符号/尾随字符/前导零）。
-func parsePinnedVersion(raw string) (int, bool) {
-	// >9 位十进制不是业务版本号（也从根上避开 int 溢出）。
-	if raw == "" || len(raw) > 9 {
-		return 0, false
-	}
-	if len(raw) > 1 && raw[0] == '0' {
-		return 0, false
-	}
-	n := 0
-	for i := 0; i < len(raw); i++ {
-		c := raw[i]
-		if c < '0' || c > '9' {
-			return 0, false
-		}
-		n = n*10 + int(c-'0')
-	}
-	if n <= 0 {
-		return 0, false
-	}
-	return n, true
-}
+func refName(ref string) string { return sourcespec.RefName(ref) }
