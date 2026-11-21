@@ -4,7 +4,8 @@
  */
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+
+import { runsAsMain } from "../lib/direct-run.mjs";
 
 
 export const DEFAULT_SHARDS = 3;
@@ -292,7 +293,7 @@ function main() {
 	return 0;
 }
 
-const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+const invokedDirectly = runsAsMain(import.meta.url);
 if (invokedDirectly) {
 	try {
 		process.exit(main());

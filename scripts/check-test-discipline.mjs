@@ -75,6 +75,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { runsAsMain } from "./lib/direct-run.mjs";
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 /* ============================ 基线与登记表 ============================ */
@@ -941,6 +943,5 @@ function main() {
 
 // 只在「被当作脚本执行」时跑 CLI：本文件同时导出纯函数（--self-test 与将来的
 // 单测都要能 import 它而不触发一次全仓扫描）。
-const invokedDirectly =
-	process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const invokedDirectly = runsAsMain(import.meta.url);
 if (invokedDirectly) process.exitCode = main();

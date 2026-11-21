@@ -30,7 +30,8 @@
 import { readFileSync, existsSync, readdirSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+
+import { runsAsMain } from "../lib/direct-run.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
 
@@ -645,8 +646,7 @@ function main() {
 	return 0;
 }
 
-const invokedDirectly =
-	process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+const invokedDirectly = runsAsMain(import.meta.url);
 if (invokedDirectly) {
 	try {
 		process.exit(main());

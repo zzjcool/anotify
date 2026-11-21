@@ -6,6 +6,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
+import { runsAsMain } from "./lib/direct-run.mjs";
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 export const RULE = {
@@ -1083,8 +1085,7 @@ const USAGE = `用法：
   前端 kind 表与服务端文档结构体逐字段同序同集（${RULE.PARITY}）；
   扫描面不得为空（${RULE.FLOOR}）。`;
 
-const isDirectRun =
-	process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+const isDirectRun = runsAsMain(import.meta.url);
 if (isDirectRun) {
 	const argv = process.argv.slice(2);
 	const known = new Set(["--self-test", "--help", "-h"]);

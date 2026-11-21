@@ -42,6 +42,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { runsAsMain } from "./lib/direct-run.mjs";
+
 export const STAMP_NAME = ".source-stamp";
 export const STAMP_VERSION = 1;
 /** 超过这个大小的文件不读内容（只记名字 + 打印），避免把仓库里的巨物吃进内存。 */
@@ -590,7 +592,7 @@ export function selfTest() {
 	return ok;
 }
 
-const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+const isDirectRun = runsAsMain(import.meta.url);
 if (isDirectRun) {
 	const USAGE = [
 		"用法：node scripts/dist-stamp.mjs --write | --check | --self-test",

@@ -37,6 +37,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { runsAsMain } from "./lib/direct-run.mjs";
+
 /** 文档扫面：由浅到深显式声明，缺一个就少一块覆盖，所以列成常量而不是 glob 猜。 */
 export const TARGET_DIRS = ["web-src/pages", "web-src/layouts", "web-src/locales"];
 export const TARGET_FILES = ["README.md", "README.en.md"];
@@ -556,8 +558,7 @@ async function selfTest() {
 	return failed === 0;
 }
 
-const isDirectRun =
-	process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+const isDirectRun = runsAsMain(import.meta.url);
 if (isDirectRun) {
 	if (process.argv.includes("--self-test")) {
 		selfTest()

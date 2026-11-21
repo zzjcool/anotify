@@ -2,9 +2,10 @@
 /* shard.test.mjs — 分片自测：分片错了的代价是漏跑，所以钉死并集/互斥、纯函数、缺片可见。 */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { COST_SECONDS, DEFAULT_SHARDS, planShards, predictedWallSeconds, mergeShards, writeShardInfo } from "./shard.mjs";
 import { registeredSuites } from "./affected.mjs";
@@ -159,4 +160,29 @@ test("CLI：--merge 少了 --expect 直接报用法错误（不许把「整片�
 	});
 	assert.equal(r.status, 2);
 	assert.match(r.stderr, /--expect/);
+});
+
+test("符号链接调用：主逻辑真的执行（#507：import.meta.url 是 realpath，argv[1] 不是）", () => {
+	const dir = tmp();
+	const link = path.join(dir, "alias.mjs");
+	symlinkSync(path.join(ROOT, "scripts/e2e/shard.mjs"), link);
+	const planFile = path.join(dir, "plan.json");
+	writeFileSync(planFile, JSON.stringify({ e2e: { selected: ["contract", "frontend", "i18n", "passkeys"] } }));
+	const outFile = path.join(dir, "gha.out");
+	writeFileSync(outFile, "");
+	const r = spawnSync(process.execPath, [link, "--from-plan", planFile, "--shards", "2", "--github-output"], {
+		env: { ...process.env, GITHUB_OUTPUT: outFile },
+		encoding: "utf8",
+	});
+	assert.equal(r.status, 0, r.stderr);
+	assert.match(r.stdout, /分片：2 片/, "符号链接调用没有任何输出 —— 主逻辑被当成 import 跳过了（fail-open）");
+	assert.match(readFileSync(outFile, "utf8"), /^count=4$/m, "符号链接调用没跑主逻辑，exit 0 只说明它什么都没做");
+});
+
+test("被 import：不执行主逻辑、也不报错（#507 的 argv[1] 缺失分支）", () => {
+	const url = pathToFileURL(path.join(ROOT, "scripts/e2e/shard.mjs")).href;
+	const r = spawnSync(process.execPath, ["-e", `import(${JSON.stringify(url)})`], { encoding: "utf8" });
+	assert.equal(r.status, 0, r.stderr);
+	assert.equal(r.stdout, "");
+	assert.equal(r.stderr, "");
 });

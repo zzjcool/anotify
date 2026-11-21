@@ -28,9 +28,9 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
 import path from "node:path";
 
+import { runsAsMain } from "../lib/direct-run.mjs";
 import {
 	FULL_SURFACES,
 	NO_E2E_IMPACT,
@@ -700,8 +700,7 @@ async function main() {
 }
 
 /* v8 ignore next 3 —— 作为模块被 import 时不跑 CLI */
-const invokedDirectly =
-	process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+const invokedDirectly = runsAsMain(import.meta.url);
 if (invokedDirectly) {
 	main()
 		.then((rc) => process.exit(rc))
