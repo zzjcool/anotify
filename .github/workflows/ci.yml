@@ -191,6 +191,7 @@ jobs:
     env:
       # Chrome 并发 4 在 4 vCPU runner 上会把浏览器打崩（PR #428：「browser has been closed」）。
       E2E_CONCURRENCY: "2"
+      E2E_SUITE_BUDGET_PASSKEYS: "1"
       # 等待上界而不是断言：runner 比开发机慢 2–3 倍（页面/导航/case 三级）。
       F3_DEFAULT_TIMEOUT_MS: "15000"
       F3_NAV_TIMEOUT_MS: "20000"
