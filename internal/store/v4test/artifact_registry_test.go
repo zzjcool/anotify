@@ -269,7 +269,7 @@ func TestC3bResultReferencesCurrentTaskNamespaceAttempt(t *testing.T) {
 	if err := db.AssignTaskAt(ctx, other.ID, node.ID, "other", 1, auth.Now); err != nil {
 		t.Fatal(err)
 	}
-	otherLease, _, otherAttempt, _, err := db.GrantLeaseAuthorized(ctx, nodeAuth, other.ID, "other", 1, 1, auth.Now)
+	otherLease, _, _, otherAttempt, _, err := db.GrantLeaseAuthorized(ctx, nodeAuth, other.ID, "other", 1, 1, auth.Now)
 	// Default maxPerNode=1: an unrelated task can also be created on a separate node.
 	if errors.Is(err, store.ErrSlotUnavailable) {
 		otherNode := newNode(t, db, "node-other", 1)
@@ -277,7 +277,7 @@ func TestC3bResultReferencesCurrentTaskNamespaceAttempt(t *testing.T) {
 		if err := db.AssignTaskAt(ctx, other.ID, otherNode.ID, "other2", 1, auth.Now); err != nil {
 			t.Fatal(err)
 		}
-		otherLease, _, otherAttempt, _, err = db.GrantLeaseAuthorized(ctx, nodeAuth, other.ID, "other2", 1, 0, auth.Now)
+		otherLease, _, _, otherAttempt, _, err = db.GrantLeaseAuthorized(ctx, nodeAuth, other.ID, "other2", 1, 0, auth.Now)
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -303,7 +303,7 @@ func TestC3bResultReferencesCurrentTaskNamespaceAttempt(t *testing.T) {
 	if err := db.AssignTaskAt(ctx, task.ID, node.ID, "again", 2, auth.Now+65); err != nil {
 		t.Fatal(err)
 	}
-	nextLease, _, nextAttempt, _, err := db.GrantLeaseAuthorized(ctx, store.NodeAuthorization{NodeID: node.ID, NodeTokenHash: node.TokenHash}, task.ID, "again", 2, 0, auth.Now+65)
+	nextLease, _, _, nextAttempt, _, err := db.GrantLeaseAuthorized(ctx, store.NodeAuthorization{NodeID: node.ID, NodeTokenHash: node.TokenHash}, task.ID, "again", 2, 0, auth.Now+65)
 	if err != nil {
 		t.Fatal(err)
 	}

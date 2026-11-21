@@ -185,7 +185,7 @@ func TestD4HistoricalAttemptIs404(t *testing.T) {
 	if err := f.db.AssignTaskAt(ctx, f.task.ID, f.node.ID, "again", 2, now+65); err != nil {
 		t.Fatalf("reassign: %v", err)
 	}
-	nextLease, _, nextAttempt, _, err := f.db.GrantLeaseAuthorized(ctx,
+	nextLease, _, _, nextAttempt, _, err := f.db.GrantLeaseAuthorized(ctx,
 		store.NodeAuthorization{NodeID: f.node.ID, NodeTokenHash: f.node.TokenHash},
 		f.task.ID, "again", 2, 0, now+65)
 	if err != nil {

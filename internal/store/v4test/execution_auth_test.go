@@ -95,7 +95,7 @@ func TestAuthorizedEntriesRequireCurrentNodeCredential(t *testing.T) {
 	currentAuth := store.NodeAuthorization{NodeID: node.ID, NodeTokenHash: newHash}
 
 	// 旧会话 grant：同 UID 仍被拒（UID 不能替代 token hash），且不动候选。
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, oldAuth, task.ID, "asg-1", 1, 0, store.Now()); !errors.Is(err, store.ErrNodeIdentityMismatch) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, oldAuth, task.ID, "asg-1", 1, 0, store.Now()); !errors.Is(err, store.ErrNodeIdentityMismatch) {
 		t.Fatalf("旧 token 的 grant 应 ErrNodeIdentityMismatch，得到 %v", err)
 	}
 	still := mustPhase(t, db, ns, task.ID, store.TaskPending)
@@ -103,7 +103,7 @@ func TestAuthorizedEntriesRequireCurrentNodeCredential(t *testing.T) {
 		t.Fatalf("被拒的旧会话 grant 不得消耗/清掉候选：%+v", still)
 	}
 
-	leaseID, token, attempt, _, err := db.GrantLeaseAuthorized(ctx, currentAuth, task.ID, "asg-1", 1, 0, store.Now())
+	leaseID, token, _, attempt, _, err := db.GrantLeaseAuthorized(ctx, currentAuth, task.ID, "asg-1", 1, 0, store.Now())
 	if err != nil {
 		t.Fatalf("当前身份 grant 应成功：%v", err)
 	}
@@ -215,11 +215,11 @@ func TestGrantStaleProposedSlotAndExpiredBindingPreserveNewAssignment(t *testing
 	auth := nodeAuthByID(t, db, node.ID)
 
 	// 旧 assignment + 旧 proposed + 旧 accepted slot：拒绝，且不改新候选。
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task.ID, "asg-old", 1, 0, now+2); !errors.Is(err, store.ErrNoAssignment) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task.ID, "asg-old", 1, 0, now+2); !errors.Is(err, store.ErrNoAssignment) {
 		t.Fatalf("旧 assignment 的 grant 应 ErrNoAssignment，得到 %v", err)
 	}
 	// 新 assignment 但 proposed 对不上：同样拒绝（proposed 是候选身份的一部分）。
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task.ID, "asg-new", 1, 0, now+2); !errors.Is(err, store.ErrNoAssignment) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task.ID, "asg-new", 1, 0, now+2); !errors.Is(err, store.ErrNoAssignment) {
 		t.Fatalf("错 proposedAttempt 的 grant 应 ErrNoAssignment，得到 %v", err)
 	}
 	after, err := db.GetTask(ctx, ns, task.ID)
@@ -231,7 +231,7 @@ func TestGrantStaleProposedSlotAndExpiredBindingPreserveNewAssignment(t *testing
 		after.AssignmentExpiresAt == nil || *after.AssignmentExpiresAt != *before.AssignmentExpiresAt {
 		t.Fatalf("stale grant 破坏了新候选：before=%+v after=%+v", before, after)
 	}
-	if _, _, got, _, err := db.GrantLeaseAuthorized(ctx, auth, task.ID, "asg-new", 2, 0, now+2); err != nil || got != 1 {
+	if _, _, _, got, _, err := db.GrantLeaseAuthorized(ctx, auth, task.ID, "asg-new", 2, 0, now+2); err != nil || got != 1 {
 		t.Fatalf("新候选应可正常 grant：attempt=%d err=%v", got, err)
 	}
 
@@ -246,7 +246,7 @@ func TestGrantStaleProposedSlotAndExpiredBindingPreserveNewAssignment(t *testing
 		t.Fatalf("get task2: %v", err)
 	}
 	// 过期路径在容量检查之前拒绝：不需要空闲槽，也不会消耗 attempt/占槽。
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task2.ID, "asg-expired", 1, 0, *expired.AssignmentExpiresAt); !errors.Is(err, store.ErrNoAssignment) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task2.ID, "asg-expired", 1, 0, *expired.AssignmentExpiresAt); !errors.Is(err, store.ErrNoAssignment) {
 		t.Fatalf("expiry==now 的 assignment 应 ErrNoAssignment，得到 %v", err)
 	}
 	staleTask := mustPhase(t, db, ns, task2.ID, store.TaskPending)
@@ -279,7 +279,7 @@ func TestGrantPerCapabilityAcrossNamespaces(t *testing.T) {
 		t.Fatalf("assign task2: %v", err)
 	}
 	auth := nodeAuthByID(t, db, node.ID)
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task2.ID, "asg-2", 1, freeSlot(t, db, node.ID), store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task2.ID, "asg-2", 1, freeSlot(t, db, node.ID), store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
 		t.Fatalf("跨 ns 同名能力预算已满应 ErrSlotUnavailable，得到 %v", err)
 	}
 	rejected := mustPhase(t, db, ns2, task2.ID, store.TaskPending)
@@ -292,7 +292,7 @@ func TestGrantPerCapabilityAcrossNamespaces(t *testing.T) {
 	if err := db.AssignTask(ctx, task3.ID, node.ID, "asg-3", 1); err != nil {
 		t.Fatalf("assign task3: %v", err)
 	}
-	if _, _, got, _, err := db.GrantLeaseAuthorized(ctx, auth, task3.ID, "asg-3", 1,
+	if _, _, _, got, _, err := db.GrantLeaseAuthorized(ctx, auth, task3.ID, "asg-3", 1,
 		freeSlot(t, db, node.ID), store.Now()); err != nil || got != 1 {
 		t.Fatalf("不同能力名应可授权：attempt=%d err=%v", got, err)
 	}
@@ -325,7 +325,7 @@ func TestGrantWildcardPerCapabilityAcrossNames(t *testing.T) {
 	if err := db.AssignTask(ctx, beta1.ID, node.ID, "asg-b1", 1); err != nil {
 		t.Fatalf("assign beta1: %v", err)
 	}
-	if _, _, got, _, err := db.GrantLeaseAuthorized(ctx, auth, beta1.ID, "asg-b1", 1,
+	if _, _, _, got, _, err := db.GrantLeaseAuthorized(ctx, auth, beta1.ID, "asg-b1", 1,
 		freeSlot(t, db, node.ID), store.Now()); err != nil || got != 1 {
 		t.Fatalf("未单列能力应使用自己的通配额度：attempt=%d err=%v", got, err)
 	}
@@ -335,7 +335,7 @@ func TestGrantWildcardPerCapabilityAcrossNames(t *testing.T) {
 	if err := db.AssignTask(ctx, beta2.ID, node.ID, "asg-b2", 1); err != nil {
 		t.Fatalf("assign beta2: %v", err)
 	}
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, beta2.ID, "asg-b2", 1,
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, beta2.ID, "asg-b2", 1,
 		freeSlot(t, db, node.ID), store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
 		t.Fatalf("通配 perCapability=1 应拦住同能力的第二个并发，得到 %v", err)
 	}
@@ -372,7 +372,7 @@ func TestGrantPinnedMaxPerNodeAcrossVersions(t *testing.T) {
 		t.Fatalf("assign v2: %v", err)
 	}
 	auth := nodeAuthByID(t, db, node.ID)
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task2.ID, "asg-2", 1,
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task2.ID, "asg-2", 1,
 		freeSlot(t, db, node.ID), store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
 		t.Fatalf("同 ns 同名跨版本 maxPerNode=1 应拒绝，得到 %v", err)
 	}
@@ -385,7 +385,7 @@ func TestGrantPinnedMaxPerNodeAcrossVersions(t *testing.T) {
 	if err := db.AssignTask(ctx, task3.ID, node.ID, "asg-3", 1); err != nil {
 		t.Fatalf("assign other: %v", err)
 	}
-	if _, _, got, _, err := db.GrantLeaseAuthorized(ctx, auth, task3.ID, "asg-3", 1,
+	if _, _, _, got, _, err := db.GrantLeaseAuthorized(ctx, auth, task3.ID, "asg-3", 1,
 		freeSlot(t, db, node.ID), store.Now()); err != nil || got != 1 {
 		t.Fatalf("不同能力名应可授权：attempt=%d err=%v", got, err)
 	}
@@ -442,7 +442,7 @@ func TestGrantCountsUnreapedExecutionsAndRealReservations(t *testing.T) {
 	auth := nodeAuthByID(t, db, node.ID)
 
 	// 预算：1 未回收 + 1 真实 reservation + 本次自己 = 3 > perCap idem 2 → 拒绝。
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task3.ID, "asg-3", 1,
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task3.ID, "asg-3", 1,
 		freeSlot(t, db, node.ID), store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
 		t.Fatalf("未回收执行 + 真实 reservation 应占满预算，得到 %v", err)
 	}
@@ -455,7 +455,7 @@ func TestGrantCountsUnreapedExecutionsAndRealReservations(t *testing.T) {
 	}
 
 	// 自己的 accepted reservation 只计一次：base=1（旧执行）+ 1（新执行）=2 ≤ perCap 2。
-	lease2, token2, got2, _, err := db.GrantLeaseAuthorized(ctx, auth, task2.ID, "asg-2", 1, slot2, store.Now())
+	lease2, token2, _, got2, _, err := db.GrantLeaseAuthorized(ctx, auth, task2.ID, "asg-2", 1, slot2, store.Now())
 	if err != nil || got2 != 1 {
 		t.Fatalf("自己的 reservation 只该算一次，grant 应成功：attempt=%d err=%v", got2, err)
 	}
@@ -481,7 +481,7 @@ func TestGrantCountsUnreapedExecutionsAndRealReservations(t *testing.T) {
 	if err := db.AssignTask(ctx, task3.ID, node.ID, "asg-3b", 1); err != nil {
 		t.Fatalf("re-assign task3: %v", err)
 	}
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task3.ID, "asg-3b", 1,
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task3.ID, "asg-3b", 1,
 		freeSlot(t, db, node.ID), store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
 		t.Fatalf("未回收执行 + 新执行占满预算，task3 应 ErrSlotUnavailable，得到 %v", err)
 	}
@@ -529,7 +529,7 @@ func TestConcurrentNarrowBudgetGrantsExactlyOne(t *testing.T) {
 			if i == 1 {
 				taskID, assignmentID = taskB.ID, "asg-b"
 			}
-			_, _, _, _, results[i] = db.GrantLeaseAuthorized(ctx, auth, taskID, assignmentID, 1, slots[i], store.Now())
+			_, _, _, _, _, results[i] = db.GrantLeaseAuthorized(ctx, auth, taskID, assignmentID, 1, slots[i], store.Now())
 		}(i)
 	}
 	close(start)
@@ -603,7 +603,7 @@ func TestGrantOwnReservationCountedOnceAtItsOwnSlot(t *testing.T) {
 	observeReservation(t, db, ns, node.ID, task2.ID, 1)
 	auth := nodeAuthByID(t, db, node.ID)
 
-	lease, _, got, _, err := db.GrantLeaseAuthorized(ctx, auth, task2.ID, "asg-2", 1, 1, store.Now())
+	lease, _, _, got, _, err := db.GrantLeaseAuthorized(ctx, auth, task2.ID, "asg-2", 1, 1, store.Now())
 	if err != nil || got != 1 {
 		t.Fatalf("自己的同槽 reservation 只该算一次，grant 应成功：attempt=%d err=%v", got, err)
 	}
@@ -644,7 +644,7 @@ func TestGrantCountsOwnReservationOutsideItsSlot(t *testing.T) {
 	auth := nodeAuthByID(t, db, node.ID)
 
 	// grant 绑 slot 1（合法空闲）：1 执行 + 2 条真实 reservation + 本次 > 2 → 必须拒。
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task2.ID, "asg-2", 1, 1, store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task2.ID, "asg-2", 1, 1, store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
 		t.Fatalf("同 task 在别的槽上的 reservation 必须计入预算，得到 %v", err)
 	}
 	rejected := mustPhase(t, db, ns, task2.ID, store.TaskPending)
@@ -692,7 +692,7 @@ func TestReservationLedgerBindsAssignmentIdentity(t *testing.T) {
 	}
 
 	// 旧 assignment 的候选本身已经不可授权。
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task.ID, "asg-old", 1, 0, store.Now()); !errors.Is(err, store.ErrNoAssignment) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task.ID, "asg-old", 1, 0, store.Now()); !errors.Is(err, store.ErrNoAssignment) {
 		t.Fatalf("旧 assignment 的 grant 应 ErrNoAssignment，得到 %v", err)
 	}
 
@@ -717,7 +717,7 @@ func TestReservationLedgerBindsAssignmentIdentity(t *testing.T) {
 	}
 
 	// 旧 assignment 留下的 slot 0 预约不能被新候选（同 task、同 proposed）复用。
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task.ID, "asg-new", 1, 0, store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task.ID, "asg-new", 1, 0, store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
 		t.Fatalf("旧 assignment 的预约不得被新候选复用，得到 %v", err)
 	}
 	if taskID, attempt, lease, assignment, _ := instanceLedger(t, db, node.ID, 0); taskID != task.ID ||
@@ -736,7 +736,7 @@ func TestReservationLedgerBindsAssignmentIdentity(t *testing.T) {
 	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-new", 1); err != nil {
 		t.Fatalf("re-assign new: %v", err)
 	}
-	if _, _, got, _, err := db.GrantLeaseAuthorized(ctx, auth, task.ID, "asg-new", 1, 0, store.Now()); err != nil || got != 1 {
+	if _, _, _, got, _, err := db.GrantLeaseAuthorized(ctx, auth, task.ID, "asg-new", 1, 0, store.Now()); err != nil || got != 1 {
 		t.Fatalf("旧预约清除后新候选应可授权：attempt=%d err=%v", got, err)
 	}
 }
@@ -865,7 +865,7 @@ func assertReservationRejectedOnDimension(t *testing.T, db *store.DB, ctx contex
 		t.Fatalf("assign task3: %v", err)
 	}
 	auth := nodeAuthByID(t, db, nodeID)
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task3.ID, "asg-3", 1, 1, store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task3.ID, "asg-3", 1, 1, store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
 		t.Fatalf("1 执行 + 1 reservation + 本次应被唯一有余量的维度拒绝，得到 %v", err)
 	}
 	if got := mustPhase(t, db, nsID, task3.ID, store.TaskPending); got.Attempt != 0 {
@@ -906,7 +906,7 @@ func TestGrantTotalUsesLocalOverNodeLimits(t *testing.T) {
 		t.Fatalf("assign task3: %v", err)
 	}
 	auth := nodeAuthByID(t, db, node.ID)
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task3.ID, "asg-3", 1, 1, store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, task3.ID, "asg-3", 1, 1, store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
 		t.Fatalf("local total=2 必须覆盖 node total=3 并拒绝第三次授权，得到 %v", err)
 	}
 	rejected := mustPhase(t, db, ns, task3.ID, store.TaskPending)
@@ -1213,7 +1213,7 @@ func TestAckCancelHistoricalReapIsByteIdempotent(t *testing.T) {
 		t.Fatalf("assign third: %v", err)
 	}
 	auth := nodeAuthByID(t, db, node.ID)
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, third.ID, "asg-3", 1,
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, auth, third.ID, "asg-3", 1,
 		freeSlot(t, db, node.ID), store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
 		t.Fatalf("2 条未回收执行应占满 maxPerNode=2，得到 %v", err)
 	}
@@ -1293,7 +1293,7 @@ func TestAckCancelHistoricalReapIsByteIdempotent(t *testing.T) {
 	if err := db.AssignTask(ctx, third.ID, node.ID, "asg-3b", 1); err != nil {
 		t.Fatalf("re-assign third: %v", err)
 	}
-	if _, _, got, _, err := db.GrantLeaseAuthorized(ctx, auth, third.ID, "asg-3b", 1,
+	if _, _, _, got, _, err := db.GrantLeaseAuthorized(ctx, auth, third.ID, "asg-3b", 1,
 		freeSlot(t, db, node.ID), store.Now()); err != nil || got != 1 {
 		t.Fatalf("历史 ACK 回收后预算应解除：attempt=%d err=%v", got, err)
 	}
@@ -1496,7 +1496,7 @@ func TestMachineLimitsSnapshotPinnedPerAttempt(t *testing.T) {
 	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-2", 2); err != nil {
 		t.Fatalf("re-assign: %v", err)
 	}
-	_, _, attempt2, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID),
+	_, _, _, attempt2, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID),
 		task.ID, "asg-2", 2, freeSlot(t, db, node.ID), store.Now())
 	if err != nil || attempt2 != 2 {
 		t.Fatalf("新 attempt 应可授权：attempt=%d err=%v", attempt2, err)

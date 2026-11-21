@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -270,9 +271,10 @@ func checkSourceTargetsOn(ctx context.Context, ex queryExec, s *Source) error {
 	if err := sourcespec.ValidateTargets(s.Targets); err != nil {
 		return err
 	}
-	for _, t := range s.Targets {
+	for i, t := range s.Targets {
 		ref := strings.TrimSpace(t.Capability)
-		if _, err := resolveRefOn(ctx, ex, s.NamespaceID, ref); err != nil {
+		capability, err := resolveRefOn(ctx, ex, s.NamespaceID, ref)
+		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				// 「引用写错了」必须可判别（server 据此翻 400）；裸 error 会落 default 500，
 				// 把调用方的参数问题报成服务端故障。
@@ -281,8 +283,37 @@ func checkSourceTargetsOn(ctx context.Context, ex queryExec, s *Source) error {
 			// 查库失败等真故障原样上抛：它不该被当成「引用写错了」。
 			return fmt.Errorf("出口能力 %s: %w", ref, err)
 		}
+		// #522：动作能力必须 ∈ 该能力的 spec.next（要读能力行，只能在这里判）。
+		if causes := outcomesNotDeclared(t.Outcomes, capability.Spec.Next, capability.Name, i); len(causes) > 0 {
+			return &sourcespec.CausesError{Causes: causes}
+		}
 	}
 	return nil
+}
+
+func outcomesNotDeclared(outcomes map[string][]sourcespec.OutcomeAction, next []string, routerName string, targetIndex int) []sourcespec.Cause {
+	if len(outcomes) == 0 {
+		return nil
+	}
+	causes := []sourcespec.Cause{}
+	names := make([]string, 0, len(outcomes))
+	for name := range outcomes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		for j, action := range outcomes[name] {
+			if _, ok := sourcespec.DeclaredRef(next, action.Capability); ok {
+				continue
+			}
+			causes = append(causes, sourcespec.Cause{
+				Field:   fmt.Sprintf("targets[%d].outcomes.%s[%d].capability", targetIndex, name, j),
+				Reason:  sourcespec.CauseReasonValueInvalid,
+				Message: fmt.Sprintf("%q 不在出口能力 %s 的 spec.next 里（已声明：%v）", action.Capability, routerName, next),
+			})
+		}
+	}
+	return causes
 }
 
 // targetRefs 取 targets 里的引用列表（入口边右端）。
@@ -296,9 +327,7 @@ func targetRefs(s *Source) []string {
 	return refs
 }
 
-// sourceNextFire 算 cron 源的下次触发时刻；非 cron 或未启用 → nil。
-//
-// 建源时就算好，否则要等到下次进程重启才被调度到。
+// sourceNextFire 算 cron 源的下次触发时刻（建源时就算好，否则要等下次重启才被调度）。
 func sourceNextFire(s *Source, after int64) (*int64, error) {
 	if s.Kind != SourceKindCron || !s.Enabled {
 		return nil, nil

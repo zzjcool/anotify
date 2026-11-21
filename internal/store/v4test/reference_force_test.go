@@ -108,7 +108,7 @@ func TestC3bNamespaceForceAfterReapAndLatePendingGrant(t *testing.T) {
 		t.Fatal("shared digest outside owner modified")
 	}
 	before := namespaceWholeFacts(t, db)
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, store.NodeAuthorization{NodeID: node.ID, NodeTokenHash: node.TokenHash}, pending.ID, "late", 1, 0, auth.Now); err == nil {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, store.NodeAuthorization{NodeID: node.ID, NodeTokenHash: node.TokenHash}, pending.ID, "late", 1, 0, auth.Now); err == nil {
 		t.Fatal("late grant resurrected deleted task")
 	}
 	if !reflect.DeepEqual(before, namespaceWholeFacts(t, db)) {

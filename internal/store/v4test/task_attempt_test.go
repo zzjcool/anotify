@@ -35,7 +35,7 @@ func regrantOnFreeSlot(t *testing.T, db *store.DB, taskID, nodeID, assignmentID 
 		t.Fatalf("assign %s: %v", assignmentID, err)
 	}
 	slot := freeSlot(t, db, nodeID)
-	leaseID, token, attempt, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, nodeID), taskID, assignmentID, 1, slot, store.Now())
+	leaseID, token, _, attempt, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, nodeID), taskID, assignmentID, 1, slot, store.Now())
 	if err != nil {
 		t.Fatalf("re-grant %s: %v", assignmentID, err)
 	}
@@ -210,7 +210,7 @@ func TestGrantConsumesAcceptedSlot(t *testing.T) {
 		t.Fatalf("assign task1: %v", err)
 	}
 	now := store.Now()
-	lease1, _, attempt1, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task1.ID, "asg-1", 1, 1, now)
+	lease1, _, _, attempt1, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task1.ID, "asg-1", 1, 1, now)
 	if err != nil {
 		t.Fatalf("grant slot 1: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestGrantConsumesAcceptedSlot(t *testing.T) {
 	if err := db.AssignTask(ctx, task2.ID, node.ID, "asg-2", 1); err != nil {
 		t.Fatalf("assign task2: %v", err)
 	}
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task2.ID, "asg-2", 1, 1, now); !errors.Is(err, store.ErrSlotUnavailable) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task2.ID, "asg-2", 1, 1, now); !errors.Is(err, store.ErrSlotUnavailable) {
 		t.Fatalf("占用 slot 应 ErrSlotUnavailable，得到 %v", err)
 	}
 	pending2, err := db.GetTask(ctx, ns, task2.ID)
@@ -259,20 +259,20 @@ func TestGrantConsumesAcceptedSlot(t *testing.T) {
 	if err := db.AssignTask(ctx, task2.ID, node.ID, "asg-3", 1); err != nil {
 		t.Fatalf("re-assign task2: %v", err)
 	}
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task2.ID, "asg-3", 1, -1, now); !errors.Is(err, store.ErrSlotUnavailable) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task2.ID, "asg-3", 1, -1, now); !errors.Is(err, store.ErrSlotUnavailable) {
 		t.Fatalf("缺 slot presence 应 ErrSlotUnavailable，得到 %v", err)
 	}
 	if err := db.AssignTask(ctx, task2.ID, node.ID, "asg-4", 1); err != nil {
 		t.Fatalf("re-assign task2 again: %v", err)
 	}
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task2.ID, "asg-4", 1, 5, now); !errors.Is(err, store.ErrSlotUnavailable) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task2.ID, "asg-4", 1, 5, now); !errors.Is(err, store.ErrSlotUnavailable) {
 		t.Fatalf("未申报 slot 应 ErrSlotUnavailable，得到 %v", err)
 	}
 	// 真正空闲的 slot 0 才能授权。
 	if err := db.AssignTask(ctx, task2.ID, node.ID, "asg-5", 1); err != nil {
 		t.Fatalf("re-assign task2: %v", err)
 	}
-	if _, _, got, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task2.ID, "asg-5", 1, 0, now); err != nil || got != 1 {
+	if _, _, _, got, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task2.ID, "asg-5", 1, 0, now); err != nil || got != 1 {
 		t.Fatalf("slot 0 应可授权：attempt=%d err=%v", got, err)
 	}
 }
@@ -320,7 +320,7 @@ func TestAssignmentWindowBoundedAndIdempotent(t *testing.T) {
 	}
 
 	// 窗口过期：不得授权，清掉候选、不耗 attempt、不占槽。
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-1", 1, 0, now+store.AssignmentWindowSec); !errors.Is(err, store.ErrNoAssignment) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-1", 1, 0, now+store.AssignmentWindowSec); !errors.Is(err, store.ErrNoAssignment) {
 		t.Fatalf("过期 assignment 应 ErrNoAssignment，得到 %v", err)
 	}
 	stale, err := db.GetTask(ctx, ns, task.ID)
@@ -335,7 +335,7 @@ func TestAssignmentWindowBoundedAndIdempotent(t *testing.T) {
 	if err := db.AssignTaskAt(ctx, task.ID, node.ID, "asg-2", 1, now+store.AssignmentWindowSec+1); err != nil {
 		t.Fatalf("re-assign: %v", err)
 	}
-	if _, _, got, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-2", 1, 0, now+store.AssignmentWindowSec+2); err != nil || got != 1 {
+	if _, _, _, got, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task.ID, "asg-2", 1, 0, now+store.AssignmentWindowSec+2); err != nil || got != 1 {
 		t.Fatalf("新窗口应可授权：attempt=%d err=%v", got, err)
 	}
 }
@@ -692,7 +692,7 @@ func TestBudgetShrinkKeepsLiveOccupancy(t *testing.T) {
 	if err := db.AssignTask(ctx, task3.ID, node.ID, "asg-3", 1); err != nil {
 		t.Fatalf("assign task3: %v", err)
 	}
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task3.ID, "asg-3", 1, 0, store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task3.ID, "asg-3", 1, 0, store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
 		t.Fatalf("预算已满应 ErrSlotUnavailable，得到 %v", err)
 	}
 	if got, _ := db.GetTask(ctx, ns, task3.ID); got.Attempt != 0 {
@@ -712,7 +712,7 @@ func TestBudgetShrinkKeepsLiveOccupancy(t *testing.T) {
 	if err := db.AssignTask(ctx, task3.ID, node.ID, "asg-3b", 1); err != nil {
 		t.Fatalf("assign task3: %v", err)
 	}
-	if _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task3.ID, "asg-3b", 1, 0, store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task3.ID, "asg-3b", 1, 0, store.Now()); !errors.Is(err, store.ErrSlotUnavailable) {
 		t.Fatalf("仍有一个占用吃满预算，应 ErrSlotUnavailable，得到 %v", err)
 	}
 	// 再回收另一个 → 现在预算内可以授权。
@@ -729,7 +729,7 @@ func TestBudgetShrinkKeepsLiveOccupancy(t *testing.T) {
 	if err := db.AssignTask(ctx, task3.ID, node.ID, "asg-3c", 1); err != nil {
 		t.Fatalf("assign task3: %v", err)
 	}
-	if _, _, got, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task3.ID, "asg-3c", 1, 0, store.Now()); err != nil || got != 1 {
+	if _, _, _, got, _, err := db.GrantLeaseAuthorized(ctx, nodeAuthByID(t, db, node.ID), task3.ID, "asg-3c", 1, 0, store.Now()); err != nil || got != 1 {
 		t.Fatalf("预算内应可授权：attempt=%d err=%v", got, err)
 	}
 }
