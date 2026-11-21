@@ -387,7 +387,7 @@ def check_a11(root: Path) -> list[str]:
     `make contract` 的最后一步是 `go test ./internal/server -run TestOpenAPIParity`。
     Go 的 `-run` 用的是正则：**匹配不到任何测试时 exit 0**。这个陷阱已经发生过一次
     （v3 的 `openapi_parity_test.go` 被删除后，`make ci` 在 schema 漂移的情况下保持
-    绿色，见 docs/v4/g3a-test-inventory.md）。所以这里静态断言测试函数存在且形状正确
+    绿色）。所以这里静态断言测试函数存在且形状正确
     （必须是 `func TestOpenAPIParityXxx(t *testing.T)`——只写 `func TestOpenAPIParityXxx() bool`
     的话 `-run` 匹配到了却不是测试，仍然是假绿）。
     """

@@ -13,7 +13,7 @@ import (
 	"github.com/zzjcool/anotify/internal/yamldoc"
 )
 
-// 轻量资源信封（api-conventions §3.1–§3.3 / V4-D1）。
+// 轻量资源信封（api-conventions §3.1–§3.3 / @decision V4-D1）。
 //
 // 只保留四个顶层键 + 可选 warnings：没有 labels / annotations / generation /
 // finalizers / deletionTimestamp（V4-D1「刻意不做」）。status 只读且必须恒存在

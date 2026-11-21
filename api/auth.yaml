@@ -3,7 +3,7 @@ info:
   title: Anotify Auth API
   version: "4.0.0"
   description: |
-    Anotify v4 身份域（exact-five 之一，清单见 `docs/v4/g3c-spec-inventory.md` §4.5）。
+    Anotify v4 身份域（exact-five 之一；清单类文档已删，本文件的 operation 集合即权威）。
     覆盖 58 个 operation：Passkey / 密码 / 恢复码三套登录模型、会话、API Key、Web Push 设备、
     VAPID 公钥、CLI 设备授权（`curl | sh` 登录）、Passkey 设备补建、管理后台，以及唯一不在
     `/v1` 下的 `/agent-login.sh`。

@@ -1,7 +1,7 @@
 # anotify v4 · 写入 / 触发入口（exact-five 之一）
 #
-# 本文件是五份 OpenAPI 真源中的 **ingress.yaml**：#333 冻结归属表
-# （docs/v4/g3c-spec-inventory.md §4.4）里的 5 个 operation 在这里：
+# 本文件是五份 OpenAPI 真源中的 **ingress.yaml**：#333 冻结归属表的 5 个 operation 在这里
+# （归属表已删，本文件的 operation 集合即权威）：
 #
 #     POST /v1/namespaces/{namespace}/events                        投递入口（Bearer consoleKey，scope notify:send）
 #     POST /v1/hooks/{token}                                        外部 webhook 投递（**匿名**，token 即凭据）

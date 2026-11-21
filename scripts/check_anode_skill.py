@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""#334 的节点 CLI 防漂移守卫：`docs/v4/anode-cli.md` ↔ **真 anode 二进制**。
+"""#334 的节点 CLI 防漂移守卫：`docs/anode-cli.md` ↔ **真 anode 二进制**。
 
 ## 为什么是「等价迁移」而不是「删掉 guard」
 
@@ -34,7 +34,7 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MANUAL = REPO_ROOT / "docs" / "v4" / "anode-cli.md"
+MANUAL = REPO_ROOT / "docs" / "anode-cli.md"
 INSTALLER = REPO_ROOT / "scripts" / "install-anode.sh"
 # `curl -fsSL <origin>/install-anode.sh` 下来喂给 `sh -s --` 的就是这一份（web/ 被静态路由覆盖）。
 # 两份字节不一致 = 用户跑的脚本和仓库里被校验的脚本不是同一个——这类漂移没有任何
@@ -264,7 +264,7 @@ def check_manual(text: str, sub_flags: dict[str, set[str]]) -> list[str]:
     errors: list[str] = []
     blocks = iter_code_blocks(text)
     if not blocks:
-        return ["docs/v4/anode-cli.md 里没有 fenced 代码块（手册的操作面必须可机检）"]
+        return ["docs/anode-cli.md 里没有 fenced 代码块（手册的操作面必须可机检）"]
 
     referenced: set[str] = set()
     for block in blocks:

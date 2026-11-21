@@ -110,7 +110,7 @@ const CHROME_SUITES = [
 	"events_paging",
 	// real_backend（#201）已具名退役，且文件已删（#338）：它驱动的是已删除的
 	// cmd/agent v3 CLI（emit/run 两个子命令都不在了）；真节点链由 node_v4（#336）覆盖，
-	// 真前端体检由 frontend（real authority）覆盖。分工与退役理由：docs/v4/e2e-inventory.md
+	// 真前端体检由 frontend（real authority）覆盖。分工与退役理由见本文件的 AUTHORITY 清单与 E2E_TESTING.md
 	// 开页抖动回归：语言条 / 命名空间槽位 / 折叠态 / 预排版
 	// （实测几何去重，专抓「功能全对但首帧后元素逐帧滑动」这类回归）
 	"ui_shift",
@@ -134,7 +134,7 @@ const ALL_SUITES = [...HTTP_SUITES, ...CHROME_SUITES];
 // 它们的 real 模式缺 session/seed bootstrap（症状是 `guest index redirected to password login`
 // 这类系统性失败），补那套底座属新底座工作，不在本轮范围。真实 API/节点覆盖由
 // frontend(real) + node_v4 + 13 个 HTTP 套件 + 7 个迁移后的 legacy Chrome 套件承担
-// （分工表：docs/v4/e2e-inventory.md）。
+// （分工表：本文件的 AUTHORITY 清单）。
 //
 // 不静默 fallback 的三条硬纪律：
 //   1. 只有下面这份**具名**清单里的套件被注入 E2E_MOCK_ONLY=1；其余套件的 env 一个都不动。
@@ -167,7 +167,7 @@ function assertAuthorityContract() {
 	if (ALL_SUITES.length !== SUITE_REGISTRY_SIZE) {
 		problems.push(
 			`注册套件 ${ALL_SUITES.length} 个，冻结值是 ${SUITE_REGISTRY_SIZE}` +
-				`（增删套件必须同步本清单、authority 裁决与 docs/v4/e2e-inventory.md）`,
+				`（增删套件必须同步本清单与 authority 裁决；离线核对 --authority-plan）`,
 		);
 	}
 	if (new Set(ALL_SUITES).size !== ALL_SUITES.length) {
@@ -226,7 +226,7 @@ const SUITE_TIMEOUT_OVERRIDE = {
 	capacity: 300_000,
 };
 // 注册套件数冻结（#338）：一次全量 = 29 个套件（#476 新增 vars_ui）。
-// 增删套件必须同时改这里 + AUTHORITY 清单 + docs/v4/e2e-inventory.md，否则启动即 exit 2。
+// 增删套件必须同时改这里 + AUTHORITY 清单（离线核对 --authority-plan），否则启动即 exit 2。
 const SUITE_REGISTRY_SIZE = 29;
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");
@@ -345,7 +345,7 @@ function authorityRows(suites) {
 
 function printAuthorityPlan(suites) {
 	const rows = authorityRows(suites);
-	console.log("验收 authority（#338 裁决；分工表 docs/v4/e2e-inventory.md）");
+	console.log("验收 authority（#338 裁决；分工表 = 本文件的 AUTHORITY 清单）");
 	for (const r of rows) {
 		console.log(
 			`  suite=${r.suite} mode=${r.mode} authority=${r.authority} ${r.mockEnv}`,
@@ -800,7 +800,7 @@ function writeAuthorityManifest(agg, requested) {
 		issue: "#338",
 		decision:
 			"TRACKER.md「2026-11-11 13:5x 裁决：五个 FE suite 的验收模式」",
-		inventoryDoc: "docs/v4/e2e-inventory.md",
+		inventoryDoc: "scripts/e2e/parallel_runner.mjs#AUTHORITY",
 		mockEnvVar: MOCK_ENV,
 		explicitMockSuites: [...EXPLICIT_MOCK_SUITES],
 		realAuthoritySuites: [...REAL_AUTHORITY_SUITES],

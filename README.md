@@ -176,7 +176,7 @@ make docker-anode                           # 节点镜像（容器即一台节�
 ```
 
 token 在中枢登记节点后签发（`POST /v1/nodes` → `POST /v1/nodes/{name}/tokens`，明文只返回一次）。
-`anode install` 只落盘（不 `sudo`、不 `systemctl`）；完整的三个子命令与 flag 见 `docs/v4/anode-cli.md`。
+`anode install` 只落盘（不 `sudo`、不 `systemctl`）；完整的三个子命令与 flag 见 `docs/anode-cli.md`。
 
 ## 公网暴露
 

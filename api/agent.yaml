@@ -1,5 +1,5 @@
 # anotify v4 · 节点通道（agent）API + 已冻结协议帧/DTO 的 schema 文档
-# （exact-five 之一；归属见 docs/v4/g3c-spec-inventory.md §4.3）
+# （exact-five 之一；归属表已删，本文件的 operation 集合即权威）
 #
 # 本文件只写**节点身份鉴权**的出站/中枢节点通道：
 #

@@ -29,8 +29,8 @@ git log --diff-filter=D --name-only -- docs/ | grep -i design   # 被删掉的�
 git show <sha>:<path>                                          # 具体某一份当时的内容
 ```
 
-决策号（`V4-D1`～`V4-D6`）没有随之消失：它们的唯一落点已迁到
-[`contracts/v4/CONTRACT.md`](contracts/v4/CONTRACT.md) 的 §0 决策索引，每条都指向实现位置。
+决策号（`V4-D1`～`V4-D6`）没有随之消失：索引的**代码侧落点**是 `internal/decisions/decisions.go`
+（编号 → 执行者，由该包的测试核对），[`contracts/v4/CONTRACT.md`](contracts/v4/CONTRACT.md) 的 §0 是同一份索引的契约副本。
 
 **历史别名**：代码与 `api/` 的描述里仍有 `api-conventions §4.1`、`capability.md §2` 这类
 **按章节号的短名引用**——它们指的是已移除设计文档里的章节。章节号是历史坐标，不是可点的链接；
@@ -55,7 +55,8 @@ git show <sha>:<path>                                          # 具体某一份
 
 1. **先改代码与测试**：新增或修改行为时，先落实现与断言。
 2. **再同步契约**：把行为写进 `docs/contracts/` 的对应条目（不变量、wire 字段、决策号）。
-   `@decision` 锚点只解析到 `docs/contracts/`（探测顺序见 `scripts/check-annotations.mjs`）。
+   `@decision` 锚点解析到决策索引：`internal/decisions/decisions.go` 与 `docs/contracts/`
+   （探测顺序见 `scripts/check-annotations.mjs`）。
 3. **不要写「愿景文档」**：没有执行者的计划不入库。要做的事进 issue/PR；已经定的事进契约并挂锚点。
    落笔前问一句：**这段话有没有执行者？** 没有就不要写。
 4. **文档里的路径 / 命令 / 端点都必须是可解析的外键**：`make ci` 会跑
@@ -70,6 +71,7 @@ git show <sha>:<path>                                          # 具体某一份
   `check-comment-density`（L12）管**总量**只许降 —— 目录与仓库注释行冻结在基线，
   单文件上限 = max(12, 代码行 × 0.5)。
 - **文档**只留操作手册。`docs/design`、`docs/specs`、`docs/plans` 重建即判红；
-  `docs/v4`、`docs/research`、`docs/perf`、`docs/contracts` 的文件数进了棘轮，只许下调。
+  `docs/v4`、`docs/research`、`docs/perf` 已删（重建即判红）；`docs/contracts` 的文件数进了棘轮，只许下调。
+  容量与背压的测量快照留在 [`reports/capacity-and-backpressure.md`](reports/capacity-and-backpressure.md)。
 - 删完同批下调基线：`node scripts/check-comment-density.mjs --update`（只降不升；抬高直接拒）。
 - 逐目录判据与分批计划见 [reports/comment-and-doc-ratchet.md](reports/comment-and-doc-ratchet.md)。
