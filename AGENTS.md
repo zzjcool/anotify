@@ -113,5 +113,6 @@ DONE <任务ID>
 - **改前端**：`web_verify` 逐页无 JS 错误/溢出；改完 `make build` 重新指纹
 - **纯视觉/样式微调（不改 DOM 契约、Go、API）**：`make fe` + 目标页 dark/light 截图即可迭代；需要时单跑 `./scripts/e2e/run_all.sh --serial frontend`，**不必每轮全量**
 - **push / 合并前**：`make e2e` 全绿（固化门禁）；全量 e2e 只在这里跑
+- **同机并发**：e2e 矩阵入口有机器级 flock（`${TMPDIR:-/tmp}/anotify-e2e-<uid>.lock`），等锁上限 `E2E_LOCK_WAIT`（默认 900s）、超时 exit 75 并打印持锁者；`E2E_LOCK=0` 是**显式**逃生口（只在确认没有共享资源冲突时用）。锁在**矩阵**层，`--parallel` 的套件照旧并发；语义与自测见 `E2E_TESTING.md`「机器级互斥」
 - **改 Go / API / DOM 契约 / 新功能**：仍跑相关包测试 + 全量
 - **新功能**：必须加对应 E2E 套件或单测覆盖

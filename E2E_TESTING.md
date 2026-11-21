@@ -145,6 +145,42 @@ q /tmp/anotify-script-*   - - - 12h
 `q`（cleanup only if exists）比默认 10d 激进得多，只清这些前缀，不影响别的程序。
 这是**兜底**不是修复：守卫红的时候请修测试，不要靠它。
 
+## 机器级互斥（#529）
+
+同一台机器上**两份 e2e 矩阵并发**会互相打：`lib/harness.mjs` 的 `findFreePort` 是
+「探测 → close → 稍后使用」，两个矩阵同时探测同一空闲端口时**都会通过探测**，随后其中一个
+bind 失败或连到别人的 server；再叠加共享的 `/tmp`、浏览器 profile、以及 `make ci` 的 Go 测试
+抢 CPU/IO，症状就是**随机套件红**（实测 routing 早退 `database is locked`、vars_ui 随机红，
+两者单跑都全绿）。这类红最贵：人学会「红了就重跑」，直到某次真红也被当成抖动。
+
+所以 `scripts/e2e/run_all.sh` 在入口加 **flock 机器级互斥**。所有入口都过它：
+`make e2e` / `make e2e-parallel` / `make e2e-serial` / `make e2e-one` / `make e2e-quick` /
+`make e2e-affected`（`affected.mjs --run-e2e` 也只是 spawn `run_all.sh`）/ CI 的每个分片
+（`e2e-shard` job）—— 只有这一个落点，谁都不许自己另起一套。
+
+| 项 | 口径 |
+| --- | --- |
+| 锁文件 | `${TMPDIR:-/tmp}/anotify-e2e-$(id -u).lock`（按 uid 隔离；常驻不删，删了会让已打开的等待者与新持有者指向不同 inode） |
+| 等锁上限 | `E2E_LOCK_WAIT`，默认 **900s**（一份全量矩阵的量级） |
+| 等不到 | 打印持锁者的 `pid / start / cwd / suites`，**exit 75**（EX_TEMPFAIL）——绝不静默降级成并发 |
+| 逃生口 | `E2E_LOCK=0`（**必须显式**；跳过锁并打一句风险提示）。只在确认没有共享资源冲突时用 |
+| 释放 | 内核在进程退出/崩溃（含 `kill -9`）时释放，不留死锁；子命令一律 `9>&-`，锁的生命周期严格等于矩阵进程 |
+| 粒度 | **矩阵**，不是套件：矩阵内 `--parallel` 的 N 个套件照旧并发；`shard.mjs` 的每个分片各是一个矩阵 |
+
+诊断两句话：等锁时会打印 `▶ 本机已有 e2e 矩阵在跑（holder: pid=… start=…）`；超时把同一行
+再打一次并给出逃生口提示。锁文件里记的是 `pid=<pid> start=<ISO> cwd=<repo> suites=<请求>`，
+`ps -o lstart= -p <pid>` 可续查；若那一行是崩溃残留（pid 已不存在），打印时会标注
+「pid N 已不在：锁已由内核释放，这行只是残留文本」，不会被误读成「有人正在跑」。
+
+CI 上分片互不干扰（不同的机器 = 不同的 `/tmp`）。**同一台机器上**跑多个分片会被串行化 ——
+那正是想要的：那两个分片会抢同一批端口与同一个 `/tmp`。
+
+这层锁有自己的自测：`make check-e2e-lock`（已进 `make ci`，约 6s）钉住八个方向 ——
+无争用立即可取 / 争用后等待成功 / 超时 exit 75 且带 holder / `kill -9` 后立刻可再取 /
+崩溃残留文本被标注且非 run_all 的持锁者也认 / `E2E_LOCK=0` 能跑但会吵 /
+缺少 `flock` 硬失败不降级 / 锁没有落到执行器与套件层。它用**私有 TMPDIR**，
+因此 `make ci` 与正在跑的真实 e2e 互不影响。
+
 ## 运行
 
 ```bash
