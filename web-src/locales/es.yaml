@@ -1248,7 +1248,7 @@ events:
   refresh: Actualizar
   recent: Eventos recientes
   loading: Cargando eventos…
-  empty: Aún no hay eventos. Envía uno con POST /v1/namespaces/{namespace}/events.
+  empty: 'Aún no hay eventos. Cuando un Agent o un script envíe uno como explica la guía de integración, aparecerá aquí al momento.'
   view_chain: Ver cadena
   filter:
     trace: Trace ID
@@ -1297,7 +1297,7 @@ events:
     loading: "Cargando datos…"
     more: "Cargar más"
     trace: "Abrir traza"
-    event_uid: "UID del evento (no deliveryId)"
+    event_uid: 'UID del evento (no es la clave de deduplicación)'
     received: "Recibido"
     dispatched: "Tareas enviadas"
     details: "Detalles de envío / poda / carga"
@@ -1609,7 +1609,7 @@ prune:
   param_type: el tipo de parámetro no coincide
   no_node: la capacidad destino no tiene nodo en línea
   foreign_user: cruza espacio de nombres/usuario
-  event_schema: 'el payload del evento no cumple el resultSchema de el origen'
+  event_schema: 'El payload del evento no cumple el contrato que declara el origen'
   max_hops: presupuesto de saltos agotado (cadena demasiado profunda)
   budget: este trace superó su presupuesto de tareas
   no_impl: el destino es un marcador (noop) — el hub no lo ejecutará
@@ -1765,7 +1765,7 @@ nodes:
     pending: 'ConfigPending: configuración de nodo aún no aplicada'
     applied: 'La configuración del nodo coincide con el hub'
     revision: 'Estado de configuración y aplicación'
-    override_stale: "overrideStale: valor inferior cambió; sigue prevaleciendo el local"
+    override_stale: 'El valor predeterminado inferior cambió; tu valor local sigue prevaleciendo'
     context: 'Contexto de espacio de nombres de los valores efectivos'
     effective_vars: 'vars efectivos (anulación local > valor predeterminado del nodo, origen por clave)'
     machine_vars: 'vars vigentes en este nodo (sin los valores predeterminados del espacio de nombres)'
@@ -1861,7 +1861,7 @@ sources:
     intro: "Las fuentes producen eventos; las capacidades reciben parámetros."
     loading: "Cargando…"
     empty: "No hay fuentes. Una entrada sin destinos es válida."
-    name: "Nombre del recurso · metadata.name"
+    name: 'Nombre del recurso'
     display: "Nombre visible (opcional)"
     kind: 'Tipo de fuente'
     immutable: "El nombre y tipo no se pueden cambiar; elimina y vuelve a crear."
@@ -1869,12 +1869,12 @@ sources:
     tz: "Zona IANA (por defecto Local)"
     token: "Nuevo token (solo escritura)"
     secret: "Nuevo secret HMAC (solo escritura)"
-    sample: "Ejemplo · config.sample (no se despacha)"
-    blank_credentials: "En edición se omiten token/secret vacíos para conservar las credenciales. Solo se leen hookUrl/secretSet."
+    sample: 'Ejemplo de referencia (no se despacha)'
+    blank_credentials: 'Si dejas token/secret en blanco al editar no se cambia nada y las credenciales se conservan; la página solo muestra la URL del hook y si hay firma.'
     hmac: "El POST externo usa {type?, id?, payload?}. Con secret, firma los bytes originales con HMAC-SHA256 y X-Anotify-Signature: sha256=<hex>. Firma ausente o inválida: 401 sin eventos."
-    payload: "Carga estática · config.payload (objeto JSON)"
-    schema: "Contrato · config.payloadSchema (opcional)"
-    schema_hint: "Cada entrega valida payloadSchema. Si no cumple se almacena con poda event_schema, sin despacho."
+    payload: 'Payload estático (objeto JSON)'
+    schema: 'Contrato del payload (opcional)'
+    schema_hint: 'Cada entrega se valida primero contra él: los eventos que no cumplen se guardan igual, pero no se despachan, y el trace queda marcado como payload que no cumple el contrato.'
     targets: "Capacidades destino · targets"
     add_target: "Añadir destino"
     remove_target: "Quitar destino"
@@ -1890,14 +1890,14 @@ sources:
     suggestions: "Campos sugeridos (clic para copiar referencia)"
     suggest_dry: "De la carga de vista previa"
     suggest_event: "Del evento real más reciente"
-    suggest_sample: "De config.sample (solo sugerencia)"
-    suggest_schema: "De payloadSchema.properties"
-    suggest_payload: "De config.payload"
+    suggest_sample: 'Tomado del payload de ejemplo (solo sugerencia)'
+    suggest_schema: 'Tomado de los campos del contrato'
+    suggest_payload: 'Tomado del payload estático'
     preview: "Resultado de vista previa (sin persistencia)"
     receipt: "Recibo de aceptación"
     accepted: "Evento aceptado; no significa que las tareas hayan tenido éxito."
-    duplicate: "deliveryId duplicado: evento/trace original, sin volver a despachar ni garantizar éxito."
-    dedup: "deliveryId se deduplica 30 días por defecto. Mismo origen/id significa aceptado, no éxito posterior. Usa otro id para cambios o reejecución. Tras vencer el plazo se acepta otra vez. Sin API replay."
+    duplicate: 'Clave de deduplicación repetida: se devuelven el evento y el trace originales, no se redistribuye y no se garantiza el éxito de la tarea.'
+    dedup: 'La clave de deduplicación se conserva 30 días por defecto: la misma clave del mismo origen solo significa aceptado, no que el trabajo posterior haya ido bien. Si cambias el contenido o quieres reejecutar, usa una clave nueva. Pasado el plazo la misma clave se acepta otra vez; no se puede reproducir.'
     no_target: "Sin destinos es válido: evento/trace y poda no_target, sin tareas."
     event_id: "ID del evento"
     fire: "Ejecutar ahora"
@@ -1911,7 +1911,7 @@ sources:
     yaml_create:
       open: "Crear desde YAML"
       title: "Crear fuente desde YAML"
-      hint: 'Pega un documento Source. <code>spec.config.token</code> / <code>secret</code> son de solo escritura; tras guardar solo se muestra hookUrl.'
+      hint: 'Pega un documento Source. <code>spec.config.token</code> / <code>secret</code> son de solo escritura; tras guardar solo se muestra la URL del hook.'
       submit: "Crear"
       cancel: "Cancelar"
       created: "Fuente creada desde YAML"
@@ -1920,11 +1920,11 @@ sources:
     namespace: "Espacio de nombres"
     rv: 'Token de versión'
     health: "Estado de salud"
-    resolved: "targetsResolved (booleano)"
+    resolved: 'Destinos resueltos'
     last_fire: "Última ejecución"
     next_fire: "Próxima ejecución"
     last_error: "Último error"
-    installed: "Instalado desde · installedFrom"
+    installed: 'Instalado desde'
     config: "Configuración y estado"
     edges: "Referencias de destino de solo lectura"
     graph: "Configuración posterior"
@@ -1932,7 +1932,7 @@ sources:
     graph_error: "No se cargó el gráfico; recarga."
     recent: "Eventos y ejecuciones recientes"
     no_events: "Todavía no hay eventos."
-    no_name: "Falta metadata.name en el enlace. Abre los detalles desde la lista."
+    no_name: 'Al enlace le falta el nombre del origen. Abre los detalles otra vez desde la lista.'
     notfound: "Fuente no encontrada; puede haberse eliminado."
     object_required: "Se requiere un objeto JSON."
     name_required: "Se requiere el nombre del recurso."
@@ -2017,8 +2017,8 @@ sources:
     name_required: El nombre es obligatorio
     expr_required: La expresión cron es obligatoria
     targets_required: 'Elige al menos una capacidad destino'
-    result_schema: "Contrato del payload del evento (resultSchema, opcional)"
-    result_schema_hint: "Opcional. Con un JSON Schema aquí (p. ej. {\"type\":\"object\",\"required\":[\"action\"]}) cada entrega se valida antes de despachar: los eventos que no cumplen se guardan igual pero no se despachan, y queda una poda event_schema en el trace. Vacío = sin validación."
+    result_schema: 'Contrato del payload del evento (opcional)'
+    result_schema_hint: 'Opcional. Con un JSON Schema aquí (p. ej. {"type":"object","required":["action"]}) cada entrega se valida primero: los eventos que no cumplen se guardan igual, pero no se despachan, y el trace queda marcado como payload que no cumple el contrato. Vacío = sin validación.'
     bad_schema: "el contrato del payload no es JSON válido: {e}"
     schema_not_object: 'el contrato del payload debe ser un objeto JSON (arrays/escalares no son objetos)'
     no_caps: 'Aún no hay capacidades utilizables. Créalas primero en la página «Capacidades».'
@@ -2036,7 +2036,7 @@ sources:
     avail_vars: '¿Qué campos ofrece este origen? (clic para copiar)'
     av_fill: "Haz clic para rellenar el origen de la variable"
     hook_url: "URL de carga"
-    hook_url_pending: "Se genera al guardar (p. ej. /v1/hooks/src_xxx)"
+    hook_url_pending: 'Se genera al guardar (p. ej. <code>/v1/hooks/src_xxx</code>)'
     hook_github: "Cómo configurarlo en GitHub"
     hook_github_events: "Con este basta; los demás eventos no se despachan"
     hook_github_secret: "El Secret lo valida GitHub; este sistema aún no verifica firmas, usa un token largo y aleatorio en la URL"
@@ -2482,7 +2482,7 @@ uxaudit:
       no_param_title: 'No se indicó ningún nodo'
       none: 'Ninguno'
     sources:
-      dedup_summary: 'Deduplicación de entregas y su ventana (deliveryId)'
+      dedup_summary: 'Deduplicación de entregas y su ventana'
       group_basic: 'Básico'
       group_basic_hint: 'El nombre y el tipo no se pueden cambiar tras crear'
       group_credentials: 'Credenciales de entrada'

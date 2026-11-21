@@ -284,7 +284,7 @@ function healthTone(health) {
    没有 properties 时不编一张空表，只说「没有声明字段」。 */
 function schemaTable(schema) {
   const box = el("div", { class: "sd-target" });
-  box.append(txt("h4", "card-title", t("sources.v4.schema", "载荷契约 config.payloadSchema")));
+  box.append(txt("h4", "card-title", t("sources.v4.schema", "载荷契约（可选）")));
   const props = isObj(schema) && isObj(schema.properties) ? schema.properties : null;
   if (!props || !Object.keys(props).length) {
     box.append(txt("p", "field-hint", t("source_detail.schema_none", "载荷契约没有声明字段")));
@@ -575,7 +575,7 @@ async function load() {
       // 缺 name：空态（含返回列表），不请求、不编 id。
       paintState(
         emptyState(
-          t("sources.v4.no_name", "链接缺少 metadata.name。请从源列表打开详情。"),
+          t("sources.v4.no_name", "链接里缺少源名。请从源列表重新打开详情。"),
           t("source_detail.no_name_hint", "从源列表点一个源的名称进来，或在地址里带上 ?namespace=<ns>&name=<name>。"),
         ),
       );
