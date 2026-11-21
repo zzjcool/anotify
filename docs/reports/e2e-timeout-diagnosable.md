@@ -17,6 +17,8 @@ snapshot-doc: 2026-11-20 本机交付快照（下文注入输出、门禁数字�
   「52s 之后什么都没有」的机制。
 - 没动产品代码（本任务边界），没放宽任何断言，`known-env-failures.json` 的 `entries` 保持空数组。
   产品侧死循环的完整证据 + 一行修法写在第 §3.4 节，建议另开产品 issue 跟踪。
+- CI 复核（§5.1）：`make ci` 绿；全量 e2e 里 **source-actions 已通过**（不再 timeout），
+  另外两个红（ui_shift 300s、node-aba 计数 flake）都是本 PR 之前就存在的，附了对照证据。
 
 ## 1. 现象与旧实现的漏洞（复述 #485）
 
@@ -233,20 +235,45 @@ $ flock /tmp/anotify-ci.lock -c "make ci"
 ✅ 契约静态断言（A2/A4/A5/A6/A7 + openapi 一致性 + 字段级核对）通过
 ✅ 契约字段守卫通过（234 个 schema、724 个已知字段）
 ✅ check-annotations 48 项判定 PASS 48 / FAIL 0（reduced-motion 注释里的计数词按规则 D 改写，棘轮 385/385）
-✅ gofmt / go vet / staticcheck 干净；go test 41 个包全 ok（含 internal/server 58.4s、store/v4test 30.9s）
+✅ gofmt / go vet / staticcheck 干净；go test 全包 ok（含 internal/server、store/v4test）
 ✅ harness 自测通过（端口/boot id/两次启动不同）
 EXIT=0
 
 $ flock /tmp/anotify-ci.lock -c "make e2e-affected"
-✅ E2E 全绿：28/28 个请求套件均达标（断言 2370 通过 / 0 失败，authority 清单覆盖 28 个）
-   frontend 43通过/0失败 161.5s · ui_shift 87通过/0失败 155.8s · capacity 178通过/0失败 147.5s
+✅ E2E 全绿：29/29 个请求套件均达标（断言 2431 通过 / 0 失败，authority 清单覆盖 29 个）
+   frontend 43通过/0失败 161.5s · ui_shift 87通过/0失败 156.6s · capacity 178通过/0失败 147.5s
    重试: 首次 incomplete 0 条 · 首次 timeout 0 条 · 重试通过 0 · 重试仍无结论 0（5 个套件上报了重试账本）
-✅ 临时目录零残留（隔离 TMPDIR 内本次新增 = 0，耗时 352.2s）
+✅ 临时目录零残留（隔离 TMPDIR 内本次新增 = 0，耗时 360.0s）
 EXIT=0
 ```
 
+（合并 main 前同一套门禁是 28/28、2370 断言；main 带来第 29 个套件后复跑仍全绿。数字是快照，
+以复跑输出为准。）
+
 （`make e2e-affected` 本次选中 28/28 全套：改动里的 `scripts/e2e/lib/harness.mjs` 是共享面，
 选择器按「无法判定 ⇒ 保守跑全套」处理，不是人为 `--full`。）
+
+## 5.1 CI 复核（GitHub runner，Chrome 157 + Node 22）
+
+`workflow_dispatch` 跑全量（`make ci` + 全量 e2e），run `44673307477`，head `1bbb2041`：
+
+```text
+✅ 快门禁（make ci）                       success
+  全量 e2e                                  ❌（两个与本 PR 无关的红，见下）
+  ❌ frontend 42通过/1失败 219.2s           唯一失败 = node-aba（既有 flake）
+  ⏱️ ui_shift 0通过/0失败 300.1s            per-suite 300s 预算被 SIGKILL（既有问题）
+  重试（incomplete/timeout → 自动重试 1 次）: 首次 incomplete 0 条 · 首次 timeout 0 条 · 重试通过 0 · 重试仍无结论 0
+```
+
+- **source-actions 在 runner 上通过了**（frontend 43 条里 42 条过，唯一失败是 node-aba；
+  `首次 timeout 0 条`）——#485 的验收②在真实 CI 上成立，不再是 `timeout ×2`。
+- `ui_shift 300s` 是**既有失败**：同一条日志在 #484 的 run `44663970230` 里已经出现
+  （`⏱️ 套件 ui_shift 超时（300s）`），本 PR 没动 ui_shift。
+  它很可能是同一个产品死循环（`f3-ui-cases.mjs` 的 interact-dialogs 也点行内 `.act-more`），
+  修 §3.4 后应一并消失；在那之前需要单独抬 ui_shift 的 per-suite 预算或缩 case。
+- `node-aba count: 19 != 18` 是**既有 flake**：它断言「释放延迟 PUT 后 50ms 内页面不得发新请求」，
+  多出来的那次请求是页面自己的时序。同一份代码上跑：本分支 3/23 红（13%）、
+  基线 `d3c26dd4` 2/25 红（8%）—— 同一量级；本 PR 不改这个 case，也不新增页面请求。
 
 ## 6. 复跑命令
 
