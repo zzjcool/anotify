@@ -1,4 +1,4 @@
-> **历史快照**：本文件是本次交付的取证记录，不随代码演进；行为以代码、测试与判定器为准。
+> snapshot-doc: 本次交付的取证记录（历史快照），不随代码演进；行为以代码、测试与判定器为准。
 > 数字全部来自下面两条 run 的日志（复算命令见 §6）。
 
 # CI 的 `e2e（affected）`：14m21s → 4m51s（4 片并行，覆盖 29/29 不变）
@@ -75,3 +75,33 @@ make ci && make e2e-affected                           # 本地门禁 + 本地�
 
 CI 侧复算：上面两条 run 的 `e2e（affected · 计划分片）/ · 分片 N / e2e（affected）` 日志，
 以及两条探针 run 的「总判定」日志。
+
+## 7. 第三种形态：分片全绿、清单齐全，总判定仍红（2026-11-21，run 44878420950）
+
+前面两条反证都是「让判定器红」，这次是判定器**自己**红在一处真失败上——记下来，因为它
+长得最像「汇总漏算」，实际不是。
+
+- run [44878420950](https://github.com/zzjcool/anotify/actions/runs/44878420950)：四个分片 job 全绿，
+  `--merge` 报「期望 29 套 / 拿到 29 套」（逐片 1/1、1/1、15/15、12/12，计划集与结果集对齐）——
+  **没有缺片、没有改名、没有 artifact 名不匹配**。
+- 总判定仍判红：`❌ e2e 出现 1 条清单之外的失败：frontend / source-actions`。判定器按设计工作，
+  红是真实失败，不是对账错了。
+- 该失败是 f3 的假红（TOCTOU），既不是产品缺陷，也不是分片带来的覆盖缺口：
+  - 现场：`33 × locator resolved to hidden <button role="menuitem" class="menu-item act-item">Disable</button>`
+    ——条目的**文本已经是 `Disable`**（行的 enabled 状态早就翻好了），33 次解析全落到 hidden 上。
+  - 机制：`toggle()` 是 PATCH → `load()` → `render()`，整行被新节点替换，刚打开的 ⋯ 菜单随之变回
+    hidden；旧断言等的是「必须菜单开着才可见」的菜单条目 ⇒ 前置动作成功那一刻的节点，检查时已被
+    摘掉（TOCTOU）。菜单自己不会重新打开，所以它只能等满 15s。
+  - 佐证：同一份代码的上一轮（`0c6c136e`，run 44877169577）同片、同配置全绿；两轮唯一差异是 main 的
+    6 个 commit（全是 docs），与产品行为无关。
+- 修法（不放宽断言、不动 `known-env-failures.json`）：状态读**行内 badge**（`Enabled`/`Disabled`，
+  始终可见，由 `m.enabled` 渲染、`toggle()` 落库后 `load()` 才有），菜单条目只在**点击动作**时用
+  `pickMenu`（它自己负责幂等地把菜单打开）。覆盖不变：启用→`Disable`、停用→`Enable` 这两个方向
+  仍由 `pickMenu` 的点击本身钉住。
+- 反证（本地、真实 artifact）：删掉某片的 `api_contract.json` 后 `--merge` 报
+  `::error title=有套件没有结果::api_contract`、判定器 exit 1；整片缺失时列出缺 15 套并叠加
+  `分片 job 有失败（failure）⇒ 判红`。
+- 附带：总判定 job 现在把「分片汇总 + 判定器输出」写进 job summary。分片 job 按设计是
+  `continue-on-error`（单一裁决口在总判定），不把理由写出来，读 checks 的人就会把「一处真失败」
+  误读成「汇总说不完整」。
+

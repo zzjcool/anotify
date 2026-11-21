@@ -299,31 +299,53 @@ jobs:
           path: .e2e-bin/sharded
 
       # 真门禁：容忍范围只在 scripts/e2e/known-env-failures.json（棘轮只许变小）。
-      - name: 总判定（清单内容忍，清单外拦；分片缺一片也拦）
+      - name: 总判定（清单内容忍，清单外拦；分片缺一片也拦；理由也写进 job summary）
         run: |
           set -euo pipefail
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          {
+            echo "### e2e（affected）总判定"
+            echo ""
+            echo "- 计划分片 job：${{ needs.e2e-plan.result }}"
+            echo "- 分片 job：${{ needs.e2e-shard.result }}"
+          } >> "$summary"
           if [ "${{ needs.e2e-plan.result }}" != "success" ]; then
             echo "::error::e2e 计划分片 job 是 ${{ needs.e2e-plan.result }}：没有可信的套件清单 ⇒ 判红（fail-closed）"
+            echo "- ❌ 计划分片 job 不是 success：没有可信的套件清单 ⇒ 判红（fail-closed）" >> "$summary"
             exit 1
           fi
           count="${{ needs.e2e-plan.outputs.count }}"
           if [ "$count" = "0" ]; then
             echo "ℹ️ 本次改动没有被任何 e2e 套件覆盖（计划里已有跳过原因）⇒ 不跑"
+            echo "- ℹ️ 本次改动没有被任何 e2e 套件覆盖 ⇒ 不跑" >> "$summary"
             exit 0
           fi
           selected="${{ needs.e2e-plan.outputs.selected }}"
-          node scripts/e2e/shard.mjs --merge --from .e2e-bin/sharded --out .e2e-bin/results --expect "$selected"
+          merge_rc=0
+          node scripts/e2e/shard.mjs --merge --from .e2e-bin/sharded --out .e2e-bin/results --expect "$selected" 2>&1 | tee merge.log || merge_rc=1
           rc=0
           node scripts/e2e/ci-e2e-verdict.mjs \
             --results .e2e-bin/results \
             --known scripts/e2e/known-env-failures.json \
-            --selected "$selected" || rc=$?
+            --selected "$selected" 2>&1 | tee verdict.log || rc=${PIPESTATUS[0]}
           # 判定器只读 results，「哪一片崩了」它看不见：分片 job 的结论要单独拦一次，
           # 否则「results 恰好齐了但有一个 job 失败」会被判绿。
           if [ "${{ needs.e2e-shard.result }}" != "success" ]; then
             echo "::error::e2e 分片 job 有失败（${{ needs.e2e-shard.result }}）⇒ 判红"
             rc=1
           fi
+          if [ "$merge_rc" != "0" ]; then rc=1; fi
+          {
+            echo ""
+            echo "**分片汇总（期望 / 拿到 / 缺哪些）**"
+            echo '```'
+            cat merge.log || true
+            echo '```'
+            echo "**判定器输出**（exit $rc）"
+            echo '```'
+            tail -n 80 verdict.log || true
+            echo '```'
+          } >> "$summary"
           exit $rc
   # ── main push：轻量回归（不跑 e2e；全量留给 nightly）───────────────
   regression:
