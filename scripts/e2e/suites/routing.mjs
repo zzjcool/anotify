@@ -40,8 +40,7 @@ const nodes = []; // 本套件起的 mock 节点（退出前统一关连接）
 
 // ---------- 节点：共享 MockNode（两段式握手 + 部署回执）----------
 //
-// 帧形状的唯一镜像在 lib/nodes.mjs（MockNode）；这里只做套件侧的编排：
-// 起节点 → 触发部署 → 等 deployment 收敛成 applied。
+// 帧形状的唯一镜像在 lib/nodes.mjs（MockNode）；这里只做套件侧的编排：起节点 → 触发部署 → 等 deployment 收敛成 applied。
 async function connectNode(name, { slots = 2, declared = [] } = {}) {
 	const node = await N.MockNode.connect({
 		base: server.base,
@@ -375,8 +374,7 @@ async function main() {
 	H.eq("no_target 不建任务", (nt.json?.tasks || []).length, 0);
 	expectPrune("no_target 留痕", nt, "no_target");
 
-	// 4.4 出口能力解析不到：v4 在**建源**时就拒（引用必须在本 ns 内可解析）。FINDING：当前回
-	// 500（见文件头）。这里只钉「被拒 + 消息点名」，不把 5xx 固化成契约。
+	// 4.4 出口能力解析不到：v4 在**建源**时就拒（引用必须在本 ns 内可解析）。FINDING：当前回500（见文件头）。这里只钉「被拒 + 消息点名」，不把 5xx 固化成契约。
 	const brokenSrc = await V.createSource(
 		server.base,
 		session,
@@ -1229,6 +1227,293 @@ async function main() {
 	H.eq("12.8 回显 all[0].negate === true", projMatch?.all?.[0]?.negate, true);
 	H.eq("12.8 回显 all[0].field + op", `${projMatch?.all?.[0]?.field} ${projMatch?.all?.[0]?.op}`, "issue.pull_request exists");
 	H.eq("12.8 回显 any[0].value 深等于 [\"bug\"]", projMatch?.any?.[0]?.value, ["bug"]);
+
+	// ---------- 13. #522 router 决策通道 + outcomes 表（断言落在 trace 上：判决执行在 result 之后）----------
+	console.log("--- 13. #522 router 决策通道 / outcomes 表 ---");
+
+		const decisionPath = (taskId) => `/v1/tasks/${encodeURIComponent(taskId)}/decision`;
+	const postDecision = (taskId, token, body) =>
+		H.req(server.base, decisionPath(taskId), {
+			method: "POST",
+			...(token === undefined ? {} : { key: token }),
+			body,
+		});
+
+	const routeTypes = (doc) =>
+		(doc?.events || [])
+			.filter((e) => e?.spec?.involvedObject?.name === "route")
+			.map((e) => e?.spec?.eventType);
+	const hasRouteType = (doc, want) => routeTypes(doc).includes(want);
+	const childrenOf = (doc, parentTaskId) =>
+		(doc?.tasks || []).filter((t) => t?.spec?.parentTaskId === parentTaskId);
+	const waitTrace = async (traceId, pred) => {
+		// 上限 24s（并行跑满时抢 CPU；判决执行跟在 task.result 之后，8s 会假红）。
+		let doc = {};
+		for (let i = 0; i < 240; i++) {
+			doc = (await H.req(server.base, V.P.trace(NS, traceId), { session })).json || {};
+			if (pred(doc)) return doc;
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		return doc;
+	};
+
+	const closeCap = await defineCap("issue-close", {
+		params: {
+			type: "object",
+			properties: { reason: { type: "string" }, title: { type: "string" } },
+		},
+	});
+	const notifyCap = await defineCap("issue-notify", {
+		params: { type: "object", properties: { channel: { type: "string" } } },
+	});
+	const triageCap = await defineCap("issue-triage", {
+		params: { type: "object", properties: { title: { type: "string" } } },
+	});
+	const routerCap = await defineCap("issue-router", {
+		params: { type: "object", properties: { event: { type: "object" } } },
+		next: ["issue-close", "issue-notify", "issue-triage"],
+	});
+	const routerNode = await connectNode("router-node", {
+		slots: 4,
+		declared: [capRef(routerCap), capRef(closeCap), capRef(notifyCap), capRef(triageCap)],
+	});
+	await deployToNode(routerNode, "issue-router");
+
+	const routerSrc = await mkHookSource("r522.router", {
+		targets: [
+			{
+				capability: "issue-router",
+				params: { event: "$(payload)" },
+				outcomes: {
+					close: [
+						{
+							capability: "issue-close",
+							params: { reason: "$(decision.reason)", title: "$(payload.issue.title)" },
+						},
+						{ capability: "issue-notify", params: { channel: "#mod" } },
+					],
+					triage: [{ capability: "issue-triage", params: { title: "$(payload.issue.title)" } }],
+					drop: [],
+				},
+			},
+		],
+	});
+	const echoTarget = routerSrc.doc?.spec?.targets?.[0] || {};
+	H.eq(
+		"13.0 读投影回显结局名（close / drop / triage）",
+		Object.keys(echoTarget.outcomes || {}).sort(),
+		["close", "drop", "triage"],
+	);
+	H.eq("13.0 读投影回显 drop: []（空动作结局合法）", (echoTarget.outcomes?.drop || []).length, 0);
+	H.eq(
+		"13.0 读投影回显动作的参数模板（$(decision.reason) 原样保留，不在此刻求值）",
+		echoTarget.outcomes?.close?.[0]?.params?.reason,
+		"$(decision.reason)",
+	);
+
+	let r522Seq = 0;
+	const deliverIssue = (tag, payload) =>
+		deliver(routerSrc.hookUrl, {}, {
+			type: "issue.opened",
+			id: `r522-${tag}-${Date.now()}-${++r522Seq}`,
+			payload,
+		});
+
+	const startRouterTask = async (label, payload) => {
+		const res = await deliverIssue(label, payload);
+		V.expectStatus(`${label}：投递 → 200`, res, 200);
+		H.eq(`${label}：回执恰好 1 个任务（router 自己）`, (res.json?.tasks || []).length, 1);
+		const taskId = res.json?.tasks?.[0]?.taskId;
+		const traceId = res.json?.traceId;
+		const dis = await routerNode.waitDispatch(taskId);
+		H.check(
+			`${label}：router 任务收到 task.dispatch`,
+			!!dis,
+			JSON.stringify(routerNode.frames.map((f) => f.type)),
+		);
+		if (dis) routerNode.accept(dis, 0);
+		const grant = dis ? await routerNode.waitGrant(taskId) : null;
+		H.check(
+			`${label}：拿到 lease.grant（执行权只来自这里）`,
+			!!grant,
+			JSON.stringify(routerNode.frames.map((f) => f.type)),
+		);
+		return { taskId, traceId, grant };
+	};
+
+	const one = await startRouterTask("13.1", { issue: { title: "RAM 飙升" } });
+	H.check(
+		"13.1 grant.decisionToken 非空（只有声明了 outcomes 的 router 任务才有）",
+		typeof one.grant?.decisionToken === "string" && one.grant.decisionToken.length >= 16,
+		JSON.stringify(one.grant && Object.keys(one.grant)),
+	);
+	const routerDoc1 = (await H.req(server.base, V.P.task(NS, one.taskId), { session })).json;
+	H.eq(
+		"13.1 router 任务的 params 取到 $(payload) 整根载荷（建任务时求值）",
+		routerDoc1?.spec?.params?.event?.issue?.title,
+		"RAM 飙升",
+	);
+	const d1 = await postDecision(one.taskId, one.grant?.decisionToken, {
+		outcome: "close",
+		params: { reason: "spam" },
+	});
+	V.expectStatus("13.1 POST decision close → 200", d1, 200);
+	H.eq("13.1 回执 actions=2（close 挂了两个动作）", d1.json?.actions, 2);
+	H.eq(
+		"13.1 回执的 taskId/outcome 与提交逐字相同",
+		`${d1.json?.taskId}/${d1.json?.outcome}`,
+		`${one.taskId}/close`,
+	);
+	routerNode.result(one.grant, { phase: "succeeded" });
+	const doc1 = await waitTrace(one.traceId, (d) => childrenOf(d, one.taskId).length >= 2);
+	const kids1 = childrenOf(doc1, one.taskId);
+	H.eq("13.1 结局 close → 恰好 2 个子任务", kids1.length, 2);
+	H.eq(
+		"13.1 子任务能力集合 = {issue-close, issue-notify}",
+		kids1.map((t) => t?.spec?.capability?.name).sort(),
+		["issue-close", "issue-notify"],
+	);
+	H.check(
+		"13.1 没有派 issue-triage（未选中的结局不执行）",
+		!kids1.some((t) => t?.spec?.capability?.name === "issue-triage"),
+		JSON.stringify(kids1.map((t) => t?.spec?.capability?.name)),
+	);
+	H.check(
+		"13.1 每个子任务的 parentTaskId 都指向 router 任务",
+		kids1.every((t) => t?.spec?.parentTaskId === one.taskId),
+		JSON.stringify(kids1.map((t) => t?.spec?.parentTaskId)),
+	);
+	const closeKid = kids1.find((t) => t?.spec?.capability?.name === "issue-close") || {};
+	H.eq(
+		"13.1 issue-close 的 reason 来自判决 params（$(decision.reason) 判决时求值）",
+		closeKid?.spec?.params?.reason,
+		"spam",
+	);
+	H.eq(
+		"13.1 issue-close 的 title 来自载荷（$(payload.issue.title) 建任务时求值）",
+		closeKid?.spec?.params?.title,
+		"RAM 飙升",
+	);
+
+	const two = await startRouterTask("13.2", { issue: { title: "需要人工判断" } });
+	H.check("13.2 新投递是新 trace（不是幂等重放）", two.traceId && two.traceId !== one.traceId, `${two.traceId} vs ${one.traceId}`);
+	const d2 = await postDecision(two.taskId, two.grant?.decisionToken, { outcome: "triage" });
+	V.expectStatus("13.2 POST decision triage → 200", d2, 200);
+	H.eq("13.2 回执 actions=1", d2.json?.actions, 1);
+	routerNode.result(two.grant, { phase: "succeeded" });
+	const doc2 = await waitTrace(two.traceId, (d) => childrenOf(d, two.taskId).length >= 1);
+	const kids2 = childrenOf(doc2, two.taskId);
+	H.eq("13.2 结局 triage → 恰好 1 个子任务", kids2.length, 1);
+	H.eq("13.2 那一条就是 issue-triage", kids2[0]?.spec?.capability?.name, "issue-triage");
+	H.eq("13.2 triage 的参数取自载荷", kids2[0]?.spec?.params?.title, "需要人工判断");
+	H.eq("13.2 子任务与 router 同一条 trace", kids2[0]?.spec?.traceUID, two.traceId);
+
+	const three = await startRouterTask("13.3", { issue: { title: "噪音" } });
+	const d3 = await postDecision(three.taskId, three.grant?.decisionToken, { outcome: "drop" });
+	V.expectStatus("13.3 POST decision drop（drop: []）→ 200", d3, 200);
+	H.eq("13.3 空动作结局的 actions=0", d3.json?.actions, 0);
+	routerNode.result(three.grant, { phase: "succeeded" });
+	const doc3 = await waitTrace(three.traceId, (d) => hasRouteType(d, "outcome_dropped"));
+	H.eq("13.3 drop → 0 子任务", childrenOf(doc3, three.taskId).length, 0);
+	H.check(
+		"13.3 trace 里有 outcome_dropped 观察行",
+		hasRouteType(doc3, "outcome_dropped"),
+		JSON.stringify(routeTypes(doc3)),
+	);
+
+	const four = await startRouterTask("13.4", { issue: { title: "没人问" } });
+	routerNode.result(four.grant, { phase: "succeeded" });
+	const doc4 = await waitTrace(four.traceId, (d) => hasRouteType(d, "no_decision"));
+	H.eq("13.4 没判决 → 0 子任务", childrenOf(doc4, four.taskId).length, 0);
+	H.check("13.4 trace 里有 no_decision 观察行", hasRouteType(doc4, "no_decision"), JSON.stringify(routeTypes(doc4)));
+
+	const five = await startRouterTask("13.5", { issue: { title: "越界" } });
+	V.expectReason(
+		"13.5 无 Bearer 凭据 → 401",
+		await postDecision(five.taskId, undefined, { outcome: "close" }),
+		401,
+		"token_invalid",
+	);
+	V.expectReason(
+		"13.5 结局名不在声明表里 → 403 outcome_not_declared",
+		await postDecision(five.taskId, five.grant?.decisionToken, { outcome: "bogus" }),
+		403,
+		"outcome_not_declared",
+	);
+	routerNode.result(five.grant, { phase: "succeeded" });
+	const doc5 = await waitTrace(five.traceId, (d) => hasRouteType(d, "no_decision"));
+	H.eq("13.5 越界判决不派任何任务", childrenOf(doc5, five.taskId).length, 0);
+	H.check(
+		"13.5 trace 里有 outcome_not_declared 审计行（越界必须留痕）",
+		hasRouteType(doc5, "outcome_not_declared"),
+		JSON.stringify(routeTypes(doc5)),
+	);
+
+	const six = await startRouterTask("13.6", { issue: { title: "重复提交" } });
+	const d6 = await postDecision(six.taskId, six.grant?.decisionToken, {
+		outcome: "close",
+		params: { reason: "dup" },
+	});
+	V.expectStatus("13.6 首次 POST close → 200", d6, 200);
+	H.eq("13.6 首次 actions=2", d6.json?.actions, 2);
+	V.expectReason(
+		"13.6 第二次 POST close → 409 decision_already_taken",
+		await postDecision(six.taskId, six.grant?.decisionToken, { outcome: "close", params: { reason: "dup" } }),
+		409,
+		"decision_already_taken",
+	);
+	routerNode.result(six.grant, { phase: "succeeded" });
+	const doc6 = await waitTrace(six.traceId, (d) => childrenOf(d, six.taskId).length >= 2);
+	H.eq("13.6 判决只执行一次：仍然恰好 2 个子任务（不是 4）", childrenOf(doc6, six.taskId).length, 2);
+
+	const badNext = await V.createSource(
+		server.base,
+		session,
+		NS,
+		V.sourceBody({
+			name: "r522.bad-next",
+			kind: "webhook",
+			targets: [{ capability: "issue-router", outcomes: { close: [{ capability: "not-in-next" }] } }],
+		}),
+	);
+	V.expectStatus("13.7 ① 动作能力不在 spec.next → 400", badNext, 400);
+	H.eq("13.7 ① reason = invalid_source_config", badNext.json?.reason, "invalid_source_config");
+	H.eq(
+		"13.7 ① causes[0].field 精确到 outcomes.close[0].capability",
+		badNext.json?.details?.causes?.[0]?.field,
+		"spec.targets[0].outcomes.close[0].capability",
+	);
+	for (const [i, badName] of ["Close", "has space"].entries()) {
+		const badNameRes = await V.createSource(
+			server.base,
+			session,
+			NS,
+			V.sourceBody({
+				name: `r522.bad-name-${i}`,
+				kind: "webhook",
+				targets: [{ capability: "issue-router", outcomes: { [badName]: [] } }],
+			}),
+		);
+		V.expectStatus(`13.7 ② 结局名 ${JSON.stringify(badName)} 非法 → 400`, badNameRes, 400);
+		H.eq(
+			`13.7 ② 名字非法时 causes[0].field 只指到 outcomes（名字进不了路径）`,
+			badNameRes.json?.details?.causes?.[0]?.field,
+			"spec.targets[0].outcomes",
+		);
+	}
+
+	const eight = await startRouterTask("13.8", { issue: { title: "脚本炸了" } });
+	routerNode.result(eight.grant, {
+		phase: "failed",
+		error: { reason: "script_failed", message: "boom" },
+	});
+	const doc8 = await waitTrace(eight.traceId, (d) => hasRouteType(d, "router_failed"));
+	H.eq("13.8 失败终态 → 0 子任务（结局不执行）", childrenOf(doc8, eight.taskId).length, 0);
+	H.check(
+		"13.8 trace 里有 router_failed 观察行",
+		hasRouteType(doc8, "router_failed"),
+		JSON.stringify(routeTypes(doc8)),
+	);
 
 	for (const n of nodes) n.conn.close();
 	server.stop();
