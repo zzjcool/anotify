@@ -284,6 +284,7 @@ func TestValidateParamsTemplate(t *testing.T) {
 		{"path": "$(payload.)"},
 		{"path": "$(payload"},
 		{"path": "$(payloadx.a)"},
+		{"r": "$(decision.reason)"},
 	}
 	for i, params := range bad {
 		if err := ValidateParamsTemplate(params); err == nil {
