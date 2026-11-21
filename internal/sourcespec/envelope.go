@@ -48,25 +48,6 @@ type Signature struct {
 	Scheme string `json:"scheme,omitempty"`
 }
 
-// Match 是 targets[].match（A1 只有 types；`cel` 属 A2）。Types 是精确、大小写敏感的事件
-// 类型白名单——不写 match 才是「全部命中」。
-type Match struct {
-	Types []string `json:"types,omitempty"`
-}
-
-// Matches 报告一次事件类型是否命中声明；nil（没写 match）= 恒命中。
-func (m *Match) Matches(eventType string) bool {
-	if m == nil {
-		return true
-	}
-	for _, want := range m.Types {
-		if want == eventType {
-			return true
-		}
-	}
-	return false
-}
-
 // ParsePointer 归一一个指针：`$.a.b` 与 `a.b` 同义，返回不带 `$` 前缀的形式。段字符集与
 // params 模板共用 validPathSegment（数字段 = 数组下标，连字符拒绝）。
 func ParsePointer(raw string) (string, error) {
@@ -263,27 +244,4 @@ func normalizeSignature(fields map[string]json.RawMessage) (*Signature, error) {
 	}
 	return nil, errf("config.signature.scheme %q 不合法（可选：%s / %s）",
 		out.Scheme, SchemeAnotifySHA256, SchemeGitHubSHA256)
-}
-
-// normalizeMatch 校验 targets[].match（空 types / 空串 / 重复都拒）。
-func normalizeMatch(m *Match) error {
-	if m == nil {
-		return nil
-	}
-	if len(m.Types) == 0 {
-		return errf("targets[].match 至少要声明 types（不写 match 才是全部命中）")
-	}
-	seen := map[string]bool{}
-	for i, want := range m.Types {
-		trimmed := strings.TrimSpace(want)
-		if trimmed == "" {
-			return errf("targets[].match.types[%d] 不能为空", i)
-		}
-		if seen[trimmed] {
-			return errf("targets[].match.types[%d] 与前面重复（%q）", i, trimmed)
-		}
-		seen[trimmed] = true
-		m.Types[i] = trimmed
-	}
-	return nil
 }

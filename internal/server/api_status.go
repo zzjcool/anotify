@@ -5,14 +5,13 @@ import (
 	"net/http"
 
 	"github.com/zzjcool/anotify/internal/protocol"
+	"github.com/zzjcool/anotify/internal/sourcespec"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// 统一错误体 Status（api-conventions §4.1 / §4.2）。
-// 为什么要有这一层：v3 各 handler 各自写 `{"error": "..."}`，错误码只体现在 HTTP 码
-// 上，客户端无法稳定分支。v4 契约把机器可读 reason 收敛成封闭集合，并规定
-// CAS 冲突要在 details.current.resourceVersion 里回当前令牌——这两件事必须只有一份
-// 实现，否则每个 handler 抄一遍迟早分叉。
+// 统一错误体 Status（api-conventions §4.1 / §4.2）：v3 各 handler 各自写 `{"error": "..."}`，
+// 客户端无法按码分支。机器可读 reason 的封闭集合与 CAS 的 details.current.resourceVersion
+// 必须只有一份实现，否则每个 handler 抄一遍迟早分叉。
 const (
 	apiVersionV1 = "anotify/v1"
 	kindStatus   = "Status"
@@ -61,16 +60,13 @@ type statusCause struct {
 	Field   string `json:"field,omitempty"`
 }
 
-// apiError 是领域 handler 直接构造的 Status 错误（code + reason + message）。
-//
-// 用法：handler 里 `return errStatus(400, "slug_taken", "…")`，再由 writeAPIError 统一
-// 落成响应体。这样 reason 字面只在构造点出现一次。
+// apiError 是领域 handler 直接构造的 Status 错误：`errStatus(400, "slug_taken", "…")` 交给
+// writeAPIError 落成响应体，reason 字面只在构造点出现一次。
 type apiError struct {
 	Code    int
 	Reason  string
 	Message string
-	// Details 是可选的结构化细节（目前只有 YAML 文档的 `details.causes` 用它）。
-	// 保持 nil 时输出与以前逐字节一致（statusDoc.Details 是 omitempty）。
+	// Details 是可选的结构化细节（YAML 文档与 #519 的组合子校验用它）；nil 时不出现。
 	Details *statusDetails
 }
 
@@ -94,10 +90,8 @@ func writeStatus(w http.ResponseWriter, code int, reason, message string, detail
 	})
 }
 
-// writeAPIError 把任意 error 翻成 Status 响应。
-//
-// 映射顺序：apiError（handler 显式语义）优先，其次 store 的封闭 sentinel，最后 500。
-// 未知错误必须给 500 而不是 400：把「我们没预料到」报成调用方错误会掩盖产品 bug。
+// writeAPIError 把任意 error 翻成 Status 响应：apiError（handler 显式语义）优先，其次 store
+// 的封闭 sentinel，最后 500——把「我们没预料到」报成 400 会掩盖产品 bug。
 func writeAPIError(w http.ResponseWriter, err error) {
 	if err == nil {
 		return
@@ -169,7 +163,8 @@ func writeAPIError(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrInvalidSourceKind):
 		writeStatus(w, http.StatusBadRequest, "invalid_source_kind", err.Error(), nil)
 	case errors.Is(err, store.ErrInvalidSourceConfig):
-		writeStatus(w, http.StatusBadRequest, "invalid_source_config", err.Error(), nil)
+		// #519：带路径校验失败逐条落进 details.causes[]（红点点到具体那行配置）。
+		writeStatus(w, http.StatusBadRequest, sourceConfigReason(err), err.Error(), sourceConfigCauses(err))
 	case errors.Is(err, store.ErrSourceTargetInvalid):
 		// targets 指向不存在的出口能力是**调用方输入错误**（改引用就好），不是服务端故障。
 		// 不加这一条就落 default 500：客户端会把它当瞬时故障去重试一个永远不会成功的写。
@@ -232,4 +227,41 @@ func writeAPIError(w http.ResponseWriter, err error) {
 	default:
 		writeStatus(w, http.StatusInternalServerError, reasonInternal, err.Error(), nil)
 	}
+}
+
+// sourceConfigReason 决定 `invalid_source_config` 的顶层 reason（#519）：纯「一个未知键」的错
+// 沿用文档层的 `unknown_field`（客户端已按它分支，也与 YAML 写面同口径），其余仍是既有码。
+func sourceConfigReason(err error) string {
+	causes := sourceConfigCauseList(err)
+	if len(causes) == 1 && causes[0].Reason == sourcespec.CauseReasonUnknownField {
+		return reasonUnknownField
+	}
+	return "invalid_source_config"
+}
+
+// sourceConfigCauses 把带路径校验失败翻成 details.causes[]（#519）：field 补 `spec.`——它是
+// **文档路径**（与 YAML 写面同写法），前端拿它去文档树定位；sourcespec 不该知道信封。
+func sourceConfigCauses(err error) *statusDetails {
+	causes := sourceConfigCauseList(err)
+	if len(causes) == 0 {
+		return nil
+	}
+	out := make([]statusCause, 0, len(causes))
+	for _, cause := range causes {
+		field := cause.Field
+		if field != "" {
+			field = "spec." + field
+		}
+		out = append(out, statusCause{Reason: cause.Reason, Message: cause.Message, Field: field})
+	}
+	return &statusDetails{Causes: out}
+}
+
+// sourceConfigCauseList 取出 sourcespec 的结构化结论。
+func sourceConfigCauseList(err error) []sourcespec.Cause {
+	var causes *sourcespec.CausesError
+	if !errors.As(err, &causes) {
+		return nil
+	}
+	return causes.Causes
 }

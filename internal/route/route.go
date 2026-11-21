@@ -206,10 +206,10 @@ func (r *Router) PlanFromSource(ctx context.Context, src *store.Source, traceID,
 		if ref == "" {
 			continue
 		}
-		// ★ 条件派（#513）：match 是“这条边要不要看这次事件”的闸，排在 resolve **之前**。
-		// 为一条永远不会派发的边去查库没有意义，也不该把 no_match 报成 downstream_missing。
-		if !declared.Match.Matches(eventType) {
-			plan.pruneNoMatch(ref, eventType, declared.Match)
+		// ★ 条件派（#513/#519）：match 是“这条边要不要看这次事件”的闸，排在 resolve **之前**：
+		// 不命中的边不该查库，也不该把 no_match 报成 downstream_missing。
+		if hit, detail := declared.Match.Matches(eventType, payload); !hit {
+			plan.pruneNoMatch(ref, detail)
 			continue
 		}
 		capability, err := r.resolveCapability(ctx, src.NamespaceID, ref)
@@ -277,13 +277,12 @@ func (r *Router) capabilityAccepting(ctx context.Context, namespaceID, name stri
 	return enabled, nil
 }
 
-// pruneNoMatch 把「事件 type 不在 match.types 里」记成一条剪枝（#513）。
+// pruneNoMatch 把「match 不命中」记成一条剪枝（#513 的 types / #519 的字段级组合子）。
 //
 // capability 用声明里的名字（`name@version` 取 `name`）：此时还没解析，没有真身份可给；
-// detail 带事件 type 与声明的 types，让「为什么没派发」在回执里直接可读。
-func (p *Plan) pruneNoMatch(ref, eventType string, match *sourcespec.Match) {
+// detail 由 `Match.Matches` 给（点名是 types 没命中、还是 all 的第几行、还是 any 全不成立）。
+func (p *Plan) pruneNoMatch(ref, detail string) {
 	name := refName(ref)
-	detail := fmt.Sprintf("事件 type %q 不在 match.types %v 里", eventType, match.Types)
 	p.Targets = append(p.Targets, Target{
 		Ref: ref, Capability: name, State: StatePruned,
 		Reason: protocol.ReasonNoMatch, Detail: detail,

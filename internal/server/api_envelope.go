@@ -340,11 +340,8 @@ func isEmptyJSON(raw json.RawMessage) bool {
 	return false
 }
 
-// unknownFieldError 把 encoding/json 的严格解码错误翻成 400。
-//
-// Go 的错误文本形如 `json: unknown field "foo"` / `json: unknown field "spec.bar"`；
-// 契约要的是机器码 unknown_field + 可读 message，所以这里统一包装而不是把原始
-// 错误文本直接回给客户端（原始文本会随 Go 版本漂移，客户端不该依赖它）。
+// unknownFieldError 把 encoding/json 的严格解码错误翻成 400：契约要的是机器码
+// unknown_field + 可读 message，不把随 Go 版本漂移的原始错误文本回给客户端。
 func unknownFieldError(err error) error {
 	var typeErr *json.UnmarshalTypeError
 	if errors.As(err, &typeErr) {

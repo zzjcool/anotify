@@ -985,6 +985,251 @@ async function main() {
 	);
 	H.eq("读投影原样回显 match.types", ghCfg?.spec?.targets?.[0]?.match?.types, ["issues.opened"]);
 
+	console.log("--- 12. #519 match 字段级组合子（all / any / negate / in / 数值 / 正则）---");
+	const ghEnv = {
+		type: { header: "x-github-event", joinFrom: "$.action" },
+		deliveryId: { header: "x-github-delivery" },
+		payload: { whole: true },
+	};
+	let hookSeq = 0;
+	const ghHead = (event, tag) => ({
+		"X-GitHub-Event": event,
+		"X-GitHub-Delivery": `gh519-${tag}-${Date.now()}-${++hookSeq}`,
+	});
+	await defineCap("mc.issue", { params: { type: "object", properties: { tag: { type: "string" } } } });
+
+	const prGate = await mkHookSource("mc.pr-gate", {
+		config: { envelope: ghEnv },
+		targets: [
+			{
+				capability: "mc.issue",
+				params: { tag: "$(payload.action)" },
+				match: {
+					types: ["issues.labeled"],
+					all: [{ field: "issue.pull_request", op: "exists", negate: true }],
+				},
+			},
+		],
+	});
+	const prBody = {
+		action: "labeled",
+		issue: {
+			number: 7,
+			title: "t",
+			pull_request: { url: "https://api.github.com/repos/o/r/pulls/7" },
+			labels: [{ name: "bug" }],
+		},
+	};
+	const asIssue = await deliver(prGate.hookUrl, ghHead("issues", "pr"), prBody);
+	V.expectStatus("12.1 PR 当作 issue 投递 → 200（字段不符不是 400/500）", asIssue, 200);
+	H.eq("12.1 PR-as-issue：0 任务", (asIssue.json?.tasks || []).length, 0);
+	H.eq("12.1 PR-as-issue：pruned[0].reason 恰为 no_match", asIssue.json?.pruned?.[0]?.reason, "no_match");
+	H.check(
+		"12.1 PR-as-issue：detail 点名 match.all[0]",
+		/match\.all\[0\]/.test(String(asIssue.json?.pruned?.[0]?.detail || "")),
+		JSON.stringify(asIssue.json?.pruned),
+	);
+	const realIssue = await deliver(prGate.hookUrl, ghHead("issues", "issue"), {
+		action: "labeled",
+		issue: { number: 7, title: "t", labels: [{ name: "bug" }] },
+	});
+	V.expectStatus("12.1 同一 body 去掉 pull_request 再投 → 200", realIssue, 200);
+	H.eq("12.1 真 issue（无 pull_request）：1 任务", (realIssue.json?.tasks || []).length, 1);
+
+	const labelHook = await mkHookSource("mc.labels", {
+		config: { envelope: ghEnv },
+		targets: [
+			{
+				capability: "mc.issue",
+				params: { tag: "$(payload.action)" },
+				match: {
+					types: ["issues.labeled"],
+					all: [{ field: "issue.labels.0.name", op: "in", value: ["bug", "regression"] }],
+				},
+			},
+		],
+	});
+	const labeled = (names) =>
+		deliver(labelHook.hookUrl, ghHead("issues", "lbl"), {
+			action: "labeled",
+			issue: { number: 1, title: "t", labels: names.map((name) => ({ name })) },
+		});
+	const bugLbl = await labeled(["bug"]);
+	V.expectStatus("12.2 labels[0].name=bug → 200", bugLbl, 200);
+	H.eq("12.2 in 命中：1 任务", (bugLbl.json?.tasks || []).length, 1);
+	const docsLbl = await labeled(["docs"]);
+	H.eq("12.2 labels[0].name=docs：0 任务", (docsLbl.json?.tasks || []).length, 0);
+	H.eq("12.2 labels[0].name=docs：no_match", docsLbl.json?.pruned?.[0]?.reason, "no_match");
+	const laterLbl = await labeled(["p2", "regression", "bug"]);
+	H.eq("12.2 regression 在第 2 位但下标 0 是 p2：0 任务", (laterLbl.json?.tasks || []).length, 0);
+	H.eq("12.2 下标 0 不命中：no_match", laterLbl.json?.pruned?.[0]?.reason, "no_match");
+
+	const assigneeHook = await mkHookSource("mc.assignee", {
+		config: { envelope: ghEnv },
+		targets: [
+			{
+				capability: "mc.issue",
+				params: { tag: "$(payload.action)" },
+				match: { all: [{ field: "issue.assignee.login", op: "==", value: "alice" }] },
+			},
+		],
+	});
+	const noAssignee = await deliver(assigneeHook.hookUrl, ghHead("issues", "asg"), {
+		action: "opened",
+		issue: { number: 1, title: "t" },
+	});
+	V.expectStatus("12.3 没有 assignee 字段 → 200（不是 500）", noAssignee, 200);
+	H.eq("12.3 没有 assignee：0 任务", (noAssignee.json?.tasks || []).length, 0);
+	H.eq("12.3 没有 assignee：no_match", noAssignee.json?.pruned?.[0]?.reason, "no_match");
+	const withAssignee = await deliver(assigneeHook.hookUrl, ghHead("issues", "asg2"), {
+		action: "opened",
+		issue: { number: 1, title: "t", assignee: { login: "alice" } },
+	});
+	V.expectStatus("12.3 assignee.login=alice → 200", withAssignee, 200);
+	H.eq("12.3 assignee 命中：1 任务", (withAssignee.json?.tasks || []).length, 1);
+
+	const numericHook = await mkHookSource("mc.numeric", {
+		config: { envelope: ghEnv },
+		targets: [
+			{
+				capability: "mc.issue",
+				params: { tag: "$(payload.issue.title)" },
+				match: {
+					all: [
+						{ field: "issue.number", op: ">", value: 3 },
+						{ field: "issue.title", op: "matches", value: "^URGENT" },
+					],
+				},
+			},
+		],
+	});
+	const num = (number, title) =>
+		deliver(numericHook.hookUrl, ghHead("issues", "num"), { action: "opened", issue: { number, title } });
+	const numHit = await num(5, "URGENT: disk full");
+	V.expectStatus("12.4 number=5 且 title 以 URGENT 开头 → 200", numHit, 200);
+	H.eq("12.4 数值与正则都命中：1 任务", (numHit.json?.tasks || []).length, 1);
+	const numLow = await num(2, "URGENT: disk full");
+	H.eq("12.4 number=2 不满足 >3：0 任务", (numLow.json?.tasks || []).length, 0);
+	const numWip = await num(5, "WIP: disk full");
+	H.eq("12.4 title 不匹配 ^URGENT：0 任务", (numWip.json?.tasks || []).length, 0);
+	const badRe = await V.createSource(
+		server.base,
+		session,
+		NS,
+		V.sourceBody({
+			name: "mc.bad-regex",
+			kind: "webhook",
+			targets: [
+				{ capability: "mc.issue", match: { all: [{ field: "issue.title", op: "matches", value: "(unclosed" }] } },
+			],
+		}),
+	);
+	V.expectStatus("12.4 matches 的正则编不过 → 400", badRe, 400);
+	H.eq("12.4 坏正则：reason=invalid_source_config", badRe.json?.reason, "invalid_source_config");
+	H.eq(
+		"12.4 坏正则：causes[0].field 精确到 all[0].value",
+		badRe.json?.details?.causes?.[0]?.field,
+		"spec.targets[0].match.all[0].value",
+	);
+
+	const andHook = await mkHookSource("mc.and", {
+		config: { envelope: ghEnv },
+		targets: [
+			{
+				capability: "mc.issue",
+				params: { tag: "$(payload.action)" },
+				match: {
+					types: ["issues.labeled"],
+					all: [{ field: "issue.pull_request", op: "exists", negate: true }],
+					any: [{ field: "issue.labels.0.name", op: "in", value: ["bug"] }],
+				},
+			},
+		],
+	});
+	const anyOnly = await deliver(andHook.hookUrl, ghHead("issues", "and1"), {
+		action: "labeled",
+		issue: { number: 1, title: "t", pull_request: { url: "u" }, labels: [{ name: "bug" }] },
+	});
+	H.eq("12.5 只有 any 命中（all 不成立）：0 任务", (anyOnly.json?.tasks || []).length, 0);
+	H.eq("12.5 只有 any 命中：no_match", anyOnly.json?.pruned?.[0]?.reason, "no_match");
+	const typesNo = await deliver(andHook.hookUrl, ghHead("pull_request", "and2"), {
+		action: "opened",
+		issue: { number: 1, title: "t", labels: [{ name: "bug" }] },
+	});
+	H.eq("12.5 类型不符（pull_request.opened）但组合子成立：0 任务", (typesNo.json?.tasks || []).length, 0);
+	H.eq("12.5 types 与组合子是 AND：no_match", typesNo.json?.pruned?.[0]?.reason, "no_match");
+	const andHit = await deliver(andHook.hookUrl, ghHead("issues", "and3"), {
+		action: "labeled",
+		issue: { number: 1, title: "t", labels: [{ name: "bug" }] },
+	});
+	V.expectStatus("12.5 types + all + any 三者都成立 → 200", andHit, 200);
+	H.eq("12.5 三者都成立：1 任务", (andHit.json?.tasks || []).length, 1);
+
+	const rows33 = Array.from({ length: 33 }, () => ({ field: "issue.title", op: "exists" }));
+	const tooMany = await V.createSource(
+		server.base,
+		session,
+		NS,
+		V.sourceBody({
+			name: "mc.rows-33",
+			kind: "webhook",
+			targets: [{ capability: "mc.issue", match: { all: rows33 } }],
+		}),
+	);
+	V.expectStatus("12.6 all 写 33 行 → 400", tooMany, 400);
+	H.check(
+		"12.6 33 行：message 含上限 32",
+		String(tooMany.json?.details?.causes?.[0]?.message || "").includes("32"),
+		JSON.stringify(tooMany.json?.details),
+	);
+	H.eq("12.6 33 行：causes[0].field 指向 match.all", tooMany.json?.details?.causes?.[0]?.field, "spec.targets[0].match.all");
+	const just32 = await V.createSource(
+		server.base,
+		session,
+		NS,
+		V.sourceBody({
+			name: "mc.rows-32",
+			kind: "webhook",
+			targets: [{ capability: "mc.issue", match: { all: rows33.slice(0, 32) } }],
+		}),
+	);
+	V.expectStatus("12.6 all 写 32 行 → 201（边界是 >32 不是 ≥32）", just32, 201);
+
+	for (const [i, [label, match, field, reason]] of [
+		["match 出现未知键 type", { type: ["issues.opened"] }, "spec.targets[0].match.type", "unknown_field"],
+		["all 是空组合子", { all: [] }, "spec.targets[0].match.all", "invalid_source_config"],
+		[
+			"op 写错成 =~",
+			{ any: [{ field: "a", op: "=~", value: "x" }] },
+			"spec.targets[0].match.any[0].op",
+			"invalid_source_config",
+		],
+		[
+			"field 路径坏成 issue.labels.0-name",
+			{ all: [{ field: "issue.labels.0-name", op: "exists" }] },
+			"spec.targets[0].match.all[0].field",
+			"invalid_source_config",
+		],
+	].entries()) {
+		const res = await V.createSource(
+			server.base,
+			session,
+			NS,
+			V.sourceBody({ name: `mc.bad-match-${i}`, kind: "webhook", targets: [{ capability: "mc.issue", match }] }),
+		);
+		V.expectStatus(`12.7 ${label} → 400`, res, 400);
+		H.eq(`12.7 ${label}：顶层 reason=${reason}`, res.json?.reason, reason);
+		H.eq(`12.7 ${label}：causes[0].field 精确`, res.json?.details?.causes?.[0]?.field, field);
+	}
+
+	const proj = await H.req(server.base, V.P.source(NS, "mc.and"), { session });
+	V.expectStatus("12.8 GET mc.and → 200", proj, 200);
+	const projMatch = proj.json?.spec?.targets?.[0]?.match;
+	H.eq("12.8 回显 types 原样", projMatch?.types, ["issues.labeled"]);
+	H.eq("12.8 回显 all[0].negate === true", projMatch?.all?.[0]?.negate, true);
+	H.eq("12.8 回显 all[0].field + op", `${projMatch?.all?.[0]?.field} ${projMatch?.all?.[0]?.op}`, "issue.pull_request exists");
+	H.eq("12.8 回显 any[0].value 深等于 [\"bug\"]", projMatch?.any?.[0]?.value, ["bug"]);
+
 	for (const n of nodes) n.conn.close();
 	server.stop();
 	// summary() 返回 true 表示**全部通过**（不是 "failed"），别搞反

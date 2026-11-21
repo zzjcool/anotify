@@ -88,27 +88,3 @@ func TestPointerSyntax(t *testing.T) {
 		t.Fatalf("对象不是标量（应回落）: %q %v", text, ok)
 	}
 }
-
-// TestMatchTypes 钉住 match 的求值语义：nil = 全部命中、精确、大小写敏感。
-func TestMatchTypes(t *testing.T) {
-	var none *Match
-	if !none.Matches("anything") {
-		t.Fatal("没写 match = 全部命中")
-	}
-	m := &Match{Types: []string{"issues.opened", "issue_comment.created"}}
-	if !m.Matches("issues.opened") || m.Matches("Issues.Opened") || m.Matches("issues") {
-		t.Fatalf("match.types 必须精确且大小写敏感: %+v", m.Types)
-	}
-	for _, raw := range []string{`{}`, `{"types":[]}`, `{"types":[""]}`, `{"types":["a","a"]}`} {
-		var tm Match
-		if err := json.Unmarshal([]byte(raw), &tm); err != nil {
-			t.Fatalf("%s 解码失败: %v", raw, err)
-		}
-		if err := normalizeMatch(&tm); !errors.Is(err, ErrInvalidConfig) {
-			t.Errorf("%s 应被拒，得到 %v", raw, err)
-		}
-	}
-	if err := ValidateTargets([]Target{{Capability: "x", Match: &Match{Types: []string{"a", " a "}}}}); !errors.Is(err, ErrInvalidConfig) {
-		t.Fatalf("归一后重复的 types 应被拒，得到 %v", err)
-	}
-}

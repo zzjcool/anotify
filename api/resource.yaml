@@ -2620,22 +2620,55 @@ components:
     SourceMatch:
       type: object
       description: |
-        条件派（#513）：`types` 是精确、大小写敏感的事件类型白名单。
+        条件派：`types` 是事件类型白名单（#513），`all` / `any` 是字段级组合子（#519）。
 
-        - 不写 `match` → 全部命中（现状）。
-        - 写了 `types` → 只给命中的那次事件建任务；不命中时事件**照常入库**、
-          回执 `pruned[].reason = no_match`、HTTP 仍 200、不建任务。
-        - `types` 必须是非空数组，元素非空且不重复（空数组 = 永不派发的死声明，
-          写路径 400 `invalid_source_config`）。
-
-        求值顺序在解析下游**之前**：不命中的边不会去查目标能力，也不会报
-        `downstream_missing`（那条边本来就不该看这次事件）。
-      required: [types]
+        - 不写 `match` → 全部命中（现状）。写了任意一组就按它判：三组**同时出现是 AND**、
+          `all` 内 AND、`any` 内 OR；各组都必须非空（空组合子恒成立，等于没写它）。
+        - 不命中时事件**照常入库**、回执 `pruned[].reason = no_match`、HTTP 仍 200、不建任务。
+        - 求值顺序在解析下游**之前**：不命中的边不会去查目标能力，也不会报
+          `downstream_missing`（那条边本来就不该看这次事件）。
+        - 叶子取不到值或类型不符 → 该行 false（**不是**错误、不 500）：想知道「字段缺失或
+          不等于 X」用 `negate: true`（`!=` 与 `==` 在字段缺失时都是 false）。
+        - 写入期 400：未知键、空组合子、非法 `op`、`matches` 正则编不过、`field` 路径语法
+          非法、单组超过 32 行、`value` 形状与 `op` 不符。`details.causes[].field` 指到
+          `spec.targets[0].match.all[1].op` 这一层。
       properties:
         types:
           type: array
           description: 精确、大小写敏感的事件类型白名单（如 `issues.opened`）
           items: {type: string}
+        all:
+          type: array
+          description: 每一行都必须成立（≥1 行，≤32 行）
+          items: {$ref: '#/components/schemas/SourceMatchLeaf'}
+        any:
+          type: array
+          description: 至少一行成立（≥1 行，≤32 行）
+          items: {$ref: '#/components/schemas/SourceMatchLeaf'}
+    SourceMatchLeaf:
+      type: object
+      required: [field, op]
+      description: |
+        一条字段级判据（#519）。`field` 是点号路径 + 数字下标（`issue.labels.0.name`），
+        与 `config.envelope` 的指针、params 模板**同一套方言**（`$.a.b` 与 `a.b` 同义）。
+
+        `op` 与 #512 的 router 规则表同一套词表：`== != > >= < <= contains matches in exists`。
+        `matches` 用 RE2（写入期编译）；`contains` 大小写敏感；`>`/`>=`/`<`/`<=` 只比数字
+        （`value` 必须是数字）；`in` 要求 `value` 是数组；`exists` 不看 `value`。
+        `negate: true` 翻转整行结论（含「字段缺失」）。
+      properties:
+        field:
+          type: string
+          description: 载荷里的点号路径（数字段是数组下标），如 `issue.pull_request`
+        op:
+          type: string
+          enum: ["==", "!=", ">", ">=", "<", "<=", contains, matches, in, exists]
+          description: 比较词表（封闭集合；写别的值 400）
+        value:
+          description: "比较项：字符串 / 数字 / 布尔 / null / 数组（`in` 用）"
+        negate:
+          type: boolean
+          description: 翻转整行结论（默认 false）
     SourceSpec:
       type: object
       description: |

@@ -1,11 +1,9 @@
 package server
 
 // spec-doc: 本文件是五份 spec ↔ 真实 mux / 中间件 / Go 结构体的双向对账自检，下面各段说明的是这道自检自己的规格（本文件实现它），不是对外部代码的无锚点约束声称。
-// 本文件是 #333（exact-five OpenAPI）的 **Go 侧门禁**：五份 spec 与真实 mux /
-// 真实中间件 / 真实 Go 结构体的双向对账 + 负向变异自测。
-// # 为什么是 Go 而不是 python
-// `scripts/check_openapi.py` 只能看 spec 自己（exact-five、归属、operationId、security 方案、
-// 错误具名族）。它**看不见 handler**。历史上的漂移都是这一半造成的：
+// 本文件是 #333（exact-five OpenAPI）的 **Go 侧门禁**：五份 spec 与真实 mux / 中间件 /
+// Go 结构体的双向对账 + 负向变异自测。为什么是 Go 而不是 python：`check_openapi.py` 只能
+// 看 spec 自己、**看不见 handler**，而历史上的漂移都是这一半造成的：
 // - mux 上加了一条路由、spec 没跟上 → 文档少一条端点（按文档写的客户端永远调不到）；
 // - spec 写了一条 mux 上不存在的端点 → 文档在骗人（客户端 404，而门禁全绿）；
 // - spec 声明 `security: [session]`、真实路由却忘了包 session 中间件 → **匿名可写**；
@@ -150,8 +148,9 @@ const (
 	// （CapabilityObserved + Emit + Prune + Tasks，CONTRACT-observed）。
 	// 234 → 240：启停/试跑六个具名 schema（CapabilityDisableRequest / CapabilityTestRequest /
 	// CapabilityTestReceipt / CapabilityTestWarning / CapabilityAuditEntry / CapabilityAuditList）；
-	// 240 → 242：#510 卸载响应的结果与 kept 行；242 → 243：#513 的 `SourceMatch`；243 → 245：#511 版本历史两对。
-	specSchemaFloor = 245
+	// 240 → 242：#510 卸载响应的结果与 kept 行；242 → 243：#513 的 `SourceMatch`；243 → 245：#511 版本历史两对；
+	// 245 → 246：#519 的组合子叶子行 `SourceMatchLeaf`。
+	specSchemaFloor = 246
 )
 
 // ---------- 测试入口 ----------
@@ -334,8 +333,7 @@ func TestOpenAPIParityDTOFields(t *testing.T) {
 	fatalIfProblems(t, "载入五份 spec", problems)
 
 	pairs := parityPairs()
-	// 削表守卫：这些数字是**实现现状的快照**，改动必须同步（删 pair / 删裸挂载 = 悄悄
-	// 放宽门禁，而那正是本门禁要防的事）。
+	// 削表守卫：数字是实现现状的快照，改动必须同步（删 pair = 悄悄放宽门禁）。
 	if len(pairs) < parityPairsFloor {
 		t.Fatalf("parityPairs 只剩 %d 对（快照下限 %d：覆盖全部 kind + 请求体/回执 + auth/ingress/agent 帧；删行必须同时改这个数字并写理由）",
 			len(pairs), parityPairsFloor)

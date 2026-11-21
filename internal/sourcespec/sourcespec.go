@@ -1,10 +1,9 @@
 // Package sourcespec 是 Anotify v4 **源（Source / 触发器）**文档与配置的唯一纯校验源。
 //
-// 为什么单独一个包：同一套判据要在三处用——store 的写路径（建/改源）、playbook 的安装
-// 比较（G1-5）、拒绝理由展示。抄两遍必然漂移（症状是「保存说没问题、安装说不一样」），
-// 所以本包只做**纯函数**：不 import 本项目任何包、不碰 IO / 环境 / 随机数（token 的生成
-// 是 store 的事，这里只判「空 = 待生成」）、config 进出都是 `json.RawMessage`（调用方拿到的
-// 字节就是落库的字节）。语义基线是 `api/` 与测试，冲突时以它们为准。
+// 同一套判据要在三处用（store 写路径 / playbook 安装比较 / 拒绝理由展示），抄两遍必然
+// 漂移（症状是「保存说没问题、安装说不一样」），所以本包只做**纯函数**：不 import 本项目
+// 任何包、不碰 IO/环境/随机数，config 进出都是 `json.RawMessage`（调用方拿到什么就存什么）。
+// 语义基线是 `api/` 与测试，冲突时以它们为准。
 package sourcespec
 
 import (
@@ -13,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // 校验错误域。调用方（store / server）把它们翻译成 `invalid_source_kind` /
@@ -61,7 +61,7 @@ func IsKind(kind string) bool {
 type Target struct {
 	Capability string         `json:"capability"`
 	Params     map[string]any `json:"params,omitempty"`
-	// Match 是条件派：不填 = 恒命中（现状）；写了 types 则事件 type 必须精确命中。
+	// Match 是条件派：不填 = 恒命中（现状）；写了任意一组（types / all / any）就按它判。
 	Match *Match `json:"match,omitempty"`
 }
 
@@ -84,10 +84,10 @@ type Config struct {
 	// Expr / TZ 是 kind=cron 的调度参数（tz 空 = Local）。
 	Expr string
 	TZ   string
-	// Token / Secret 是 kind=webhook 的入口凭据（token 空 = 待服务端生成）。
+	// Token / Secret 是 webhook 的入口凭据（token 空 = 待服务端生成）。
 	Token  string
 	Secret string
-	// Payload 是静态打底数据（三个 kind 同语义：入站载荷一层覆盖它）。
+	// Payload 是静态打底数据（三个 kind 同语义：入站一层覆盖）。
 	Payload map[string]any
 	// PayloadSchema 是载荷契约（缺省/null = 不校验）。
 	PayloadSchema json.RawMessage
@@ -195,3 +195,36 @@ func SortedKeys(m map[string]any) []string {
 func errf(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalidConfig, fmt.Sprintf(format, args...))
 }
+
+// Cause 是一条**带位置**的校验失败（服务端原样翻成 `Status.details.causes[]`）：Field 相对
+// `spec`，Reason 复用状态码封闭词表（`unknown_field` / `value_invalid`），Message 给人看。
+type Cause struct {
+	Field   string
+	Reason  string
+	Message string
+}
+
+// cause 的两个短码（都是 `Status.reason` 已有的词，不新造）。
+const (
+	CauseReasonUnknownField = "unknown_field"
+	CauseReasonValueInvalid = "value_invalid"
+)
+
+// CausesError 是一次写入期校验里**所有**问题的集合：`details.causes[].field` 让前端把红点
+// 点到具体那行配置上（拼进 message 只能靠人眼找）。errors.Is(ErrInvalidConfig) 仍成立。
+type CausesError struct{ Causes []Cause }
+
+func (e *CausesError) Error() string {
+	parts := make([]string, 0, len(e.Causes))
+	for _, cause := range e.Causes {
+		if cause.Field == "" {
+			parts = append(parts, cause.Message)
+			continue
+		}
+		parts = append(parts, cause.Field+"："+cause.Message)
+	}
+	return ErrInvalidConfig.Error() + ": " + strings.Join(parts, "；")
+}
+
+// Unwrap 让 errors.Is(err, ErrInvalidConfig) 成立（与 errf 同一错误域）。
+func (e *CausesError) Unwrap() error { return ErrInvalidConfig }
