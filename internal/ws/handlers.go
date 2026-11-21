@@ -35,8 +35,7 @@ func (h *Hub) handleConfigApplied(ctx context.Context, sess *Session, f *protoco
 // handleAccept 处理 task.accept：只有这里（节点接受 + 真实 slot）才可能授权执行。
 //
 // 顺序不可交换：形状（含 slot presence，0 合法）→ 会话身份（node 是登记名）→
-// GrantLeaseAuthorized 事务（当前凭证/ns/assignment/proposed/slot/三层预算）。
-// 任一步失败都**不授执行权**：不发 grant；store 已把 stale_config/slot_unavailable
+// GrantLeaseAuthorized 事务（当前凭证/ns/assignment/proposed/slot/三层预算）。任一步失败都**不授执行权**：不发 grant；store 已把 stale_config/slot_unavailable
 // 放回 pending + 有界退避，其它错误保持原状（assignment 窗口自然过期）。
 func (h *Hub) handleAccept(ctx context.Context, sess *Session, f *protocol.TaskAcceptFrame) error {
 	if err := protocol.ValidateAccept(f); err != nil {
@@ -46,7 +45,7 @@ func (h *Hub) handleAccept(ctx context.Context, sess *Session, f *protocol.TaskA
 		return fmt.Errorf("%w: accept.node %q 不是本会话节点 %q", errProtocolViolation, f.Node, sess.nodeName)
 	}
 	slot := *f.Slot
-	leaseID, attemptToken, attempt, expiresAt, err := h.db.GrantLeaseAuthorized(
+	leaseID, attemptToken, decisionToken, attempt, expiresAt, err := h.db.GrantLeaseAuthorized(
 		ctx, sess.auth, f.TaskID, f.AssignmentID, f.ProposedAttempt, slot, h.Now())
 	if err != nil {
 		if errors.Is(err, store.ErrNodeIdentityMismatch) {
@@ -59,24 +58,25 @@ func (h *Hub) handleAccept(ctx context.Context, sess *Session, f *protocol.TaskA
 			"slot", slot, "err", err)
 		return nil
 	}
+	// DecisionToken 只对声明了 outcomes 的 router 任务非空（#522）；空串时 wire 上不出现。
 	return sess.Send(ctx, &protocol.LeaseGrantFrame{
-		Type:         protocol.FrameLeaseGrant,
-		TaskID:       f.TaskID,
-		Attempt:      attempt,
-		Node:         sess.nodeName,
-		LeaseID:      leaseID,
-		AttemptToken: attemptToken,
-		ExpiresAt:    timeUnix(expiresAt),
-		AssignmentID: f.AssignmentID,
-		Slot:         &slot,
+		Type:          protocol.FrameLeaseGrant,
+		TaskID:        f.TaskID,
+		Attempt:       attempt,
+		Node:          sess.nodeName,
+		LeaseID:       leaseID,
+		AttemptToken:  attemptToken,
+		DecisionToken: decisionToken,
+		ExpiresAt:     timeUnix(expiresAt),
+		AssignmentID:  f.AssignmentID,
+		Slot:          &slot,
 	})
 }
 
 // handleReject 处理 task.reject：只接受封闭集合的两个 pre-grant 理由。
 //
 // 授权判定全在 store.RejectAssignmentAuthorized 同一事务：当前 credential hash /
-// namespace 仍可用 / 目标 Node + assignment + proposedAttempt 精确匹配 / 提案未过期。
-// 会话层只做形状与 wire node 名校验，不 Get-precheck 后裸 Reject。
+// namespace 仍可用 / 目标 Node + assignment + proposedAttempt 精确匹配 / 提案未过期。会话层只做形状与 wire node 名校验，不 Get-precheck 后裸 Reject。
 func (h *Hub) handleReject(ctx context.Context, sess *Session, f *protocol.TaskRejectFrame) error {
 	if !protocol.IsTaskRejectReason(f.Reason) {
 		return fmt.Errorf("%w: 未知 reject reason %q", errProtocolViolation, f.Reason)
@@ -139,8 +139,7 @@ func (h *Hub) handleRenew(ctx context.Context, sess *Session, f *protocol.LeaseR
 //
 // ACK 纪律（C3b）：只有 store 明确返回 Recorded / Duplicate（当前认证身份 +
 // 当前绑定 + 全量保留事实一致）才回 result.ack{accepted:true}。任何 generic error
-// ——旧 attempt、过期租约、取消在飞、manifest 不匹配、任意内部错误——都**不 ACK**：
-// 节点会把「没有 ack」当成结果未被中枢接受，而不是被一条错误的 ack 骗过去。
+// ——旧 attempt、过期租约、取消在飞、manifest 不匹配、任意内部错误——都**不 ACK**：节点会把「没有 ack」当成结果未被中枢接受，而不是被一条错误的 ack 骗过去。
 func (h *Hub) handleResult(ctx context.Context, sess *Session, f *protocol.TaskResultFrame) error {
 	if f.TaskID == "" || f.Attempt < 1 || f.LeaseID == "" {
 		return fmt.Errorf("%w: task.result 缺 task/attempt/lease", errProtocolViolation)
@@ -185,12 +184,31 @@ func (h *Hub) handleResult(ctx context.Context, sess *Session, f *protocol.TaskR
 		h.log.Warn("result disposition not ackable", "task_id", f.TaskID, "disposition", disposition)
 		return nil
 	}
+	// #522：结局只对 Recorded 执行（Duplicate 是幂等重放，再派一次会多出一组子任务）。放在 ack 之前：让「节点看到 accepted」蕴含「下游已建好」；失败只记日志，不拖垮 ack。
+	if disposition == store.TaskResultRecorded {
+		h.dispatchRouterOutcome(ctx, f.TaskID)
+	}
 	return sess.Send(ctx, &protocol.ResultAckFrame{
 		Type:     protocol.FrameResultAck,
 		TaskID:   f.TaskID,
 		Attempt:  f.Attempt,
 		Accepted: true,
 	})
+}
+
+// dispatchRouterOutcome 在任务终态之后执行它的结局表（#522）；非 router 任务立刻返回。
+func (h *Hub) dispatchRouterOutcome(ctx context.Context, taskID string) {
+	task, err := h.db.GetTaskByID(ctx, taskID)
+	if err != nil {
+		h.log.Warn("router outcome: read task failed", "task_id", taskID, "err", err)
+		return
+	}
+	if len(task.Outcomes) == 0 {
+		return
+	}
+	if err := h.router.DispatchOutcome(ctx, task); err != nil {
+		h.log.Warn("router outcome: dispatch failed", "task_id", taskID, "err", err)
+	}
 }
 
 // handleCancelAck 处理 cancel.ack：**先** ValidateCancelAck（历史绑定 presence 是
