@@ -170,14 +170,6 @@ export const BASELINE = {
 			"files": 16,
 			"lines": 2966
 		},
-		"research": {
-			"files": 2,
-			"lines": 422
-		},
-		"perf": {
-			"files": 3,
-			"lines": 706
-		}
 	},
 	"rootPlans": {
 		"files": 3,
@@ -249,8 +241,8 @@ export const DOC_POLICY = [
 	{ dir: "", verdict: "manual", why: "docs/README.md 等入口手册" },
 	{ dir: "contracts", verdict: "shrink", why: "冻结契约：迁移进代码与测试前不许增长，只能一块块搬走" },
 	{ dir: "v4", verdict: "forbidden", why: "实施期清单快照（inventory/manifest）已删（#495 B）：计数只会腐烂" },
-	{ dir: "research", verdict: "shrink", why: "可行性研究 = 计划，无执行者 ⇒ 删" },
-	{ dir: "perf", verdict: "shrink", why: "一次性测量快照 ⇒ 删；要留就并进 reports/" },
+	{ dir: "research", verdict: "forbidden", why: "可行性研究 = 计划，无执行者 ⇒ 已删（#495 B）" },
+	{ dir: "perf", verdict: "forbidden", why: "一次性测量快照已删（#495 B）：要留的已并进 reports/" },
 	{ dir: "reports", verdict: "evidence", why: "排障取证：按 PR 增长，不定上限" },
 	{ dir: "history", verdict: "evidence", why: "更早的档案与已迁移台账" },
 	{ dir: "design", verdict: "forbidden", why: "#477 的判据：实施前的计划一旦落地就只能变错" },
@@ -807,8 +799,6 @@ const FIXTURE_DOCS = {
 	dirs: {
 		"": { files: 2, lines: 80 },
 		contracts: { files: 5, lines: 400 },
-		research: { files: 1, lines: 30 },
-		perf: { files: 1, lines: 20 },
 		reports: { files: 3, lines: 120 },
 		history: { files: 2, lines: 90 },
 	},
@@ -820,7 +810,7 @@ const FIXTURE_BASELINE = {
 	files: 500,
 	dirs: { "internal/a": 30 },
 	dense: {},
-	docs: { contracts: { files: 5, lines: 400 }, research: { files: 1, lines: 30 }, perf: { files: 1, lines: 20 } },
+	docs: { contracts: { files: 5, lines: 400 } },
 	rootPlans: { files: 1, lines: 40 },
 };
 const FIXTURE_MIN = { files: 1, codeLines: 1 };
@@ -982,12 +972,12 @@ export function selfTest() {
 	}
 	{
 		const measured = fixtureMeasured({ dirs: { "internal/a": 24 } });
-		const docs = { total: 8, lines: 500, dirs: { contracts: { files: 4, lines: 350 }, research: { files: 1, lines: 30 }, perf: { files: 1, lines: 20 } }, rootPlans: { files: 1, lines: 40 } };
+		const docs = { total: 8, lines: 500, dirs: { contracts: { files: 4, lines: 350 } }, rootPlans: { files: 1, lines: 40 } };
 		const baseline = {
 			commentLines: 100,
 			dirs: { "internal/a": 30 },
 			dense: {},
-			docs: { contracts: { files: 5, lines: 400 }, research: { files: 1, lines: 30 }, perf: { files: 1, lines: 20 } },
+			docs: { contracts: { files: 5, lines: 400 } },
 			rootPlans: { files: 1, lines: 40 },
 		};
 		const { baseline: next, refusals, changes } = nextBaseline(measured, docs, baseline, "2026-11-20");

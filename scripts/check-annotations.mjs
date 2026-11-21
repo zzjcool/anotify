@@ -261,9 +261,9 @@ export const ANCHOR_MIN = ANNOTATION_MIN.anchors;
 // C 保持 #479 批末的 299（本批没有可降的量）；同批交付报告用 `snapshot-doc:` 定格，不参与 D。
 // 2026-11-21（#495 B 阶段前置）：下限改成「扫描面覆盖 + 解析器存活」，删掉写死四个实测快照的那段注释、
 // 也压掉了两段历史校准流水账，所以 C 299→298、D 312→311（均为本树实测；不是判据放宽）。
-// B1（删 docs/v4 的五份清单）后 D 311→248：它们整篇落在规则 D 的扫描面里，删掉即降（C 不动）。
+// B1（删 docs/v4 五份清单）后 D 311→248、B2（删 docs/research + docs/perf）后 210：它们整篇落在规则 D 的扫描面里，删掉即降（C 不动）。
 export const CLAIM_UNBACKED_BASELINE = 298;
-export const COUNT_UNMARKED_BASELINE = 248;
+export const COUNT_UNMARKED_BASELINE = 210;
 
 /* ---------- 判据 ---------- */
 

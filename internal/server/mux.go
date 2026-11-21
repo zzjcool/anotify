@@ -113,7 +113,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 同量级）：一条空 payload 的 ingest 在磁盘上是 **679.9 B**（含派发剪枝留痕的额外行，
 	// 一条 ingest 落 2 行 events），1KB payload 是 **1908.7 B**。按 38 ev/s 算，
 	// 30 天窗口 ≈ 62.4 GiB（空 payload）/ 175.1 GiB（1KB）。
-	// 完整的容量表与复现口径见 docs/perf/capacity-and-backpressure.md。
+	// 完整的容量表与复现口径见 docs/reports/capacity-and-backpressure.md。
 	//
 	// 调用点只负责「装配期做一次」，分支与字段在 reportEventRetention 里（那个函数带
 	// 一条确定性单测：日志里的数字必须是 system_config 的生效值，不是 env 的回显）。
