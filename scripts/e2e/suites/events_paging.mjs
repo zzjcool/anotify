@@ -45,21 +45,16 @@ const PAGE_SIZE = 100;
 const TOTAL_EVENTS = 1000; // 事件流总条数（真实 1 + 合成 999）→ 10 页 × 100
 const SYNTHETIC_EVENTS = TOTAL_EVENTS - 1;
 const EXPECTED_PAGES = TOTAL_EVENTS / PAGE_SIZE; // 10（整除，第 10 页也是满页）
-// UI 侧页大小：v4 的 events 页把「翻页」换成了「加载更多」累积，
-// 每页数量选项是 2/10/20/50（没有 100），所以 UI 扫全量是 20 页。
+// UI 侧页大小：v4 的 events 页把「翻页」换成了「加载更多」累积， 每页数量选项是 2/10/20/50（没有 100），所以 UI 扫全量是 20 页。
 const UI_PAGE_SIZE = 50;
 const UI_PAGES = TOTAL_EVENTS / UI_PAGE_SIZE; // 20
 const NS = V.DEFAULT_NS;
 const SHORT_LIMIT = 37; // 短页扫描：故意不整除，钉住「不足整页 ⇒ 末页收敛」
 const SHORT_PAGES = Math.ceil(TOTAL_EVENTS / SHORT_LIMIT); // 28
 const SHORT_LAST_ROWS = TOTAL_EVENTS % SHORT_LIMIT; // 1
-// 契约 §4：四个图脚本只在 trace / source 两页加载。
-//
-// 注意**指纹**：静态资源经 `make fe` 改名为 `<stem>.<hash8>.js`
-// （`/vendor/dagre.min.54a503e3.js`、`/traceview.642fc03d.js`）。所以这里比的是
-// 「去掉指纹后的 basename」，而不是 URL 里的字面子串 —— 用子串匹配的话
-// 「不含 dagre.min.js」这种**否定**断言会永远为真（指纹对不上就当成没加载），
-// 是个假绿陷阱。
+// 契约 §4：四个图脚本只在 trace / source 两页加载。 注意**指纹**：静态资源经 `make fe` 改名为 `<stem>.<hash8>.js`
+// （`/vendor/dagre.min.54a503e3.js`、`/traceview.642fc03d.js`）。所以这里比的是 「去掉指纹后的 basename」，而不是 URL 里的字面子串 —— 用子串匹配的话
+// 「不含 dagre.min.js」这种**否定**断言会永远为真（指纹对不上就当成没加载）， 是个假绿陷阱。
 const GRAPH_LIBS = ["dagre.min.js", "flograph.js", "graphs.js", "traceview.js"];
 
 // libBaseName 把 URL 还原成「无指纹的 basename」：/x/y.flograph.20c5c69e.js → flograph.js
@@ -99,9 +94,9 @@ async function injectSession(ctx, sessionValue, base) {
 // ---------- 造数：直插库（1000 次 POST 太慢，也会污染事件流口径） ----------
 //
 // 为什么直插而不是循环 POST /v1/events：
-//   ① 1000 次 HTTP + 每次派发尝试要几十秒，套件会被 120s 预算吃掉；
-//   ② POST 会尝试派发任务、可能写剪枝事件（source='route'），事件流条数就不再是
-//      「我插入的条数」那种可预期的东西。
+// ① 1000 次 HTTP + 每次派发尝试要几十秒，套件会被 120s 预算吃掉；
+// ② POST 会尝试派发任务、可能写剪枝事件（source='route'），事件流条数就不再是
+// 「我插入的条数」那种可预期的东西。
 //
 // 列名以 internal/store/schema.sql 的 events 表为准（v4 baseline）：
 // id / namespace_id / trace_id / source / type / payload / delivery_id / created_at。
@@ -168,10 +163,10 @@ function streamRows(dbPath, namespaceId) {
 //
 // #335 的前端重写把 events 页从「?before= 游标翻页」换成了「加载更多」累积：
 //
-//   #ev-list    卡片列表（每张卡带 data-uid = 事件 metadata.name，稳定且每行唯一）
-//   #ev-count   「已显示 {n} 条唯一事件」——它本身就是**去重**口径的呈现
-//   #ev-more    「加载更多」按钮（没有 continuation 时 disabled）
-//   #ev-limit   每页数量 select（2/10/20/50）
+// #ev-list    卡片列表（每张卡带 data-uid = 事件 metadata.name，稳定且每行唯一）
+// #ev-count   「已显示 {n} 条唯一事件」——它本身就是**去重**口径的呈现
+// #ev-more    「加载更多」按钮（没有 continuation 时 disabled）
+// #ev-limit   每页数量 select（2/10/20/50）
 //
 // 所以「翻页真的换了窗口」这件事现在等价于「点一次加载更多，列表长度 + 页大小、
 // 且不出现重复 uid」——比原来按首行 trace 猜测更硬。
@@ -281,11 +276,11 @@ async function main() {
 	// ---------- A. 造数：真实任务 trace + 999 条合成事件 = 1000 条 ----------
 	//
 	// v4 配方（与 v3 的差别）：
-	//   · 能力是**信封**写请求（capabilityBody），不是 `{name, spec:{outputs}}`；
-	//   · 入口边不再是 `/v1/edges` 资源，而是 `source.spec.targets`（边是只读派生投影）；
-	//   · 投递入口是 `POST …/namespaces/{ns}/events`，且源必须是本 ns 的真实资源；
-	//   · **不需要节点**：v4 的任务在 ingress 时就建行（pending），节点只决定「谁执行」，
-	//     不决定「派不派得出任务」。所以这里不再造 WS 节点（也就没有可假的派发事实）。
+	// · 能力是**信封**写请求（capabilityBody），不是 `{name, spec:{outputs}}`；
+	// · 入口边不再是 `/v1/edges` 资源，而是 `source.spec.targets`（边是只读派生投影）；
+	// · 投递入口是 `POST …/namespaces/{ns}/events`，且源必须是本 ns 的真实资源；
+	// · **不需要节点**：v4 的任务在 ingress 时就建行（pending），节点只决定「谁执行」，
+	// 不决定「派不派得出任务」。所以这里不再造 WS 节点（也就没有可假的派发事实）。
 	console.log("--- A. 造数：真实任务 trace + 合成事件 = 1000 条 ---");
 	const cap = await V.mkCapability(base, s.session, "e2e.paging");
 
@@ -493,8 +488,8 @@ async function main() {
 	// v4 的 events 页把「游标翻页（?before=）」换成了「加载更多」累积（#335 前端重写）：
 	// 每次点 #ev-more 追加下一页，列表按 metadata.creationTimestamp DESC 渲染。
 	// 所以 UI 侧的等价断言是：从 50 行开始，连点 19 次 → 1000 行，并且
-	//  ① 行序与 API 游标序列**逐条相等**（无重复、无遗漏、无换序）；
-	//  ② 到底后 #ev-more 被禁用、计数文案等于总数。
+	// ① 行序与 API 游标序列**逐条相等**（无重复、无遗漏、无换序）；
+	// ② 到底后 #ev-more 被禁用、计数文案等于总数。
 	console.log(`--- C. events 页 UI 加载更多（Chrome 1280×800，${UI_PAGES} 页 × ${UI_PAGE_SIZE}）---`);
 	browser = await chromium.launch({ channel: "chrome", headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
 	const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -781,10 +776,10 @@ async function main() {
 	// ---------- F. #377：列表规模化（8 个列表接口的 limit/continue + 4 页搜索/加载更多）----------
 	//
 	// 本段只钉两件在别处没有的事实：
-	//   ① sources / nodes 两个形状不同的列表（ns 资源 vs cluster 资源）按 limit/continue
-	//      翻页后与「一次性全量」逐条相等，且末页不带游标；
-	//   ② sources 页首屏只渲染一页（DOM 行数 == 已加载条数，不随总条数线性增长），
-	//      「加载更多」累加、本地搜索只过滤已加载的行。
+	// ① sources / nodes 两个形状不同的列表（ns 资源 vs cluster 资源）按 limit/continue
+	// 翻页后与「一次性全量」逐条相等，且末页不带游标；
+	// ② sources 页首屏只渲染一页（DOM 行数 == 已加载条数，不随总条数线性增长），
+	// 「加载更多」累加、本地搜索只过滤已加载的行。
 	console.log("--- F. #377 列表分页：sources / nodes API + sources 页 UI ---");
 	const PAGE = 20;
 	const SOURCE_BULK = 50;

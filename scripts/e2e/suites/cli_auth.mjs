@@ -18,17 +18,14 @@ import path from "node:path";
 import * as H from "../lib/harness.mjs";
 import * as V from "../lib/v4.mjs";
 
-// v4 的投递入口是 `/v1/namespaces/{ns}/events`，而且**源必须是本 ns 的真实资源**
-// （source.md §5：源不存在 → 404）。v3 那种「随便写个 source 名就投递」的隐式入口
-// 已退役，所以本套件开局建一个无 targets 的源——“接口串用”类断言（能/不能调事件入口）
-// 才是真的在测鉴权，而不是在测路由是否存在。
+// v4 的投递入口是 `/v1/namespaces/{ns}/events`，而且**源必须是本 ns 的真实资源** （source.md §5：源不存在 → 404）。v3 那种「随便写个 source 名就投递」的隐式入口
+// 已退役，所以本套件开局建一个无 targets 的源——“接口串用”类断言（能/不能调事件入口） 才是真的在测鉴权，而不是在测路由是否存在。
 const NS = V.DEFAULT_NS;
 
 // 辅助：建一个会话，返回 create 响应 json
 let _ipCounter = 0;
 async function createSession(server, body, opts = {}) {
-	// 默认用递增 IP，避免进程级 rlCreate(10/min/IP) 在套件内触发误限速；
-	// 测限速的用例显式传 ip 并复用同一 IP。
+	// 默认用递增 IP，避免进程级 rlCreate(10/min/IP) 在套件内触发误限速； 测限速的用例显式传 ip 并复用同一 IP。
 	const ip = opts.ip || `198.51.100.${(_ipCounter++ % 200) + 1}`;
 	const r = await H.req(server.base, "/v1/cli-auth/sessions", {
 		method: "POST",
@@ -52,8 +49,7 @@ async function poll(server, sid, secret) {
 	return H.req(server.base, `/v1/cli-auth/sessions/${sid}/poll?secret=${encodeURIComponent(secret)}`);
 }
 
-// 辅助：带最小间隔的 poll（避开 pollG）
-// 注意：setTimeout 保留——后端 pollGuard 强制最小间隔（防暴力轮询），
+// 辅助：带最小间隔的 poll（避开 pollG） 注意：setTimeout 保留——后端 pollGuard 强制最小间隔（防暴力轮询），
 // 不是前端页面挂载等待，无法用事件替代。
 async function pollSafe(server, sid, secret, extraMs = 300) {
 	const r = await poll(server, sid, secret);
@@ -159,8 +155,7 @@ async function main() {
 
 	// ============================================================
 	// 4.3 批准/拒绝与 scope 减量（AC-11/12/13/14/15/16）
-	// ============================================================
-	// AC-11 批准默认 scope → poll 领证 → Key 可用
+	// ============================================================ AC-11 批准默认 scope → poll 领证 → Key 可用
 	{
 		const ap = await approve(server, session, sess1.json.sessionId, ["notify:send"]);
 		H.eq("AC-11 approve → 200 approved", ap.status, 200);
@@ -180,8 +175,7 @@ async function main() {
 			source: "github", type: "pr_opened", payload: { title: "cli-auth ok" },
 		});
 		H.eq("AC-11 Key 调 …/events → 200", notify.status, 200);
-		// 该 Key 不能调**节点入口**：/v1/node/stream 要 nodeToken，不是 API Key。
-		// （旧 /v1/stream 已随消息模型删除，这条断言保的是「入口之间不串用」。）
+		// 该 Key 不能调**节点入口**：/v1/node/stream 要 nodeToken，不是 API Key。 （旧 /v1/stream 已随消息模型删除，这条断言保的是「入口之间不串用」。）
 		// v4 的节点入口先升级再鉴权（普通 HTTP 一律 426），所以用真握手验。
 		await V.expectNotNodeToken("AC-11 API Key 不能当 nodeToken 用", server.base, p.json.apiKey, { namespace: NS });
 

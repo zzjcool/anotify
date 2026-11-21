@@ -36,7 +36,7 @@ export const COST_SECONDS = {
 	passkeys: 3.2,
 	"password_login": 5.0,
 	persistence: 7.0,
-	playbook_release: 4.5,
+	playbook_release: 5.5,	// #511 加了包版本历史段（实测单跑 3.8s，含起 server）
 	recovery_next: 4.6,
 	routing: 4.6,
 	security: 15.1,
