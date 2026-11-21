@@ -12,9 +12,8 @@ import (
 )
 
 // v4 baseline 的结构门禁：表/列/索引/唯一约束的**终态形状**。
-//
-// 这些断言是「库长什么样」的唯一验收：schema.sql 是唯一事实源，任何一处
-// 漏建 / 多建 / 列名漂移都会让后续 store 代码在运行期才炸（而且是业务路径上）。
+// 这些断言是「库长什么样」的唯一验收：schema.sql 是唯一事实源，任何一处漏建 / 多建 / 列名漂移
+// 都会让后续 store 代码在运行期才炸（而且是业务路径上）。
 // 所以这里逐条写死，不靠「跑起来没报错」当证据。
 
 // baselineTables 是 v4 baseline 的完整表集合（一个不多一个不少）。
@@ -192,9 +191,9 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 		"playbook_installs": {
 			// playbook_id 是**历史 id**（无 live-parent 外键），slug/ns 快照让删包后
 			// 回执仍可读、且不会被同名重建的新包认领（父裁决 D3）。
-			// release 是安装级身份（一个预案可并存多份实例）。
+			// release 是安装级身份（一个预案可并存多份实例）；uninstalled_at 是卸载标记（回执不删，已卸载的实例不进清单）。
 			"id", "namespace_id", "namespace_slug", "playbook_id", "playbook_slug",
-			"values", "values_digest", "receipt", "source", "release", "created_at",
+			"values", "values_digest", "receipt", "source", "release", "uninstalled_at", "created_at",
 		},
 		"sources": {
 			"id", "namespace_id", "name", "display_name", "kind", "config", "targets", "enabled",
@@ -233,8 +232,8 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 	}
 }
 
-// TestSchemaBaselineIndexes 固定当前 v4 查询索引的名字、表、有序列和 unique/partial。
-// 期望独立写死，不从 schemaSQL 或 validateV4Layout 的同源期望中推导。
+// TestSchemaBaselineIndexes 固定当前 v4 查询索引的名字、表、有序列和 unique/partial，期望独立写死，不从
+// schemaSQL 或 validateV4Layout 的同源期望中推导。
 func TestSchemaBaselineIndexes(t *testing.T) {
 	db := openTestDB(t)
 	indexes := []struct {
@@ -512,9 +511,8 @@ func sortedKeys(m map[string]bool) []string {
 }
 
 // TestSchemaBaselineNodeFactsColumns G1-3 的节点事实列（hello 快照的落点）。
-//
-// 这些列不是「可选缓存」：没有它们，NodesAvailable 的 CommandMissing /
-// NamespaceUnauthorized 与节点页的 status.* 都答不出来（anode.md §0/§3.3/§6）。
+// 这些列不是「可选缓存」：没有它们，NodesAvailable 的 CommandMissing / NamespaceUnauthorized
+// 与节点页的 status.* 都答不出来（anode.md §0/§3.3/§6）。
 func TestSchemaBaselineNodeFactsColumns(t *testing.T) {
 	db := openTestDB(t)
 	nodes := columnNames(t, db, "nodes")
@@ -577,27 +575,27 @@ func foreignKeyColumns(t *testing.T, db *store.DB, table string) map[string]stri
 // TestSchemaBaselineLayoutMarkerIsSeparateFromLedger v4 的「布局格式」与「记账版本」
 // 是两个独立事实：schema_version 记 1（baseline 跑过），PRAGMA user_version 记 4（表结构是 v4）。
 //
-// 为什么必须分开：v3 的库同样记着 schema_version=1，只看记账根本分不出
-// 「v4 新建的库」和「v3 的库」——那正是 G1-6C1 之前 Open 放行 v3 库的根因。
+// 为什么必须分开：v3 的库同样记着 schema_version=1，只看记账根本分不出「v4 新建的库」和「v3 的库」
+// ——那正是 G1-6C1 之前 Open 放行 v3 库的根因。
 func TestSchemaBaselineLayoutMarkerIsSeparateFromLedger(t *testing.T) {
 	db, path := openTestDBWithPath(t)
 	if got := rawUserVersion(t, path); got != 4 {
 		t.Fatalf("新库 PRAGMA user_version = %d, want 4（v4 布局格式标记）", got)
 	}
-	if v, err := db.SchemaVersion(); err != nil || v != 2 {
-		t.Fatalf("SchemaVersion = %d, %v; want 2（记账 = 块数，不是布局标记）", v, err)
+	if v, err := db.SchemaVersion(); err != nil || v != 3 {
+		t.Fatalf("SchemaVersion = %d, %v; want 3（记账 = 块数，不是布局标记）", v, err)
 	}
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&n); err != nil {
 		t.Fatalf("count schema_version: %v", err)
 	}
-	if n != 2 {
-		t.Fatalf("schema_version 行数 = %d, want 2（baseline + release 块）", n)
+	if n != 3 {
+		t.Fatalf("schema_version 行数 = %d, want 3（baseline + release + 卸载标记块）", n)
 	}
 }
 
-// TestSchemaBaselineEveryTableRequiredByFormat 独立固定表集合对运行期 schema-derived 门禁的反例：
-// 少任何一张表，marker=4 的库都必须被拒绝（而不是被 CREATE IF NOT EXISTS 补齐）。
+// TestSchemaBaselineEveryTableRequiredByFormat 独立固定表集合对运行期 schema-derived 门禁的反例：少任何一张表，
+// marker=4 的库都必须被拒绝（而不是被 CREATE IF NOT EXISTS 补齐）。
 //
 // 这条用例不借用运行期参照结构；独立删表输入确保每张 baseline 表都真正参与拒绝。
 func TestSchemaBaselineEveryTableRequiredByFormat(t *testing.T) {
@@ -638,8 +636,8 @@ func TestSchemaBaselineEveryTableRequiredByFormat(t *testing.T) {
 	}
 }
 
-// TestSchemaBaselineRetiredColumnsRejectedByFormat v3 的退役列一旦出现在 marker=4 的库里，
-// 必须被拒绝：列在、v4 代码不读它 = 「能写进去、读出来丢」。
+// TestSchemaBaselineRetiredColumnsRejectedByFormat v3 的退役列一旦出现在 marker=4 的库里，必须被拒绝：
+// 列在、v4 代码不读它 = 「能写进去、读出来丢」。
 //
 // 与 TestSchemaBaselineNoHistoricalBaggage（正向断言「新库里没有这些列」）成对：
 // 那条管「新建的库干净」，这条管「不干净的库不许被当成 v4 打开」。

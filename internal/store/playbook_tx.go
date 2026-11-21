@@ -14,12 +14,9 @@ import (
 )
 
 // 本文件是 Playbook 安装的**事务内实现细节**（playbook.go 是公开面）。
-//
-// 为什么单独一个文件：安装路径上所有读都必须走当前事务（txExec），而 store 里 「事务外读」的既有方法是 `*DB` 方法（走 per-DB 语句缓存）。混用会读到**另一个快照**：
-//
-//	① 看不到本事务刚写的行（新源 targets 指向同包刚建的能力）；
-//	② 与提交之间出现「检查时成立、提交后不成立」的窗口（把读错当空库 → 多建一批行）。
-//
+// 为什么单独一个文件：安装路径上所有读都必须走当前事务（txExec），而 store 里「事务外读」的既有方法是 `*DB` 方法（走 per-DB 语句缓存）。
+// 混用会读到**另一个快照**：① 看不到本事务刚写的行（新源 targets 指向同包刚建的能力）；
+// ② 与提交之间出现「检查时成立、提交后不成立」的窗口（把读错当空库 → 多建一批行）。
 // 所以这里的每个查询都只经 ex，且把 error 交给调用方裁决（installSnapshot）。
 
 // getPlaybookOn 是事务内按 (namespace, slug) 取包（GetPlaybook 的 ex 版）。
@@ -50,9 +47,8 @@ func getNamespaceSlugOn(ctx context.Context, ex queryExec, namespaceID string) (
 	return slug, nil
 }
 
-// getSourceByNameOn 是事务内按名字取源（GetSourceByName 的只读 ex 版）。
-//
-// 不能调用 GetSourceByName：它走 per-DB 语句缓存，在本事务里读的是另一条连接。
+// getSourceByNameOn 是事务内按名字取源（GetSourceByName 的只读 ex 版）：不能调用 GetSourceByName，
+// 它走 per-DB 语句缓存，在本事务里读的是另一条连接。
 func getSourceByNameOn(ctx context.Context, ex queryExec, namespaceID, name string) (*Source, error) {
 	rows, err := ex.queryContext(ctx,
 		`SELECT `+sourceColumns+` FROM sources WHERE namespace_id = ? AND name = ?`,
@@ -132,10 +128,9 @@ func newInstallSnapshot(ctx context.Context, ex queryExec, namespaceID string) *
 	return &installSnapshot{ctx: ctx, ex: ex, namespaceID: namespaceID, owners: map[string]ownerRef{}}
 }
 
-// ownerOn 取 installed_from 指向的那次安装的 release——「这一行是谁装出来的」的答案。
-//
-// 返回 found=false 表示**无主**，两种来源都算：空 installed_from（手工创建的行）、
-// 悬挂引用（回执被清理过）。悬挂引用刻意不报错：schema 上没有 FK 允许它存在 （回执是审计，删包不删回执），而把一条脏引用当成「别人的 release」会让一次正常 安装莫名 409 —— 报错的代价比「当无主」更大。
+// ownerOn 取 installed_from 指向的那次安装的 release——「这一行是谁装出来的」的答案。返回 found=false 表示**无主**，
+// 两种来源都算：空 installed_from（手工创建的行）、悬挂引用（回执被清理过）。悬挂引用刻意不报错：schema 上没有 FK
+// 允许它存在（回执是审计，删包不删回执），而把一条脏引用当成「别人的 release」会让一次正常安装莫名 409 —— 报错代价更大。
 func (s *installSnapshot) ownerOn(installID string) ownerRef {
 	if installID == "" {
 		return ownerRef{}
@@ -361,11 +356,10 @@ func (s *installSnapshot) HasUpstream(name string) bool {
 }
 
 // insertInstalledCapabilityOn 落一条**本次新建**的能力行（计划已定 version / digest）。
-//
-// 只处理 Action=create：reuse（skipped）条目一行都不写，也不调用任何「折叠更新」 入口（CreateCapability / UpdateNext / SetCapabilityDisplayName）——那些会改已存行的
-// next / displayName，违反安装只做加法（I-P1）。所以这里不复用 insertCapabilityOn （它的唯一冲突分支会回查复用），而是严格 INSERT：撞唯一约束就是错误。
-//
-// 边投影只属于**该名字的 latest**：显式低版本新建（已有 v3，再装 v1）不改变裸名解析 到的版本，因此也**不能**重建这个名字的边（否则边指向 v1 的 next、派发却落到 v3）。
+// 只处理 Action=create：reuse（skipped）条目一行都不写，也不调用任何「折叠更新」入口（CreateCapability / UpdateNext /
+// SetCapabilityDisplayName）——那些会改已存行的 next / displayName，违反只加不改（I-P1）。所以这里不复用 insertCapabilityOn
+// （它的唯一冲突分支会回查复用），而是严格 INSERT：撞唯一约束就是错误。
+// 边投影只属于**该名字的 latest**：显式低版本新建（已有 v3，再装 v1）不改变裸名解析到的版本，因此也**不能**重建这个名字的边。
 func insertInstalledCapabilityOn(ctx context.Context, ex queryExec, namespaceID, installID string, pc playbook.PlannedCapability) error {
 	if pc.Artifact == nil {
 		return fmt.Errorf("planned capability is nil")
@@ -410,8 +404,7 @@ func insertInstalledCapabilityOn(ctx context.Context, ex queryExec, namespaceID,
 		id, namespaceID, name, norm.Metadata.DisplayName, version, string(specJSON),
 		digest, foldKey, installID, 1, now); ierr != nil {
 		if isUniqueConstraintError(ierr) || isUniqueViolation(ierr) {
-			// 安装快照已经判过「这一行不存在」；撞约束说明计划与库不一致。
-			// **不回查折叠、不改已有行**：只加不改的边界在这里是最硬的。
+			// 安装快照已经判过「这一行不存在」；撞约束说明计划与库不一致。**不回查折叠、不改已有行**：只加不改在这里最硬。
 			return fmt.Errorf("capability %s@%d 已存在（Plan 与库快照不一致）：%w", name, version, ierr)
 		}
 		return fmt.Errorf("insert capability %s@%d: %w", name, version, ierr)
@@ -424,10 +417,8 @@ func insertInstalledCapabilityOn(ctx context.Context, ex queryExec, namespaceID,
 }
 
 // createInstalledSourceOn 落一条**本次新建**的源行 + 入口边投影（只对新源写）。
-//
-// config 走与直写 CreateSource 完全相同的归一化（含「webhook token 省略则服务端生成」）：
-// token 的生成是创建期一次性副作用，生成的值只进这一行（dryRun 随事务回滚）。
-// **不校验 targets 可解析**：安装允许 pending（§3 第三行），那是 Plan 的判定，不是写路径的。
+// config 走与直写 CreateSource 完全相同的归一化（含「webhook token 省略则服务端生成」）：token 的生成是创建期一次性副作用，
+// 生成的值只进这一行（dryRun 随事务回滚）。**不校验 targets 可解析**：安装允许 pending（§3 第三行），那是 Plan 的判定。
 func (d *DB) createInstalledSourceOn(ctx context.Context, ex queryExec, namespaceID, installID string, ps playbook.PlannedSource, now int64) error {
 	if err := sourcespec.ValidateName(ps.Name); err != nil {
 		return fmt.Errorf("source %q: %w", ps.Name, err)
@@ -460,12 +451,9 @@ func (d *DB) createInstalledSourceOn(ctx context.Context, ex queryExec, namespac
 	return nil
 }
 
-// insertPlaybookInstallOn 写一行安装回执（dryRun 也会走到这里，然后随事务回滚）。
-//
-// 落库内容（§4.5 / D21）： - `values` 是**打码后**的有效 values（writeOnly → "***"），digest 对打码前算；
-//   - `receipt` 是回执原文（响应文档，不是资源信封）；
-//
-// - `namespace_slug` / `playbook_slug` / `playbook_id` 是快照：删包之后回执仍可读， 同 slug 重建的新包也不会把旧回执认成自己的实例。
+// insertPlaybookInstallOn 写一行安装回执（dryRun 也会走到这里，然后随事务回滚）。落库内容（§4.5 / D21）：
+// `values` 是**打码后**的有效 values（writeOnly → "***"，digest 对打码前算），`receipt` 是回执原文（响应文档，不是资源信封），
+// `namespace_slug` / `playbook_slug` / `playbook_id` 是快照：删包之后回执仍可读，同 slug 重建的新包也不会把旧回执认成自己的实例。
 func insertPlaybookInstallOn(ctx context.Context, ex queryExec, namespaceID string, row *PlaybookRow, receipt *playbook.Receipt, now int64) error {
 	valuesJSON, err := json.Marshal(receipt.Values)
 	if err != nil {
@@ -492,10 +480,8 @@ func insertPlaybookInstallOn(ctx context.Context, ex queryExec, namespaceID stri
 	return nil
 }
 
-// keptPlaybookObjectsOn 反查删包后留下的对象（DELETE 响应的 kept）。
-//
-// 能力写 `name@version`、源写名字；两个列表都按 installed_from ∈ 本包历史回执 过滤。
-// **不需要再用 values 渲染一次**：installed_from 记录的就是「这一行是谁建的」（§7）。
+// keptPlaybookObjectsOn 反查删包后留下的对象（DELETE 响应的 kept）：能力写 `name@version`、源写名字，
+// 两个列表都按 installed_from ∈ 本包历史回执过滤。**不需要再用 values 渲染一次**：installed_from 记录的就是「这一行是谁建的」（§7）。
 func keptPlaybookObjectsOn(ctx context.Context, ex queryExec, namespaceID, playbookID string) (PlaybookKept, error) {
 	kept := PlaybookKept{Capabilities: []string{}, Sources: []string{}}
 	capRows, err := ex.queryContext(ctx,
@@ -547,9 +533,8 @@ func keptPlaybookObjectsOn(ctx context.Context, ex queryExec, namespaceID, playb
 	return kept, nil
 }
 
-// playbookInstallValuesOn 汇总一组「装过哪些 values」（DELETE 响应的 values）。
-//
-// 按 valuesDigest 去重（同一组 values 装 N 次只报一次），保留首次出现的顺序； values 本身就是回执行里的**打码后**形态，这里不再二次处理。
+// playbookInstallValuesOn 汇总一组「装过哪些 values」（DELETE 响应的 values）：按 valuesDigest 去重（装 N 次只报一次），
+// 保留首次出现的顺序；values 本身就是回执行里的**打码后**形态，这里不再二次处理。
 func playbookInstallValuesOn(ctx context.Context, ex queryExec, namespaceID, playbookID string) ([]map[string]any, error) {
 	rows, err := ex.queryContext(ctx,
 		`SELECT "values", values_digest FROM playbook_installs

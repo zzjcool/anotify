@@ -13,28 +13,20 @@ import (
 	"github.com/zzjcool/anotify/internal/playbook"
 )
 
-// 预案（Playbook）领域（v4，playbook.md）：目录包 = 清单 + 回执，不是所有权。
-//
-// 本文件是安装包在 store 的**唯一**落点，三条边界：
-//
-//	① 包体是「文件集合」的原文：`playbooks.files` 存 `{相对路径: 正文}`（含 playbook.yaml），
-//	   `includeBody` 原样返回它；render / install 每次都从这份原文 Parse（不另存解析态）。
-//	② 安装**只做加法**（I-P1）：只 INSERT 能力行 / 源行 / 边投影 / 回执行，不 UPDATE、
-//	   不 DELETE 任何已有行。任何「想改已有东西」的差异进回执的 unapplied[]。
-//	③ 回执是**审计**不是锁：每次普通 install 写一行（dryRun 一行不写），删包不删回执，
-//	   回执里的 namespace / 原 slug / 原包 id 是快照（playbooks 行消失后仍可定位）。
-//
-// 12 格动作矩阵与回执形状由纯包 `internal/playbook` 算（Plan / BuildReceipt）；
-// 本文件只负责「同一事务里读快照 → INSERT 计划里的 create 条目 → 写回执」。
+// 预案（Playbook）领域（v4，playbook.md）：目录包 = 清单 + 回执，不是所有权；本文件是安装包在 store 的唯一落点。
+// 三条边界：
+//	① 包体是「文件集合」原文：`playbooks.files` 存 `{相对路径: 正文}`，render / install 每次从它 Parse（不另存解析态）；
+//	② 安装**只做加法**（I-P1）：只 INSERT 能力行 / 源行 / 边投影 / 回执行，想改已有东西的差异进回执 unapplied[]；
+//	③ 回执是**审计**不是锁：每次普通 install 写一行（dryRun 不写），删包不删回执，回执里的 ns / 原 slug / 原包 id 是快照。
+// 12 格动作矩阵与回执形状由纯包 `internal/playbook` 算（Plan / BuildReceipt），本文件只做「读快照 → INSERT create → 写回执」。
 // 事务内读一律走 txExec（见 txexec.go）；任何读错误都不允许被当成「库是空的」。
 
 // 预案写路径的哨兵错误。
 var (
 	// ErrSlugTaken 表示同一命名空间里已有同 slug 的预案（POST 应翻 409 slug_taken）。
 	ErrSlugTaken = errors.New("store: playbook slug already used")
-	// ErrPlaybookSlugMismatch 表示路径里的 slug 与包内 metadata.name 不一致。
-	//
-	// 包名就在入口文档里（D8：slug 不渲染、不依赖 values），路径只是它的寻址。 两者不一致时若照写，`GET /playbooks/<slug>` 读出来的包会自称另一个名字。
+	// ErrPlaybookSlugMismatch 表示路径里的 slug 与包内 metadata.name 不一致：包名就在入口文档里（D8：slug 不渲染、不依赖 values），
+	// 路径只是它的寻址；两者不一致时若照写，`GET /playbooks/<slug>` 读出来的包会自称另一个名字。
 	ErrPlaybookSlugMismatch = errors.New("store: playbook slug does not match package metadata.name")
 )
 
@@ -64,7 +56,6 @@ type PlaybookRow struct {
 }
 
 // PlaybookKept 是删除响应里「留下了什么」：能力写 `name@version`，源写名字。
-//
 // 两个列表都来自 installed_from 反查（§7：比「再用 values 渲染一遍」精确）。
 type PlaybookKept struct {
 	Capabilities []string `json:"capabilities"`
@@ -81,8 +72,7 @@ type PlaybookDeleteResult struct {
 }
 
 // PlaybookInstallGroup 是实例清单（§4.10）的一个折叠组： `(ns, 原包 id, release, valuesDigest)`。
-//
-// 一个组 = 一个 release 的一套 values；`attempts` 是这组 values 装了几次（组内回执行数）， 不是版本号。换一个 release（哪怕 values 一样）是另一套实例，单独立组。
+// 一个组 = 一个 release 的一套 values；`attempts` 是这组 values 装了几次（组内回执行数），不是版本号。换一个 release（哪怕 values 一样）是另一套实例，单独立组。
 type PlaybookInstallGroup struct {
 	// Release 是这组的安装级身份（Helm 语义：一个 release 一套实例）。
 	Release      string `json:"release"`
@@ -137,9 +127,7 @@ func scanPlaybookRow(row scanner) (*PlaybookRow, error) {
 }
 
 // CreatePlaybook 存一份包（POST 语义）：Parse 做值无关的形状校验，同 slug 已存在 → ErrSlugTaken。
-//
-// slug 为空时取包内 metadata.name（"若无 slug 传递从 Parse 给"）；两者都给时必须一致。
-// 存储的是 Parse 返回的**原文文件集合**（pkg.Files），render / install 每次重新 Parse。
+// slug 为空时取包内 metadata.name；两者都给时必须一致。存储的是 Parse 返回的**原文文件集合**（pkg.Files），render / install 每次重新 Parse。
 func (d *DB) CreatePlaybook(ctx context.Context, namespaceID, slug string, files map[string]string, source string) (*PlaybookRow, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -216,7 +204,6 @@ func (d *DB) ListPlaybooksPage(ctx context.Context, namespaceID string, afterAt 
 }
 
 // GetPlaybook 按 (namespace, slug) 取一份包（含原始 files；是否存在当前清单由它回答）。
-//
 // 未命中返回 ErrNotFound。名字里带 playbook 是为了与命名空间/能力的 Get* 区分。
 func (d *DB) GetPlaybook(ctx context.Context, namespaceID, slug string) (*PlaybookRow, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
@@ -259,7 +246,6 @@ func (d *DB) ListPlaybooks(ctx context.Context, namespaceID string) ([]*Playbook
 }
 
 // ReplacePlaybook 整体替换包体（PUT 语义）：同一信封 + CAS，缺 rv / 旧 rv 稳定哨兵。
-//
 // **只换模板**：已装的能力 / 源一行不动，它们要等下一次 install 才会变化（§5 / §10）。
 func (d *DB) ReplacePlaybook(ctx context.Context, namespaceID, slug string, expectedVersion string, files map[string]string, source string) (*PlaybookRow, error) {
 	if _, _, err := parseResourceVersion(expectedVersion); err != nil {
@@ -321,11 +307,9 @@ func (d *DB) ReplacePlaybook(ctx context.Context, namespaceID, slug string, expe
 	return row, nil
 }
 
-// RenderPlaybook 是 `render` 端点（§2.4）：只读包体 → Parse → Render。
-//
-// **纯只读**：不读安装冲突库、不写库、不产生回执（D19：render 是 helm template， dryRun 才读库）。所以它不可能因为库里已有同名能力而失败，也不会留下任何行。
-//
-// release 只影响模板渲染（`{{release.name}}`）；它不读库，所以 render 不判 release 冲突。
+// RenderPlaybook 是 `render` 端点（§2.4）：只读包体 → Parse → Render。**纯只读**：不读安装冲突库、不写库、不产生回执
+// （D19：render 是 helm template，dryRun 才读库），所以它不可能因为库里已有同名能力而失败，也不会留下任何行；
+// release 只影响模板渲染（`{{release.name}}`），不读库，所以 render 不判 release 冲突。
 func (d *DB) RenderPlaybook(ctx context.Context, namespaceID, slug, release string, values map[string]any) (*playbook.RenderResult, error) {
 	row, err := d.GetPlaybook(ctx, namespaceID, slug)
 	if err != nil {
@@ -339,11 +323,8 @@ func (d *DB) RenderPlaybook(ctx context.Context, namespaceID, slug, release stri
 }
 
 // InstallPlaybook 在**一个 BEGIN IMMEDIATE 事务**里完成一次安装（§4.4 / §4.6）。
-//
-// release 是安装级身份（Helm 语义）：空串 = 缺省 = 包名。同一个包可以有多个 release，
-// 各是一套实例；**要复用的行是别的 release 装出来的**时 Plan 会给出 release_conflict， 本函数在写之前就返回（0 写）。
-//
-// 顺序固定：
+// release 是安装级身份（Helm 语义）：空串 = 缺省 = 包名，同一个包可以有多个 release、各是一套实例；
+// **要复用的行是别的 release 装出来的**时 Plan 给出 release_conflict，本函数在写之前就返回（0 写）。顺序固定：
 //
 //	① 读包体（事务内，走 tx）
 //	② Render + 读库快照（installSnapshot，六个只读查询也走 tx）→ Plan
@@ -448,7 +429,6 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, slug, release str
 }
 
 // DeletePlaybook 只删清单（§7）：CAS 校验在同一事务里，回执 / 已装对象一行不动。
-//
 // 响应告诉用户留下了什么：`kept` 由 installed_from 反查，`values` 从回执历史汇总 （都是**打码后**的有效 values，按 valuesDigest 去重）。
 func (d *DB) DeletePlaybook(ctx context.Context, namespaceID, slug string, expectedVersion string) (*PlaybookDeleteResult, error) {
 	if _, _, err := parseResourceVersion(expectedVersion); err != nil {
@@ -497,9 +477,8 @@ func (d *DB) DeletePlaybook(ctx context.Context, namespaceID, slug string, expec
 }
 
 // ListPlaybookInstalls 是实例清单（§4.10）：把回执行按 `(namespace_id, 原包 id, release, valuesDigest)` 折叠成「一套 values 装过几次」。
-//
-// currentPlaybookID 是**当前清单**的 id：同 slug 删掉重建后是一份新清单（新 id），
-// 旧回执仍引用旧 id —— 所以新包看不到旧实例，也不会把旧 group 的来源认成自己的。 组数上限 200，按 lastAt 降序截断；Total 是折叠组总数。
+// 已卸载（uninstalled_at != 0）的回执不进清单；currentPlaybookID 是当前清单 id（同 slug 重建即新 id，新包看不到旧实例）；
+// 组数上限 200、按 lastAt 降序截断，Total 是折叠组总数。
 func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlaybookID string) (*PlaybookInstallList, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -511,7 +490,7 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 	rows, err := d.cachedQueryContext(ctx,
 		`SELECT id, release, values_digest, "values", created_at, rowid
 		   FROM playbook_installs
-		  WHERE namespace_id = ? AND playbook_id = ?
+		  WHERE namespace_id = ? AND playbook_id = ? AND uninstalled_at = 0
 		  ORDER BY created_at, rowid`, namespaceID, currentPlaybookID)
 	if err != nil {
 		return nil, fmt.Errorf("list playbook installs: %w", err)
@@ -535,8 +514,7 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 		if err := rows.Scan(&id, &release, &digest, &rawValues, &createdAt, &seq); err != nil {
 			return nil, fmt.Errorf("scan playbook install: %w", err)
 		}
-		// 折叠键 = (release, valuesDigest)：同一个 release 的同一套 values 装 N 次是一组；
-		// 换 release 就是另一套实例（名字由 `{{release.name}}` 决定，行本来就是分开的）。
+		// 折叠键 = (release, valuesDigest)：同一套 values 装 N 次是一组；换 release 就是另一套实例（名字由 `{{release.name}}` 决定）。
 		key := release + "\x00" + digest
 		g, ok := byGroup[key]
 		if !ok {
@@ -680,8 +658,7 @@ func anyArgs(ss []string) []any {
 }
 
 // GetPlaybookInstall 按「历史 ns + 原 slug + installId」读取一次 install 的完整回执。
-//
-// **不要求当前清单存在**：回执行的 playbook_id / playbook_slug 是快照，删包之后 单条回执仍可按旧 slug 直达（§4.10 / D21）。未命中返回 ErrNotFound。
+// **不要求当前清单存在**：回执行的 playbook_id / playbook_slug 是快照，删包之后单条回执仍可按旧 slug 直达（§4.10 / D21）；未命中返回 ErrNotFound。
 func (d *DB) GetPlaybookInstall(ctx context.Context, namespaceID, slug, installID string) (*playbook.Receipt, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired

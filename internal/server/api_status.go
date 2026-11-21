@@ -187,6 +187,11 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		writeStatus(w, http.StatusBadRequest, "version_content_immutable", err.Error(), nil)
 	case errors.Is(err, store.ErrSlugTaken):
 		writeStatus(w, http.StatusConflict, "slug_taken", "playbook slug already exists", nil)
+	// #510：release 不在这个包名下 → 404；installId 与本次 release 对不上 ⇒ 客户端视图过期（409，不删不猜）。
+	case errors.Is(err, store.ErrPlaybookReleaseNotFound):
+		writeStatus(w, http.StatusNotFound, "release_not_found", err.Error(), nil)
+	case errors.Is(err, store.ErrPlaybookInstallMismatch):
+		writeStatus(w, http.StatusConflict, "install_conflict", err.Error(), nil)
 	case errors.Is(err, store.ErrEmitIDConflict):
 		writeStatus(w, http.StatusConflict, "emit_id_conflict", err.Error(), nil)
 	case errors.Is(err, store.ErrEmitNamespaceDenied):

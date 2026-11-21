@@ -155,6 +155,7 @@
           <h3 class="card-title" title="{{t "pb.v4.instances_hint"}}">{{t "pb.v4.instances"}}</h3>
         </div>
         <div id="pb-installs" aria-live="polite"></div>
+        <div id="pb-uninstall-result" class="pb-section" aria-live="polite"></div>
       </section>
 
       <section id="pb-template-section" class="card card-pad">
@@ -414,6 +415,7 @@
     }
     async function installs() {
       $("pb-installs").textContent = t("pb.v4.loading");
+      $("pb-uninstall-result").replaceChildren();
       try {
         const data = await api(path("/installs"));
         if (!Array.isArray(data.installs) || typeof data.total !== "number") throw new Error(t("pb.v4.invalid_installs"));
@@ -440,10 +442,42 @@
             open.addEventListener("click", () => singleReceipt(group.lastInstallId));
             item.append(open); section.append(item);
           }
+          if (release) {
+            const uninstallButton = el("button", "btn btn-ghost btn-sm", t("pb.v4.uninstall"));
+            uninstallButton.type = "button"; uninstallButton.dataset.action = "uninstall"; uninstallButton.dataset.release = release;
+            uninstallButton.addEventListener("click", () => uninstall(release, uninstallButton));
+            section.append(uninstallButton);
+          }
           host.append(section);
         }
         if (!data.installs.length) host.append(el("p", "field-hint", t("pb.v4.no_installs")));
       } catch (error) { $("pb-installs").replaceChildren(loadErrorNode(error, installs)); }
+    }
+    function uninstallResult(result) {
+      const host = $("pb-uninstall-result");
+      const doc = result || {};
+      const removed = doc.removed || {};
+      const capabilities = Array.isArray(removed.capabilities) ? removed.capabilities : [];
+      const sources = Array.isArray(removed.sources) ? removed.sources : [];
+      const kept = Array.isArray(doc.kept) ? doc.kept : [];
+      const line = doc.alreadyUninstalled
+        ? t("pb.v4.uninstall_already")
+        : t("pb.v4.uninstalled_n", { release: doc.release || "", c: capabilities.length, s: sources.length });
+      host.append(el("p", "field-hint", line));
+      if (!kept.length) return;
+      host.append(el("p", "field-hint", t("pb.v4.uninstall_kept_n", { n: kept.length })));
+      host.append(el("p", "field-hint", t("pb.v4.uninstall_reason")));
+      host.append(code(kept));
+    }
+    async function uninstall(release, button) {
+      if (!(await confirmDanger({ body: t("pb.v4.uninstall_confirm", { release }) }))) return;
+      button.disabled = true;
+      $("pb-uninstall-result").replaceChildren();
+      try {
+        const result = await api(path("/releases/" + encodeURIComponent(release)), { method: "DELETE" });
+        await refreshSummary(); await installs();
+        uninstallResult(result);
+      } catch (error) { $("pb-uninstall-result").replaceChildren(loadErrorNode(error)); button.disabled = false; }
     }
     async function singleReceipt(id) {
       try {

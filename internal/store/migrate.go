@@ -32,7 +32,7 @@ const baselineVersion = 1
 //
 // 块序列从 `-- +migration 1 baseline` 起算，之后按编号追加（v3 的迁移块一个都不许出现：
 // v3→v4 升级路径不存在，见 ErrUnsupportedFormat）。每追加一块都要同步 +1， 否则新块永远不会被应用、而参照结构又会把「缺列」判成坏库。
-const headVersion = 2
+const headVersion = 3
 
 // layoutFormatV4 是 v4 **布局格式**标记（SQLite 的 PRAGMA user_version）。
 //

@@ -134,8 +134,8 @@ export const SUITE_SURFACES = {
 		paths: ["cmd/anode/**", "internal/protocol/**", "internal/ws/**", "internal/artifact/**"],
 	},
 	playbook_release: {
-		why: "#505 预案安装的 release 身份（缺省 release=包名 / 多实例 / 跨 release 409 / 模板透传）",
-		paths: ["internal/playbook/**", "internal/store/playbook*.go", "web-src/pages/playbook.html"],
+		why: "#505 预案安装的 release 身份（缺省 release=包名 / 多实例 / 跨 release 409 / 模板透传）+#510 uninstall（按 release 撤行 / kept / 幂等）",
+		paths: ["internal/playbook/**", "internal/store/playbook*.go", "internal/server/resource_playbook.go", "web-src/pages/playbook.html"],
 	},
 
 	// ---- Chrome 类（15）----

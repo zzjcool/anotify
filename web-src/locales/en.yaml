@@ -2395,6 +2395,12 @@ pb:
     delete_confirm: "Delete only the manifest? Capabilities, sources, receipts and provenance remain. This is not an uninstall."
     deleted: "Manifest deleted; retained contents below."
     delete_stale: 'Version is stale. Refresh to get the current version; a second delete still requires confirmation.'
+    uninstall: "Uninstall instance"
+    uninstall_confirm: 'Uninstall instance "{release}"? Capabilities and sources created by this install are removed; objects that belong to others are kept, and the install record stays readable.'
+    uninstalled_n: 'Uninstalled "{release}": removed {c} capabilities / {s} sources.'
+    uninstall_kept_n: "Kept {n} objects that do not belong to it (details below)."
+    uninstall_already: "This instance was already uninstalled; nothing changed now."
+    uninstall_reason: "Reasons in the details: created by hand, owned by another instance, or still reused by another instance."
 
 node:
   artifacts:

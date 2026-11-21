@@ -722,3 +722,9 @@ ALTER TABLE playbook_installs ADD COLUMN release TEXT NOT NULL DEFAULT '';
 UPDATE playbook_installs SET release = playbook_slug WHERE release = '';
 CREATE INDEX IF NOT EXISTS idx_playbook_installs_release
     ON playbook_installs(namespace_id, playbook_id, release, created_at);
+
+-- 卸载按 release 撤对象，但不删回执：回执是审计快照，原文一个字都不改，
+-- 只在列上记下卸载时刻（幂等 0 写与「已卸载的实例不进实例清单」都靠它）。
+-- 归属判据仍是 installed_from；查询走上面的 idx_playbook_installs_release，不加索引。
+-- +migration 3 playbook_uninstall
+ALTER TABLE playbook_installs ADD COLUMN uninstalled_at INTEGER NOT NULL DEFAULT 0;
