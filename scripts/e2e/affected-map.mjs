@@ -55,7 +55,7 @@ export const FULL_SURFACES = [
 	{ glob: "scripts/e2e/lib/**", why: "共享 harness（startServer/seed 的公共实现，所有套件都走它）" },
 	{ glob: "scripts/e2e/run_all.sh", why: "总编排（构建 + 前置 + 委托）" },
 	{ glob: "scripts/e2e/parallel_runner.mjs", why: "执行器本体（分组/超时/判分）" },
-	{ glob: "scripts/e2e/shard.mjs", why: "分片器（决定哪一片跑哪些套件）" },
+	{ glob: "scripts/e2e/shard.mjs", why: "分片器（探针分支：分片崩溃注入）" },
 	{ glob: "scripts/e2e/shard.test.mjs", why: "分片器自测；它坏 = 「并集齐全」的证据可能已经失效" },
 	// 选择器本体改动 ⇒ 全量：它决定了「跑哪些」，改它的时候不该由它自己来决定验多少。
 	{ glob: "scripts/e2e/affected.mjs", why: "选择器本体（谁被选中由它算）" },

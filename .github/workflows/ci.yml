@@ -204,6 +204,13 @@ jobs:
           fetch-depth: 1
           filter: blob:none
 
+      - name: 探针：让分片 3 崩溃（不产出任何 results）
+        if: matrix.shard.id == 3
+        run: |
+          set -euo pipefail
+          echo "::error::崩溃探针：SIGKILL 本步骤，模拟分片 job 死亡"
+          kill -9 $$
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
