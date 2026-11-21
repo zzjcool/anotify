@@ -943,6 +943,14 @@ components:
             本次 attempt 的一次性高熵令牌（重试后旧 token 立即作废）。它是凭据：
             帧里可回带、日志/响应/错误消息里永不出现。
           writeOnly: true
+        decisionToken:
+          type: string
+          description: |
+            **router 任务**的决策凭据（#522）：只有该任务声明了 `outcomes` 表才出现（省略 =
+            本任务没有结局表，节点不注入 `ANOTIFY_DECISION_*`）。一次性、绑定 taskId、短 TTL；
+            节点据此注入 `ANOTIFY_DECISION_TOKEN`，并用中枢 HTTP 根拼出 `ANOTIFY_DECISION_URL`。
+            它只授权「给自己这个任务选一个已声明的结局」，与 `attemptToken` 是两颗独立凭据。
+          writeOnly: true
         expiresAt:
           type: string
           format: date-time
