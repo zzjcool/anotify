@@ -176,6 +176,13 @@ const (
 	ReasonCapabilityDisabled = "capability_disabled"
 	// ReasonNoMatch 是「target 声明了 match.types，本次事件 type 不在里面」（#513 A1）。
 	ReasonNoMatch = "no_match"
+
+	// 决策通道（#522）：HTTP 结论码 + `source='route'` 观察行 type。
+	ReasonOutcomeNotDeclared   = "outcome_not_declared"   // 结局名不在声明表（403 + 审计行）
+	ReasonDecisionAlreadyTaken = "decision_already_taken" // 同 task 第二次决策（409）
+	ReasonNoDecision           = "no_decision"            // router 成功但没提交决策
+	ReasonRouterFailed         = "router_failed"          // router 失败/放弃：不执行结局
+	ReasonOutcomeDropped       = "outcome_dropped"        // 选中空动作结局（drop: []）
 )
 
 // pruneReasons 是「事件已接收、下游没建 task」的观察原因（capability.md §8.3）。
@@ -190,6 +197,24 @@ var pruneReasons = []string{
 	ReasonParamMissing,
 	ReasonCapabilityDisabled,
 	ReasonNoMatch,
+}
+
+// 决策通道观察行（#522）：不在 pruneReasons。
+var routeObservationReasons = []string{
+	ReasonNoDecision,
+	ReasonRouterFailed,
+	ReasonOutcomeDropped,
+	ReasonOutcomeNotDeclared,
+}
+
+func IsRouteObservationReason(reason string) bool {
+	return containsString(routeObservationReasons, reason)
+}
+
+func RouteObservationReasons() []string {
+	out := make([]string, len(routeObservationReasons))
+	copy(out, routeObservationReasons)
+	return out
 }
 
 // IsPruneReason 报告 reason 是不是剪枝观察原因。

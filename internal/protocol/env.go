@@ -4,9 +4,8 @@ import "strings"
 
 // 任务环境里的 ANOTIFY_ 契约变量（capability.md §4.0 / A2）。
 //
-// 这张表就是**全部** ANOTIFY_ 变量，一个不多：能力脚本只靠这些名字拿到本次
-// 任务的端点、令牌、任务 id、参数与导出目录。守护进程注入，中枢从不直接下发
-// 它们；名字是协议的一部分，节点/中枢/能力三方都从这里取，禁止各写一份字面量。
+// 这张表就是**全部** ANOTIFY_ 变量，一个不多：能力脚本只靠这些名字拿到本次任务的
+// 端点、令牌、任务 id、参数、导出目录与决策通道。名字是协议的一部分，禁止各写一份字面量。
 const (
 	// EnvEmitEndpoint 是本次任务的 emit 端点（协议 + 地址 + 端口，如
 	// `http://127.0.0.1:41237`）。脚本拼 `/emit` 后 POST。
@@ -18,12 +17,12 @@ const (
 	EnvTaskID = "ANOTIFY_TASK_ID"
 	// EnvParamPrefix 是任务参数变量的前缀（`ANOTIFY_PARAM_<NAME>`）。
 	EnvParamPrefix = "ANOTIFY_PARAM_"
-	// EnvArtifactDir 是本 attempt 专属的系统自有导出目录（A2，绝对路径）。
-	//
-	// 节点在系统结果目录下为**每个 (taskId, attempt)** 新建唯一随机后缀目录
-	// （0700）并注入；脚本把要导出托管的普通文件写进去，节点完成后安全枚举、
-	// 复制、上传。它只读、不可由 run.env / envPassthrough 覆盖（保留 ANOTIFY_
-	// 规则），不进 vars/配置 hash/中枢环境值快照。空目录 = 真正没有导出文件。
+	// EnvDecisionToken / EnvDecisionURL 是 router 任务的决策通道（#522，只有声明了 outcomes 才有）。
+	EnvDecisionToken = "ANOTIFY_DECISION_TOKEN"
+	EnvDecisionURL   = "ANOTIFY_DECISION_URL"
+	// EnvArtifactDir 是本 attempt 专属的系统自有导出目录（A2，绝对路径）：节点按
+	// (taskId, attempt) 新建 0700 目录并注入，脚本写入要导出的普通文件。它只读、不可被
+	// run.env / envPassthrough 覆盖，不进 vars/配置 hash。空目录 = 没有导出文件。
 	EnvArtifactDir = "ANOTIFY_ARTIFACT_DIR"
 )
 
