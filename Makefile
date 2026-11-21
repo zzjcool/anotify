@@ -39,7 +39,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-comment-density check-guard-selftest check-annotations check-doc-links check-doc-endpoints check-examples check-secrets check-config-writes check-yaml-doc check-affected-map hooks lint-go tools test-affected e2e-affected plan-affected test-frontend
+.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-comment-density check-guard-selftest check-annotations check-doc-links check-doc-endpoints check-examples check-secrets check-config-writes check-yaml-doc check-affected-map check-e2e-lock hooks lint-go tools test-affected e2e-affected plan-affected test-frontend
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -150,6 +150,11 @@ check-affected-map: ## 改动选择的映射表自测：已知耦合必须选中
 	node --test scripts/e2e/affected.test.mjs
 	@# CI 上 e2e 的判定器（已知环境性失败清单 + 「清单外必须拦」的变异自测）
 	node scripts/e2e/ci-e2e-verdict.mjs --self-test
+
+check-e2e-lock: ## 机器级 e2e 锁自测（#529）：无争用 / 争用等待 / 超时 exit 75 / kill -9 恢复 / 逃生口 / 粒度
+	@# 锁的失败模式是「静默降级成并发」——那正是随机假红的来源，所以八个方向都要有秒级用例钉住。
+	@# 它用私有 TMPDIR，不碰本机真实 e2e 锁：`make ci` 与正在跑的 e2e 可以同时存在。
+	bash scripts/e2e/lock_selftest.sh
 
 test-frontend: ## 前端单测（node:test）：消息流字段映射（#456）+ YAML 文档层（#473）+ vars 表格行逻辑（#476）
 	@# 为什么必须接进 ci：这页的事故是「页面读的字段名服务端从不发」，静态检查
@@ -383,6 +388,8 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	@# harness 自测（#215）：/health 的 boot 身份校验是"看不见的"修复——正常跑什么都不打印。
 	@# 而这个缺陷的症状是「套件随机 0通过/0失败」，跟超时/代码 bug 分不开，所以必须有秒级用例钉住它。
 	ANOTIFY_BIN=$(CURDIR)/anotify node scripts/e2e/harness_selftest.mjs
+	@# e2e 机器级锁自测（#529）：等锁/超时/崩溃恢复/逃生口八个方向，秒级；锁坏掉 = 随机假红回来。
+	$(MAKE) check-e2e-lock
 	@# 安装自测（#338）：v3 的 scripts/install_agent_selftest.sh（install-agent.sh + cmd/agent）
 	@# **已删除** —— 它的被测对象 cmd/agent 随 v3 节点产品退役，脚本第一步就要编
 	@# 那个已不存在的二进制（必红），留着只是让 `grep cmd/agent` 多一条假线索。
