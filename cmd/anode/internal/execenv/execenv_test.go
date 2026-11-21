@@ -240,3 +240,57 @@ func envMap(env []string) map[string]string {
 	}
 	return out
 }
+
+func TestResolveDecisionChannel(t *testing.T) {
+	dir := t.TempDir()
+	a := testArtifact(t, nil)
+	base := Input{
+		Facts:         protocol.NodeFacts{HomeDir: dir},
+		Artifact:      a,
+		MachineVars:   map[string]string{},
+		Baseline:      testBaseline(t),
+		Params:        json.RawMessage(`{}`),
+		Endpoint:      "http://127.0.0.1:9",
+		TaskToken:     "tok",
+		TaskID:        "tsk_dec",
+		DecisionURL:   "https://hub.example/v1/tasks/tsk_dec/decision",
+		DecisionToken: "dtn_secret",
+	}
+	res, err := Resolve(base)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := envMap(res.Env())
+	if env[protocol.EnvDecisionURL] != base.DecisionURL || env[protocol.EnvDecisionToken] != "dtn_secret" {
+		t.Fatalf("router 任务必须注入决策通道：%v", env)
+	}
+	for _, d := range res.Diags {
+		if strings.Contains(d.Name, "dtn_secret") || strings.Contains(d.Source, "dtn_secret") {
+			t.Fatalf("诊断不能含凭据：%+v", d)
+		}
+	}
+
+	half := base
+	half.DecisionURL = ""
+	res, err = Resolve(half)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env = envMap(res.Env())
+	if _, ok := env[protocol.EnvDecisionToken]; ok {
+		t.Fatalf("缺 URL 时不得注入决策凭据：%v", env)
+	}
+	if _, ok := env[protocol.EnvDecisionURL]; ok {
+		t.Fatalf("没有凭据时不得注入决策 URL：%v", env)
+	}
+	plain := base
+	plain.DecisionToken = ""
+	plain.DecisionURL = ""
+	res, err = Resolve(plain)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if _, ok := envMap(res.Env())[protocol.EnvDecisionToken]; ok {
+		t.Fatal("非 router 任务不该有决策凭据")
+	}
+}
