@@ -36,6 +36,7 @@ export const COST_SECONDS = {
 	passkeys: 3.2,
 	"password_login": 5.0,
 	persistence: 7.0,
+	playbook_release: 4.5,
 	recovery_next: 4.6,
 	routing: 4.6,
 	security: 15.1,
