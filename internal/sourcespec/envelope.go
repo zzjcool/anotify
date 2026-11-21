@@ -29,8 +29,7 @@ type Envelope struct {
 
 // FieldSource 是 type / deliveryId 的来源：header 与 pointer 二选一。
 //
-// JoinFrom 只对 type 有意义（`x-github-event` + `$.action` → `issues.opened`）：
-// GitHub 的事件类型是「头 + body 字段」两段拼的，只读头会丢掉 action 维度。
+// JoinFrom 只对 type 有意义（`x-github-event` + `$.action` → `issues.opened`）：GitHub 的事件类型是「头 + body 字段」两段拼的，只读头会丢掉 action 维度。
 type FieldSource struct {
 	Header   string `json:"header,omitempty"`
 	Pointer  string `json:"pointer,omitempty"`
