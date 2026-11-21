@@ -4,7 +4,7 @@
 # webhook 配置化信封 + github-sha256 + match.types（#513 A1）交付报告
 
 > 分支 `pi-subagent/hw-nj/anotify-513-envelope-0eb1b980` · base `main`
-> 设计记录：#512 · 本阶段范围：#513 · PR：见分支上的 PR（正文 `Fixes #513`）
+> 设计记录：#512 · 本阶段范围：#513 · PR：[#515](https://github.com/zzjcool/anotify/pull/515)（正文 `Fixes #513`）
 
 一句话：**把「从哪取 type/deliveryId/payload」与「用哪种签名口径」从 Go 搬到配置里**，
 让 `kind: webhook` 能读懂任意平台（含 GitHub）的推送；传输仍在 Go（信任边界不外包），
