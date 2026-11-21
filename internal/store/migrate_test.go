@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -12,8 +13,7 @@ import (
 // TestParseMigrations 校验 schema.sql 的分块序列：编号连续、无重复、名字非空。
 //
 // squash 之后从 `1 baseline` 重新起算：baseline 不动，新变更按 `2 ...` 往后追加。
-// 这里钉住「块数 == 本代码认识的最高版本」（headVersion）——追加了块却忘了 +1
-// 会让新建的库被 legacyVersionError 自己拒掉；反过来改了常量没加块则直接红。
+// 这里钉住「块数 == 本代码认识的最高版本」（headVersion）——追加了块却忘了 +1 会让新建的库被 legacyVersionError 自己拒掉；反过来改了常量没加块则直接红。
 func TestParseMigrations(t *testing.T) {
 	set, err := parseMigrations(schemaSQL)
 	if err != nil {
@@ -43,8 +43,7 @@ func TestParseMigrations(t *testing.T) {
 	}
 }
 
-// TestParseMigrationsRejectsGap 断言跳号的迁移序列会被拒绝——
-// 否则漏掉一个编号会导致「以为迁移过」。
+// TestParseMigrationsRejectsGap 断言跳号的迁移序列会被拒绝—— 否则漏掉一个编号会导致「以为迁移过」。
 func TestParseMigrationsRejectsGap(t *testing.T) {
 	src := `
 -- +migration 1 a
@@ -121,8 +120,7 @@ func TestMigrationIdempotent(t *testing.T) {
 }
 
 // TestMigrationFailureRollsBack 注入一个写坏的迁移，断言：
-//  1. Open 返回错误（不许吞错）
-//  2. 该版本**未记账**
+// 1. Open 返回错误（不许吞错） 2. 该版本**未记账**
 //  3. 该迁移里的建表**未生效**（事务回滚）
 func TestMigrationFailureRollsBack(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "broken.db")
@@ -187,8 +185,7 @@ func TestMigrationHookFailureRollsBack(t *testing.T) {
 	}
 }
 
-// TestMigrationNoSwallowedErrors 确认没有旧写法
-// `_, _ = db.Exec("ALTER TABLE ...")` 那种吞错残留。
+// TestMigrationNoSwallowedErrors 确认没有旧写法 `_, _ = db.Exec("ALTER TABLE ...")` 那种吞错残留。
 //
 // 只检查真正的代码行（跳过纯注释：注释里提到旧写法是说明，不是实现）。
 func TestMigrationNoSwallowedErrors(t *testing.T) {
@@ -212,10 +209,8 @@ func TestMigrationNoSwallowedErrors(t *testing.T) {
 //
 // I1：schema 里不得出现可执行概念（A2 的关键词）。
 // I3：**推导量**不落库——capability / node / edge 都没有 kind 列（kind 由 outputs +
-// 节点声明推导）。允许 kind 的只有两张表，且都不是推导量：sources.kind（cron /
-// webhook / manual）是用户显式选择的**配置**，没有任何东西能推导出「这个源应该是
-// 定时器还是 webhook」；cli_auth_sessions.kind（apikey / passkey）是**授权类型**，
-// 与能力在链上的角色无关。
+// 节点声明推导）。允许 kind 的只有两张表，且都不是推导量：sources.kind（cron / webhook / manual）是用户显式选择的**配置**，没有任何东西能推导出「这个源应该是
+// 定时器还是 webhook」；cli_auth_sessions.kind（apikey / passkey）是**授权类型**， 与能力在链上的角色无关。
 func TestNoArgvOrKindInSchema(t *testing.T) {
 	lower := strings.ToLower(schemaSQL)
 	for _, banned := range []string{"argv", "shell", "script"} {
@@ -295,4 +290,77 @@ func readSource(t *testing.T, name string) string {
 		t.Fatalf("read %s: %v", name, err)
 	}
 	return string(b)
+}
+
+// TestMigrationPlaybookReleaseBackfill 是块 2（release 身份）的**存量回填**验收。
+//
+// 造一个「记账只有 1、回执表还没有 release 列」的 v4 库，再 Open：
+//
+//	· 块 2 被应用（不重建、不删数据）；
+//	· 历史回执的 release 回填成 playbook_slug —— 回填成空串会让它们既归不了组，
+//	  也对不上默认 release（= 包名），等于历史实例全部失联；
+//	· 新索引落在 (namespace_id, playbook_id, release, created_at)；
+//	· 重开幂等（不重复 ALTER、不重复记账）。
+func TestMigrationPlaybookReleaseBackfill(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v1-installs.db")
+	set, err := parseMigrations(schemaSQL)
+	if err != nil {
+		t.Fatalf("parse schema.sql: %v", err)
+	}
+	raw, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	raw.SetMaxOpenConns(1)
+	if err := applyBaselineMigration(raw, set[0], nil); err != nil {
+		t.Fatalf("apply baseline only: %v", err)
+	}
+	// 老库的形状：列里没有 release（这是块 1 的终态）。
+	mustExec(t, raw, `INSERT INTO playbook_installs
+		   (id, namespace_id, namespace_slug, playbook_id, playbook_slug,
+		    "values", values_digest, receipt, source, created_at)
+		 VALUES ('ins_old','ns_old','demo','pb_old','project-chain','{}','sha256:old',
+		         '{"apiVersion":"anotify/v1","kind":"InstallReceipt"}','',1700000000)`)
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open v1 db (块 2 应被应用): %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if v, err := db.SchemaVersion(); err != nil || v != headVersion {
+		t.Fatalf("SchemaVersion = %d, %v; want %d", v, err, headVersion)
+	}
+	var release string
+	if err := db.QueryRow(`SELECT release FROM playbook_installs WHERE id = 'ins_old'`).Scan(&release); err != nil {
+		t.Fatalf("read backfilled release: %v", err)
+	}
+	if release != "project-chain" {
+		t.Fatalf("存量回填 release = %q, want %q（= playbook_slug）", release, "project-chain")
+	}
+	got := indexColumnsOn(t, db, "playbook_installs", "idx_playbook_installs_release")
+	if want := []string{"namespace_id", "playbook_id", "release", "created_at"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("索引列 = %v, want %v", got, want)
+	}
+
+	// 重开：块 2 不再重复应用（ALTER 会报 duplicate column），回填值不变。
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	db2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = db2.Close() })
+	if v, err := db2.SchemaVersion(); err != nil || v != headVersion {
+		t.Fatalf("重开后 SchemaVersion = %d, %v; want %d", v, err, headVersion)
+	}
+	if err := db2.QueryRow(`SELECT release FROM playbook_installs WHERE id = 'ins_old'`).Scan(&release); err != nil {
+		t.Fatalf("重开后读 release: %v", err)
+	}
+	if release != "project-chain" {
+		t.Fatalf("重开改了回填值: %q", release)
+	}
 }

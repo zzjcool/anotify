@@ -217,7 +217,7 @@ func TestC3bCapabilityGCInstallReceiptAnchor(t *testing.T) {
 	if _, err := db.CreatePlaybook(ctx, ns, p.slug, p.build(), "test"); err != nil {
 		t.Fatal(err)
 	}
-	receipt, err := db.InstallPlaybook(ctx, ns, p.slug, map[string]any{"project": "demo"}, false)
+	receipt, err := db.InstallPlaybook(ctx, ns, p.slug, "", map[string]any{"project": "demo"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

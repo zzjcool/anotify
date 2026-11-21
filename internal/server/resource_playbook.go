@@ -4,14 +4,9 @@ package server
 //
 // 三条语义边界决定了这里的形状，写代码时不要越过去：
 //
-//  1. **包是清单 + 回执，不是所有权**（playbook.md §7）：DELETE 只删清单行，已装出去的
-//     能力 / 源一行不动，响应必须告诉用户留下了什么（kept / values）。
-//  2. **默认是摘要**（W3）：包体是 `{相对路径: 正文}` 的整份 map，列表 / 详情默认不回它
-//     （spec 是空投影 `{}`）；只有 `?includeBody=true` 才回原始未渲染的 `spec.files`，
-//     供编辑 / 导出。默认摘要**不能**当完整 PUT 模板。
-//  3. **安装不部署，冲突 0 写**：install 只在单事务里建能力 / 源 + 写回执；有冲突时整包
-//     一行不写并回 400 `playbook_conflict`，details 里带 valuesDigest / conflicts[] / hint
-//     （12 格矩阵明细不能被裁成 causes）。
+// 1. **包是清单 + 回执，不是所有权**（playbook.md §7）：DELETE 只删清单行，已装出去的 能力 / 源一行不动，响应必须告诉用户留下了什么（kept / values）。
+// 2. **默认是摘要**（W3）：包体是 `{相对路径: 正文}` 的整份 map，列表 / 详情默认不回它 （spec 是空投影 `{}`）；只有 `?includeBody=true` 才回原始未渲染的 `spec.files`， 供编辑 / 导出。默认摘要**不能**当完整 PUT 模板。
+// 3. **安装不部署，冲突 0 写**：install 只在单事务里建能力 / 源 + 写回执；有冲突时整包 一行不写并回 400 `playbook_conflict`，details 里带 valuesDigest / conflicts[] / hint （12 格矩阵明细不能被裁成 causes）。
 
 import (
 	"bytes"
@@ -34,8 +29,7 @@ const kindPlaybook = "Playbook"
 
 // playbookAPI 是 Playbook 资源域的 handler 集合。
 //
-// 只持有 serverDeps：作用域 / 授权走 namespace_scope.go，错误映射走 api_status.go，
-// CAS 令牌走 api_cas.go —— 三件共享判据都不在这里再抄一份。
+// 只持有 serverDeps：作用域 / 授权走 namespace_scope.go，错误映射走 api_status.go， CAS 令牌走 api_cas.go —— 三件共享判据都不在这里再抄一份。
 type playbookAPI struct{ d *serverDeps }
 
 // newPlaybookAPI 构造 Playbook 资源域。
@@ -43,9 +37,7 @@ func newPlaybookAPI(d *serverDeps) *playbookAPI { return &playbookAPI{d: d} }
 
 // register 注册全部 Playbook 路由（全部 session 包裹，未登录直 401）。
 //
-// 方法不匹配（例如 `PATCH …/playbooks/{slug}`）本函数**不**兜底方法分派：这里只挂带方法的
-// pattern，生产 mux 会把这类请求交给末尾的静态兜底（回 404/503 而不是 405）。两种挂载方式
-// 为什么答案不同，见 resource_capability.go 的 register() 注释——同仓同结论只在那一处解释。
+// 方法不匹配（例如 `PATCH …/playbooks/{slug}`）本函数**不**兜底方法分派：这里只挂带方法的 pattern，生产 mux 会把这类请求交给末尾的静态兜底（回 404/503 而不是 405）。两种挂载方式 为什么答案不同，见 resource_capability.go 的 register() 注释——同仓同结论只在那一处解释。
 func (a *playbookAPI) register(mux *http.ServeMux) {
 	const base = "/v1/namespaces/{ns}/playbooks"
 	routes := []struct {
@@ -105,8 +97,7 @@ func (a *playbookAPI) list(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, env)
 	}
-	// 空列表是 []（writeList 收口 nil → []）；列表 kind 沿 api-conventions §3.3 的
-	// `<Kind>List` 约定（同 `CapabilityList` / `EventList`）。
+	// 空列表是 []（writeList 收口 nil → []）；列表 kind 沿 api-conventions §3.3 的 `<Kind>List` 约定（同 `CapabilityList` / `EventList`）。
 	writeList(w, http.StatusOK, kindPlaybook+"List", listMeta{Continue: cont}, items)
 }
 
@@ -132,8 +123,7 @@ func (a *playbookAPI) get(w http.ResponseWriter, r *http.Request) {
 
 // listInstalls 处理 GET …/playbooks/{slug}/installs：按 valuesDigest 折叠的实例清单（§4.10）。
 //
-// 响应是**读模型**（total / installs），不是资源列表：一个折叠组不是可寻址对象，
-// 别把它包装成 `PlaybookInstallList` kind 的 items。
+// 响应是**读模型**（total / installs），不是资源列表：一个折叠组不是可寻址对象， 别把它包装成 `PlaybookInstallList` kind 的 items。
 func (a *playbookAPI) listInstalls(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -248,8 +238,7 @@ func (a *playbookAPI) replace(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, err)
 		return
 	}
-	// namespace 由路径给出（写请求的 metadata 白名单不含它）；这里仍走共享校验，
-	// 一旦骨架允许 metadata.namespace，冲突会就地报 namespace_mismatch 而不是被忽略。
+	// namespace 由路径给出（写请求的 metadata 白名单不含它）；这里仍走共享校验， 一旦骨架允许 metadata.namespace，冲突会就地报 namespace_mismatch 而不是被忽略。
 	if err := checkMetaNamespace(meta, r.PathValue("ns")); err != nil {
 		writePlaybookAPIError(w, err)
 		return
@@ -285,8 +274,7 @@ func (a *playbookAPI) replace(w http.ResponseWriter, r *http.Request) {
 
 // delete 处理 DELETE …/playbooks/{slug}?resourceVersion=：只删清单。
 //
-// 响应是动作文档（deleted / kept / values / note），不套四键信封：它回答的是
-// 「留下了什么」，不是一个资源的状态。
+// 响应是动作文档（deleted / kept / values / note），不套四键信封：它回答的是 「留下了什么」，不是一个资源的状态。
 func (a *playbookAPI) delete(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -337,7 +325,8 @@ func (a *playbookAPI) render(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, err)
 		return
 	}
-	res, err := a.d.DB.RenderPlaybook(r.Context(), ns, slug, body.Values)
+	// release 在这里不归一化：store 的 RenderForRelease 用包名做缺省、并按同一套正则校验 （错误码 invalid_playbook 由 writePlaybookAPIError 翻成 400）。
+	res, err := a.d.DB.RenderPlaybook(r.Context(), ns, slug, body.Release, body.Values)
 	if err != nil {
 		writePlaybookAPIError(w, err)
 		return
@@ -364,7 +353,7 @@ func (a *playbookAPI) install(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, err)
 		return
 	}
-	rcpt, err := a.d.DB.InstallPlaybook(r.Context(), ns, slug, body.Values, body.DryRun)
+	rcpt, err := a.d.DB.InstallPlaybook(r.Context(), ns, slug, body.Release, body.Values, body.DryRun)
 	if err != nil {
 		writePlaybookAPIError(w, err)
 		return
@@ -377,9 +366,7 @@ func (a *playbookAPI) install(w http.ResponseWriter, r *http.Request) {
 
 // playbookWriteSpec 是 Playbook 写请求的 spec（W3：只搬包体，不复制根清单）。
 //
-// `playbook.yaml` 仍然是唯一根清单：values / 能力 / 源相对引用都从它解析，请求体
-// **不要求**也不接受第二份并行的 spec.values / spec.capabilities / spec.sources
-// （decodeWriteEnvelope 的严格解码会把它们报成 unknown_field）。
+// `playbook.yaml` 仍然是唯一根清单：values / 能力 / 源相对引用都从它解析，请求体 **不要求**也不接受第二份并行的 spec.values / spec.capabilities / spec.sources （decodeWriteEnvelope 的严格解码会把它们报成 unknown_field）。
 type playbookWriteSpec struct {
 	// Files 是整份包体（相对路径 → 正文），含 playbook.yaml。
 	Files map[string]string `json:"files"`
@@ -389,11 +376,8 @@ type playbookWriteSpec struct {
 
 // packageBody 校验 files / source 二选一，并返回要交给 store 的实参。
 //
-// 三个拒绝分支都是 400，但 reason 不同（封闭词表 playbook.md §9.2）：
-//   - 两个都给 / 都不给 → invalid_playbook；
-//   - 只给 source：W3 要求服务端拉取一次并以解析后的完整 files 存储，而 v4 一期没有
-//     网络拉取实现（playbook.md §11 只留了码位）→ oci_unsupported。这里明确拒绝，
-//     而不是让 store 的 Parse 报一个会误导人的 entry_missing（"包缺入口文件"）。
+// 三个拒绝分支都是 400，但 reason 不同（封闭词表 playbook.md §9.2）： - 两个都给 / 都不给 → invalid_playbook；
+// - 只给 source：W3 要求服务端拉取一次并以解析后的完整 files 存储，而 v4 一期没有 网络拉取实现（playbook.md §11 只留了码位）→ oci_unsupported。这里明确拒绝， 而不是让 store 的 Parse 报一个会误导人的 entry_missing（"包缺入口文件"）。
 func (s playbookWriteSpec) packageBody() (map[string]string, string, error) {
 	files := s.Files
 	if len(files) == 0 {
@@ -416,11 +400,14 @@ func (s playbookWriteSpec) packageBody() (map[string]string, string, error) {
 
 // playbookActionBody 是 render / install 的动作请求体。
 //
-// 它不是资源信封（动作 POST 不套 CAS、不套 status 只读检查），所以用一个宽松的
-// 小结构：`{values, dryRun}`。render 忽略 dryRun（render 永远只读）。
+// 它不是资源信封（动作 POST 不套 CAS、不套 status 只读检查），所以用一个宽松的 小结构：`{values, dryRun, release}`。render 忽略 dryRun（render 永远只读）；
+// 两个动作都吃 release——render 要用它渲染 `{{release.name}}`，install 还用它判认领。
+//
+// release 是**动作参数**，不是资源写路径：它不落在 playbook 清单上，也不会因此 多出一条 `PUT …/config`（YAML 仍是模板的唯一编辑面）。
 type playbookActionBody struct {
-	Values map[string]any `json:"values"`
-	DryRun bool           `json:"dryRun"`
+	Values  map[string]any `json:"values"`
+	DryRun  bool           `json:"dryRun"`
+	Release string         `json:"release"`
 }
 
 // decodePlaybookAction 解码动作 POST 的请求体。
@@ -454,17 +441,16 @@ func decodePlaybookAction(r *http.Request) (playbookActionBody, error) {
 //
 // 每一项都必须是**真实派生**，派不出来就给空（宁少不编）：
 //   - items / sources / lastInstallId / unapplied 来自回执历史：`ListPlaybookInstalls` 的
-//     installed_from 反查给出「这个包历史上装出来的行」，最近一组的 lastInstallId 给出
-//     该组最新回执（`unapplied[]` 就从这份回执读，它才是「差异没生效」的原始记录）。
-//   - conditions 是**成员能力的四条 condition** 聚合（playbook.md §6.1）：成员行按
-//     installed_from 反查出来（`ListPlaybookInstalls` 的 groups[].capabilities），再逐行
-//     取该能力自己的 status 派生（与 get capability 同一份实现）。任一成员 False ⇒ 该 type
-//     聚合后 False，reason/message 取第一个失败成员，members 列出失败者。
-//     **不编造**：反查不到行（能力被删）就不参与，四种 type 都聚不出来时 conditions 仍是 []。
-//   - ready 由 conditions + unapplied 派生（四条全 True 且 unapplied 为空）。
 //
-// 刻意**没有** `blocker`：它要求「最该先做的一件事」，来源正是成员能力的四条
-// condition；条件拿不到时给一个 blocker 就是纯编造，故省略该键（派生出事实时再加）。
+// installed_from 反查给出「这个包历史上装出来的行」，最近一组的 lastInstallId 给出 该组最新回执（`unapplied[]` 就从这份回执读，它才是「差异没生效」的原始记录）。
+// - conditions 是**成员能力的四条 condition** 聚合（playbook.md §6.1）：成员行按 installed_from 反查出来（`ListPlaybookInstalls` 的 groups[].capabilities），再逐行
+//
+// 取该能力自己的 status 派生（与 get capability 同一份实现）。任一成员 False ⇒ 该 type 聚合后 False，reason/message 取第一个失败成员，members 列出失败者。
+//
+//	  **不编造**：反查不到行（能力被删）就不参与，四种 type 都聚不出来时 conditions 仍是 []。
+//	- ready 由 conditions + unapplied 派生（四条全 True 且 unapplied 为空）。
+//
+// 刻意**没有** `blocker`：它要求「最该先做的一件事」，来源正是成员能力的四条 condition；条件拿不到时给一个 blocker 就是纯编造，故省略该键（派生出事实时再加）。
 type playbookStatus struct {
 	Ready       bool                      `json:"ready"`
 	Unapplied   []playbook.UnappliedEntry `json:"unapplied"`
@@ -488,9 +474,7 @@ type playbookCondition struct {
 
 // playbookItem 是体检的一行（只有 capability / source 两类，§6.1）。
 //
-// `state` 只有 `ok`：`no_node`（节点池）/ `blocked`（targets 解析）/ `disabled`
-// （enabled:false）/ `unapplied` 都需要能力或源的读模型，本域拿不到（D0.9），
-// 因此只声明「定义在库里」这一个已知事实。
+// `state` 只有 `ok`：`no_node`（节点池）/ `blocked`（targets 解析）/ `disabled` （enabled:false）/ `unapplied` 都需要能力或源的读模型，本域拿不到（D0.9）， 因此只声明「定义在库里」这一个已知事实。
 type playbookItem struct {
 	Kind    string `json:"kind"`
 	Name    string `json:"name"`
@@ -507,9 +491,7 @@ const (
 
 // playbookSourceStatus 是 status.sources（§6.1 的四态计数）。
 //
-// 只报两组能派生的数：total（历史上装出来的源个数）与 unapplied（最近回执里
-// targets 未生效的源数）。enabled / blocked / disabled 需要读源行本身，本域不查库，
-// 所以不出现这些键——比回 0 更诚实（0 会被前端当成"全都停用了"）。
+// 只报两组能派生的数：total（历史上装出来的源个数）与 unapplied（最近回执里 targets 未生效的源数）。enabled / blocked / disabled 需要读源行本身，本域不查库， 所以不出现这些键——比回 0 更诚实（0 会被前端当成"全都停用了"）。
 type playbookSourceStatus struct {
 	Total     int `json:"total"`
 	Unapplied int `json:"unapplied"`
@@ -616,12 +598,10 @@ var playbookConditionOrder = []string{
 
 // memberConditions 把成员能力的四条 condition 聚合成包级的四条（playbook.md §6.1）。
 //
-// 输入是反查出来的成员行（groups[].capabilities = "name@version"）。逐行调用能力自己的
-// status 派生（与 GET capability 同源，不另写一套判定），再按 type 归并：
+// 输入是反查出来的成员行（groups[].capabilities = "name@version"）。逐行调用能力自己的 status 派生（与 GET capability 同源，不另写一套判定），再按 type 归并：
 // 任一成员 False ⇒ 该 type False；reason/message 取第一个失败成员；members = 失败成员名。
 //
-// 同时给出 items[].state 需要的 "no_node"（该能力的 NodesAvailable 不为 True）——
-// 词表沿用 playbook.md §6.1（ok / no_node），不新造第三套。
+// 同时给出 items[].state 需要的 "no_node"（该能力的 NodesAvailable 不为 True）—— 词表沿用 playbook.md §6.1（ok / no_node），不新造第三套。
 func (a *playbookAPI) memberConditions(ctx context.Context, ns string,
 	groups []store.PlaybookInstallGroup) ([]playbookCondition, map[string]string) {
 	type tally struct {
@@ -685,8 +665,7 @@ func (a *playbookAPI) memberConditions(ctx context.Context, ns string,
 
 // playbookItemsFromInstalls 把折叠组反查出来的能力 / 源名字并成 items（去重 + 稳定排序）。
 //
-// 同一行可能出现在多个组里（第二组 values 装的是同一批名字时），所以先按身份去重：
-// 能力的身份是 name@version，源的身份只有名字。
+// 同一行可能出现在多个组里（第二组 values 装的是同一批名字时），所以先按身份去重： 能力的身份是 name@version，源的身份只有名字。
 func playbookItemsFromInstalls(groups []store.PlaybookInstallGroup) []playbookItem {
 	const (
 		kindCapability = "capability"
@@ -728,8 +707,7 @@ func playbookItemsFromInstalls(groups []store.PlaybookInstallGroup) []playbookIt
 
 // playbookReady 是对「四条 condition 全 True 且 unapplied 为空」的唯一实现（§6.2）。
 //
-// 拿不到四条 condition（成员能力读模型缺失）时 ready 必须是 false：把「不知道」
-// 报成「就绪」会让前端把没部署的包显示成全绿。
+// 拿不到四条 condition（成员能力读模型缺失）时 ready 必须是 false：把「不知道」 报成「就绪」会让前端把没部署的包显示成全绿。
 func playbookReady(conditions []playbookCondition, unapplied []playbook.UnappliedEntry) bool {
 	if len(unapplied) > 0 || len(conditions) != 4 {
 		return false
@@ -755,9 +733,7 @@ func (a *playbookAPI) row(r *http.Request, ns string) (*store.PlaybookRow, error
 
 // playbookConflictDetails 是 400 冲突响应的 details（W3 冻结形状）。
 //
-// 为什么不用 statusDetails：它只有 causes / current / retryAfterSeconds 三个槽，装不下
-// 12 格矩阵的 conflicts[]。把 conflicts 压成 causes 人话会丢掉 declaredDigest /
-// actualDigest / fields —— 而客户端判「能不能改包解决」正是靠这些结构化字段。
+// 为什么不用 statusDetails：它只有 causes / current / retryAfterSeconds 三个槽，装不下 12 格矩阵的 conflicts[]。把 conflicts 压成 causes 人话会丢掉 declaredDigest / actualDigest / fields —— 而客户端判「能不能改包解决」正是靠这些结构化字段。
 type playbookConflictDetails struct {
 	ValuesDigest string              `json:"valuesDigest"`
 	Conflicts    []playbook.Conflict `json:"conflicts"`
@@ -777,14 +753,27 @@ type playbookStatusDoc struct {
 
 // writePlaybookAPIError 是 Playbook 端点错误映射的唯一实现。
 //
-// 顺序：领域冲突（要带结构化 details）→ 其它 playbook.Error（封闭码表 → 400/404）
-// → store 哨兵（slug_mismatch）→ 通用 writeAPIError（含 CAS 家族与 404）。
+// 顺序：领域冲突（要带结构化 details）→ 其它 playbook.Error（封闭码表 → 400/404） → store 哨兵（slug_mismatch）→ 通用 writeAPIError（含 CAS 家族与 404）。
 func writePlaybookAPIError(w http.ResponseWriter, err error) {
 	if err == nil {
 		return
 	}
 	var pbErr *playbook.Error
 	if errors.As(err, &pbErr) {
+		if pbErr.Code == playbook.CodeReleaseConflict {
+			// 409（不是 400）：这不是「你输入的内容有问题」，而是「这个对象已经有主人」。
+			// details 指认到 owner（release + 回执 id），两条出路在 hint 里。
+			writeJSON(w, http.StatusConflict, playbookStatusDoc{
+				APIVersion: apiVersionV1,
+				Kind:       kindStatus,
+				Status:     "Failure",
+				Code:       http.StatusConflict,
+				Reason:     pbErr.Code,
+				Message:    pbErr.Message,
+				Details:    playbookReleaseConflictDetailsOf(pbErr),
+			})
+			return
+		}
 		if pbErr.Code == playbook.CodePlaybookConflict || pbErr.Code == playbook.CodeVersionContentImmutable {
 			writeJSON(w, http.StatusBadRequest, playbookStatusDoc{
 				APIVersion: apiVersionV1,
@@ -805,12 +794,62 @@ func writePlaybookAPIError(w http.ResponseWriter, err error) {
 		return
 	}
 	if errors.Is(err, store.ErrPlaybookSlugMismatch) {
-		// 路径 slug 与包内 metadata.name 不一致：这是调用方把包和 URL 拼错了，
-		// 不是服务端故障（api_status.go 未注册该哨兵，默认会落 500）。
+		// 路径 slug 与包内 metadata.name 不一致：这是调用方把包和 URL 拼错了， 不是服务端故障（api_status.go 未注册该哨兵，默认会落 500）。
 		writeStatus(w, http.StatusBadRequest, playbook.CodeInvalidPlaybook, err.Error(), nil)
 		return
 	}
 	writeAPIError(w, err)
+}
+
+// playbookReleaseConflictDetails 是 409 release_conflict 的 details 形状。
+//
+// 与 400 的 playbook_conflict 分开：那是「内容覆盖」被拒（改版本号/改名字），这是 「认领」被拒（换 release / 把 release 写进名字模板）——状态码和处置都不一样。
+type playbookReleaseConflictDetails struct {
+	Name           string                     `json:"name"`
+	Kind           string                     `json:"kind"`
+	OwnerRelease   string                     `json:"ownerRelease"`
+	OwnerInstallID string                     `json:"ownerInstallId"`
+	Conflicts      []playbook.ReleaseConflict `json:"conflicts"`
+	Hint           string                     `json:"hint,omitempty"`
+}
+
+// playbookReleaseConflictDetailsOf 从 *playbook.Error.Details 里取出认领冲突的形状。
+//
+// 取不到结构化字段时**不编造**：name/kind/owner 留空、conflicts 是 []（空列表纪律）， 至少 message 还在（调用方仍能看到人话）。
+func playbookReleaseConflictDetailsOf(e *playbook.Error) playbookReleaseConflictDetails {
+	d := playbookReleaseConflictDetails{Conflicts: []playbook.ReleaseConflict{}}
+	if e == nil {
+		return d
+	}
+	if v, ok := e.Details["name"].(string); ok {
+		d.Name = v
+	}
+	if v, ok := e.Details["kind"].(string); ok {
+		d.Kind = v
+	}
+	if v, ok := e.Details["ownerRelease"].(string); ok {
+		d.OwnerRelease = v
+	}
+	if v, ok := e.Details["ownerInstallId"].(string); ok {
+		d.OwnerInstallID = v
+	}
+	if v, ok := e.Details["hint"].(string); ok {
+		d.Hint = v
+	}
+	switch raw := e.Details["conflicts"].(type) {
+	case []playbook.ReleaseConflict:
+		d.Conflicts = raw
+	case nil:
+		// 保持 []。
+	default:
+		if b, err := json.Marshal(raw); err == nil {
+			_ = json.Unmarshal(b, &d.Conflicts)
+		}
+	}
+	if d.Conflicts == nil {
+		d.Conflicts = []playbook.ReleaseConflict{}
+	}
+	return d
 }
 
 // playbookConflictDetailsOf 从 *playbook.Error.Details 里取出 W3 要求的三个字段。
@@ -831,8 +870,7 @@ func playbookConflictDetailsOf(e *playbook.Error) playbookConflictDetails {
 	case nil:
 		// 没有明细就保持空数组（空列表纪律）。
 	default:
-		// 兜底：万一将来 Details 换成了 map/list 的泛型形态，仍然按 JSON 形状搬过来，
-		// 而不是把结构化明细静默丢掉。
+		// 兜底：万一将来 Details 换成了 map/list 的泛型形态，仍然按 JSON 形状搬过来， 而不是把结构化明细静默丢掉。
 		if b, err := json.Marshal(raw); err == nil {
 			_ = json.Unmarshal(b, &d.Conflicts)
 		}

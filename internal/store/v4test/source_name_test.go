@@ -107,12 +107,12 @@ func TestStoredSourceNameRenderDryRunInstallRejectCreateReuse(t *testing.T) {
 				row := pbCreate(t, db, ns, p)
 				values := map[string]any{"project": "a", "name": tc.name}
 				before := sourceNameFacts(t, db)
-				if rendered, err := db.RenderPlaybook(ctx, ns, p.slug, values); !errors.Is(err, tc.want) || rendered != nil || !playbook.IsCode(err, playbook.CodeRenderNameInvalid) {
+				if rendered, err := db.RenderPlaybook(ctx, ns, p.slug, "", values); !errors.Is(err, tc.want) || rendered != nil || !playbook.IsCode(err, playbook.CodeRenderNameInvalid) {
 					t.Fatalf("stored render did not reject with shared identity/domain code: %v", err)
 				}
 				requireSourceNameFacts(t, db, before)
 				for _, dryRun := range []bool{true, false} {
-					r, err := db.InstallPlaybook(ctx, ns, p.slug, values, dryRun)
+					r, err := db.InstallPlaybook(ctx, ns, p.slug, "", values, dryRun)
 					if !errors.Is(err, tc.want) || r != nil || !playbook.IsCode(err, playbook.CodeRenderNameInvalid) {
 						t.Fatalf("dryRun=%t accepted invalid name or lost error identity: %v", dryRun, err)
 					}
@@ -142,7 +142,7 @@ func TestInstallSourceLegalKindsNamesEmptyTargetsAndPending(t *testing.T) {
 				p.files["sources/on-push.yaml"] = fmt.Sprintf("metadata:\n  name: %q\nspec:\n  kind: %s\n  config: %s\n  targets: []\n", name, kind, config)
 				row := pbCreate(t, db, ns, p)
 				before := sourceNameFacts(t, db)
-				dry, err := db.InstallPlaybook(ctx, ns, p.slug, pbValues("a"), true)
+				dry, err := db.InstallPlaybook(ctx, ns, p.slug, "", pbValues("a"), true)
 				if err != nil || dry == nil || !dry.Install.DryRun || len(dry.Created.Sources) != 1 || dry.Created.Sources[0] != name {
 					t.Fatalf("legal empty-target dryRun rejected/renamed source: %v", err)
 				}
@@ -153,7 +153,7 @@ func TestInstallSourceLegalKindsNamesEmptyTargetsAndPending(t *testing.T) {
 					t.Fatal("legal source identity/kind/empty targets/installedFrom changed")
 				}
 				before = sourceNameFacts(t, db)
-				reused, err := db.InstallPlaybook(ctx, ns, p.slug, pbValues("a"), true)
+				reused, err := db.InstallPlaybook(ctx, ns, p.slug, "", pbValues("a"), true)
 				if err != nil || reused == nil || len(reused.Skipped.Sources) != 1 || reused.Skipped.Sources[0] != name {
 					t.Fatalf("legal empty-target reuse rejected: %v", err)
 				}

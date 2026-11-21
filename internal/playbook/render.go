@@ -20,20 +20,24 @@ import (
 // `TestRenderNamePatternMatchesArtifact` 钉住两者的判定一致。
 var capNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 
-// Render 把包渲染成一组**普通文档**（playbook.md §2 / D19）。
-//
-// 三步，顺序固定：
-//
-//	① 填默认：按 spec.values（JSON Schema）递归补 default
-//	② 校验 values：required（values_missing）/ 类型与 additionalProperties（values_invalid）
-//	③ 结构内插值：遍历解析后的文档树，对每个字符串叶子求值 `{{values.点号路径}}`
-//
-// 渲染后立即走**单建校验**（能力 artifact / 源 sourcespec，D6：不设第二套），再加三条
-// 包视角的检查：渲染后同名（duplicate_capability / duplicate_source）、包内成环（cycle）、
-// 数量上限（too_many_items）。
-//
-// **纯函数**：只读写包体（Files / Values）与 values。不读库、不判冲突、不写库、不产生回执。
+// Render 把包渲染成一组**普通文档**（playbook.md §2 / D19），release 取缺省（= 包名）：
+// 等价于 RenderForRelease(pkg, values, "")，所以老包与本版之前逐字相同。
 func Render(pkg *Package, values map[string]any) (*RenderResult, error) {
+	return RenderForRelease(pkg, values, "")
+}
+
+// RenderForRelease 是带 release 身份的渲染：① 补 schema 默认 ② 校验 values
+// ③ 结构内插值（`{{values.点号路径}}` 与 `{{release.name}}`，未知形态 400）。
+// 渲染后立即走单建校验（D6，不设第二套），再查包内同名 / 成环 / 数量上限。 **纯函数**：只读包体、values 与 release，不读库、不判冲突、不产生回执。
+func RenderForRelease(pkg *Package, values map[string]any, release string) (*RenderResult, error) {
+	if pkg == nil {
+		return nil, errf(CodeInvalidPlaybook, "Render 需要一个包（nil 不是空包）")
+	}
+	rel, err := NormalizeRelease(release, pkg.Name)
+	if err != nil {
+		return nil, err
+	}
+	scope := renderScope{release: rel}
 	sch, err := pkg.schemaOf()
 	if err != nil {
 		return nil, err
@@ -42,6 +46,7 @@ func Render(pkg *Package, values map[string]any) (*RenderResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	scope.values = eff
 	digest, err := ValuesDigest(eff)
 	if err != nil {
 		return nil, err
@@ -65,7 +70,7 @@ func Render(pkg *Package, values map[string]any) (*RenderResult, error) {
 		if !ok {
 			return nil, errf(CodeFileMissing, "引用清单里的 %q 不在包内", p)
 		}
-		a, renderedBody, err := renderCapability(p, body, eff)
+		a, renderedBody, err := renderCapability(p, body, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -85,7 +90,7 @@ func Render(pkg *Package, values map[string]any) (*RenderResult, error) {
 		if !ok {
 			return nil, errf(CodeFileMissing, "引用清单里的 %q 不在包内", p)
 		}
-		src, renderedBody, err := renderSource(p, body, eff)
+		src, renderedBody, err := renderSource(p, body, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -105,14 +110,14 @@ func Render(pkg *Package, values map[string]any) (*RenderResult, error) {
 }
 
 // renderCapability 渲染一份能力文档并跑单建校验。
-func renderCapability(where, body string, values map[string]any) (*artifact.Artifact, string, error) {
+func renderCapability(where, body string, scope renderScope) (*artifact.Artifact, string, error) {
 	tree, err := decodeDoc(body, where)
 	if err != nil {
 		return nil, "", err
 	}
 	// §1.3：`status` 在导入时剥离（它是派生物；API 直接写 status 才 400）。
 	delete(tree, "status")
-	rendered, err := interpolateTree(tree, values, where)
+	rendered, err := interpolateTree(tree, scope, where)
 	if err != nil {
 		return nil, "", err
 	}
@@ -146,8 +151,7 @@ type sourceMetaWire struct {
 
 // sourceSpecWire 是 spec 段的严格形状：未知字段是错误（拼错的键静默失效最难查）。
 //
-// Enabled 用指针：`enabled` 省略 = true（source.md §2），用 bool 会把省略读成 false，
-// 于是每个包里的每个源都会被当成"停用"。
+// Enabled 用指针：`enabled` 省略 = true（source.md §2），用 bool 会把省略读成 false， 于是每个包里的每个源都会被当成"停用"。
 type sourceSpecWire struct {
 	Kind    string              `json:"kind"`
 	Enabled *bool               `json:"enabled"`
@@ -156,13 +160,13 @@ type sourceSpecWire struct {
 }
 
 // renderSource 渲染一份源文档并跑单建校验（sourcespec.ValidateSpec）。
-func renderSource(where, body string, values map[string]any) (Source, string, error) {
+func renderSource(where, body string, scope renderScope) (Source, string, error) {
 	tree, err := decodeDoc(body, where)
 	if err != nil {
 		return Source{}, "", err
 	}
 	delete(tree, "status")
-	rendered, err := interpolateTree(tree, values, where)
+	rendered, err := interpolateTree(tree, scope, where)
 	if err != nil {
 		return Source{}, "", err
 	}
@@ -238,11 +242,9 @@ func fieldString(tree map[string]any, a, b string) string {
 	return s
 }
 
-// checkRenderedName 校验渲染后的名字，并给出 §2.3 要求的三个信息
-// （哪条模板 → 渲染成什么 → 为什么不合规 + 建议）。**永远不自动清洗**（D25）。
+// checkRenderedName 校验渲染后的名字，并给出 §2.3 要求的三个信息 （哪条模板 → 渲染成什么 → 为什么不合规 + 建议）。**永远不自动清洗**（D25）。
 //
-// 缺失 metadata.name（连模板都没有）是包的形状问题（invalid_playbook）；
-// 模板存在但渲染结果不合法（含渲染成空串）是 render_name_invalid。
+// 缺失 metadata.name（连模板都没有）是包的形状问题（invalid_playbook）； 模板存在但渲染结果不合法（含渲染成空串）是 render_name_invalid。
 func checkRenderedName(before, after map[string]any, where, what string) error {
 	tmpl := fieldString(before, "metadata", "name")
 	if tmpl == "" {
@@ -275,15 +277,24 @@ func checkRenderedSourceName(before, after map[string]any, where string) error {
 
 // ---------- 结构内插值 ----------
 
-// templateToken 是一段字符串里的一个原子：字面量，或一个 `{{values.路径}}` 引用。
+// renderScope 是插值时仅有的两个事实源（values / release）：模板看不见库与包体其它字段。
+type renderScope struct {
+	values  map[string]any
+	release string
+}
+
+// templateToken 是一段字符串里的一个原子：字面量，或一个模板引用（根名只有 values / release）。
 type templateToken struct {
 	literal   string
-	reference string // 不含 `values.` 前缀以外的部分；空 = 字面量
+	root      string // "values" | "release"；空 = 字面量
+	reference string // root 之内剩下的路径（values: `a.b.0`；release: `name`）
+	// invalid 是不认识的引用原文（`{{release.foo}}`）：插值时 400，敏感性推导忽略它。
+	invalid string
 }
 
 // interpolateTree 递归渲染一棵文档树的**字符串叶子**（键不渲染，D5）。
-func interpolateTree(tree map[string]any, values map[string]any, where string) (map[string]any, error) {
-	out, err := interpolateValue(tree, values, where)
+func interpolateTree(tree map[string]any, scope renderScope, where string) (map[string]any, error) {
+	out, err := interpolateValue(tree, scope, where)
 	if err != nil {
 		return nil, err
 	}
@@ -295,12 +306,12 @@ func interpolateTree(tree map[string]any, values map[string]any, where string) (
 }
 
 // interpolateValue 递归渲染一个值；at 是给人看的字段位置（`capabilities/a.yaml: spec.next[0]`）。
-func interpolateValue(v any, values map[string]any, at string) (any, error) {
+func interpolateValue(v any, scope renderScope, at string) (any, error) {
 	switch val := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(val))
 		for _, k := range sortedValueKeys(val) {
-			child, err := interpolateValue(val[k], values, at+"."+k)
+			child, err := interpolateValue(val[k], scope, at+"."+k)
 			if err != nil {
 				return nil, err
 			}
@@ -310,7 +321,7 @@ func interpolateValue(v any, values map[string]any, at string) (any, error) {
 	case []any:
 		out := make([]any, len(val))
 		for i, item := range val {
-			child, err := interpolateValue(item, values, fmt.Sprintf("%s[%d]", at, i))
+			child, err := interpolateValue(item, scope, fmt.Sprintf("%s[%d]", at, i))
 			if err != nil {
 				return nil, err
 			}
@@ -318,7 +329,7 @@ func interpolateValue(v any, values map[string]any, at string) (any, error) {
 		}
 		return out, nil
 	case string:
-		return interpolateString(val, values, at)
+		return interpolateString(val, scope, at)
 	default:
 		return v, nil
 	}
@@ -327,52 +338,72 @@ func interpolateValue(v any, values map[string]any, at string) (any, error) {
 // interpolateString 求值一个字符串叶子（§1.4 的类型规则）。
 //
 //   - 整个值恰好只有一个引用 → **保留原类型**（`replicas: '{{values.n}}'` 是数字）；
-//   - 掺了任何常量 → **字符串拼接**（非字符串按 JSON 文本拼入）；
-//   - 对象/数组拼进字符串 → `render_type_mismatch`。
 //
-// 只有恰好匹配 `{{values.<path>}}` 的片段会被替换：其它 `{{…}}`（`{{payload.x}}`）、
-// `$NAME`、`${…}`、`$(…)` 一律原样透传，不检查残留、不报错、不清洗。
-func interpolateString(s string, values map[string]any, at string) (any, error) {
+// - 掺了任何常量 → **字符串拼接**（非字符串按 JSON 文本拼入）； - 对象/数组拼进字符串 → `render_type_mismatch`。
+//
+// 只替换恰好匹配 `{{values.<路径>}}` / `{{release.name}}` 的片段；其它 `{{…}}`（`{{payload.x}}`）、
+// `$NAME`、`${…}`、`$(…)` 原样透传。但 `release.` 开头的其它写法是 400——它看起来像 引用，静默当字面量会让作者以为名字按 release 分开了。
+func interpolateString(s string, scope renderScope, at string) (any, error) {
 	tokens := tokenizeTemplate(s)
 	refs := 0
 	for _, tk := range tokens {
-		if tk.reference != "" {
+		if tk.invalid != "" {
+			return nil, errf(CodeInvalidPlaybook,
+				"%s：不认识的模板引用 %s——包模板只认 {{values.点号路径}} 与 {{release.name}}（release 只有 name 一个字段）",
+				at, tk.invalid).withDetails(map[string]any{
+				"field":     at,
+				"reference": tk.invalid,
+			})
+		}
+		if tk.root != "" {
 			refs++
 		}
 	}
 	if refs == 0 {
 		return s, nil
 	}
-	if len(tokens) == 1 && tokens[0].reference != "" {
-		v, err := lookupValue(values, tokens[0].reference, at)
-		if err != nil {
-			return nil, err
-		}
-		return v, nil
+	if len(tokens) == 1 && tokens[0].root != "" {
+		return resolveToken(tokens[0], scope, at)
 	}
 
 	var b strings.Builder
 	for _, tk := range tokens {
-		if tk.reference == "" {
+		if tk.root == "" {
 			b.WriteString(tk.literal)
 			continue
 		}
-		v, err := lookupValue(values, tk.reference, at)
+		v, err := resolveToken(tk, scope, at)
 		if err != nil {
 			return nil, err
 		}
 		switch v.(type) {
 		case map[string]any, []any:
 			return nil, errf(CodeRenderTypeMismatch,
-				"%s：values.%s 是 %s，不能拼进字符串（要整值引用就让它独占整个值）",
-				at, tk.reference, typeName(v))
+				"%s：%s 是 %s，不能拼进字符串（要整值引用就让它独占整个值）",
+				at, refLabel(tk), typeName(v))
 		}
 		b.WriteString(stringifyValue(v))
 	}
 	return b.String(), nil
 }
 
-// tokenizeTemplate 把字符串拆成字面量与引用；只认 `{{values.点号路径}}` 一种形态。
+// resolveToken 求值一个引用 token；release.name 一定是字符串，不会触发类型不符。
+func resolveToken(tk templateToken, scope renderScope, at string) (any, error) {
+	if tk.root == "release" {
+		return scope.release, nil
+	}
+	return lookupValue(scope.values, tk.reference, at)
+}
+
+// refLabel 是引用在错误消息里的全名（`values.a.b` / `release.name`）。
+func refLabel(tk templateToken) string {
+	if tk.root == "" {
+		return tk.reference
+	}
+	return tk.root + "." + tk.reference
+}
+
+// tokenizeTemplate 把字符串拆成字面量与引用；其它 `{{…}}` 原样留在字面量里。
 func tokenizeTemplate(s string) []templateToken {
 	out := make([]templateToken, 0, 2)
 	var lit strings.Builder
@@ -393,12 +424,13 @@ func tokenizeTemplate(s string) []templateToken {
 		}
 		closeAt += open
 		inner := s[open+2 : closeAt]
-		if ref, ok := valuesReference(inner); ok {
+		root, ref, invalid := templateReference(inner)
+		if root != "" || invalid != "" {
 			if lit.Len() > 0 {
 				out = append(out, templateToken{literal: lit.String()})
 				lit.Reset()
 			}
-			out = append(out, templateToken{reference: ref})
+			out = append(out, templateToken{root: root, reference: ref, invalid: invalid})
 			i = closeAt + 2
 			continue
 		}
@@ -410,6 +442,22 @@ func tokenizeTemplate(s string) []templateToken {
 		out = append(out, templateToken{literal: lit.String()})
 	}
 	return out
+}
+
+// templateReference 判定 `{{…}}` 是哪一种引用：`values.路径` / `release.name`（唯一字段）/
+// `release.<别的>`（invalid，400）/ 其它（三者皆空 = 普通文本）。带空格的写法一律算普通 文本——两种引用同一条拼写口径，才不会出现「空格版生效、紧凑版不生效」。
+func templateReference(inner string) (root, ref, invalid string) {
+	if path, ok := valuesReference(inner); ok {
+		return "values", path, ""
+	}
+	const prefix = "release."
+	if !strings.HasPrefix(inner, prefix) {
+		return "", "", ""
+	}
+	if inner == ReleaseRef {
+		return "release", "name", ""
+	}
+	return "", "", "{{" + inner + "}}"
 }
 
 // valuesReference 判定 `{{…}}` 的内容是不是 `values.点号路径`，返回去掉根名的路径。
@@ -432,8 +480,7 @@ func valuesReference(inner string) (string, bool) {
 
 // validValuesSegment 是点号路径的路径段字符集：标识符或纯数字（数字段 = 数组下标）。
 //
-// 与 source.md §4.1 的路径规则同口径（连字符既可能是减号也可能是键名，两种解释都会让
-// 用户猜；写成合法标识符最省事）。
+// 与 source.md §4.1 的路径规则同口径（连字符既可能是减号也可能是键名，两种解释都会让 用户猜；写成合法标识符最省事）。
 func validValuesSegment(seg string) bool {
 	if seg == "" {
 		return false

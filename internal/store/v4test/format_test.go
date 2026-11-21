@@ -23,17 +23,16 @@ import (
 // 拒绝前后**用户数据、DDL、布局标记**一字不差——程序不许自愈、不许补标记、不许删数据。
 // 唯一不比较的是 SQLite 自己的 journal/WAL 字节（父裁决明确排除）。
 
-// TestFormatNewDatabaseWritesLayoutMarker 全新空库：baseline 记账 1 + 布局标记 4，
-// 重开幂等，字段往返一致。
+// TestFormatNewDatabaseWritesLayoutMarker 全新空库：baseline 记账 1 + 布局标记 4， 重开幂等，字段往返一致。
 func TestFormatNewDatabaseWritesLayoutMarker(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fresh.db")
 	db, err := store.Open(path)
 	if err != nil {
 		t.Fatalf("open fresh: %v", err)
 	}
-	// 记账仍是 1（历史迁移链没多、headVersion 没变）。
-	if v, err := db.SchemaVersion(); err != nil || v != 1 {
-		t.Fatalf("SchemaVersion = %d, %v; want 1", v, err)
+	// 记账 = headVersion：baseline（1）之后还有增量块（2 是 release 身份）。
+	if v, err := db.SchemaVersion(); err != nil || v != 2 {
+		t.Fatalf("SchemaVersion = %d, %v; want 2", v, err)
 	}
 	// 布局标记是**独立**的另一件事。
 	if got := rawUserVersion(t, path); got != 4 {
@@ -53,8 +52,8 @@ func TestFormatNewDatabaseWritesLayoutMarker(t *testing.T) {
 	if got := rawUserVersion(t, path); got != 4 {
 		t.Fatalf("重开后 PRAGMA user_version = %d, want 4", got)
 	}
-	if v, err := db2.SchemaVersion(); err != nil || v != 1 {
-		t.Fatalf("重开后 SchemaVersion = %d, %v; want 1", v, err)
+	if v, err := db2.SchemaVersion(); err != nil || v != 2 {
+		t.Fatalf("重开后 SchemaVersion = %d, %v; want 2", v, err)
 	}
 	var name, digest, foldKey string
 	if err := db2.QueryRow(
@@ -71,8 +70,7 @@ func TestFormatNewDatabaseWritesLayoutMarker(t *testing.T) {
 // TestFormatBaselineLedgerWithoutLayoutMarkerRejected 是 G1-6C1 的核心反例：
 // schema_version=1（看起来和 v4 baseline 一模一样）但**没有**布局标记的 v3 库。
 //
-// 旧实现就是这么放过去的：看见 schema_version 已有 1 就跳过 baseline，
-// 然后在业务路径上炸 "no such column"。现在必须在任何写操作**之前**具名拒绝。
+// 旧实现就是这么放过去的：看见 schema_version 已有 1 就跳过 baseline， 然后在业务路径上炸 "no such column"。现在必须在任何写操作**之前**具名拒绝。
 func TestFormatBaselineLedgerWithoutLayoutMarkerRejected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v3-baseline1.db")
 	raw := openRawFixture(t, path)
@@ -235,8 +233,7 @@ func TestFormatUnknownLayoutMarkerRejected(t *testing.T) {
 
 // TestFormatMarkerWithoutLedgerRejected marker=4 但没有记账表：半写的 v4 库。
 //
-// 关键点：**不许**因为「标记是 4」就建 baseline 补齐——那等于把一个半写库
-// 当成新库来用，而它的表可能缺一半。
+// 关键点：**不许**因为「标记是 4」就建 baseline 补齐——那等于把一个半写库 当成新库来用，而它的表可能缺一半。
 func TestFormatMarkerWithoutLedgerRejected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "marker-no-ledger.db")
 	raw := openRawFixture(t, path)
@@ -290,7 +287,8 @@ func TestFormatMarkerContradictoryLedgerRejected(t *testing.T) {
 			name: "ledger_ahead_of_head",
 			stmts: []string{
 				`CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`,
-				`INSERT INTO schema_version (version, applied_at) VALUES (1, 1), (2, 1)`,
+				// 1..3：第 3 块比本版本代码认识的 headVersion（= schema.sql 的块数）更高。
+				`INSERT INTO schema_version (version, applied_at) VALUES (1, 1), (2, 1), (3, 1)`,
 			},
 			wantHint: "高于",
 		},
@@ -453,8 +451,7 @@ func TestFormatMarkerRetiredColumnRejected(t *testing.T) {
 
 // TestFormatMarkerMissingUniqueIndexRejected marker=4 但缺关键唯一约束。
 //
-// emits 的 (task_id, emit_id) 唯一索引是 emit 幂等的唯一落点：没了它，
-// 同一 emit_id 会被重复派发。
+// emits 的 (task_id, emit_id) 唯一索引是 emit 幂等的唯一落点：没了它， 同一 emit_id 会被重复派发。
 func TestFormatMarkerMissingUniqueIndexRejected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing-unique.db")
 	db, err := store.Open(path)
@@ -494,8 +491,7 @@ func TestFormatMarkerMissingUniqueIndexRejected(t *testing.T) {
 func TestFormatCollidingBaselineViewRejectedBeforeInitialization(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "baseline-fail.db")
 	raw := openRawFixture(t, path)
-	// 与 baseline 末段的索引同名：CREATE INDEX IF NOT EXISTS 撞上视图会直接报错
-	// （IF NOT EXISTS 只对同名**索引**生效，跨对象类型的重名仍然是错误）。
+	// 与 baseline 末段的索引同名：CREATE INDEX IF NOT EXISTS 撞上视图会直接报错 （IF NOT EXISTS 只对同名**索引**生效，跨对象类型的重名仍然是错误）。
 	mustExecSQL(t, raw, `CREATE VIEW idx_sources_due AS SELECT 1 AS enabled`)
 	if err := raw.Close(); err != nil {
 		t.Fatalf("close raw: %v", err)
@@ -680,8 +676,7 @@ func rawRowCount(t *testing.T, path, table string) int {
 // snapshotDatabase 把「这个数据目录的可观察状态」拍成一段稳定文本：
 // 布局标记 + sqlite_master 全量（对象集合与 DDL）+ 每张用户表的完整行值。
 //
-// 为什么不用文件字节：SQLite 自己的 journal/WAL 字节不是契约目标（父裁决排除），
-// 但**用户数据与结构、布局标记**必须原样保留——这三样正好覆盖在快照里。
+// 为什么不用文件字节：SQLite 自己的 journal/WAL 字节不是契约目标（父裁决排除）， 但**用户数据与结构、布局标记**必须原样保留——这三样正好覆盖在快照里。
 // 同数量覆写、NULL/类型变化与重复行也必须被快照捕获。
 func snapshotDatabase(t *testing.T, path string) string {
 	t.Helper()
@@ -922,10 +917,8 @@ func TestFormatMarkerForeignKeysRequired(t *testing.T) {
 // TestFormatMarkerGuttedTaskShapeCheckRejected marker=4 但 tasks 的具名表级 CHECK
 // 被改成恒真（列、主键、外键、唯一索引一个没变，只掏空 CHECK 表达式）。
 //
-// PRAGMA 不暴露 CHECK，所以「结构完整」的旧门禁看不见这条漂移；可这两条 CHECK 正是
-// tasks 行的唯一形状不变量：掏空它们等于允许「没有解析事实却有 Node/租约」的行、
-// 或「有 UID 但没有 digest/version」的行。两条都要被看见：第二条在 DDL 末尾，
-// 前面隔着大段注释与嵌套括号——只认第一条的解析器会漏掉它。
+// PRAGMA 不暴露 CHECK，所以「结构完整」的旧门禁看不见这条漂移；可这两条 CHECK 正是 tasks 行的唯一形状不变量：掏空它们等于允许「没有解析事实却有 Node/租约」的行、
+// 或「有 UID 但没有 digest/version」的行。两条都要被看见：第二条在 DDL 末尾， 前面隔着大段注释与嵌套括号——只认第一条的解析器会漏掉它。
 func TestFormatMarkerGuttedTaskShapeCheckRejected(t *testing.T) {
 	for _, tc := range []struct{ name, constraint, old, replacement string }{
 		{
@@ -950,8 +943,7 @@ func TestFormatMarkerGuttedTaskShapeCheckRejected(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertFormatRefusalUnchanged(t, path, store.ErrSchemaInvalid, tc.constraint)
-			// hint 只证明点到了这条约束；再钉一次缺陷类别，防止误命中别的文案
-			// （例如「缺 CHECK」与「CHECK 不一致」是两种不同的退化）。
+			// hint 只证明点到了这条约束；再钉一次缺陷类别，防止误命中别的文案 （例如「缺 CHECK」与「CHECK 不一致」是两种不同的退化）。
 			assertCheckDefect(t, path, "CHECK 约束与 baseline 不一致 "+tc.constraint)
 
 			// 拒绝不许顺带自愈：掏空的表达式必须原样留在库里。
@@ -1011,8 +1003,8 @@ func TestFormatMarkerExtraCheckRejected(t *testing.T) {
 //
 // 两个子用例分别盯两个面：
 //   - after_comma：注释在列定义行尾（基线里 tasks 的 DDL 本来就有带 CHECK 字样的注释）；
-//   - between_name_and_parens：块注释夹在表名与括号之间——把注释当 token 留下的实现
-//     会在这里直接把一个合法库拒掉（fail closed 误报），是最直观的变异靶点。
+//
+// - between_name_and_parens：块注释夹在表名与括号之间——把注释当 token 留下的实现 会在这里直接把一个合法库拒掉（fail closed 误报），是最直观的变异靶点。
 func TestFormatCheckInCommentIsNotAConstraint(t *testing.T) {
 	for _, tc := range []struct{ name, old, replacement string }{
 		{
@@ -1074,10 +1066,8 @@ func assertCheckDefect(t *testing.T, path, want string) {
 }
 
 // TestFormatMarkerDuplicateCheckNameRejected SQLite 允许重复的约束名，而"逐条等价比对"
-// 靠名字配对：若把同名项折叠成 map[name]tokens，结果就取决于声明顺序——把一条恒真的
-// 重名 CHECK 插到真约束**之前**，比较器只看得到后面那条真约束，于是"多出来一条约束"
-// 这件事在校验视图里消失（SQLite 自己仍 AND 执行所有 CHECK，所以被削弱的是判定视图，
-// 不是行约束执行）。所以重名必须 fail closed 拒绝，与顺序无关，绝不折叠。
+// 靠名字配对：若把同名项折叠成 map[name]tokens，结果就取决于声明顺序——把一条恒真的 重名 CHECK 插到真约束**之前**，比较器只看得到后面那条真约束，于是"多出来一条约束"
+// 这件事在校验视图里消失（SQLite 自己仍 AND 执行所有 CHECK，所以被削弱的是判定视图， 不是行约束执行）。所以重名必须 fail closed 拒绝，与顺序无关，绝不折叠。
 func TestFormatMarkerDuplicateCheckNameRejected(t *testing.T) {
 	path := seededFormatFixture(t)
 	raw := openRawFixture(t, path)
@@ -1118,8 +1108,7 @@ func TestFormatMarkerDuplicateCheckNameRejected(t *testing.T) {
 // 与 finished_at/version 两条谓词）必须被明确拒绝，而不是被自动迁移。
 //
 // 刻意行为：v4 尚未发布、baseline 直接重建（本轮用户授权的 v4 开发期全量切换，见
-// AGENTS.md §3 与 issue #337 卡），所以上一版开发库走 fail-closed 拒绝——这是刻意后果，
-// 不是缺迁移；拒绝时一行数据也不删、CHECK 文本不被改写。
+// AGENTS.md §3 与 issue #337 卡），所以上一版开发库走 fail-closed 拒绝——这是刻意后果， 不是缺迁移；拒绝时一行数据也不删、CHECK 文本不被改写。
 func TestFormatMarkerPreviousBaselineCheckRejected(t *testing.T) {
 	// 上一版文本 = 本版减去这两行谓词（与存储态 DDL 逐字一致，含 12 空格缩进）。
 	const removedPredicates = "            AND summary = '' AND artifacts = '[]' AND result_accepted_at IS NULL\n" +

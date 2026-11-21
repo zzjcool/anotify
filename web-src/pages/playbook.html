@@ -120,6 +120,11 @@
         <h3 class="card-title">{{t "pb.v4.values"}}</h3>
         <div id="pb-schema-state" aria-live="polite"></div>
         <div id="pb-values" class="pb-values pb-section"></div>
+        <div class="field pb-section">
+          <label class="field-label" for="pb-release">{{t "pb.v4.release"}}</label>
+          <input id="pb-release" class="input mono" autocomplete="off" spellcheck="false" />
+          <p class="field-hint">{{t "pb.v4.release_hint"}}</p>
+        </div>
         <details class="pb-section">
           <summary>{{t "pb.v4.values_json"}}</summary>
           <label class="field-label" for="pb-values-json">{{t "pb.v4.values_json_hint"}}</label>
@@ -374,7 +379,9 @@
       $("pb-action-state").textContent = t("pb.v4.loading"); $("pb-preview").replaceChildren(); $("pb-receipt").replaceChildren();
       try {
         const input = values();
+        const release = $("pb-release").value;
         const body = mode === "render" ? { values: input } : { values: input, dryRun: mode === "dry" };
+        if (release !== "") body.release = release;
         const result = await api(path(mode === "render" ? "/render" : "/install"), { method: "POST", body: JSON.stringify(body) });
         if (mode === "render") {
           const secrets = valueSecrets(schema, input);
@@ -390,21 +397,52 @@
           const details = error.details || {};
           $("pb-preview").replaceChildren(el("div", "pb-warning", t("pb.v4.atomic_conflict")), code({ valuesDigest: details.valuesDigest, conflicts: details.conflicts, hint: details.hint }));
         }
+        if (error.reason === "release_conflict") {
+          const details = error.details || {};
+          const box = el("div", "pb-warning");
+          box.append(el("h4", "card-title", t("pb.v4.release_conflict")));
+          box.append(el("p", "field-hint", t("pb.v4.release_conflict_owner", { release: details.ownerRelease || "", id: details.ownerInstallId || "" })));
+          if (details.hint) box.append(el("p", "field-hint", details.hint));
+          box.append(code({ name: details.name, kind: details.kind, ownerRelease: details.ownerRelease, ownerInstallId: details.ownerInstallId }));
+          $("pb-preview").replaceChildren(box);
+        }
       } finally { buttons.forEach(b => b.disabled = false); }
+    }
+    function shortDigest(digest) {
+      const text = String(digest || "");
+      return (text.startsWith("sha256:") ? text.slice("sha256:".length) : text).slice(0, 12);
     }
     async function installs() {
       $("pb-installs").textContent = t("pb.v4.loading");
       try {
         const data = await api(path("/installs"));
         if (!Array.isArray(data.installs) || typeof data.total !== "number") throw new Error(t("pb.v4.invalid_installs"));
-        $("pb-installs").replaceChildren(el("p", "field-hint", t("pb.v4.group_count", { n: data.total })));
+        const host = $("pb-installs");
+        host.replaceChildren(el("p", "field-hint", t("pb.v4.group_count", { n: data.total })));
+        const byRelease = new Map();
         for (const group of data.installs) {
-          const item = el("div", "pb-group"); item.dataset.digest = group.valuesDigest;
-          item.append(code(group));
-          const open = el("button", "btn btn-ghost btn-sm", t("pb.v4.single_receipt") + " · " + group.lastInstallId);
-          open.addEventListener("click", () => singleReceipt(group.lastInstallId)); item.append(open); $("pb-installs").append(item);
+          const release = group.release || "";
+          if (!byRelease.has(release)) byRelease.set(release, []);
+          byRelease.get(release).push(group);
         }
-        if (!data.installs.length) $("pb-installs").append(el("p", "field-hint", t("pb.v4.no_installs")));
+        for (const release of [...byRelease.keys()].sort()) {
+          const rows = byRelease.get(release);
+          const section = el("div", "pb-section"); section.dataset.release = release;
+          section.append(el("p", "field-label", t("pb.v4.release_group", { release, n: rows.length })));
+          for (const group of rows) {
+            const item = el("div", "pb-group");
+            item.dataset.digest = group.valuesDigest; item.dataset.release = group.release || "";
+            const refs = ["capabilities", "sources"]
+              .map(kind => kind + ": " + (group[kind] && group[kind].length ? group[kind].join(", ") : t("pb.v4.none")))
+              .join(" · ");
+            item.append(el("p", "field-label mono", shortDigest(group.valuesDigest)), el("p", "field-hint", t("pb.v4.attempts_n", { n: group.attempts }) + " · " + refs));
+            const open = el("button", "btn btn-ghost btn-sm", t("pb.v4.single_receipt") + " · " + group.lastInstallId);
+            open.addEventListener("click", () => singleReceipt(group.lastInstallId));
+            item.append(open); section.append(item);
+          }
+          host.append(section);
+        }
+        if (!data.installs.length) host.append(el("p", "field-hint", t("pb.v4.no_installs")));
       } catch (error) { $("pb-installs").replaceChildren(loadErrorNode(error, installs)); }
     }
     async function singleReceipt(id) {
@@ -429,7 +467,7 @@
       const pb = model.playbook(raw);
       if (!pb.files || !pb.files["playbook.yaml"]) throw new Error(t("pb.v4.raw_missing"));
       draft = pb.files; templateRV = pb.resourceVersion; filePicker("playbook.yaml");
-      if (resetValues) valuesForm(pb.valuesSchema);
+      if (resetValues) { valuesForm(pb.valuesSchema); $("pb-release").value = pb.slug || name; }
     }
     /* #380：徽章必须两条路径都收敛。「正在读取…」只在 checkup() 里被改写，
        404/409/网络错误时原来会永久停在 loading，并留下一个空的 #pb-summary 圆角容器。

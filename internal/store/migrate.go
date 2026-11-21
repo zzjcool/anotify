@@ -18,8 +18,7 @@ var schemaSQL string
 
 // schemaVersionTable 记录已应用的迁移版本。
 //
-// 它是**记账**，不是布局身份：「哪些迁移块跑过」。v3 的库同样记着 1..11，
-// v4 baseline 也记 1——只看记账，一个 v3 库和一个刚建好的 v4 库长得一模一样。
+// 它是**记账**，不是布局身份：「哪些迁移块跑过」。v3 的库同样记着 1..11， v4 baseline 也记 1——只看记账，一个 v3 库和一个刚建好的 v4 库长得一模一样。
 // 表结构到底是哪一代由 layoutFormatV4（PRAGMA user_version）单独记录。
 const schemaVersionTable = `CREATE TABLE IF NOT EXISTS schema_version (
     version    INTEGER PRIMARY KEY,
@@ -31,20 +30,17 @@ const baselineVersion = 1
 
 // headVersion 是本版本代码认识的**最高**迁移版本（= schema.sql 的最后一块）。
 //
-// v4 开发期只有一块 baseline，没有历史增量块：`-- +migration 1 baseline` 之后
-// 不许再出现任何 v3 的迁移块（v3→v4 升级路径不存在，见 ErrUnsupportedFormat）。
-// 每追加一块 v4 迁移都要同步 +1。
-const headVersion = 1
+// 块序列从 `-- +migration 1 baseline` 起算，之后按编号追加（v3 的迁移块一个都不许出现：
+// v3→v4 升级路径不存在，见 ErrUnsupportedFormat）。每追加一块都要同步 +1， 否则新块永远不会被应用、而参照结构又会把「缺列」判成坏库。
+const headVersion = 2
 
 // layoutFormatV4 是 v4 **布局格式**标记（SQLite 的 PRAGMA user_version）。
 //
 // 为什么不能拿 schema_version=1 当布局身份：记账回答的是「跑过哪些迁移块」，
-// 不回答「表结构是哪一代」；v3 的库同样记着 schema_version=1（一直到 11）。
-// 所以 v4 用独立标记记录布局，并且只在**一个地方**写它：
+// 不回答「表结构是哪一代」；v3 的库同样记着 schema_version=1（一直到 11）。 所以 v4 用独立标记记录布局，并且只在**一个地方**写它：
 // 空库新建时，baseline DDL、记账行与这个标记落在**同一个事务**里，要么全有要么全无。
 //
-// 于是三件事被彻底分开：
-//   - marker=4：这个文件里的表结构就是 v4 baseline（再逐表/列/约束校验，见 validateV4Layout）；
+// 于是三件事被彻底分开： - marker=4：这个文件里的表结构就是 v4 baseline（再逐表/列/约束校验，见 validateV4Layout）；
 //   - 有 schema_version 却没 marker：不是 v4 建的库（v3 或半写）→ ErrUnsupportedFormat，
 //     **绝不补 marker** 当成新库（补了就等于把 v3 的旧表当成 v4 用，缺列/缺表会在业务路径上炸）；
 //   - marker 既不是 4 也不是 0：未知布局 → ErrUnsupportedFormat。
@@ -53,20 +49,17 @@ const layoutFormatV4 = 4
 // 两个具名拒绝理由：Open 的失败必须能按类分辨（调用方/测试不该靠匹配中文文案）。
 var (
 	// ErrUnsupportedFormat：这个数据目录不是「v4 新建的库」——v3/更旧的库（有旧业务表，
-	// 或有 schema_version 记账但没布局标记）、未知的布局标记、或比本代码更高的记账版本。
-	// 拒绝时**不改写任何东西**：不补标记、不建 v4 表、不删用户数据。
+	// 或有 schema_version 记账但没布局标记）、未知的布局标记、或比本代码更高的记账版本。 拒绝时**不改写任何东西**：不补标记、不建 v4 表、不删用户数据。
 	ErrUnsupportedFormat = errors.New("store: 数据目录不是 v4 新建的库（不支持旧库升级）")
 	// ErrSchemaInvalid：库自称是 v4 布局（PRAGMA user_version=4），但结构与 baseline 不一致
-	// ——半写（缺记账）、缺表、缺列、残留 v3 列、缺关键唯一约束。
-	// 程序**不会**在坏库上做 `CREATE IF NOT EXISTS` 修补（那只会把「缺列」藏成「查询时才炸」），
+	// ——半写（缺记账）、缺表、缺列、残留 v3 列、缺关键唯一约束。 程序**不会**在坏库上做 `CREATE IF NOT EXISTS` 修补（那只会把「缺列」藏成「查询时才炸」），
 	// 也不会删除用户数据；只把缺什么说清楚。
 	ErrSchemaInvalid = errors.New("store: v4 布局标记与库结构不一致")
 )
 
 // legacyBusinessTables 是「没有 schema_version 但已经有业务表」的判定清单。
 //
-// 这种库只可能来自 v3 或更早：v4 的 Open 只在一次事务里建 baseline，
-// 所以「业务表在、记账表不在、布局标记也不是 4」= 旧库。命中就拒绝，绝不尝试兼容。
+// 这种库只可能来自 v3 或更早：v4 的 Open 只在一次事务里建 baseline， 所以「业务表在、记账表不在、布局标记也不是 4」= 旧库。命中就拒绝，绝不尝试兼容。
 var legacyBusinessTables = []string{
 	"users",
 	"passkeys",
@@ -99,9 +92,7 @@ type migrationSet []migration
 
 // parseMigrations 把 schema.sql 按 `-- +migration N name` 切块。
 //
-// 约束（parseMigrations 会强制检查）：
-//   - 版本号从 1 开始连续递增，不跳号、不重复（漏一个编号会导致「以为迁移过」）
-//   - 每块必须有非空的名字
+// 约束（parseMigrations 会强制检查）： - 版本号从 1 开始连续递增，不跳号、不重复（漏一个编号会导致「以为迁移过」） - 每块必须有非空的名字
 func parseMigrations(src string) (migrationSet, error) {
 	var out migrationSet
 	var cur *migration
@@ -142,8 +133,7 @@ func parseMigrations(src string) (migrationSet, error) {
 
 // migrate 应用所有未记账的迁移，并返回本次实际应用的版本数。
 //
-// modify（测试注入用）在校验完版本序列后、执行前被调用，可修改待执行的迁移
-// ——用于断言「迁移失败必须回滚且不记账」。
+// modify（测试注入用）在校验完版本序列后、执行前被调用，可修改待执行的迁移 ——用于断言「迁移失败必须回滚且不记账」。
 //
 // v4 baseline 全是 DDL，没有钩子；migrateWith 的钩子表保留给后续新块。
 func migrate(db *sql.DB, modify func(*migrationSet)) (int, error) {
@@ -163,8 +153,7 @@ func migrate(db *sql.DB, modify func(*migrationSet)) (int, error) {
 // v4 baseline 不需要钩子（它建的是一个空库的全部结构，没有要搬的数据）。
 var migrationHooks = map[int]func(*sql.Tx) error{}
 
-// migrateWith 执行迁移：新库的 baseline（DDL + 记账 + 布局标记）一个事务，
-// 之后的版本各自一个事务。
+// migrateWith 执行迁移：新库的 baseline（DDL + 记账 + 布局标记）一个事务， 之后的版本各自一个事务。
 //
 // **顺序是这里最重要的东西**：格式判定必须在任何写操作之前完成。
 // 旧实现先 `CREATE TABLE IF NOT EXISTS schema_version`、再按记账决定要不要跑 baseline，
@@ -176,8 +165,7 @@ func migrateWith(db *sql.DB, set migrationSet, hooks map[int]func(*sql.Tx) error
 		return 0, err
 	}
 	if probe.marker == layoutFormatV4 {
-		// 已经是 v4 布局：**只校验，不修复**。坏库必须在这里被点名，
-		// 而不是被 CREATE IF NOT EXISTS 自愈成「看起来正常」。
+		// 已经是 v4 布局：**只校验，不修复**。坏库必须在这里被点名， 而不是被 CREATE IF NOT EXISTS 自愈成「看起来正常」。
 		if err := validateV4Layout(db, probe); err != nil {
 			return 0, err
 		}
@@ -205,6 +193,16 @@ func migrateWith(db *sql.DB, set migrationSet, hooks map[int]func(*sql.Tx) error
 			return applied, fmt.Errorf("migration %d (%s): %w", m.version, m.name, err)
 		}
 		applied++
+	}
+	if applied > 0 {
+		// 应用完再核一次「结构与记账是否一致」：写坏的增量块（少列/多列/约束不对）必须 在下一次打开**之前**就被点名，而不是等到业务查询上炸「no such column」。
+		reprobed, err := probeDatabaseFormat(db)
+		if err != nil {
+			return applied, err
+		}
+		if err := validateV4Layout(db, reprobed); err != nil {
+			return applied, err
+		}
 	}
 	return applied, nil
 }
@@ -234,8 +232,7 @@ type databaseFormat struct {
 
 // probeDatabaseFormat 只读地摸清现状：布局标记、记账表、现有用户表。
 //
-// 它不建表、不写标记、不改任何东西——顺序错了（先建记账表再判定）就会把
-// 「没有记账表」这条旧库证据自己抹掉。
+// 它不建表、不写标记、不改任何东西——顺序错了（先建记账表再判定）就会把 「没有记账表」这条旧库证据自己抹掉。
 func probeDatabaseFormat(db *sql.DB) (databaseFormat, error) {
 	f := databaseFormat{versions: map[int]bool{}}
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&f.marker); err != nil {
@@ -314,13 +311,10 @@ func userTables(db *sql.DB) ([]string, error) {
 
 // requireBrandNewDatabase 拦住所有「不是 v4 新建的库」。
 //
-// 为什么必须**明说**而不是尽力兼容：v4 baseline 是全新结构（列、表、语义都变了），
-// 升级路径根本不存在。就这么打开的话，缺列/缺表会在第一次查询时以
-// `no such column` / `no such table` 炸开，而且是在业务路径上炸——半死不活，
-// 还看不出根因。
+// 为什么必须**明说**而不是尽力兼容：v4 baseline 是全新结构（列、表、语义都变了）， 升级路径根本不存在。就这么打开的话，缺列/缺表会在第一次查询时以
+// `no such column` / `no such table` 炸开，而且是在业务路径上炸——半死不活， 还看不出根因。
 //
-// 为什么**不**静默删数据重建、也不补标记：这是用户的数据目录。删不删由人决定；
-// 补标记更糟——把一个 v3 库标成 v4，等于用错误的结构继续写入新数据。
+// 为什么**不**静默删数据重建、也不补标记：这是用户的数据目录。删不删由人决定； 补标记更糟——把一个 v3 库标成 v4，等于用错误的结构继续写入新数据。
 func requireBrandNewDatabase(f databaseFormat) error {
 	if f.marker != 0 {
 		return fmt.Errorf(
@@ -363,8 +357,7 @@ type columnRequirement struct {
 
 // v4RetiredColumns 是 v3 有、v4 明确删掉的列。
 //
-// marker=4 的库里出现它们，说明这个文件不是「完整应用过 v4 baseline」的 v4 库
-// （半写、或者被旧版本代码/手工改动过）→ ErrSchemaInvalid。
+// marker=4 的库里出现它们，说明这个文件不是「完整应用过 v4 baseline」的 v4 库 （半写、或者被旧版本代码/手工改动过）→ ErrSchemaInvalid。
 // 注意 nodes.status 是 v4 自己的列（offline|online|draining），不是 v3 的 tasks.status。
 var v4RetiredColumns = []columnRequirement{
 	{"nodes", []string{"namespace_id"}},
@@ -387,12 +380,14 @@ func validateV4Layout(db *sql.DB, f databaseFormat) error {
 	if !f.versions[baselineVersion] {
 		return fmt.Errorf("%w：有 v4 布局标记但没有 baseline（版本 %d）记账行；程序不会补记账", ErrSchemaInvalid, baselineVersion)
 	}
-	if maxDone := maxVersion(f.versions); maxDone > headVersion {
-		return fmt.Errorf("%w：schema_version 记账版本 %d 高于本版本代码认识的 %d", ErrSchemaInvalid, maxDone, headVersion)
+	done := maxVersion(f.versions)
+	if done > headVersion {
+		return fmt.Errorf("%w：schema_version 记账版本 %d 高于本版本代码认识的 %d", ErrSchemaInvalid, done, headVersion)
 	}
-	want, err := baselineLayout()
+	// 参照结构取「已记账到的最后一块」：库还没应用增量块时，它就该长成旧一块的样子。
+	want, err := schemaLayoutAt(done)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w：%w", ErrSchemaInvalid, err)
 	}
 	present := make(map[string]bool, len(f.tables))
 	for _, name := range f.tables {
@@ -473,8 +468,7 @@ func validateV4Layout(db *sql.DB, f databaseFormat) error {
 			}
 		}
 		// CHECK 约束是 PRAGMA 看不见的业务不变量（未解析失败行的形状、单行配置表的 id）。
-		// 参照侧与实测侧走同一个 reader（baselineLayout 从内嵌 schema.sql 自动派生），
-		// 所以「换名字、改表达式、加约束、删约束」都会被抓到——逐条等价，不是「包含」。
+		// 参照侧与实测侧走同一个 reader（baselineLayout 从内嵌 schema.sql 自动派生）， 所以「换名字、改表达式、加约束、删约束」都会被抓到——逐条等价，不是「包含」。
 		for _, problem := range compareChecks(table, want[table].checks, got.checks) {
 			problems = append(problems, problem)
 		}
@@ -486,55 +480,94 @@ func validateV4Layout(db *sql.DB, f databaseFormat) error {
 	return nil
 }
 
-// baselineLayout 的唯一事实源是 schema.sql，而非另一份易漏字段/身份的手写清单。
-var baselineLayoutCache struct {
-	sync.Once
-	tables map[string]tableLayout
-	err    error
+// schemaLayoutCache 按**迁移版本**缓存参照结构（唯一事实源是 schema.sql， 而非另一份易漏字段/身份的手写清单）。
+//
+// 为什么要按版本分开缓存，而不是只读 baseline 一块：一个记着 1..k 的库，它的结构 必须恰好等于「重放 1..k 块」的结果。校验之前就要求它长成 head 的样子，会让
+// **每一个还没有应用增量块的既有库**在 Open 时被 ErrSchemaInvalid 拒掉——而它其实 只是等着一块还没跑的迁移。所以参照结构必须按「已记账到哪一块」取。
+var schemaLayoutCache struct {
+	sync.Mutex
+	byVersion map[int]map[string]tableLayout
+	errs      map[int]error
 }
 
-func baselineLayout() (map[string]tableLayout, error) {
-	baselineLayoutCache.Do(func() {
-		db, err := sql.Open("sqlite", ":memory:")
-		if err != nil {
-			baselineLayoutCache.err = err
-			return
-		}
-		defer func() { _ = db.Close() }()
-		db.SetMaxOpenConns(1)
-		set, err := parseMigrations(schemaSQL)
-		if err == nil && (len(set) != 1 || set[0].version != baselineVersion) {
-			err = fmt.Errorf("expected one v4 baseline")
-		}
-		if err == nil {
-			_, err = db.Exec(schemaVersionTable)
-		}
-		if err == nil {
-			_, err = db.Exec(set[0].body)
-		}
-		if err != nil {
-			baselineLayoutCache.err = err
-			return
-		}
-		names, err := userTables(db)
-		if err != nil {
-			baselineLayoutCache.err = err
-			return
-		}
-		baselineLayoutCache.tables = make(map[string]tableLayout, len(names))
-		for _, name := range names {
-			layout, err := readTableLayout(db, name)
-			if err != nil {
-				baselineLayoutCache.err = err
-				return
-			}
-			baselineLayoutCache.tables[name] = layout
-		}
-	})
-	if baselineLayoutCache.err != nil {
-		return nil, fmt.Errorf("read embedded v4 baseline: %w", baselineLayoutCache.err)
+// schemaLayoutAt 返回「重放 1..version 块（含 hooks）」之后的表结构。
+func schemaLayoutAt(version int) (map[string]tableLayout, error) {
+	schemaLayoutCache.Lock()
+	defer schemaLayoutCache.Unlock()
+	if layout, ok := schemaLayoutCache.byVersion[version]; ok {
+		return layout, nil
 	}
-	return baselineLayoutCache.tables, nil
+	if err := schemaLayoutCache.errs[version]; err != nil {
+		return nil, err
+	}
+	layout, err := buildSchemaLayoutAt(version)
+	if schemaLayoutCache.byVersion == nil {
+		schemaLayoutCache.byVersion = map[int]map[string]tableLayout{}
+		schemaLayoutCache.errs = map[int]error{}
+	}
+	if err != nil {
+		schemaLayoutCache.errs[version] = err
+		return nil, err
+	}
+	schemaLayoutCache.byVersion[version] = layout
+	return layout, nil
+}
+
+func buildSchemaLayoutAt(version int) (map[string]tableLayout, error) {
+	set, err := parseMigrations(schemaSQL)
+	if err != nil {
+		return nil, err
+	}
+	if len(set) == 0 || set[0].version != baselineVersion {
+		return nil, fmt.Errorf("expected a v4 baseline as the first block (got %v)", migrationVersions(set))
+	}
+	if version < baselineVersion || version > len(set) {
+		return nil, fmt.Errorf("no reference layout for migration version %d (blocks: %v)", version, migrationVersions(set))
+	}
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(schemaVersionTable); err != nil {
+		return nil, err
+	}
+	for _, m := range set {
+		if m.version > version {
+			break
+		}
+		if _, err := db.Exec(m.body); err != nil {
+			return nil, fmt.Errorf("replay migration %d (%s): %w", m.version, m.name, err)
+		}
+		// 参照结构必须走同一批 hooks：数据搬迁会改变行的形状（例如新增列的默认值回填）， 漏跑 hook 会让参照侧与真库侧在「结构之后」的检查上分叉。
+		if hook := migrationHooks[m.version]; hook != nil {
+			tx, err := db.Begin()
+			if err != nil {
+				return nil, err
+			}
+			if err := hook(tx); err != nil {
+				_ = tx.Rollback()
+				return nil, fmt.Errorf("replay hook %d: %w", m.version, err)
+			}
+			if err := tx.Commit(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	names, err := userTables(db)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]tableLayout, len(names))
+	for _, name := range names {
+		layout, err := readTableLayout(db, name)
+		if err != nil {
+			return nil, err
+		}
+		out[name] = layout
+	}
+	return out, nil
 }
 
 type columnLayout struct {
@@ -724,8 +757,7 @@ type checkConstraint struct {
 
 // ddlToken 是 DDL 分词结果中的一项。
 //
-// bare 只对「裸词/裸标点」为真：引号标识符（"CHECK"）与字符串字面量（'CHECK'）
-// 永远不会被当成 CREATE/CHECK 这类关键字，否则一个列名就能伪造一条约束。
+// bare 只对「裸词/裸标点」为真：引号标识符（"CHECK"）与字符串字面量（'CHECK'） 永远不会被当成 CREATE/CHECK 这类关键字，否则一个列名就能伪造一条约束。
 type ddlToken struct {
 	text string // 去引号后的原样文本（保留大小写）：具名约束/表名/列名用它
 	norm string // 比较用的规范形式：标识符与裸词转大写，字符串字面量原样
@@ -737,8 +769,7 @@ func isBare(tok ddlToken, want string) bool { return tok.bare && tok.norm == wan
 
 // tokenizeSchemaDDL 用与 validNullPredicate 同一套 SQL 词法切 DDL，并丢弃注释。
 //
-// 先丢注释是必须的：baseline 的 tasks DDL 里就有一行注释提「两条 CHECK」，
-// 不丢注释的话「写注释」就能凭空造出一条约束（反之也能把一条真约束注释掉）。
+// 先丢注释是必须的：baseline 的 tasks DDL 里就有一行注释提「两条 CHECK」， 不丢注释的话「写注释」就能凭空造出一条约束（反之也能把一条真约束注释掉）。
 func tokenizeSchemaDDL(ddl string) []ddlToken {
 	var out []ddlToken
 	for _, raw := range schemaSQLToken.FindAllString(ddl, -1) {
@@ -763,8 +794,7 @@ func tokenizeSchemaDDL(ddl string) []ddlToken {
 // checksFromDDL 从 sqlite_master 的建表 DDL 里读出该表的全部 CHECK 约束。
 //
 // fail closed：DDL 取不到（空/NULL/查不到表）或不符合 CREATE TABLE 的语法形状，
-// 一律返回 error 由调用方包成 ErrSchemaInvalid——「读不出 CHECK」绝不能被当成
-// 「没有 CHECK」放行，那正是「掏空 CHECK 的库能过门禁」这个 bug 的根。
+// 一律返回 error 由调用方包成 ErrSchemaInvalid——「读不出 CHECK」绝不能被当成 「没有 CHECK」放行，那正是「掏空 CHECK 的库能过门禁」这个 bug 的根。
 func checksFromDDL(db *sql.DB, table string) ([]checkConstraint, error) {
 	var ddl sql.NullString
 	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&ddl); err != nil {
@@ -932,8 +962,7 @@ func parseChecksFromDDL(table, ddl string) ([]checkConstraint, error) {
 	sort.Slice(checks, func(a, b int) bool { return checks[a].name < checks[b].name })
 	// 同名 CHECK 出现 ≥2 次直接拒绝（fail closed），绝不折叠。
 	//
-	// SQLite 允许重名约束，而“逐条等价”靠名字配对：一旦用 map[name]tokens 折叠，
-	// 胜出的是谁就取决于声明顺序——重名恒真约束插在真约束**之前**就能骗过门禁
+	// SQLite 允许重名约束，而“逐条等价”靠名字配对：一旦用 map[name]tokens 折叠， 胜出的是谁就取决于声明顺序——重名恒真约束插在真约束**之前**就能骗过门禁
 	// （实测 Open 返回 nil）。重名本身就是结构漂移，先拒它，比对才谈得上逐条等价。
 	for i := 1; i < len(checks); i++ {
 		if checks[i].name == checks[i-1].name {
@@ -943,8 +972,7 @@ func parseChecksFromDDL(table, ddl string) ([]checkConstraint, error) {
 	return checks, nil
 }
 
-// compareChecks 逐条比对参照与实测的 CHECK：缺失、表达式被改、多余都算缺陷。
-// 与「多余列」对称——只查「包含」等于允许偷偷加一条更严的 CHECK（同样是结构漂移）。
+// compareChecks 逐条比对参照与实测的 CHECK：缺失、表达式被改、多余都算缺陷。 与「多余列」对称——只查「包含」等于允许偷偷加一条更严的 CHECK（同样是结构漂移）。
 // 展示名统一是 "<表>.<name>"：表名只在这里加一次，name 内不带表名前缀。
 func compareChecks(table string, want, got []checkConstraint) []string {
 	wantTokens := make(map[string]string, len(want))
@@ -1064,18 +1092,15 @@ func applyMigration(db *sql.DB, m migration, hook func(*sql.Tx) error) error {
 	return applyMigrationTx(db, m, hook, false)
 }
 
-// applyBaselineMigration 是**空库首块**专用：baseline DDL、记账行与 v4 布局标记
-// 全部落在同一个事务里。
+// applyBaselineMigration 是**空库首块**专用：baseline DDL、记账行与 v4 布局标记 全部落在同一个事务里。
 //
-// 为什么必须同一个事务：分开写就会出现「有表没标记」（下次 Open 会被当旧库拒掉）
-// 或「有标记没表」（marker=4 的半写库）——两种半成品都要人来手工收拾。
+// 为什么必须同一个事务：分开写就会出现「有表没标记」（下次 Open 会被当旧库拒掉） 或「有标记没表」（marker=4 的半写库）——两种半成品都要人来手工收拾。
 // 一次事务失败就整体回滚，库里只会剩下「空」这一种状态。
 func applyBaselineMigration(db *sql.DB, m migration, hook func(*sql.Tx) error) error {
 	return applyMigrationTx(db, m, hook, true)
 }
 
-// applyMigrationTx 是两者的实现：newBaseline=true 时先写布局标记、建记账表，
-// 再执行 SQL 块、钩子，最后写记账行；任何一步失败都整体回滚。
+// applyMigrationTx 是两者的实现：newBaseline=true 时先写布局标记、建记账表， 再执行 SQL 块、钩子，最后写记账行；任何一步失败都整体回滚。
 func applyMigrationTx(db *sql.DB, m migration, hook func(*sql.Tx) error, newBaseline bool) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -1084,8 +1109,7 @@ func applyMigrationTx(db *sql.DB, m migration, hook func(*sql.Tx) error, newBase
 	defer func() { _ = tx.Rollback() }()
 
 	if newBaseline {
-		// PRAGMA user_version 是事务性的（写在库头里，随事务提交/回滚），
-		// 所以它能和 DDL、记账行一起原子落盘。这里先写，任何后续失败都会把它一起回滚。
+		// PRAGMA user_version 是事务性的（写在库头里，随事务提交/回滚）， 所以它能和 DDL、记账行一起原子落盘。这里先写，任何后续失败都会把它一起回滚。
 		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, layoutFormatV4)); err != nil {
 			return fmt.Errorf("write layout marker: %w", err)
 		}
@@ -1142,8 +1166,7 @@ func appliedVersions(db *sql.DB) (map[int]bool, error) {
 
 // SchemaVersion 返回当前库的最高已应用版本（0 = 空库）。供健康检查/测试使用。
 //
-// 注意它返回的是**记账**版本（v4 baseline = 1），不是布局格式标记
-// （PRAGMA user_version = 4，见 layoutFormatV4）。
+// 注意它返回的是**记账**版本（v4 baseline = 1），不是布局格式标记 （PRAGMA user_version = 4，见 layoutFormatV4）。
 func (d *DB) SchemaVersion() (int, error) {
 	var v sql.NullInt64
 	if err := d.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&v); err != nil {

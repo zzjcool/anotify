@@ -312,6 +312,29 @@ func (f *fakeExisting) withUpstream(name string) *fakeExisting {
 	return f
 }
 
+// withCapOwner 给已加进快照的一条能力行标注「谁装的」（release + 回执 id）。
+// 行必须已经存在：认领是行的属性，不是新加一行。
+func (f *fakeExisting) withCapOwner(name, release, installID string) *fakeExisting {
+	for _, c := range f.caps {
+		if c.Name == name {
+			c.OwnerRelease = release
+			c.OwnerInstallID = installID
+		}
+	}
+	return f
+}
+
+// withSourceOwner 同 withCapOwner，作用于源行。
+func (f *fakeExisting) withSourceOwner(name, release, installID string) *fakeExisting {
+	for _, s := range f.sources {
+		if s.Name == name {
+			s.OwnerRelease = release
+			s.OwnerInstallID = installID
+		}
+	}
+	return f
+}
+
 func (f *fakeExisting) CapabilityByFoldKey(name, foldKey string) (*CapabilitySnapshot, bool) {
 	for _, c := range f.caps {
 		if c.Name == name && c.FoldKey == foldKey {

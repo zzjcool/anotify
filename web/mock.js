@@ -3374,9 +3374,9 @@
 		}
 		if (Array.isArray(value)) value.forEach((v, i) => pbValidateValues(schema.items, v, path + "." + i));
 	}
-	function pbInterpolate(value, values, path) {
-		if (Array.isArray(value)) return value.map((v, i) => pbInterpolate(v, values, path + "." + i));
-		if (pbObject(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, pbInterpolate(v, values, path + "." + k)]));
+	function pbInterpolate(value, values, path, release) {
+		if (Array.isArray(value)) return value.map((v, i) => pbInterpolate(v, values, path + "." + i, release));
+		if (pbObject(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, pbInterpolate(v, values, path + "." + k, release)]));
 		if (typeof value !== "string") return value;
 		const get = key => {
 			let result = values;
@@ -3386,11 +3386,16 @@
 			}
 			return clone(result);
 		};
+		const other = /\{\{release\.([\w.-]+)\}\}/.exec(value);
+		if (other && other[1] !== "name") pbFail("invalid_playbook", path + ": unknown template reference {{release." + other[1] + "}}; only {{values.path}} and {{release.name}} are supported");
 		const whole = /^\{\{values\.([\w.-]+)\}\}$/.exec(value);
 		if (whole) return get(whole[1]);
-		return value.replace(/\{\{values\.([\w.-]+)\}\}/g, (_, key) => {
-			const v = get(key); return typeof v === "string" ? v : JSON.stringify(v);
-		});
+		if (value === "{{release.name}}") return release;
+		return value
+			.replace(/\{\{values\.([\w.-]+)\}\}/g, (_, key) => {
+				const v = get(key); return typeof v === "string" ? v : JSON.stringify(v);
+			})
+			.replace(/\{\{release\.name\}\}/g, () => release);
 	}
 	function pbSecrets(schema, value, list = [], inherited = false) {
 		const secret = inherited || schema?.writeOnly;
@@ -3438,8 +3443,14 @@
 		if (raw && typeof raw === "object") for (const [k, v] of Object.entries(raw)) pbDisplaySecrets(v, masked?.[k], secrets);
 		return secrets;
 	}
-	function pbRender(row, input) {
+	function pbRelease(value, slug) {
+		if (value == null || value === "") return slug;
+		if (typeof value !== "string" || !/^[a-z0-9][a-z0-9._-]{0,62}$/.test(value)) pbFail("invalid_playbook", "release must match ^[a-z0-9][a-z0-9._-]{0,62}$ and is 1..63 characters");
+		return value;
+	}
+	function pbRender(row, input, release) {
 		const pkg = pbPackage(row.files, row.name);
+		const rel = pbRelease(release, row.name);
 		if (input != null && !pbObject(input)) pbFail("values_invalid", "values must be an object");
 		const values = pbDefaults(pkg.root.spec.values || {}, input || {});
 		pbValidateValues(pkg.root.spec.values, values);
@@ -3452,7 +3463,7 @@
 		for (const [slot, entries] of Object.entries(pkg.documents)) {
 			const names = new Set();
 			for (const { path, doc } of entries) {
-				const rendered = pbInterpolate(doc, values, path);
+				const rendered = pbInterpolate(doc, values, path, rel);
 				pbDisplaySecrets(rendered, pbMask(rendered, [], pbTemplatePolicy(doc, pkg.root.spec.values)), errorSecrets);
 				if (typeof rendered.metadata.name !== "string") pbFail("render_type_mismatch", path + ": metadata.name must render to string");
 				if (!NAME_RE.test(rendered.metadata.name)) pbFail("render_name_invalid", path + ": " + doc.metadata.name + " rendered to " + rendered.metadata.name + "; tighten values schema pattern");
@@ -3483,7 +3494,7 @@
 			visiting.delete(name); done.add(name);
 		};
 		for (const name of byName.keys()) visit(name);
-		return { values, valuesDigest: mockDigest(stableStringify(values)), files, documents };
+		return { values, valuesDigest: mockDigest(stableStringify(values)), files, documents, release: rel };
 		} catch (error) { if (error.reason) error.message = pbMask(error.message, errorSecrets); throw error; }
 	}
 	// `/render` 的响应体是**平铺**的 RenderResult（api/resource.yaml·PlaybookRenderResult）：
@@ -3576,7 +3587,7 @@
 		// dryRun 也不例外：区别只在“不进库”（store 整事务回滚），所以预览用独立序号，
 		// 不吃真实安装的序号。
 		const id = dryRun ? "ins_mock_preview_" + (++previewInstalls) : "ins_mock_" + (state.playbookInstalls.length + 1);
-		const receipt = { apiVersion: API_VERSION, kind: "InstallReceipt", playbook: { name: row.name, version: row.root.metadata.version || null }, ...(row.source ? { source: row.source } : {}), install: { id, at: isoNow(), dryRun }, namespace: row.ns,
+		const receipt = { apiVersion: API_VERSION, kind: "InstallReceipt", playbook: { name: row.name, version: row.root.metadata.version || null }, ...(row.source ? { source: row.source } : {}), install: { id, at: isoNow(), dryRun, release: rendered.release }, namespace: row.ns,
 			values: rendered.values, valuesDigest: rendered.valuesDigest, created: { capabilities: [], sources: [] }, skipped: { capabilities: [], sources: [] }, upgraded: [], unapplied: [], external: [], pending: [], notes: [] };
 		const additions = { capabilities: [], sources: [] }; const conflicts = [];
 		const templates = pbPackage(row.files, row.name).documents;
@@ -3692,7 +3703,7 @@
 		}
 		for (const [index, added] of plan.additions.sources.entries()) state.sources.push(Object.assign({}, added, { uid: nextUID("src"), receiptRef: plan.receipt.created.sources[index], rv: nextRV(), createdAt: isoNow() }));
 		const receipt = plan.receipt;
-		state.playbookInstalls.push({ id: receipt.install.id, ns: row.ns, playbookName: row.name, playbookUid: row.uid, valuesDigest: receipt.valuesDigest, values: clone(receipt.values), source: row.source || null, receipt: clone(receipt) });
+		state.playbookInstalls.push({ id: receipt.install.id, ns: row.ns, playbookName: row.name, playbookUid: row.uid, release: receipt.install.release, valuesDigest: receipt.valuesDigest, values: clone(receipt.values), source: row.source || null, receipt: clone(receipt) });
 	}
 	function pbRequest(handler) {
 		return ctx => {
@@ -3733,8 +3744,8 @@
 	for (const action of ["render", "install"]) on("POST", new RegExp("^/v1/namespaces/([^/]+)/playbooks/([^/]+)/" + action + "$"), pbRequest(ctx => {
 		const ns = decodeURIComponent(ctx.m[1]); const miss = nsMissing(ns); if (miss) return miss;
 		const row = pbFind(ns, decodeURIComponent(ctx.m[2])); if (!row) return notFound("Playbook ");
-		if (!pbObject(ctx.body || {}) || Object.keys(ctx.body || {}).some(k => !["values", ...(action === "install" ? ["dryRun"] : [])].includes(k))) return badRequest("unknown_field", "Only values and install.dryRun are accepted");
-		const rendered = pbRender(row, ctx.body?.values);
+		if (!pbObject(ctx.body || {}) || Object.keys(ctx.body || {}).some(k => !["values", "release", ...(action === "install" ? ["dryRun"] : [])].includes(k))) return badRequest("unknown_field", action === "install" ? "Only values, release and dryRun are accepted" : "Only values and release are accepted");
+		const rendered = pbRender(row, ctx.body?.values, ctx.body?.release);
 		if (action === "render") return json(pbRenderResult(rendered));
 		const dryRun = ctx.body?.dryRun === true;
 		const plan = pbPlan(row, rendered, dryRun); if (plan.error) return plan.error;
@@ -3751,10 +3762,11 @@
 		if (!row) return notFound("Playbook ");
 		const groups = new Map();
 		for (const i of records) {
-			let g = groups.get(i.valuesDigest);
-			if (!g) { g = { valuesDigest: i.valuesDigest, values: clone(i.values), firstAt: i.receipt.install.at, lastAt: i.receipt.install.at, attempts: 0, lastInstallId: i.id, capabilities: [], sources: [] }; groups.set(i.valuesDigest, g); }
+			const key = (i.release || "") + "\u0000" + i.valuesDigest;
+			let g = groups.get(key);
+			if (!g) { g = { release: i.release || "", valuesDigest: i.valuesDigest, values: clone(i.values), firstAt: i.receipt.install.at, lastAt: i.receipt.install.at, attempts: 0, lastInstallId: i.id, capabilities: [], sources: [] }; groups.set(key, g); }
 			g.attempts++; g.lastAt = i.receipt.install.at; g.lastInstallId = i.id;
-			const ids = new Set(records.filter(r => r.valuesDigest === i.valuesDigest).map(r => r.id));
+			const ids = new Set(records.filter(r => (r.release || "") === (i.release || "") && r.valuesDigest === i.valuesDigest).map(r => r.id));
 			g.capabilities = [...new Set(state.capabilities.filter(c => c.ns === ns).flatMap(pbVersions).filter(c => ids.has(c.installedFrom)).map(c => c.receiptRef || c.name + "@" + c.version))];
 			g.sources = state.sources.filter(s => s.ns === ns && ids.has(s.installedFrom)).map(s => s.receiptRef || s.name);
 		}

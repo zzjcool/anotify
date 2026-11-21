@@ -232,7 +232,7 @@ func TestInstallReceiptUnappliedMaskedBeforePersist(t *testing.T) {
 	}
 
 	// ⑦ valuesDigest 仍对打码前的 values 算，且与 RenderPlaybook 一致。
-	rendered, err := db.RenderPlaybook(ctx, ns, p.slug, pbMaskNewValues())
+	rendered, err := db.RenderPlaybook(ctx, ns, p.slug, "", pbMaskNewValues())
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}

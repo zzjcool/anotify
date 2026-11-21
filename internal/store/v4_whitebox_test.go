@@ -127,8 +127,9 @@ func TestWhiteboxBaselineDDLFailureRollsBackMarkerAndLedger(t *testing.T) {
 	assertPristineMigrationState(t, db)
 
 	// 同一个库可以直接重新初始化：失败事务没有留下需要人清理的半成品。
-	if n, err := migrate(db, nil); err != nil || n != 1 {
-		t.Fatalf("失败回滚后重新初始化: applied=%d err=%v, want 1/nil", n, err)
+	// 应用块数 = schema.sql 的块数（baseline + 增量块），不是写死的 1。
+	if n, err := migrate(db, nil); err != nil || n != headVersion {
+		t.Fatalf("失败回滚后重新初始化: applied=%d err=%v, want %d/nil", n, err, headVersion)
 	}
 	probe, err := probeDatabaseFormat(db)
 	if err != nil {

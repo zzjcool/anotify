@@ -72,7 +72,7 @@ export const FULL_SURFACES = [
 
 /** 逐套件映射面。`why` 写的是「为什么是这些面」，不是复述页面名。 */
 export const SUITE_SURFACES = {
-	// ---- HTTP 类（13）----
+	// ---- HTTP 类（14）----
 	api_contract: {
 		why: "v4 资源面 API 契约矩阵（状态码/信封/CAS/camelCase/空列表）+ 静态产物缓存头",
 		// index 页：本套件断言 `/index.html` 的 Cache-Control（静态产物形状的一部分）。
@@ -132,6 +132,10 @@ export const SUITE_SURFACES = {
 	node_v4: {
 		why: "真 anode 核心链：hello → 部署 → 真执行 → result → 日志/产物/取消",
 		paths: ["cmd/anode/**", "internal/protocol/**", "internal/ws/**", "internal/artifact/**"],
+	},
+	playbook_release: {
+		why: "#505 预案安装的 release 身份（缺省 release=包名 / 多实例 / 跨 release 409 / 模板透传）",
+		paths: ["internal/playbook/**", "internal/store/playbook*.go", "web-src/pages/playbook.html"],
 	},
 
 	// ---- Chrome 类（15）----

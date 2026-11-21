@@ -361,7 +361,7 @@ func TestPlaybookGCConcurrentWithInstall(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		_, installErr = db.InstallPlaybook(ctx, ns, "project-chain", pbValues("a"), false)
+		_, installErr = db.InstallPlaybook(ctx, ns, "project-chain", "", pbValues("a"), false)
 	}()
 	go func() {
 		defer wg.Done()

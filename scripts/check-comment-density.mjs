@@ -26,9 +26,9 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const BASELINE = {
 	"schemaVersion": 2,
 	"measuredAt": "2026-11-21",
-	"commentLines": 43372,
-	"codeLines": 266349,
-	"files": 666,
+	"commentLines": 43335,
+	"codeLines": 268627,
+	"files": 672,
 	"dirs": {
 		".": 89,
 		".github/workflows": 108,
@@ -65,7 +65,7 @@ export const BASELINE = {
 		"internal/decisions": 2,
 		"internal/lease": 36,
 		"internal/logging": 22,
-		"internal/playbook": 1347,
+		"internal/playbook": 1321,
 		"internal/protocol": 1061,
 		"internal/push": 108,
 		"internal/resultspool": 184,
@@ -78,7 +78,7 @@ export const BASELINE = {
 		"internal/source": 151,
 		"internal/sourcespec": 294,
 		"internal/store": 6821,
-		"internal/store/v4test": 1208,
+		"internal/store/v4test": 1197,
 		"internal/trigger": 25,
 		"internal/version": 48,
 		"internal/ws": 669,
@@ -113,8 +113,8 @@ export const BASELINE = {
 		"internal/auth/apikey_cache.go": 124,
 		"internal/auth/postclose_guard_test.go": 82,
 		"internal/auth/session_cache.go": 116,
-		"internal/playbook/playbook.go": 118,
-		"internal/playbook/sensitive.go": 233,
+		"internal/playbook/playbook.go": 116,
+		"internal/playbook/sensitive.go": 181,
 		"internal/protocol/applied.go": 20,
 		"internal/protocol/config_frames.go": 99,
 		"internal/protocol/deploy_frames.go": 52,
@@ -169,7 +169,7 @@ export const BASELINE = {
 		"contracts": {
 			"files": 16,
 			"lines": 2966
-		},
+		}
 	},
 	"rootPlans": {
 		"files": 0,

@@ -3,12 +3,10 @@ package store
 // playbook（目录包）的数据层验收 —— v4 迁移。
 //
 // v4 的 playbook 是**真包**：`playbooks.files` 存 `{相对路径: 正文}` 原始包体
-// （含入口 `playbook.yaml`），render / install 每次都重新 Parse（internal/playbook），
-// 安装在一个 BEGIN IMMEDIATE 事务里完成「计划 → 建行 → 回执」。
+// （含入口 `playbook.yaml`），render / install 每次都重新 Parse（internal/playbook）， 安装在一个 BEGIN IMMEDIATE 事务里完成「计划 → 建行 → 回执」。
 //
 // v3 的那套模型（manifest 里的 items/edges/checks、端口、优先级、handler、
-// PlaybookChecks 的「装完再验」）在 v4 整体删除，因此下列 v3 用例**逐条退役**，
-// 它们的保护点由本文件里真实存在的 v4 用例接走（映射见 TEST-MAPPING.md）：
+// PlaybookChecks 的「装完再验」）在 v4 整体删除，因此下列 v3 用例**逐条退役**， 它们的保护点由本文件里真实存在的 v4 用例接走（映射见 TEST-MAPPING.md）：
 //
 //	v3 TestPlaybookChecksNodePresence / …ChecksPartialAndEntryCapabilities /
 //	…ChecksResolvesDeclaredVersion / …ChecksHubHandlerRefIsReady
@@ -218,7 +216,7 @@ func TestPlaybookCreateGetListDelete(t *testing.T) {
 	}
 
 	// 装一次，让删除响应有「留下了什么」可说
-	if _, err := db.InstallPlaybook(ctx, nsID, "pr-review", pbValues("demo"), false); err != nil {
+	if _, err := db.InstallPlaybook(ctx, nsID, "pr-review", "", pbValues("demo"), false); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	capRows := countRows(t, db, "capability_versions")
@@ -261,8 +259,7 @@ func TestPlaybookCreateGetListDelete(t *testing.T) {
 	}
 }
 
-// TestPlaybookEmptyManifestNormalized：v4 的入口文档是**必需**的——
-// 「空清单」在 v3 会被归一成空列表，v4 直接拒（entry_missing），因为没入口就没法寻址。
+// TestPlaybookEmptyManifestNormalized：v4 的入口文档是**必需**的—— 「空清单」在 v3 会被归一成空列表，v4 直接拒（entry_missing），因为没入口就没法寻址。
 func TestPlaybookEmptyManifestNormalized(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -333,7 +330,7 @@ func TestRenderPlaybookReadOnly(t *testing.T) {
 		"edges":               countRows(t, db, "edges"),
 	}
 
-	out, err := db.RenderPlaybook(ctx, nsID, "pr-review", pbValues("demo"))
+	out, err := db.RenderPlaybook(ctx, nsID, "pr-review", "", pbValues("demo"))
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -355,7 +352,7 @@ func TestRenderPlaybookReadOnly(t *testing.T) {
 		t.Fatalf("渲染后还残留模板占位符:\n%s", capBody)
 	}
 	// 渲染两次一致（纯函数语义：同一 values → 同一 digest）
-	again, err := db.RenderPlaybook(ctx, nsID, "pr-review", pbValues("demo"))
+	again, err := db.RenderPlaybook(ctx, nsID, "pr-review", "", pbValues("demo"))
 	if err != nil {
 		t.Fatalf("render again: %v", err)
 	}
@@ -364,7 +361,7 @@ func TestRenderPlaybookReadOnly(t *testing.T) {
 	}
 
 	// 缺必填 values → values_missing（不是静默空串）
-	if _, err := db.RenderPlaybook(ctx, nsID, "pr-review", map[string]any{}); !playbook.IsCode(err, playbook.CodeValuesMissing) {
+	if _, err := db.RenderPlaybook(ctx, nsID, "pr-review", "", map[string]any{}); !playbook.IsCode(err, playbook.CodeValuesMissing) {
 		t.Fatalf("缺 project 应 values_missing, got %v", err)
 	}
 
@@ -382,15 +379,14 @@ func TestRenderPlaybookReadOnly(t *testing.T) {
 	}
 }
 
-// TestInstallPlaybookIdempotent：同一 values 装两次 → 第二次全是 reused，
-// 能力/源不新增行、不产生新版本；回执历史仍记两次（attempts=2）。
+// TestInstallPlaybookIdempotent：同一 values 装两次 → 第二次全是 reused， 能力/源不新增行、不产生新版本；回执历史仍记两次（attempts=2）。
 func TestInstallPlaybookIdempotent(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	pbCreate(t, db, nsID, "pr-review", pbBundle("pr-review"))
 
-	first, err := db.InstallPlaybook(ctx, nsID, "pr-review", pbValues("demo"), false)
+	first, err := db.InstallPlaybook(ctx, nsID, "pr-review", "", pbValues("demo"), false)
 	if err != nil {
 		t.Fatalf("install 1: %v", err)
 	}
@@ -404,7 +400,7 @@ func TestInstallPlaybookIdempotent(t *testing.T) {
 	srcRows := countRows(t, db, "sources")
 	edgeRows := countRows(t, db, "edges")
 
-	second, err := db.InstallPlaybook(ctx, nsID, "pr-review", pbValues("demo"), false)
+	second, err := db.InstallPlaybook(ctx, nsID, "pr-review", "", pbValues("demo"), false)
 	if err != nil {
 		t.Fatalf("install 2: %v", err)
 	}
@@ -442,7 +438,7 @@ func TestInstallPlaybookDryRunWritesNothing(t *testing.T) {
 		before[table] = countRows(t, db, table)
 	}
 
-	receipt, err := db.InstallPlaybook(ctx, nsID, "pr-review", pbValues("demo"), true)
+	receipt, err := db.InstallPlaybook(ctx, nsID, "pr-review", "", pbValues("demo"), true)
 	if err != nil {
 		t.Fatalf("dryRun install: %v", err)
 	}
@@ -464,14 +460,13 @@ func TestInstallPlaybookDryRunWritesNothing(t *testing.T) {
 	}
 }
 
-// TestInstallPlaybookInlineSpecStoresScriptBody：包内 run 正文按**渲染后**的字节落库，
-// 且 digest 与正文同源（v4 只有脚本，没有 handler 镜像）。
+// TestInstallPlaybookInlineSpecStoresScriptBody：包内 run 正文按**渲染后**的字节落库， 且 digest 与正文同源（v4 只有脚本，没有 handler 镜像）。
 func TestInstallPlaybookInlineSpecStoresScriptBody(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	pbCreate(t, db, nsID, "pr-review", pbBundle("pr-review"))
-	if _, err := db.InstallPlaybook(ctx, nsID, "pr-review", pbValues("demo"), false); err != nil {
+	if _, err := db.InstallPlaybook(ctx, nsID, "pr-review", "", pbValues("demo"), false); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -500,14 +495,13 @@ func TestInstallPlaybookInlineSpecStoresScriptBody(t *testing.T) {
 	}
 }
 
-// TestInstallPlaybookWebhookSourceIsUsable：装出来的源是**真源**——
-// token 由服务端生成、能按 token 找回、入口边指向包内能力。
+// TestInstallPlaybookWebhookSourceIsUsable：装出来的源是**真源**—— token 由服务端生成、能按 token 找回、入口边指向包内能力。
 func TestInstallPlaybookWebhookSourceIsUsable(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	pbCreate(t, db, nsID, "pr-review", pbBundle("pr-review"))
-	if _, err := db.InstallPlaybook(ctx, nsID, "pr-review", pbValues("demo"), false); err != nil {
+	if _, err := db.InstallPlaybook(ctx, nsID, "pr-review", "", pbValues("demo"), false); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -561,7 +555,7 @@ func TestInstallPlaybookCronSource(t *testing.T) {
 			"    - capability: '{{values.project}}-audit'\n",
 	}
 	pbCreate(t, db, nsID, "nightly-audit", files)
-	if _, err := db.InstallPlaybook(ctx, nsID, "nightly-audit", pbValues("demo"), false); err != nil {
+	if _, err := db.InstallPlaybook(ctx, nsID, "nightly-audit", "", pbValues("demo"), false); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -589,7 +583,7 @@ func TestPlaybookInstallEmptyManifest(t *testing.T) {
 	pbCreate(t, db, nsID, "no-items", pbEmpty("no-items"))
 
 	// 空包也要满足它声明的 values 契约（project 必填）
-	receipt, err := db.InstallPlaybook(ctx, nsID, "no-items", pbValues("demo"), false)
+	receipt, err := db.InstallPlaybook(ctx, nsID, "no-items", "", pbValues("demo"), false)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -604,8 +598,7 @@ func TestPlaybookInstallEmptyManifest(t *testing.T) {
 	}
 }
 
-// TestListPlaybookInstallsGroups：实例清单按 `(包, valuesDigest)` 折叠，
-// attempts 是同组回执数；caps/sources 是组内回执反查的并集。
+// TestListPlaybookInstallsGroups：实例清单按 `(包, valuesDigest)` 折叠， attempts 是同组回执数；caps/sources 是组内回执反查的并集。
 func TestListPlaybookInstallsGroups(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -613,12 +606,12 @@ func TestListPlaybookInstallsGroups(t *testing.T) {
 	row := pbCreate(t, db, nsID, "pr-review", pbBundle("pr-review"))
 
 	for i := 0; i < 2; i++ {
-		if _, err := db.InstallPlaybook(ctx, nsID, "pr-review", pbValues("demo"), false); err != nil {
+		if _, err := db.InstallPlaybook(ctx, nsID, "pr-review", "", pbValues("demo"), false); err != nil {
 			t.Fatalf("install %d: %v", i+1, err)
 		}
 	}
 	// 另一套 values → 另一个折叠组
-	if _, err := db.InstallPlaybook(ctx, nsID, "pr-review", pbValues("other"), false); err != nil {
+	if _, err := db.InstallPlaybook(ctx, nsID, "pr-review", "", pbValues("other"), false); err != nil {
 		t.Fatalf("install other: %v", err)
 	}
 
@@ -691,8 +684,7 @@ func TestListPlaybooksCreatedAtOrder(t *testing.T) {
 
 // TestPlaybookInstallReservedSourceNameRejectedLikeDirectCreate 父裁定 #2（B 轮）：
 // 渲染产物必须走**与直接创建完全相同**的校验路径（playbook.md §2.2）——
-// 源名 `route` 是保留剪枝来源名，直写 CreateSource 拒，安装写路径也必须拒，
-// 且整次安装 0 写（不建能力、不建源、不建安装回执、不落入口边）。
+// 源名 `route` 是保留剪枝来源名，直写 CreateSource 拒，安装写路径也必须拒， 且整次安装 0 写（不建能力、不建源、不建安装回执、不落入口边）。
 //
 // 本用例用**真原包**（raw files map）证明物化后的 Source.name 恰好是 `route`：
 // 源文档里 `metadata.name: route` 是字面量，不经过 values 模板、不是前缀变体。
@@ -722,10 +714,9 @@ func TestPlaybookInstallReservedSourceNameRejectedLikeDirectCreate(t *testing.T)
 	}
 	pbCreate(t, db, nsID, "reserved-source", files)
 
-	receipt, err := db.InstallPlaybook(ctx, nsID, "reserved-source", pbValues("demo"), false)
+	receipt, err := db.InstallPlaybook(ctx, nsID, "reserved-source", "", pbValues("demo"), false)
 	if err == nil {
-		// 产品缺陷：安装接受了保留源名。把「物化名恰好是 route」与 0 写要求
-		// 一起钉在报错里，便于父会话按具名 case + 2 处生产点裁决。
+		// 产品缺陷：安装接受了保留源名。把「物化名恰好是 route」与 0 写要求 一起钉在报错里，便于父会话按具名 case + 2 处生产点裁决。
 		var src *Source
 		if got, gerr := db.GetSourceByName(ctx, nsID, EventPruneSource); gerr == nil {
 			src = got
@@ -762,8 +753,7 @@ func TestPlaybookInstallReservedSourceNameRejectedLikeDirectCreate(t *testing.T)
 
 // TestPlaybookInstallAllowsV4CapabilityNamesThatWereReservedInV3 父裁定 #2（前半）：
 // v3 的 `TestPlaybookManifestReservedOriginNames` 实际禁的是**能力名** github/cron/http/manual；
-// v4 里这些名字完全合法（能力名正则 ^[a-z0-9][a-z0-9._-]{0,62}$）。
-// 真原包安装必须全部建出来——这是“允许清单”用例，不是新的黑名单。
+// v4 里这些名字完全合法（能力名正则 ^[a-z0-9][a-z0-9._-]{0,62}$）。 真原包安装必须全部建出来——这是“允许清单”用例，不是新的黑名单。
 func TestPlaybookInstallAllowsV4CapabilityNamesThatWereReservedInV3(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -780,7 +770,7 @@ func TestPlaybookInstallAllowsV4CapabilityNamesThatWereReservedInV3(t *testing.T
 	files["playbook.yaml"] = pbEntry("legal-names", 1, capPaths, nil)
 	pbCreate(t, db, nsID, "legal-names", files)
 
-	r, err := db.InstallPlaybook(ctx, nsID, "legal-names", pbValues("demo"), false)
+	r, err := db.InstallPlaybook(ctx, nsID, "legal-names", "", pbValues("demo"), false)
 	if err != nil {
 		t.Fatalf("v4 合法能力名安装被拒: %v", err)
 	}
@@ -846,5 +836,194 @@ func TestInstalledSourceNameFinalDefenseRollsBack(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ---------- release 身份（#505） ----------
+
+// pbReleaseBundle 是「名字里带 release」的包：能力名与源名都含 {{release.name}}。
+func pbReleaseBundle(slug string) map[string]string {
+	capPath := "capabilities/review.yaml"
+	srcPath := "sources/on-push.yaml"
+	return map[string]string{
+		"playbook.yaml": pbEntry(slug, 3, []string{capPath}, []string{srcPath}),
+		capPath:         pbCapabilityDoc("{{release.name}}-{{values.project}}-review", nil, "#!/usr/bin/env bash\ntrue\n"),
+		srcPath:         pbSourceDoc("{{release.name}}-{{values.project}}-on-push", []string{"{{release.name}}-{{values.project}}-review"}),
+	}
+}
+
+// TestPlaybookInstallReleaseRoundTrip：release 存进列、读回回执、并按 release 折叠成组。
+//
+// 「存什么读什么」是 #505 的字段级往返断言：receive 回执上的 release、列上的 release、 实例清单里的 release 三处必须是同一个值。
+func TestPlaybookInstallReleaseRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	row := pbCreate(t, db, nsID, "multi", pbReleaseBundle("multi"))
+
+	rcpt, err := db.InstallPlaybook(ctx, nsID, "multi", "blue", pbValues("demo"), false)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if rcpt.Install.Release != "blue" {
+		t.Fatalf("回执 install.release = %q, want blue", rcpt.Install.Release)
+	}
+	var col string
+	if err := db.QueryRow(`SELECT release FROM playbook_installs WHERE id = ?`, rcpt.Install.ID).Scan(&col); err != nil {
+		t.Fatalf("read release column: %v", err)
+	}
+	if col != "blue" {
+		t.Fatalf("列 release = %q, want blue", col)
+	}
+	got, err := db.GetPlaybookInstall(ctx, nsID, "multi", rcpt.Install.ID)
+	if err != nil {
+		t.Fatalf("get install: %v", err)
+	}
+	if got.Install.Release != "blue" {
+		t.Fatalf("读回的回执 release = %q, want blue", got.Install.Release)
+	}
+
+	// 缺省 release = 包名：同一个包再来一套，是**另一组**实例。
+	if _, err := db.InstallPlaybook(ctx, nsID, "multi", "", pbValues("demo"), false); err != nil {
+		t.Fatalf("install default: %v", err)
+	}
+	list, err := db.ListPlaybookInstalls(ctx, nsID, row.ID)
+	if err != nil {
+		t.Fatalf("list installs: %v", err)
+	}
+	if list.Total != 2 {
+		t.Fatalf("两个 release 应各成一组, got %+v", list.Installs)
+	}
+	byRelease := map[string]PlaybookInstallGroup{}
+	for _, g := range list.Installs {
+		byRelease[g.Release] = g
+	}
+	for _, want := range []string{"blue", "multi"} {
+		g, ok := byRelease[want]
+		if !ok {
+			t.Fatalf("缺 release %q 的组: %+v", want, list.Installs)
+		}
+		if g.Attempts != 1 {
+			t.Fatalf("release %q 的 attempts = %d, want 1", want, g.Attempts)
+		}
+		if len(g.Capabilities) != 1 || !strings.HasPrefix(g.Capabilities[0], want+"-demo-review@") {
+			t.Fatalf("release %q 的成员不对: %+v", want, g.Capabilities)
+		}
+	}
+}
+
+// TestPlaybookInstallCrossReleaseConflictZeroWrite：跨 release 复用别人的行 → release_conflict 且 0 写。
+func TestPlaybookInstallCrossReleaseConflictZeroWrite(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	row := pbCreate(t, db, nsID, "fixed-name", pbBundle("fixed-name"))
+
+	first, err := db.InstallPlaybook(ctx, nsID, "fixed-name", "blue", pbValues("demo"), false)
+	if err != nil {
+		t.Fatalf("install blue: %v", err)
+	}
+	caps := countRows(t, db, "capability_versions")
+	srcs := countRows(t, db, "sources")
+	installs := countRows(t, db, "playbook_installs")
+
+	_, err = db.InstallPlaybook(ctx, nsID, "fixed-name", "green", pbValues("demo"), false)
+	if !playbook.IsCode(err, playbook.CodeReleaseConflict) {
+		t.Fatalf("应 release_conflict, got %v", err)
+	}
+	pe := err.(*playbook.Error)
+	if pe.Details["ownerRelease"] != "blue" || pe.Details["ownerInstallId"] != first.Install.ID {
+		t.Fatalf("details 要点名 owner: %+v", pe.Details)
+	}
+	for table, before := range map[string]int64{
+		"capability_versions": caps, "sources": srcs, "playbook_installs": installs,
+	} {
+		if after := countRows(t, db, table); after != before {
+			t.Fatalf("409 后 %s 行数 %d → %d（应当 0 写）", table, before, after)
+		}
+	}
+	// 库里那行的 owner 仍然是 blue：认领没有被改动。
+	list, err := db.ListPlaybookInstalls(ctx, nsID, row.ID)
+	if err != nil {
+		t.Fatalf("list installs: %v", err)
+	}
+	if list.Total != 1 || list.Installs[0].Release != "blue" {
+		t.Fatalf("被拒的安装不该留下任何组: %+v", list.Installs)
+	}
+}
+
+// TestPlaybookInstallReleaseInvalid：形状错在**事务之前**就拒绝（不建任何行）。
+func TestPlaybookInstallReleaseInvalid(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	pbCreate(t, db, nsID, "bad-release", pbBundle("bad-release"))
+
+	_, err := db.InstallPlaybook(ctx, nsID, "bad-release", "Prod", pbValues("demo"), false)
+	if !playbook.IsCode(err, playbook.CodeInvalidPlaybook) {
+		t.Fatalf("应 invalid_playbook, got %v", err)
+	}
+	for _, table := range []string{"capability_versions", "sources", "playbook_installs"} {
+		if n := countRows(t, db, table); n != 0 {
+			t.Fatalf("坏 release 不该写 %s（%d 行）", table, n)
+		}
+	}
+}
+
+// TestPlaybookInstallReleaseDryRunDoesNotWrite：dryRun 带 release 也不落库（同一条代码路径）。
+func TestPlaybookInstallReleaseDryRunDoesNotWrite(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	pbCreate(t, db, nsID, "dry-rel", pbReleaseBundle("dry-rel"))
+
+	rcpt, err := db.InstallPlaybook(ctx, nsID, "dry-rel", "blue", pbValues("demo"), true)
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if !rcpt.Install.DryRun || rcpt.Install.Release != "blue" {
+		t.Fatalf("dryRun 回执不对: %+v", rcpt.Install)
+	}
+	if n := countRows(t, db, "playbook_installs"); n != 0 {
+		t.Fatalf("dryRun 不该留回执, got %d", n)
+	}
+	if n := countRows(t, db, "capability_versions"); n != 0 {
+		t.Fatalf("dryRun 不该建能力, got %d", n)
+	}
+}
+
+// TestGetPlaybookInstallLegacyReceiptGetsRelease：迁移前写的回执原文里没有 release，
+// 读的时候按列补齐——回执是审计快照（不改原文），但身份必须一致： 同一次安装从实例清单（按列分组）点进来不能显示成另一个 release。
+func TestGetPlaybookInstallLegacyReceiptGetsRelease(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	pbCreate(t, db, nsID, "legacy-receipt", pbEmpty("legacy-receipt"))
+
+	raw := `{"apiVersion":"anotify/v1","kind":"InstallReceipt","playbook":{"name":"legacy-receipt","version":1},` +
+		`"install":{"id":"ins_legacy","at":"2026-11-01T00:00:00Z","dryRun":false},` +
+		`"namespace":"demo","values":{},"valuesDigest":"sha256:legacy",` +
+		`"created":{"capabilities":[],"sources":[]},"skipped":{"capabilities":[],"sources":[]},` +
+		`"upgraded":[],"unapplied":[],"external":[],"pending":[],"notes":[]}`
+	mustExec(t, db, `INSERT INTO playbook_installs
+		   (id, namespace_id, namespace_slug, playbook_id, playbook_slug,
+		    "values", values_digest, receipt, source, release, created_at)
+		 VALUES ('ins_legacy', ?, 'demo', 'pb_legacy', 'legacy-receipt','{}','sha256:legacy',?,'','legacy-receipt',1700000000)`,
+		nsID, raw)
+
+	got, err := db.GetPlaybookInstall(ctx, nsID, "legacy-receipt", "ins_legacy")
+	if err != nil {
+		t.Fatalf("get install: %v", err)
+	}
+	if got.Install.Release != "legacy-receipt" {
+		t.Fatalf("回执 release = %q, want legacy-receipt（按列补齐）", got.Install.Release)
+	}
+	// 原文没被改写：库里存的还是那段 JSON。
+	var stored string
+	if err := db.QueryRow(`SELECT receipt FROM playbook_installs WHERE id = 'ins_legacy'`).Scan(&stored); err != nil {
+		t.Fatalf("read receipt: %v", err)
+	}
+	if stored != raw {
+		t.Fatalf("读路径改了回执原文（审计快照必须原样）")
 	}
 }
