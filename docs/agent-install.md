@@ -1,6 +1,6 @@
 # 接入 Agent：原生安装
 
-> **v3 历史文档**（#338）：v4 的节点产品叫 **anode**（`cmd/anode`，CLI 见 `docs/v4/anode-cli.md`），
+> **v3 历史文档**（#338）：v4 的节点产品叫 **anode**（`cmd/anode`，CLI 见 [`anode-cli.md`](anode-cli.md)），
 > 安装面是 `scripts/install-anode.sh` + `anode install`。下文里的 `agent` / `anotify-agent` /
 > `install-agent.sh` / `/app/agent` 都是 v3 名词，v4 的等价物是 `anode` / `/app/anode`。
 > 保留本文是因为「原生 vs 容器」「能力工作目录归谁管」这两件事的判断依然成立。

@@ -622,7 +622,7 @@ func TestNamespaceResourceStats(t *testing.T) {
 	}
 }
 
-// TestNamespaceResourceSpecSwitchRejected V4-D1 刻意不做的 spec 开关必须被拒（不静默忽略）。
+// TestNamespaceResourceSpecSwitchRejected @decision V4-D1：刻意不做的 spec 开关必须被拒（不静默忽略）。
 func TestNamespaceResourceSpecSwitchRejected(t *testing.T) {
 	env := newNamespaceTestEnv(t)
 	body := `{"apiVersion":"anotify/v1","kind":"Namespace","metadata":{"name":"with-switch"},"spec":{"seedBuiltinCapabilities":true}}`

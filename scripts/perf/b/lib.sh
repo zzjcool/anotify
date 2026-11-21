@@ -12,7 +12,7 @@
 # （`agent -f node.yaml -data-dir … -grace`），而 v4 的 anode 是子命令 CLI
 # （`anode serve --config …`）且配置文件形状不同 —— 这些场景**未迁移**，
 # 所以 pb_build 不再构建节点二进制，pb_node* 会当场报 pb_die（不静默用错二进制）。
-# v4 的节点入口：docs/v4/anode-cli.md / make dev-node。
+# v4 的节点入口：docs/anode-cli.md / make dev-node。
 #
 # 用法：场景脚本里 `. "$(dirname "$0")/lib.sh"`，然后 pb_init → 各 pb_* 函数 → pb_cleanup。
 set -uo pipefail
@@ -301,7 +301,7 @@ pb_node() {
 	# 节点侧未迁移（#338）：v3 的 cmd/agent 已被 anode 取代，而下面这条命令用的是
 	# v3 专属的 `-f` / `-data-dir` / `-grace`。显式失败，而不是拉起一只形态不对的
 	# 进程然后在“节点一直不上线”里挖半天。
-	pb_die "本场景的节点侧仍是 v3 形状（agent -f node.yaml -grace），节点产品已换成 anode（v4）：见 docs/v4/anode-cli.md / make dev-node"
+	pb_die "本场景的节点侧仍是 v3 形状（agent -f node.yaml -grace），节点产品已换成 anode（v4）：见 docs/anode-cli.md / make dev-node"
 }
 
 # pb_node_create <name> <instances> <conc> <cmd> [timeoutSec]：只建节点 + 部署 + 写 yaml，不起 agent
@@ -325,7 +325,7 @@ pb_node_create() {
 # 节点侧未迁移（#338）：同 pb_node —— v3 的 `-f`/`-data-dir`/`-grace` 在 v4 的 anode 上不存在。
 pb_node_start() {
 	local name=$1
-	pb_die "pb_node_start $name：本场景的节点侧仍是 v3 形状，节点产品已换成 anode（v4）；见 docs/v4/anode-cli.md"
+	pb_die "pb_node_start $name：本场景的节点侧仍是 v3 形状，节点产品已换成 anode（v4）；见 docs/anode-cli.md"
 }
 
 # pb_event <payload-json>：POST /v1/events（API Key，无限流）→ 原样返回响应

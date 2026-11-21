@@ -49,7 +49,7 @@ scripts/e2e/
 2. `scripts/e2e/lib/harness.mjs` 的 `SUITE_PORTS`（每套件独占 50 个端口段）
 3. 只有需要跑在 **explicit-mock** 验收下的套件才进 `EXPLICIT_MOCK_SUITES`（默认 real）。
    `E2E_MOCK_ONLY` 是执行器**注入**的，不从外部环境继承：清单外的套件（含 `frontend`）
-   会被剥掉。authority 裁决与分工见 `docs/v4/e2e-inventory.md`，离线核对用
+   会被剥掉。authority 裁决与分工见 `scripts/e2e/parallel_runner.mjs` 的 AUTHORITY 清单，离线核对用
    `node scripts/e2e/parallel_runner.mjs --authority-plan`。
 
 另外：**临时目录一律用 `H.mkdtempTmp()` 创建、`finally` 里 `H.removeTmpDir()` 删除**，
@@ -210,8 +210,8 @@ GitHub runner 比开发机慢，f3 的浏览器矩阵套件会偶发**环境性*
 ## 测试矩阵（全 case 清单）
 
 见各 suite 文件顶部注释。当前注册 **28 套件**（13 HTTP + 15 Chrome），断言总数以执行器
-汇总行为准（每次运行现算；逐套件 kept/migrated/retired 台账与历史口径见
-`docs/v4/e2e-inventory.md`），覆盖：
+汇总行为准（每次运行现算；逐套件 kept/migrated/retired 台账在 `scripts/e2e/parallel_runner.mjs`
+的注册表与 AUTHORITY 清单里，增删套件不同步即 exit 2），覆盖：
 
 - 每个 API 端点的 成功/401/403/400/404 路径
 - Passkey 注册→登录→登出→会话失效 全生命周期
@@ -233,4 +233,4 @@ GitHub runner 比开发机慢，f3 的浏览器矩阵套件会偶发**环境性*
   > 构建事实（#336/#338）：`run_all.sh` 只构建三个真实产物 —— `anotify`（`cmd/server`，带
   > `embeddist`）、`devseed`、`anode`（`cmd/anode`）；v3 的 `cmd/agent`（已退役）/ `AGENT_BIN`
   > 退役，已不存在「迁移中」的构建路径。
-  > `real_backend` 已具名退役并删文件（理由见 `docs/v4/e2e-inventory.md` §4）。
+  > `real_backend` 已具名退役并删文件（理由：v3 扁平路由的端到端用例在 v4 全部由 `api_contract` 覆盖）。

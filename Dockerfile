@@ -95,4 +95,4 @@ VOLUME ["/data"]
 ENTRYPOINT ["anotify"]
 # devseed 只在 build 阶段产出（不复制进 runtime）：本地开发用它播种。
 # 生产镜像刻意只带 server（/usr/local/bin/anotify）与节点升级源（/app/anode）。
-# 见 docker-compose.dev.yml 的 seed/demo 服务与 docs/v4/anode-cli.md。
+# 见 docker-compose.dev.yml 的 seed/demo 服务与 docs/anode-cli.md。

@@ -1,7 +1,7 @@
 // Package runner 是节点上的真实执行运行器：dispatch → accept/reject → lease.grant
 // → 真 shebang exec → renew/ack → result/ack / cancel。
 //
-// 硬不变量（capability.md §8.5 / decisions V4-D4 / SLOT-HANDOFF A3）：
+// 硬不变量（capability.md §8.5 / @decision V4-D4 / SLOT-HANDOFF A3）：
 //
 //  1. **派发不是授权**：task.dispatch 只做校验 + 原子预留真实空闲槽（accept），
 //     没有 token、不执行、不计 attempt；只有 lease.grant 才启动进程，且 grant 里的

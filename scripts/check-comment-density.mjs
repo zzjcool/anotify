@@ -26,9 +26,9 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const BASELINE = {
 	"schemaVersion": 2,
 	"measuredAt": "2026-11-21",
-	"commentLines": 43373,
-	"codeLines": 266224,
-	"files": 664,
+	"commentLines": 43372,
+	"codeLines": 266349,
+	"files": 666,
 	"dirs": {
 		".": 89,
 		".github/workflows": 108,
@@ -62,6 +62,7 @@ export const BASELINE = {
 		"internal/artifact": 424,
 		"internal/auth": 1259,
 		"internal/authn": 16,
+		"internal/decisions": 2,
 		"internal/lease": 36,
 		"internal/logging": 22,
 		"internal/playbook": 1347,
@@ -82,7 +83,7 @@ export const BASELINE = {
 		"internal/version": 48,
 		"internal/ws": 669,
 		"internal/yamldoc": 262,
-		"scripts": 3617,
+		"scripts": 3614,
 		"scripts/demo": 16,
 		"scripts/e2e": 634,
 		"scripts/e2e/fixtures": 0,
@@ -169,22 +170,10 @@ export const BASELINE = {
 			"files": 16,
 			"lines": 2966
 		},
-		"v4": {
-			"files": 5,
-			"lines": 960
-		},
-		"research": {
-			"files": 2,
-			"lines": 422
-		},
-		"perf": {
-			"files": 3,
-			"lines": 706
-		}
 	},
 	"rootPlans": {
-		"files": 3,
-		"lines": 193
+		"files": 0,
+		"lines": 0
 	}
 };
 /* BASELINE-END */
@@ -192,8 +181,9 @@ export const BASELINE = {
 export const PER_FILE_RATIO_MAX = 0.5;
 export const PER_FILE_FLOOR = 12;
 export const NEW_DIR_COMMENT_MAX = 10;
-/** 扫描面坏掉（路径/过滤/解析）时不允许静默通过。 */
-export const MIN_SCANNED = { files: 600, commentLines: 30000, codeLines: 150000 };
+/** 扫描面坏掉（路径/过滤/解析）时不允许静默通过。2026-11-21（#495 B 阶段前置 1）删掉了
+ * `commentLines: 30000`：它随删注释变成「本批必须下调」的墙，而目录等值棘轮已管住这个形态。 */
+export const MIN_SCANNED = { files: 600, codeLines: 150000 };
 
 export const CODES = {
 	DIR_OVER: "DIR_OVER",
@@ -250,9 +240,9 @@ const LANG_TOKENS = {
 export const DOC_POLICY = [
 	{ dir: "", verdict: "manual", why: "docs/README.md 等入口手册" },
 	{ dir: "contracts", verdict: "shrink", why: "冻结契约：迁移进代码与测试前不许增长，只能一块块搬走" },
-	{ dir: "v4", verdict: "shrink", why: "实施期清单快照（inventory/manifest）：计数会腐烂，删" },
-	{ dir: "research", verdict: "shrink", why: "可行性研究 = 计划，无执行者 ⇒ 删" },
-	{ dir: "perf", verdict: "shrink", why: "一次性测量快照 ⇒ 删；要留就并进 reports/" },
+	{ dir: "v4", verdict: "forbidden", why: "实施期清单快照（inventory/manifest）已删（#495 B）：计数只会腐烂" },
+	{ dir: "research", verdict: "forbidden", why: "可行性研究 = 计划，无执行者 ⇒ 已删（#495 B）" },
+	{ dir: "perf", verdict: "forbidden", why: "一次性测量快照已删（#495 B）：要留的已并进 reports/" },
 	{ dir: "reports", verdict: "evidence", why: "排障取证：按 PR 增长，不定上限" },
 	{ dir: "history", verdict: "evidence", why: "更早的档案与已迁移台账" },
 	{ dir: "design", verdict: "forbidden", why: "#477 的判据：实施前的计划一旦落地就只能变错" },
@@ -531,8 +521,6 @@ export function evaluate({ measured, docs }, baseline, opts = {}) {
 	const scan = opts.minScanned ?? MIN_SCANNED;
 	if (measured.total.files < scan.files)
 		push(CODES.SCAN_TOO_SMALL, `只扫到 ${measured.total.files} 个文件（下限 ${scan.files}）—— 扫描面坏了`);
-	if (measured.total.comment < scan.commentLines)
-		push(CODES.SCAN_TOO_SMALL, `只扫到 ${measured.total.comment} 行注释（下限 ${scan.commentLines}）`);
 	if (measured.total.code < scan.codeLines)
 		push(CODES.SCAN_TOO_SMALL, `只扫到 ${measured.total.code} 行代码（下限 ${scan.codeLines}）`);
 
@@ -811,9 +799,6 @@ const FIXTURE_DOCS = {
 	dirs: {
 		"": { files: 2, lines: 80 },
 		contracts: { files: 5, lines: 400 },
-		v4: { files: 2, lines: 60 },
-		research: { files: 1, lines: 30 },
-		perf: { files: 1, lines: 20 },
 		reports: { files: 3, lines: 120 },
 		history: { files: 2, lines: 90 },
 	},
@@ -825,10 +810,10 @@ const FIXTURE_BASELINE = {
 	files: 500,
 	dirs: { "internal/a": 30 },
 	dense: {},
-	docs: { contracts: { files: 5, lines: 400 }, v4: { files: 2, lines: 60 }, research: { files: 1, lines: 30 }, perf: { files: 1, lines: 20 } },
+	docs: { contracts: { files: 5, lines: 400 } },
 	rootPlans: { files: 1, lines: 40 },
 };
-const FIXTURE_MIN = { files: 1, commentLines: 1, codeLines: 1 };
+const FIXTURE_MIN = { files: 1, codeLines: 1 };
 
 function fixtureMeasured({ dirs = {}, files = [], total } = {}) {
 	const comment = Object.values(dirs).reduce((a, b) => a + b, 0);
@@ -967,6 +952,7 @@ export function selfTest() {
 		const under = run(docsOf({ ...all, contracts: { files: 4, lines: 400 } }), base);
 		const lineOver = run(docsOf({ ...all, contracts: { files: 5, lines: 401 } }), base);
 		const forbidden = run(docsOf({ ...all, design: { files: 1, lines: 10 } }), base);
+		const v4Rebuilt = run(docsOf({ ...all, v4: { files: 1, lines: 10 } }), base);
 		const unknown = run(docsOf({ ...all, notes: { files: 1, lines: 10 } }), base);
 		const rootOver = run(docsOf(all, { files: 2, lines: 40 }), base);
 		const rootUnder = run(docsOf(all, { files: 0, lines: 0 }), base);
@@ -974,6 +960,7 @@ export function selfTest() {
 		check("⑨' docs 待收缩目录 文件数低于基线 → DOC_DIR_UNDER", kinds(under).includes(CODES.DOC_DIR_UNDER), JSON.stringify(kinds(under)));
 		check("⑨'' 16 份并成 1 份也拦得住（行数超基线 → DOC_DIR_OVER）", kinds(lineOver).includes(CODES.DOC_DIR_OVER), JSON.stringify(kinds(lineOver)));
 		check("⑨''' docs/design 重建 → DOC_DIR_FORBIDDEN", kinds(forbidden).includes(CODES.DOC_DIR_FORBIDDEN), JSON.stringify(kinds(forbidden)));
+		check("⑨'''-b docs/v4 重建 → DOC_DIR_FORBIDDEN（#495 B 删完后不许回填）", kinds(v4Rebuilt).includes(CODES.DOC_DIR_FORBIDDEN), JSON.stringify(kinds(v4Rebuilt)));
 		check("⑨'''' 判据外的 docs/notes → DOC_DIR_UNKNOWN", kinds(unknown).includes(CODES.DOC_DIR_UNKNOWN), JSON.stringify(kinds(unknown)));
 		check("⑨''''' 仓库根 plan 类 md 超基线 → DOC_ROOT_OVER", kinds(rootOver).includes(CODES.DOC_ROOT_OVER), JSON.stringify(kinds(rootOver)));
 		check("⑨'''''' 仓库根 plan 类 md 低于基线 → DOC_ROOT_UNDER", kinds(rootUnder).includes(CODES.DOC_ROOT_UNDER), JSON.stringify(kinds(rootUnder)));
@@ -981,16 +968,16 @@ export function selfTest() {
 	}
 	{
 		const res = evaluate({ measured: { dirs: {}, files: [], total: { files: 3, comment: 3, code: 3 } }, docs: FIXTURE_DOCS }, { ...FIXTURE_BASELINE, dirs: {}, commentLines: 3 });
-		check("⑩ 扫到的文件/注释/代码任一不足下限 → SCAN_TOO_SMALL ×3", kinds(res).filter((k) => k === CODES.SCAN_TOO_SMALL).length === 3, JSON.stringify(kinds(res)));
+		check("⑩ 扫到的文件/代码任一不足下限 → SCAN_TOO_SMALL ×2（注释行不再有绝对地板）", kinds(res).filter((k) => k === CODES.SCAN_TOO_SMALL).length === 2, JSON.stringify(kinds(res)));
 	}
 	{
 		const measured = fixtureMeasured({ dirs: { "internal/a": 24 } });
-		const docs = { total: 8, lines: 500, dirs: { contracts: { files: 4, lines: 350 }, v4: { files: 2, lines: 60 }, research: { files: 1, lines: 30 }, perf: { files: 1, lines: 20 } }, rootPlans: { files: 1, lines: 40 } };
+		const docs = { total: 8, lines: 500, dirs: { contracts: { files: 4, lines: 350 } }, rootPlans: { files: 1, lines: 40 } };
 		const baseline = {
 			commentLines: 100,
 			dirs: { "internal/a": 30 },
 			dense: {},
-			docs: { contracts: { files: 5, lines: 400 }, v4: { files: 2, lines: 60 }, research: { files: 1, lines: 30 }, perf: { files: 1, lines: 20 } },
+			docs: { contracts: { files: 5, lines: 400 } },
 			rootPlans: { files: 1, lines: 40 },
 		};
 		const { baseline: next, refusals, changes } = nextBaseline(measured, docs, baseline, "2026-11-20");

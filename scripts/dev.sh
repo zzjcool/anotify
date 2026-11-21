@@ -13,7 +13,7 @@
 # 行为：
 #   1. 加载 .env.local（不覆盖已 export 的环境变量，便于临时覆盖）
 #   2. 确保 web/*.html 存在（否则 make sitegen）
-#   3. 端口检查 + 构建节点二进制 ./anode（能力脚本的出口是 `anode emit`，见 docs/v4/anode-cli.md）
+#   3. 端口检查 + 构建节点二进制 ./anode（能力脚本的出口是 `anode emit`，见 docs/anode-cli.md）
 #   4. 后台起 cloudflared tunnel run anotify（固定 dev.openaaas.org → :8080）
 #   5. 播种开发账号并生成自动登录页（web/__dev_login.html，退出时删除）
 #   6. 前台起 go run ./cmd/server
@@ -337,7 +337,7 @@ else
 	echo "     1) 建节点 + 签 token：POST /v1/nodes → POST /v1/nodes/<name>/tokens"
 	echo "     2) 写 .dev-anode/anode.yaml（name / server: ws://localhost:${PORT_NUM} / token）"
 	echo "     3) 重跑 make dev（或直接用已编好的 $ANODE_BIN serve --config …）"
-	echo "   CLI 手册：docs/v4/anode-cli.md"
+	echo "   CLI 手册：docs/anode-cli.md"
 fi
 
 # ---------- 7. 公网可达性探测 ----------

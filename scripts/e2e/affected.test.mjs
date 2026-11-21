@@ -191,7 +191,7 @@ for (const c of COUPLED) {
 }
 
 const UNRELATED = [
-	{ why: "纯文档改动不跑任何 e2e", files: ["docs/v4/e2e-inventory.md", "AGENTS.md"], expect: 0 },
+	{ why: "纯文档改动不跑任何 e2e", files: ["docs/reports/comment-and-doc-ratchet.md", "AGENTS.md"], expect: 0 },
 	{ why: "协调者报告目录不是运行输入", files: [".reports/ci-cost-reduction.md"], expect: 0 },
 	{ why: "CI 编排改动不改变被断言的产品行为", files: [".github/workflows/ci.yml"], expect: 0 },
 ];

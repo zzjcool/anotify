@@ -188,7 +188,7 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 	// 快照 124 → 125：#333 的 SAFE_BLOCKED 缺口 `GET /v1/node/capabilities/{digest}`
 	// 已经实现（internal/server/node_capability.go + mux 接线），agent.yaml 因此多一条
 	// operation。这是**实现追上契约**的方向（契约 §8.2 一直要求这条通道），不是新增端点：
-	// docs/v4/g3c-spec-inventory.md §1 的 124/3 与 §5.1 的缺口条目待文档 owner 同步。
+	// 清单类文档已删（#495 B）：spec ↔ mux 的对账以本测试 + api/ 五份 spec 为准。
 	// 125 → 127：两条 `/yaml` 只读端点（能力的正文全文 / 源的脱敏重建，
 	// CONTRACT-capability-yaml §1.1）。
 	// 127 → 129：+2 两条 `POST …/yaml` 从 YAML 创建（yaml-create）。
