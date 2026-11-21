@@ -175,7 +175,7 @@ jobs:
 
       - name: 分片（纯函数：同一份 selected 永远切出同一份分片）
         id: shard
-        run: node scripts/e2e/shard.mjs --from-plan plan.json --shards 3 --github-output
+        run: node scripts/e2e/shard.mjs --from-plan plan.json --shards 4 --github-output
 
   e2e-shard:
     name: e2e（affected · 分片 ${{ matrix.shard.id }}）

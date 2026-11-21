@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 /* shard.mjs — 把本次选中的 e2e 套件切成 N 片（CI 一个 job 跑一片）
- *
  * 只改「谁在哪个 runner 上跑」：并集必须等于计划里的 selected（--merge 复核 + --selected 硬校验）。
  */
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
@@ -45,9 +44,11 @@ export const COST_SECONDS = {
 	ws_protocol: 18.4,
 };
 const DEFAULT_COST = 20;
+/** 每套件固定启动成本（spawn node + 起 server + seed，实测 CI 约 4s）：让「把一堆廉价套件堆进同一片」在模型里也变贵。 */
+export const SUITE_START_SECONDS = 4;
 
 export function costOf(suite, cost = COST_SECONDS) {
-	return cost[suite] ?? DEFAULT_COST;
+	return (cost[suite] ?? DEFAULT_COST) + SUITE_START_SECONDS;
 }
 
 export function predictedWallSeconds(suites, { cost = COST_SECONDS, slots = EFFECTIVE_SLOTS } = {}) {
