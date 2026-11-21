@@ -125,36 +125,83 @@ jobs:
       - name: PR gate
         run: make ci
 
-  # ── PR：只跑被改动选中的 e2e 套件 ─────────────────────────────────
-  e2e-affected:
-    name: e2e（affected）
+  # ── PR：只跑被改动选中的 e2e 套件（分片并行，总判定收口）─────────────
+  #
+  # 为什么分片：套件之间没有共享状态，同一次选择可以拆到 N 个 runner 上并行跑（实测 29 套
+  # 串行 13m17s，run 44865127142）。分片不许改覆盖 —— 下面的「总判定」用 --selected 硬校验并集。
+  # 分片器是纯函数：同一份 selected 永远切出同一份分片（复现/重跑不会漂）。
+  e2e-plan:
+    name: e2e（affected · 计划分片）
     needs: [triage, quick]
-    # 实测（本 workflow 第一次真跑，PR #428）：Chrome 并发 4 时 ui_shift 中途
-    # 「Target page, context or browser has been closed」——浏览器被打崩，不是断言失败。
-    # runner 是 4 vCPU，而每个 Chrome 套件自己还会 spawn 多进程；降到 2 换稳定。
-    env:
-      E2E_CONCURRENCY: "2"
-      # runner 比开发机慢 2–3 倍（实测 source-actions/interact-dialogs 在本地 3–5s 通过、
-      # 在 runner 上撞 4.5s 默认等待）。这些都是**等待上界**，不是断言：
-      #   F3_DEFAULT_TIMEOUT_MS → 页面元素/动作的默认等待
-      #   F3_NAV_TIMEOUT_MS     → 导航默认等待
-      #   F3_CASE_BUDGET_MS     → 单 case 外层预算（超预算仍判红）
-      F3_DEFAULT_TIMEOUT_MS: "15000"
-      F3_NAV_TIMEOUT_MS: "20000"
-      F3_CASE_BUDGET_MS: "150000"
-    # label `full-ci` 的 PR 走 full-e2e，这里不重复跑部分集。
     if: >-
       github.event_name == 'pull_request' &&
       needs.triage.outputs.docs_only != 'true' &&
       !contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 10
+    outputs:
+      count: ${{ steps.shard.outputs.count }}
+      selected: ${{ steps.shard.outputs.selected }}
+      shards: ${{ steps.shard.outputs.shards }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           # 选择器要 merge-base（这次改动相对目标分支的名字集合）。
           fetch-depth: 0
+          filter: blob:none
+
+      - name: Set up Go
+        # 选择器要 `go list` 的 import 图（二进制风险面），不是白跑一次工具链。
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 自测分片逻辑（分片错了 = 漏跑，先钉住它）
+        run: node --test scripts/e2e/shard.test.mjs
+
+      - name: 选择本次要跑的套件（并打印跳过清单）
+        run: |
+          set -euo pipefail
+          node scripts/e2e/affected.mjs --base "origin/${{ github.base_ref }}" > plan.txt
+          cat plan.txt
+          node scripts/e2e/affected.mjs --json --base "origin/${{ github.base_ref }}" > plan.json
+
+      - name: 分片（纯函数：同一份 selected 永远切出同一份分片）
+        id: shard
+        run: node scripts/e2e/shard.mjs --from-plan plan.json --shards 3 --github-output
+
+  e2e-shard:
+    name: e2e（affected · 分片 ${{ matrix.shard.id }}）
+    needs: [e2e-plan]
+    if: needs.e2e-plan.result == 'success' && needs.e2e-plan.outputs.count != '0'
+    strategy:
+      # 一片红了也要看其它片的结果：总判定要有完整证据才能回答「到底缺什么」。
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.e2e-plan.outputs.shards) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Chrome 并发 4 在 4 vCPU runner 上会把浏览器打崩（PR #428：「browser has been closed」）。
+      E2E_CONCURRENCY: "2"
+      # 等待上界而不是断言：runner 比开发机慢 2–3 倍（页面/导航/case 三级）。
+      F3_DEFAULT_TIMEOUT_MS: "15000"
+      F3_NAV_TIMEOUT_MS: "20000"
+      F3_CASE_BUDGET_MS: "150000"
+      SHARD_ID: ${{ matrix.shard.id }}
+      SHARD_SUITES: ${{ join(matrix.shard.suites, ' ') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
           filter: blob:none
 
       - name: Set up Go
@@ -172,8 +219,7 @@ jobs:
       - name: Install JS deps
         run: npm ci --no-audit --no-fund
 
-      # e2e 的 Chrome 类套件要真 Chrome。runner 自带 google-chrome；找不到就**当场红**
-      # —— 不许因为「没有浏览器」而静默跳过前端套件（那正是本仓最贵的假绿形态）。
+      # 找不到 Chrome 就当场红：不许因为没有浏览器而静默跳过前端套件（最贵的假绿形态）。
       - name: 预检：Chrome 与 python3（缺了就红，不静默跳过）
         run: |
           set -euo pipefail
@@ -182,8 +228,7 @@ jobs:
           done
           /usr/bin/google-chrome --version
 
-      # VAPID 密钥缺失时，api_contract 里那条 VAPID 断言会被 `if (env)` 静默跳过。
-      # 生成一对临时密钥，让 CI 的断言集合与本地一致。
+      # 没有 key 时 api_contract 的 VAPID 断言会被 `if (env)` 静默跳过 ⇒ 生成一对。
       - name: VAPID 密钥（避免「没有 key 就静默少一条断言」）
         run: |
           set -euo pipefail
@@ -193,54 +238,93 @@ jobs:
             echo "ANOTIFY_VAPID_PRIVATE_KEY=$ANOTIFY_VAPID_PRIVATE_KEY"
           } >> "$GITHUB_ENV"
 
-      - name: 选择本次要跑的套件（并打印跳过清单）
-        id: pick
-        run: |
-          set -euo pipefail
-          node scripts/e2e/affected.mjs --base "origin/${{ github.base_ref }}" > plan.txt
-          cat plan.txt
-          node scripts/e2e/affected.mjs --json --base "origin/${{ github.base_ref }}" > plan.json
-          count=$(python3 -c 'import json;print(len(json.load(open("plan.json"))["e2e"]["selected"]))')
-          suites=$(python3 -c 'import json;print(" ".join(json.load(open("plan.json"))["e2e"]["selected"]))')
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-          echo "suites=$suites" >> "$GITHUB_OUTPUT"
-
-      - name: 跑被选中的 e2e 套件
-        # 失败不直接判红：交给下一步按「已知环境性失败清单」裁决。
-        # 为什么不是整块 continue-on-error：那样清单之外的新失败也会被吞掉（永久红着没人看）。
+      - name: 跑本分片的 e2e 套件
+        # 失败不直接判红：交给总判定按「已知环境性失败清单」裁决。
         continue-on-error: true
         run: |
           set -euo pipefail
-          count="${{ steps.pick.outputs.count }}"
+          # 空清单绝不退化成全量（run_all.sh 不带套件名 = 29 套全跑），宁可直接红。
+          [ -n "${SHARD_SUITES// /}" ] || { echo "❌ 本分片的套件清单为空"; exit 1; }
+          ./scripts/e2e/run_all.sh --parallel $SHARD_SUITES
+
+      # 分片凭据必须在跑完之后写：parallel_runner 启动时会清空 results 目录。
+      - name: 落分片凭据（本片本该跑哪些套件）
+        if: always()
+        run: node scripts/e2e/shard.mjs --write-shard-info --id "$SHARD_ID" --suites "$SHARD_SUITES" --out .e2e-bin/results
+
+      # 失败时把证据留下来：没有逐 case 的 full.log，环境问题只能靠猜。
+      - name: 上传本分片的结果（总是上传：判定与复核都靠它）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results-shard-${{ matrix.shard.id }}
+          path: .e2e-bin/results
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: 上传截图证据（f3 现场）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots-shard-${{ matrix.shard.id }}
+          path: scripts/e2e/fixtures/f3/screenshots
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # 总判定：唯一的裁决口。分组 job 崩溃/失败时**必须跑到**这里并判红，不许被 needs 跳过。
+  e2e-affected:
+    name: e2e（affected）
+    needs: [e2e-plan, e2e-shard]
+    if: always() && (needs.e2e-plan.result == 'success' || needs.e2e-plan.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          filter: blob:none
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # 0 个 artifact 时 download 会报错；不中断，让下面的判定逐条说出缺了哪些套件。
+      - name: 下载分片结果
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: e2e-results-shard-*
+          path: .e2e-bin/sharded
+
+      # 真门禁：容忍范围只在 scripts/e2e/known-env-failures.json（棘轮只许变小）。
+      - name: 总判定（清单内容忍，清单外拦；分片缺一片也拦）
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.e2e-plan.result }}" != "success" ]; then
+            echo "::error::e2e 计划分片 job 是 ${{ needs.e2e-plan.result }}：没有可信的套件清单 ⇒ 判红（fail-closed）"
+            exit 1
+          fi
+          count="${{ needs.e2e-plan.outputs.count }}"
           if [ "$count" = "0" ]; then
             echo "ℹ️ 本次改动没有被任何 e2e 套件覆盖（计划里已有跳过原因）⇒ 不跑"
             exit 0
           fi
-          ./scripts/e2e/run_all.sh ${{ steps.pick.outputs.suites }}
-
-      # 裁决：失败集 ⊆ 已知清单 → 绿（逐条 warning）；清单之外 → 红并拦合并。
-      # 这个 job 是真门禁 —— 容忍范围写在 scripts/e2e/known-env-failures.json（棘轮只许变小），
-      # 不是靠 continue-on-error 整块放行。
-      - name: 判定（清单内容忍，清单外拦）
-        if: steps.pick.outputs.count != '0'
-        run: |
+          selected="${{ needs.e2e-plan.outputs.selected }}"
+          node scripts/e2e/shard.mjs --merge --from .e2e-bin/sharded --out .e2e-bin/results --expect "$selected"
+          rc=0
           node scripts/e2e/ci-e2e-verdict.mjs \
             --results .e2e-bin/results \
             --known scripts/e2e/known-env-failures.json \
-            --selected "${{ steps.pick.outputs.suites }}"
-
-      # 失败时把证据留下来：没有逐 case 的 full.log，上面的环境问题只能靠猜。
-      - name: 上传 e2e 证据（总是上传：判定靠它复核「清单外的失败」）
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-evidence-${{ github.run_id }}
-          path: |
-            .e2e-bin/results
-            scripts/e2e/fixtures/f3/screenshots
-          retention-days: 7
-          if-no-files-found: ignore
-
+            --selected "$selected" || rc=$?
+          # 判定器只读 results，「哪一片崩了」它看不见：分片 job 的结论要单独拦一次，
+          # 否则「results 恰好齐了但有一个 job 失败」会被判绿。
+          if [ "${{ needs.e2e-shard.result }}" != "success" ]; then
+            echo "::error::e2e 分片 job 有失败（${{ needs.e2e-shard.result }}）⇒ 判红"
+            rc=1
+          fi
+          exit $rc
   # ── main push：轻量回归（不跑 e2e；全量留给 nightly）───────────────
   regression:
     name: regression（main push：make ci）
