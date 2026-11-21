@@ -51,6 +51,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { runsAsMain } from "./lib/direct-run.mjs";
+
 /** 仓库根（按脚本位置推，不依赖 cwd；与 scripts/build-tailwind.mjs 同款）。 */
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -682,9 +684,7 @@ async function main() {
 	return 1;
 }
 
-const isDirectRun =
-	process.argv[1] &&
-	path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+const isDirectRun = runsAsMain(import.meta.url);
 if (isDirectRun) {
 	if (process.argv.includes("--self-test")) {
 		process.exit(selfTest() ? 0 : 1);

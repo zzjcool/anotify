@@ -63,7 +63,8 @@
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+
+import { runsAsMain } from "./lib/direct-run.mjs";
 
 /** 站点支持的 4 种语言（与 `make sitegen -langs zh-CN,en,ja,es` 同序）。 */
 export const LANGS = ["zh-CN", "en", "ja", "es"];
@@ -943,8 +944,7 @@ function throwsParseError(fn) {
 	}
 }
 
-const isDirectRun =
-	process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+const isDirectRun = runsAsMain(import.meta.url);
 if (isDirectRun) {
 	const USAGE = "用法：node scripts/check-i18n-keys.mjs [--src=web-src] [--static=web] [--self-test]";
 	const known = (a) => a === "--self-test" || a.startsWith("--src=") || a.startsWith("--static=");

@@ -70,8 +70,8 @@
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { LANGS, ParseError, extractRefs, parseLocale } from "./check-i18n-keys.mjs";
+import { runsAsMain } from "./lib/direct-run.mjs";
 
 /** 豁免标记（值所在行或上一行的注释里）。理由必填。 */
 export const EXEMPT_MARKER = "ui-copy-ok";
@@ -1154,8 +1154,7 @@ async function main() {
 	return 1;
 }
 
-const isDirectRun =
-	process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+const isDirectRun = runsAsMain(import.meta.url);
 if (isDirectRun) {
 	const known = (a) => a === "--self-test" || a.startsWith("--src=");
 	const unknown = process.argv.slice(2).filter((a) => !known(a));

@@ -125,6 +125,7 @@ check-guard-selftest: ## 守卫自测：拦"守卫自己静默不查了"（恒�
 	node scripts/check-ui-copy.mjs --self-test
 	node scripts/check-config-writes.mjs --self-test
 	node scripts/check-yaml-doc.mjs --self-test
+	node --test scripts/lib/direct-run.test.mjs
 
 check-annotations: ## 注解即外键：文档/注释里的 scripts、make、npm 引用与 @guard/@decision 锚点必须解析（docs/lint-guards.md §3）
 	node scripts/check-annotations.mjs --self-test
