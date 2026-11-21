@@ -184,6 +184,7 @@ func newHarness(t *testing.T) *harness {
 		},
 		Results:      h.results,
 		EmitEndpoint: "http://127.0.0.1:12345",
+		DecisionBase: "https://hub.example",
 		WorkRoot:     workRoot,
 		Clock:        h.clk,
 		Logf:         t.Logf,
@@ -300,12 +301,17 @@ func (h *harness) acceptFor(taskID string, attempt int) (*int, string) {
 }
 
 func (h *harness) grant(taskID string, attempt int, leaseID, token string) {
+	h.grantRouter(taskID, attempt, leaseID, token, "")
+}
+
+func (h *harness) grantRouter(taskID string, attempt int, leaseID, token, decisionToken string) {
 	slot, assignment := h.acceptFor(taskID, attempt)
 	h.r.HandleLeaseGrant(&protocol.LeaseGrantFrame{
 		Type: protocol.FrameLeaseGrant, TaskID: taskID, Attempt: attempt,
 		Node: "node-a", LeaseID: leaseID, AttemptToken: token,
-		ExpiresAt:    h.clk.Now().Add(protocol.LeaseTTL),
-		AssignmentID: assignment, Slot: slot,
+		DecisionToken: decisionToken,
+		ExpiresAt:     h.clk.Now().Add(protocol.LeaseTTL),
+		AssignmentID:  assignment, Slot: slot,
 	})
 }
 
@@ -350,8 +356,7 @@ func (h *harness) waitFrameAdvancing(t *testing.T, pred func(any) bool, step tim
 //
 //  1. fatal（可选）返回非空字符串 ⇒ 这个等待**已经不可能满足**（例如等的是
 //     succeeded 结果，而它已经以 failed 落地）。旧写法只把“phase 不是 succeeded”
-//     当“还没到”，于是把真实的 script_failed 埋成 15s 超时（anotify#490）。
-//     遇到终态就必须立即带着真实原因失败，不能把终态当成“再等等”。
+//     当“还没到”，于是把真实的 script_failed 埋成 15s 超时（anotify#490）。    遇到终态就必须立即带着真实原因失败，不能把终态当成“再等等”。
 //  2. 真超时 ⇒ 带上 harness 快照（pending/running/slots/帧/各 attempt 生命周期
 //     + 包内 goroutine 栈），而不是只留一句「等待 X 超时」。
 func (h *harness) waitUntil(t *testing.T, what string, pred func() bool, timeout time.Duration, fatal ...func() string) {
@@ -1133,5 +1138,70 @@ func TestDualStreamLogsCaptured(t *testing.T) {
 	stderr, err := os.ReadFile(filepath.Join(dir, "stderr.log"))
 	if err != nil || !strings.Contains(string(stderr), "err-marker") || strings.Contains(string(stderr), "out-marker") {
 		t.Fatalf("stderr.log 不对：%q err=%v", stderr, err)
+	}
+}
+
+// TestDecisionURL 钉住决策端点的拼法（#522）：没有凭据就没有 URL，有凭据才拼。
+//
+// 判据必须是「凭据 + 地址都在」——只拼出一个没有凭据的 URL 等于把脚本指向一个
+// 必定 401 的端点（作者会以为是中枢坏了）。
+func TestDecisionURL(t *testing.T) {
+	cases := []struct {
+		name  string
+		base  string
+		task  string
+		token string
+		want  string
+	}{
+		{"齐全", "https://hub.example", "tsk_1", "tok_x", "https://hub.example/v1/tasks/tsk_1/decision"},
+		{"base 带尾斜杠", "https://hub.example/", "tsk_1", "tok_x", "https://hub.example/v1/tasks/tsk_1/decision"},
+		{"没有凭据", "https://hub.example", "tsk_1", "", ""},
+		{"没有中枢地址", "", "tsk_1", "tok_x", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := decisionURL(tc.base, tc.task, tc.token); got != tc.want {
+				t.Fatalf("decisionURL = %q，want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDecisionChannelInjectedIntoScriptEnv 钉住 grant → attempt → 脚本 env（#522）：凭据与 URL 成对注入，没凭据时两个都不出现。
+func TestDecisionChannelInjectedIntoScriptEnv(t *testing.T) {
+	cases := []struct {
+		name          string
+		decisionToken string
+		want          string
+	}{
+		{"router 任务", "tok_router", "tok_router|https://hub.example/v1/tasks/t1/decision"},
+		{"普通任务", "", "|"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			a, digest := h.artifact(func(a *artifact.Artifact) {
+				a.Spec.Run.Files["run.sh"] = `#!/bin/sh
+printf '%s|%s' "$ANOTIFY_DECISION_TOKEN" "$ANOTIFY_DECISION_URL" > decision.txt
+`
+			})
+			h.dispatch("t1", 1, a, digest)
+			h.waitFrame(t, func(any) bool { return hasAccept(h.sender.snapshot(), "t1") }, 2*time.Second)
+			h.grantRouter("t1", 1, "lease-1", "token-1", tc.decisionToken)
+			res := h.waitFrame(t, func(f any) bool {
+				r, ok := f.(*protocol.TaskResultFrame)
+				return ok && r.TaskID == "t1"
+			}, 5*time.Second).(*protocol.TaskResultFrame)
+			if res.Phase != protocol.TaskPhaseSucceeded {
+				t.Fatalf("脚本应成功：%+v", res)
+			}
+			data, err := os.ReadFile(filepath.Join(execenv.SystemWorkDir(h.workRoot, "t1", 1), "decision.txt"))
+			if err != nil {
+				t.Fatalf("读 decision.txt: %v", err)
+			}
+			if string(data) != tc.want {
+				t.Fatalf("注入的决策 channel = %q，want %q", data, tc.want)
+			}
+		})
 	}
 }

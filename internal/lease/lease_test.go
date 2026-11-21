@@ -97,7 +97,7 @@ func (f *fixture) runningTask(t *testing.T, capability *store.CapabilityVersion,
 		t.Fatalf("写节点令牌: %v", err)
 	}
 	_ = token
-	if _, _, _, _, err := f.db.GrantLeaseAuthorized(ctx, store.NodeAuthorization{NodeID: f.node.ID, NodeTokenHash: hash},
+	if _, _, _, _, _, err := f.db.GrantLeaseAuthorized(ctx, store.NodeAuthorization{NodeID: f.node.ID, NodeTokenHash: hash},
 		task.ID, "asg_lease_1", 1, 0, now); err != nil {
 		t.Fatalf("授予租约: %v", err)
 	}

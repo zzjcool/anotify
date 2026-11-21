@@ -123,8 +123,8 @@ const (
 	// 192 → 196：上面那四个 observed 子 schema 各自进 pair（虽然能从 CapabilityStatus
 	// 递归到达，但「可达」不等于「被单独钉住」——具名 DTO 都单独成对）。
 	// 196 → 202：启停/试跑的六对 DTO；202 → 204：#510 卸载响应两对（结果 / kept 行）；
-	// 204 → 206：#511 版本历史两对（列表 / 一行）。
-	parityPairsFloor = 206
+	// 204 → 206：#511 版本历史两对（列表 / 一行）；206 → 209：#522 router 结局三对（动作 / 决策请求 / 决策回执）。
+	parityPairsFloor = 209
 	// bareMountFloor 是 bareMountSpec() 的条目数。
 	bareMountFloor = 27
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底）。
@@ -139,8 +139,8 @@ const (
 	// `GET /v1/namespaces/{name}/yaml`、`GET /v1/system/yaml`）。
 	// 126 → 127：命名空间的 YAML 写面（#476 阶段 2：`PUT /v1/namespaces/{name}/yaml`）。
 	// 127 → 128：`DELETE …/playbooks/{slug}/releases/{release}`（#510 实例卸载）；
-	// 128 → 129：`GET …/playbooks/{slug}/versions`（#511 版本历史）。
-	muxPatternCount = 129
+	// 128 → 129：`GET …/playbooks/{slug}/versions`（#511 版本历史）；129 → 130：`POST /v1/tasks/{taskId}/decision`（#522 决策端点）。
+	muxPatternCount = 130
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 39
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数。
@@ -149,8 +149,8 @@ const (
 	// 234 → 240：启停/试跑六个具名 schema（CapabilityDisableRequest / CapabilityTestRequest /
 	// CapabilityTestReceipt / CapabilityTestWarning / CapabilityAuditEntry / CapabilityAuditList）；
 	// 240 → 242：#510 卸载响应的结果与 kept 行；242 → 243：#513 的 `SourceMatch`；243 → 245：#511 版本历史两对；
-	// 245 → 246：#519 的组合子叶子行 `SourceMatchLeaf`。
-	specSchemaFloor = 246
+	// 245 → 246：#519 的组合子叶子行 `SourceMatchLeaf`；246 → 249：#522 的 `SourceOutcomeAction` / `TaskDecisionRequest` / `TaskDecisionResponse`。
+	specSchemaFloor = 249
 )
 
 // ---------- 测试入口 ----------
@@ -194,8 +194,8 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 	// 135 → 137：+2 只读 YAML（IA ③④：Namespace 文档 / SystemConfig 文档）。
 	// 137 → 138：+1 命名空间的 YAML 写面（#476 阶段 2）；138 → 139：+1 实例卸载（#510 的 DELETE releases）；
 	// 139 → 140：+1 包版本历史读模型（#511 的 GET …/playbooks/{slug}/versions）。
-	if len(ops) != 140 {
-		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 140（139 + #511 的包版本历史）", len(ops))
+	if len(ops) != 141 {
+		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 141（140 + #522 的决策端点）", len(ops))
 	}
 	// 至少一条来自 components.pathItems（agent.yaml 四条 + events/ingress 的共享 pathItem）。
 	fromPathItems := 0
@@ -1454,6 +1454,7 @@ var protocolPathConsts = map[string]string{
 	"NodeTaskArtifactsPathInfix":  protocol.NodeTaskArtifactsPathInfix,
 	"NodeStreamPath":              protocol.NodeStreamPath,
 	"NodeBinaryPath":              protocol.NodeBinaryPath,
+	"DecisionPatternPath":         protocol.DecisionPatternPath,
 }
 
 // patternCollector 是一次静态扫描的状态。
@@ -2755,6 +2756,18 @@ var nodeTokenRegistration = map[string]struct {
 	},
 }
 
+var taskTokenRegistration = map[string]struct {
+	Handler  string
+	AuthFile string
+	Tokens   []string
+}{
+	"POST /v1/tasks/{taskId}/decision": {
+		Handler:  "newTaskDecisionHandler",
+		AuthFile: "internal/server/decision.go",
+		Tokens:   []string{"BearerToken", "RecordDecision"},
+	},
+}
+
 // consoleKeyRegistration 是 consoleKey 两个端点各自的**鉴权入口**。
 //
 // consoleKey 没有中间件：鉴权在 handler 里（Bearer → ValidateKey → scopes）。所以判据是
@@ -2785,6 +2798,7 @@ var securitySchemeWitness = map[string][]string{
 	"adminSession": {"internal/auth/admin.go:AdminMiddleware", "internal/auth/session.go:Middleware"},
 	"consoleKey":   {"internal/auth/apikey.go:ValidateKey", "internal/api/events.go:EventHandler"},
 	"nodeToken":    {"internal/authn/authn.go:BearerToken"},
+	"taskToken":    {"internal/authn/authn.go:BearerToken"},
 }
 
 // securityRegistrationProblems 对账「spec 的 security 方案」与「注册语句里出现的鉴权标识」。
@@ -2827,6 +2841,7 @@ func securityRegistrationProblems(patterns []routePattern, ops []specOp) []strin
 
 	usedNodeToken := map[string]bool{}
 	usedConsoleKey := map[string]bool{}
+	usedTaskToken := map[string]bool{}
 	for _, op := range ops {
 		if len(op.Security) == 0 {
 			continue
@@ -2874,6 +2889,26 @@ func securityRegistrationProblems(patterns []routePattern, ops []specOp) []strin
 							op.Method, op.Path, spec.AuthFile, token, err))
 					}
 				}
+			case "taskToken":
+				spec, ok := taskTokenRegistration[op.Key()]
+				if !ok {
+					problems = append(problems, fmt.Sprintf(
+						"security 注册语句：%s %s 声明 taskToken，但 taskTokenRegistration 里没有它的鉴权入口登记", op.Method, op.Path))
+					continue
+				}
+				usedTaskToken[op.Key()] = true
+				if !strings.Contains(reg.Reg, spec.Handler) {
+					problems = append(problems, fmt.Sprintf(
+						"security 注册语句：%s %s 声明 taskToken，但注册语句里没有 %q（决策凭据入口）：%s（%s）",
+						op.Method, op.Path, spec.Handler, firstLine(reg.Reg), reg.Pos))
+				}
+				for _, token := range spec.Tokens {
+					if ok, err := fileMustContain(spec.AuthFile, token); err != nil || !ok {
+						problems = append(problems, fmt.Sprintf(
+							"security 注册语句：%s %s 的决策凭据校验不见了 —— %s 里没有 %q（err=%v）",
+							op.Method, op.Path, spec.AuthFile, token, err))
+					}
+				}
 			case "nodeToken":
 				spec, ok := nodeTokenRegistration[op.Key()]
 				if !ok {
@@ -2907,6 +2942,13 @@ func securityRegistrationProblems(patterns []routePattern, ops []specOp) []strin
 		}
 		problems = append(problems, fmt.Sprintf(
 			"nodeTokenRegistration 已过期：spec 里没有声明 nodeToken 的 %s（或方案换了），请从表里删掉", key))
+	}
+	for _, key := range sortedKeys(taskTokenRegistration) {
+		if usedTaskToken[key] {
+			continue
+		}
+		problems = append(problems, fmt.Sprintf(
+			"taskTokenRegistration 已过期：spec 里没有声明 taskToken 的 %s（或方案换了），请从表里删掉", key))
 	}
 	for _, key := range sortedKeys(consoleKeyRegistration) {
 		if usedConsoleKey[key] {
@@ -3050,6 +3092,7 @@ func parityPairs() []parityPair {
 		{GoLabel: "srcSpecView", File: "resource.yaml", Schema: "SourceSpec", Sample: srcSpecView{}},
 		{GoLabel: "srcStatusView", File: "resource.yaml", Schema: "SourceStatus", Sample: srcStatusView{}},
 		{GoLabel: "sourcespec.Target", File: "resource.yaml", Schema: "SourceTarget", Sample: sourcespec.Target{}},
+		{GoLabel: "sourcespec.OutcomeAction", File: "resource.yaml", Schema: "SourceOutcomeAction", Sample: sourcespec.OutcomeAction{}},
 		{GoLabel: "srcReceiptDoc", File: "resource.yaml", Schema: "SourceReceipt", Sample: srcReceiptDoc{}},
 		{GoLabel: "srcReceiptTask", File: "resource.yaml", Schema: "SourceReceiptTask", Sample: srcReceiptTask{}},
 		{GoLabel: "route.Prune", File: "resource.yaml", Schema: "PruneFact", Sample: route.Prune{}},
@@ -3224,6 +3267,8 @@ func parityPairs() []parityPair {
 		{GoLabel: "nodeAPI.upgradeNode", File: "resource.yaml", Schema: "NodeUpgradeResult",
 			Wire: &goWire{File: "resource_node.go", Func: "nodeAPI.upgradeNode", Kind: "response", Select: 0}},
 		{GoLabel: "playbookActionBody", File: "resource.yaml", Schema: "PlaybookActionRequest", Sample: playbookActionBody{}},
+		{GoLabel: "protocol.DecisionRequest", File: "resource.yaml", Schema: "TaskDecisionRequest", Sample: protocol.DecisionRequest{}},
+		{GoLabel: "protocol.DecisionResponse", File: "resource.yaml", Schema: "TaskDecisionResponse", Sample: protocol.DecisionResponse{}},
 		{GoLabel: "taskActionReason", File: "resource.yaml", Schema: "TaskActionRequest",
 			Wire: &goWire{File: "resource_task.go", Func: "taskActionReason", Kind: "request", Select: -1}},
 		{GoLabel: "artifact.Template", File: "resource.yaml", Schema: "CapabilityTemplate", Sample: artifact.Template{}},

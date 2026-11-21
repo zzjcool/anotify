@@ -129,7 +129,8 @@ type LeaseGrantFrame struct {
 	// LeaseID 是本次授权的租约 id（renew/ack/result 都必须回带同一个）。
 	LeaseID string `json:"leaseId"`
 	// AttemptToken 是本次 attempt 的一次性高熵令牌（重试后旧 token 立即作废）。
-	AttemptToken string `json:"attemptToken"`
+	AttemptToken  string `json:"attemptToken"`
+	DecisionToken string `json:"decisionToken,omitempty"` // router 任务的决策凭据（#522）
 	// ExpiresAt 是本授权到期的绝对时间（中枢时钟）。
 	ExpiresAt time.Time `json:"expiresAt"`
 	// AssignmentID / Slot 回带本次派发的 assignment 与节点在 accept 时预留的槽

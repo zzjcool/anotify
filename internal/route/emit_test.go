@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/protocol"
+	"github.com/zzjcool/anotify/internal/sourcespec"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -520,7 +521,7 @@ func TestEmitStrictPinnedRefRejectsNonCanonicalVersion(t *testing.T) {
 	}
 }
 
-// TestSplitRefStrictPinnedVersions 直接钉住 strict ref 解析（emit 与 source 共用）。
+// strict ref 解析只有一份实现（sourcespec.SplitRef）。
 func TestSplitRefStrictPinnedVersions(t *testing.T) {
 	cases := map[string]struct {
 		name   string
@@ -539,9 +540,9 @@ func TestSplitRefStrictPinnedVersions(t *testing.T) {
 		"ghost@2@3":   {"ghost", -1, true},
 	}
 	for ref, want := range cases {
-		name, ver, pinned := splitRef(ref)
+		name, ver, pinned := sourcespec.SplitRef(ref)
 		if name != want.name || ver != want.ver || pinned != want.pinned {
-			t.Fatalf("splitRef(%q) = (%q,%d,%v)，want (%q,%d,%v)",
+			t.Fatalf("SplitRef(%q) = (%q,%d,%v)，want (%q,%d,%v)",
 				ref, name, ver, pinned, want.name, want.ver, want.pinned)
 		}
 	}

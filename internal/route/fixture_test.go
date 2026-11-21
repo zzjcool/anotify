@@ -110,7 +110,7 @@ func testRunningTask(t *testing.T, db *store.DB, namespaceID, traceID string, ca
 	if err := db.AssignTaskAt(testCtx(), task.ID, node.ID, "asg_route_1", 1, now); err != nil {
 		t.Fatalf("记派发候选: %v", err)
 	}
-	leaseID, attemptToken, _, _, err := db.GrantLeaseAuthorized(testCtx(),
+	leaseID, attemptToken, _, _, _, err := db.GrantLeaseAuthorized(testCtx(),
 		store.NodeAuthorization{NodeID: node.ID, NodeTokenHash: tokenHash},
 		task.ID, "asg_route_1", 1, 0, now)
 	if err != nil {

@@ -146,7 +146,7 @@ func (e *benchEnv) grantOne(tb testing.TB, ctx context.Context, taskID string) (
 	if err := e.db.AssignTask(ctx, taskID, e.nodeID, assignmentID, 1); err != nil {
 		tb.Fatalf("assign %s: %v", taskID, err)
 	}
-	leaseID, _, attempt, _, err := e.db.GrantLeaseAuthorized(ctx, e.auth, taskID, assignmentID, 1, 0, store.Now())
+	leaseID, _, _, attempt, _, err := e.db.GrantLeaseAuthorized(ctx, e.auth, taskID, assignmentID, 1, 0, store.Now())
 	if err != nil {
 		tb.Fatalf("grant %s: %v", taskID, err)
 	}
@@ -206,7 +206,7 @@ func BenchmarkAssignGrant(b *testing.B) {
 		if err := env.db.AssignTask(ctx, t.ID, env.nodeID, assignmentID, 1); err != nil {
 			b.Fatalf("assign: %v", err)
 		}
-		if _, _, _, _, err := env.db.GrantLeaseAuthorized(ctx, env.auth, t.ID, assignmentID, 1, 0, store.Now()); err != nil {
+		if _, _, _, _, _, err := env.db.GrantLeaseAuthorized(ctx, env.auth, t.ID, assignmentID, 1, 0, store.Now()); err != nil {
 			b.Fatalf("grant: %v", err)
 		}
 	}

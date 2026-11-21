@@ -59,7 +59,7 @@ func TestC3bDuplicateResultRequiresCurrentBindingZeroFacts(t *testing.T) {
 	if err := db.AssignTaskAt(ctx, task.ID, node.ID, "new-attempt", 2, auth.Now+1); err != nil {
 		t.Fatal(err)
 	}
-	lease, _, attempt, _, err := db.GrantLeaseAuthorized(ctx, nodeAuth, task.ID, "new-attempt", 2, 0, auth.Now+1)
+	lease, _, _, attempt, _, err := db.GrantLeaseAuthorized(ctx, nodeAuth, task.ID, "new-attempt", 2, 0, auth.Now+1)
 	if err != nil {
 		t.Fatal(err)
 	}
