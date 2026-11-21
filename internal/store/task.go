@@ -15,11 +15,7 @@ import (
 	"github.com/zzjcool/anotify/internal/protocol"
 )
 
-// 任务相位（capability.md §8.3：小写，与 wire 一致）。
-//
-// 六个值就是全部：任务只有「在排队 / 在跑 / 终态」三种处境，终态再按原因分四类。
-// 没有 v3 的 9 态（assigned/acked/lease_expired 是**派发过程的步骤**，不是相位：
-// 它们要么还在 pending（等槽 / 退避 / 等配置），要么已经 running（授了租约）。
+// 任务相位（capability.md §8.3：小写，与 wire 一致）。六个值就是全部：任务只有「在排队 / 在跑 / 终态」三种处境，终态再按原因分四类。 没有 v3 的 9 态（assigned/acked/lease_expired 是**派发过程的步骤**，不是相位：它们要么还在 pending（等槽 / 退避 / 等配置），要么已经 running（授了租约）。
 const (
 	TaskPending   = string(protocol.TaskPhasePending)
 	TaskRunning   = string(protocol.TaskPhaseRunning)
@@ -31,10 +27,7 @@ const (
 	TaskAbandoned = string(protocol.TaskPhaseAbandoned)
 )
 
-// 停止意图（tasks.stop_intent）：**内部列**，不进任何公共 DTO。
-//
-// 它是 cancel / abandon 的**唯一判据**：running 任务的终态相位由它决定，不从
-// cancel_reason 的字符串字面（人话还是封闭码）反推。空串 = 没有停止意图。
+// 停止意图（tasks.stop_intent）：**内部列**，不进任何公共 DTO。它是 cancel / abandon 的**唯一判据**：running 任务的终态相位由它决定，不从 cancel_reason 的字符串字面（人话还是封闭码）反推。空串 = 没有停止意图。
 const (
 	StopIntentCancel  = "cancel"
 	StopIntentAbandon = "abandon"
@@ -71,10 +64,7 @@ const (
 var (
 	// ErrInvalidTransition 表示状态机拒绝该迁移（或该行已不在期望相位）。
 	ErrInvalidTransition = errors.New("invalid_transition")
-	// ErrLeaseMismatch 表示 attempt / lease_id 与库里的权威事实不一致。
-	//
-	// 它覆盖三种同源的事故：旧 attempt 令牌、过期的租约、被重派后拿旧租约回报。
-	// 一律报错、不"尽力而为"——静默接受会让两次执行都写进同一行。
+	// ErrLeaseMismatch 表示 attempt / lease_id 与库里的权威事实不一致。它覆盖三种同源的事故：旧 attempt 令牌、过期的租约、被重派后拿旧租约回报。 一律报错、不"尽力而为"——静默接受会让两次执行都写进同一行。
 	ErrLeaseMismatch = errors.New("lease_mismatch")
 	// ErrAttemptTokenInvalid 表示尝试令牌对不上（emit / task.result 的权威校验）。
 	ErrAttemptTokenInvalid = errors.New("attempt_token_invalid")
@@ -86,11 +76,8 @@ var (
 	ErrNoAssignment = errors.New("no_assignment")
 )
 
-// MaxTaskParamsBytes 是单条任务 params 的硬上限（120 KiB = 122880 字节）。
-//
-// 这是**传输层**限制：节点把整份 params 塞进子进程环境变量，而 Linux 对单个
-// env/argv 串的硬上限是 MAX_ARG_STRLEN = 131072，超过 execve 直接 E2BIG。
-// 留 ~8KiB 余量给前缀与其它 argv 后取 120KiB。
+// MaxTaskParamsBytes 是单条任务 params 的硬上限（120 KiB = 122880 字节）。这是**传输层**限制：节点把整份 params 塞进子进程环境变量，而 Linux 对单个
+// env/argv 串的硬上限是 MAX_ARG_STRLEN = 131072，超过 execve 直接 E2BIG。留 ~8KiB 余量给前缀与其它 argv 后取 120KiB。
 const MaxTaskParamsBytes = 120 << 10
 
 // ErrParamsTooLarge 是 params 超限的哨兵（errors.Is 可用）。
@@ -126,9 +113,7 @@ func CheckTaskParamsSize(taskID string, params json.RawMessage) error {
 	return nil
 }
 
-// Task 是 tasks 表的一行：**一个逻辑 task 一行**。
-//
-// 路由不在这张表上：出口的唯一载体是 emit 记录（`emits`）。任务行只记
+// Task 是 tasks 表的一行：**一个逻辑 task 一行**。路由不在这张表上：出口的唯一载体是 emit 记录（`emits`）。任务行只记
 // 「执行这件事怎么样了」，以及**执行授权的全部事实**（attempt / lease / token hash）。
 type Task struct {
 	ID           string          `json:"id"`
@@ -423,11 +408,11 @@ func loadNamespaceInputsOn(ctx context.Context, ex queryExec, namespaceID string
 // TaskInputs 解析一条任务在**当前 attempt** 里实际可用的输入值（名字 → 值 + 来源层）。
 //
 // 两层判据（D2）：
-//   - namespace 只读任务接受时钉住的快照（NamespaceVars）与它的 revision：
-//     后续 namespace 配置更新不会改动已接受任务，重试/换节点也一样；
-//   - local / node 只读该 attempt 在 grant 时钉住的机器快照（task_attempts）：
-//     本次 attempt 运行期间配置更新 / hello 重报本机值都不会改动它（同一 attempt 不漂），
-//     换 attempt（换节点或重新授权）时新 attempt 自己重新解析机器层。
+// - namespace 只读任务接受时钉住的快照（NamespaceVars）与它的 revision：
+// 后续 namespace 配置更新不会改动已接受任务，重试/换节点也一样；
+// - local / node 只读该 attempt 在 grant 时钉住的机器快照（task_attempts）：
+// 本次 attempt 运行期间配置更新 / hello 重报本机值都不会改动它（同一 attempt 不漂），
+// 换 attempt（换节点或重新授权）时新 attempt 自己重新解析机器层。
 //
 // 只返回 names 点名的键（不把整份 ns 快照灌进 run.env、也不隐式给全部键）；
 // 两层都没有的名字不出现在结果里（缺失 = 该 env 键不出现，不是空串）。
@@ -668,8 +653,8 @@ func (d *DB) ListDispatchableTasks(ctx context.Context, now int64, limit int) ([
 // 必须带回同一个值，否则视为旧派发（ErrNoAssignment）。
 //
 // 两条硬条件写在**同一条 UPDATE** 里（不先读后写）：
-//   - cancel_requested_at IS NULL：已请求取消的任务永不再被选点；
-//   - 目标节点必须仍 online（EXISTS 子查询）：draining/offline 的节点不接新任务。
+// - cancel_requested_at IS NULL：已请求取消的任务永不再被选点；
+// - 目标节点必须仍 online（EXISTS 子查询）：draining/offline 的节点不接新任务。
 //
 // 前面的节点状态读只用于给出准确错误，真正的判定在 UPDATE 的 WHERE 里（原子）。
 //
@@ -779,10 +764,10 @@ const TaskRejectSlotUnavailable = "slot_unavailable"
 
 // RejectAssignment 处理节点的 `task.reject`：合法理由只有两个：
 //
-//   - `stale_config`：机器级配置还没 apply 完 → 回 pending + waiting_for_config，
-//     带 5s 起/上限 60s 的退避；
-//   - `slot_unavailable`：本机没有真实空槽 / 预算已满 / 已有占用 → 回 pending +
-//     waiting_for_slot，同样有界退避。
+// - `stale_config`：机器级配置还没 apply 完 → 回 pending + waiting_for_config，
+// 带 5s 起/上限 60s 的退避；
+// - `slot_unavailable`：本机没有真实空槽 / 预算已满 / 已有占用 → 回 pending +
+// waiting_for_slot，同样有界退避。
 //
 // 两条路径都**不计 attempt、不占槽、不改 node 归属**：它们不是执行失败（否则一次配置
 // 延迟或一次容量抖动就能把任务打成 abandoned）。未知理由一律 fail-closed。
@@ -900,15 +885,15 @@ func normalizeTaskError(result TaskResult) string {
 
 // RequestCancel 记录一次**用户取消**意图（取消与 grant 的**唯一线性化点**）。
 //
-//   - pending：没有执行者，直接终态（cancelled），不需要等 ack；
-//   - running：只落 cancel_reason + cancel_requested_at + stop_intent，等节点 cancel.ack
-//     带回 processGroupReaped=true 才置终态并释放槽位（进程可能还在跑）。
+// - pending：没有执行者，直接终态（cancelled），不需要等 ack；
+// - running：只落 cancel_reason + cancel_requested_at + stop_intent，等节点 cancel.ack
+// 带回 processGroupReaped=true 才置终态并释放槽位（进程可能还在跑）。
 //
 // 读与写必须在**同一个事务**里（DSN `_txlock=immediate`，写锁在事务起点拿下）：
 // 先读后写的两步之间如果被 grant 插进来，就会把一条**正在跑**的任务无条件改成已取消，
 // 而节点上的进程还在用着那个槽位。现在两种赢法都是对的：
-//   - 取消先赢（pending → 终态）：随后的 grant 看到终态/取消标记，直接拒；
-//   - grant 先赢（pending → running）：取消走 running 分支，只记意图，等 reap。
+// - 取消先赢（pending → 终态）：随后的 grant 看到终态/取消标记，直接拒；
+// - grant 先赢（pending → running）：取消走 running 分支，只记意图，等 reap。
 //
 // 重复取消是幂等的（返回 nil，保留第一次的原因）：网关重试/两个管理员同时点
 // 不该变成 409。已终态 → ErrInvalidTransition（调用方翻 409）。
@@ -1019,10 +1004,10 @@ func defaultStopReason(finalPhase string) string {
 // cancelPhase 把**已落库的停止意图**翻成终态相位（cancel.ack / 租约回收路径）。
 //
 // 判据是 stop_intent 列（cancel / abandon），**不是** reason 的字符串字面：
-//   - 用户取消（stop_intent=cancel）恒为 cancelled——reason 是契约里的人话，
-//     `{"reason":"e2e 运行中取消"}` 曾被 literal 比较误判成 abandoned（#336 的真 bug）；
-//   - 用户放弃（stop_intent=abandon）恒为 abandoned，与 reason 是不是默认码无关
-//     （#348 文档化的边界：running + /abandon + 人话 reason 曾经落 cancelled，已修）。
+// - 用户取消（stop_intent=cancel）恒为 cancelled——reason 是契约里的人话，
+// `{"reason":"e2e 运行中取消"}` 曾被 literal 比较误判成 abandoned（#336 的真 bug）；
+// - 用户放弃（stop_intent=abandon）恒为 abandoned，与 reason 是不是默认码无关
+// （#348 文档化的边界：running + /abandon + 人话 reason 曾经落 cancelled，已修）。
 //
 // stop_intent 为空/未知只可能来自未带该列的存量行（v4 新库不会出现）：那时按
 // reason 的封闭码兜底，保持旧行为且不 panic。

@@ -12,11 +12,9 @@ import (
 	"github.com/zzjcool/anotify/internal/artifact"
 )
 
-// 部署状态（deployments.state）。
-//
-// 写者纪律（CONTRACT-protocol §7）：
-//   - 建行/删行只有控制台 API 会做；
-//   - state / reason / updated_at 只有节点帧（apply）与 hello 对账会写。
+// 部署状态（deployments.state）。写者纪律（CONTRACT-protocol §7）：
+// - 建行/删行只有控制台 API 会做；
+// - state / reason / updated_at 只有节点帧（apply）与 hello 对账会写。
 const (
 	// DeploymentPending 中枢想部署，还没收到节点确认。
 	DeploymentPending = "pending"
@@ -24,21 +22,16 @@ const (
 	DeploymentApplied = "applied"
 	// DeploymentFailed 节点拒绝（reason 里是短码 + 说明）。
 	DeploymentFailed = "failed"
-	// DeploymentLocal 是**旧的**「本地变体」态：节点上的 digest 与中枢期望不一致，
-	// 且中枢不敢覆盖。
-	//
-	// 现在不再产生这个态：中枢是部署的唯一写者，发现不一致就重新下发（覆盖），
-	// 对账会把行打成 pending。保留它只为了让旧库里已有的行能被读出来（下一次 hello
+	// DeploymentLocal 是**旧的**「本地变体」态：节点上的 digest 与中枢期望不一致，且中枢不敢覆盖。
+	// 现在不再产生这个态：中枢是部署的唯一写者，发现不一致就重新下发（覆盖），对账会把行打成 pending。保留它只为了让旧库里已有的行能被读出来（下一次 hello
 	// 对账就会把它们改成 applied/pending）。UI 上的黄色“本地变体”也因此只会是历史残留。
 	DeploymentLocal = "local"
 )
 
 // ErrArtifactNotFound 表示「这个能力此刻没有可部署/可引用的产物」。
-//
 // v4 只有 run 一种实现形式，所以它只有两种来源：
-//   - 能力不存在，或不属于该命名空间；
-//   - 能力没有 run（spec 过不了 artifact.Validate 的行不该出现在库里，防御性判一次）。
-//
+// - 能力不存在，或不属于该命名空间；
+// - 能力没有 run（spec 过不了 artifact.Validate 的行不该出现在库里，防御性判一次）。
 // 名字沿用旧哨兵：handler 层靠它翻 404 artifact_not_found，改名字换不来任何好处。
 var ErrArtifactNotFound = errors.New("store: artifact not found")
 
@@ -53,9 +46,9 @@ var ErrDeploymentExists = errors.New("store: deployment already exists")
 // 三处都要同一份形状，拼三遍迟早会拼出三种 digest。
 //
 // 字段取舍（契约 §11.2 / P2a）：
-//   - NamespaceID / CapabilityID / Digest / Spec 是内容的全部身份，都留着；
-//   - CreatedAt 删掉：没有行了，就没有落库时间（它唯一的作用是「新的在前」排序，
-//     而按能力取只有一份）。
+// - NamespaceID / CapabilityID / Digest / Spec 是内容的全部身份，都留着；
+// - CreatedAt 删掉：没有行了，就没有落库时间（它唯一的作用是「新的在前」排序，
+// 而按能力取只有一份）。
 type Artifact struct {
 	// P2 起产物不再是一个行身份：它是能力行正文的**派生**（Capability Spec v3 §11）。
 	// 曾经留过一个空的 ID 字段做兼容，P2b 已删：没有行身份就没有 ID，
@@ -121,9 +114,9 @@ func deployable(c *CapabilityVersion) error {
 // artifactOf 把一行能力拼成整份产物（**唯一**的拼装点）。
 //
 // 两件事必须一起做对，否则症状极难查：
-//   - digest 取能力行上的 digest（含 version 的部署身份，capability.md §3）。
-//     它必须与节点从收到的字节重算出来的一致，否则部署永远收敛不了；
-//   - Spec 取 `artifact.CanonicalJSON(c.Artifact())`（与 digest 同一次归一化）。
+// - digest 取能力行上的 digest（含 version 的部署身份，capability.md §3）。
+// 它必须与节点从收到的字节重算出来的一致，否则部署永远收敛不了；
+// - Spec 取 `artifact.CanonicalJSON(c.Artifact())`（与 digest 同一次归一化）。
 func artifactOf(c *CapabilityVersion) (*Artifact, error) {
 	if err := deployable(c); err != nil {
 		return nil, err
@@ -184,11 +177,11 @@ func (d *DB) ListArtifacts(ctx context.Context, namespaceID, capabilityID string
 // CreateDeployments 人工部署：为每个节点写一行 pending（「中枢希望这台机器持有这份内容」）。
 //
 // 语义（capability.md §2.4 Deployed condition / 契约 §11.2）：
-//   - 只引用 capability_id + digest，没有 artifact 行可指（产物不再是可引用物体）；
-//   - digest 的唯一来源是能力行：传空 = 用能力行的 digest；传了就必须与它相等
-//     （部署别的能力的 digest 是自相矛盾的请求，按「找不到这份产物」拒绝）；
-//   - 同一 (node, capability) **只保留一行**：部署是期望状态，新期望直接取代旧的。
-//     留着旧行会让同一能力同时存在两条互斥期望，节点每次重连都在两份内容之间来回被推。
+// - 只引用 capability_id + digest，没有 artifact 行可指（产物不再是可引用物体）；
+// - digest 的唯一来源是能力行：传空 = 用能力行的 digest；传了就必须与它相等
+// （部署别的能力的 digest 是自相矛盾的请求，按「找不到这份产物」拒绝）；
+// - 同一 (node, capability) **只保留一行**：部署是期望状态，新期望直接取代旧的。
+// 留着旧行会让同一能力同时存在两条互斥期望，节点每次重连都在两份内容之间来回被推。
 //
 // nodeIDs 为空是 no-op（不是错误）：控制台要部署的机器集合可能被筛空了。
 // 已存在的 (node, capability, digest) 视为幂等 no-op：重复点部署不该把绿标打回灰。
@@ -504,12 +497,12 @@ type DeploymentResultInputs struct {
 // MarkDeployResultAuthorized 落一条节点部署回执（**当前凭证 + 当前 intent 同一事务**）。
 //
 // 事务内判据：
-//  1. 当前 credential hash（nodes.token_hash == auth.NodeTokenHash）；
-//  2. namespace 当前仍对该节点可用（撤销后 0 写）；
-//  3. intent 行存在且归属 auth.NodeID（跨 Node 拒绝）；
-//  4. requestId == "dep_"+deploymentID；capability UID/name/version/digest 与当前
-//     intent 及能力行完整一致（旧 receipt / 错 digest 不能改当前 intent）；
-//  5. 已记录 receipt：精确同 state+reason 幂等（0 DML）；changed body → 冲突。
+// 1. 当前 credential hash（nodes.token_hash == auth.NodeTokenHash）；
+// 2. namespace 当前仍对该节点可用（撤销后 0 写）；
+// 3. intent 行存在且归属 auth.NodeID（跨 Node 拒绝）；
+// 4. requestId == "dep_"+deploymentID；capability UID/name/version/digest 与当前
+// intent 及能力行完整一致（旧 receipt / 错 digest 不能改当前 intent）；
+// 5. 已记录 receipt：精确同 state+reason 幂等（0 DML）；changed body → 冲突。
 //
 // 旧内部 MarkDeployResult 保留给现存调用方，但新 wire 消费者只能走这里；
 // 不允许 Get/precheck 后裸 Mark。
@@ -635,9 +628,9 @@ type ReconcileStats struct {
 // ReconcileNode 用节点自报的 applied 列表对账它名下的部署行。
 //
 // 判据（中枢覆盖语义，capability.md §2.4）：
-//   - digest 与期望一致 → applied（绿勾）
-//   - digest 不一致       → pending + reason 里写明两端 digest（stale，等重推）
-//   - 节点没上报这条能力  → pending（缺失，等重推）
+// - digest 与期望一致 → applied（绿勾）
+// - digest 不一致       → pending + reason 里写明两端 digest（stale，等重推）
+// - 节点没上报这条能力  → pending（缺失，等重推）
 //
 // 期望值取**能力行**的 digest（deploymentDigestSQL），不是 deployments.digest 列的副本：
 // 列里那份是建行那一刻的快照，而「这个能力现在的产物」只有能力行说了算。

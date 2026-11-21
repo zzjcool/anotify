@@ -17,15 +17,10 @@ import (
 	"github.com/zzjcool/anotify/internal/protocol"
 )
 
-// 节点领域（v4，anode.md §0/§2/§3.3/§6，api-conventions §7.4）。
-//
-// 节点是**集群级**对象：不绑命名空间。一台机器能服务哪些 ns 由两份列表的交集回答：
-//
+// 节点领域（v4，anode.md §0/§2/§3.3/§6，api-conventions §7.4）。节点是**集群级**对象：不绑命名空间。一台机器能服务哪些 ns 由两份列表的交集回答：
 //	node_configs.namespaces      管理员授权（缺省 ["*"]）
 //	nodes.declared_namespaces    本机申报（hello 上报，缺省 ["default"]）
-//
-// 生效 = 申报 ∩ 授权（权限只能收紧，不做「本地优先」）。节点的身份令牌不绑 ns。
-// 执行资格由 hello 上报的事实（facts / declared_capabilities / appliedRevision）
+// 生效 = 申报 ∩ 授权（权限只能收紧，不做「本地优先」）。节点的身份令牌不绑 ns。执行资格由 hello 上报的事实（facts / declared_capabilities / appliedRevision）
 // 与中枢配置（node_configs.revision）+ 部署事实共同决定：见 EligibleNodes。
 
 // 节点状态（api-conventions §7.4 / anode.md §0）。
@@ -44,11 +39,8 @@ const (
 // NodeNameMaxLen 是节点名的长度上限（1..63，与能力/ns 名同口径的字符集）。
 const NodeNameMaxLen = 63
 
-// Node 是 nodes 表的一行（一台机器）。
-//
-// TokenHash 是 sha256(token)，明文只在创建时返回一次，所以它带 `json:"-"`，
-// 任何 API 响应都不会泄漏哈希。Facts / DeclaredCapabilities / DeclaredNamespaces
-// 都是 hello 上报的**事实快照**：中枢不据此推断，只据此匹配与展示。
+// Node 是 nodes 表的一行（一台机器）。 TokenHash 是 sha256(token)，明文只在创建时返回一次，所以它带 `json:"-"`，
+// 任何 API 响应都不会泄漏哈希。Facts / DeclaredCapabilities / DeclaredNamespaces 都是 hello 上报的**事实快照**：中枢不据此推断，只据此匹配与展示。
 type Node struct {
 	ID   string   `json:"id"`
 	Name string   `json:"name"`
@@ -58,8 +50,7 @@ type Node struct {
 	TokenHash      string `json:"-"`
 	MaxInstances   int    `json:"maxInstances"`
 	MaxConcurrency int    `json:"maxConcurrency"`
-	// AgentVersion / AgentCommit 是节点上跑的那个 anode 的版本信息（空串 = 未知）。
-	// AgentVersion/AgentCommit 由 hello 自报（D-I13）；两者都是事实，不参与 digest。
+	// AgentVersion / AgentCommit 是节点上跑的那个 anode 的版本信息（空串 = 未知）。 AgentVersion/AgentCommit 由 hello 自报（D-I13）；两者都是事实，不参与 digest。
 	AgentVersion string `json:"agentVersion"`
 	AgentCommit  string `json:"agentCommit"`
 	// AgentUpgrade 是最近一次升级尝试的状态（零值 = 从未尝试）。
@@ -100,13 +91,9 @@ type AgentUpgrade struct {
 	At int64 `json:"at"`
 }
 
-// NodeInstance 是 node_instances 表的一行（并发槽位，由节点申报）。
-//
-// 槽位是**机器级**的（一台机器上的并发预算跨 ns 共享），所以没有 namespace_id。
-// 每槽最多一个能力进程（v4 不再有 per-slot concurrency 乘数：容量 = 真实 slot 记录，
-// 预算 = 机器级 limits）。
-// BusyTask 是占用它的逻辑任务；BusyAttempt / BusyLeaseID 是具体那一代执行
-// （task_attempts 的 attempt 与它那次 grant 的 lease）：同一逻辑任务换 attempt
+// NodeInstance 是 node_instances 表的一行（并发槽位，由节点申报）。槽位是**机器级**的（一台机器上的并发预算跨 ns 共享），所以没有 namespace_id。
+// 每槽最多一个能力进程（v4 不再有 per-slot concurrency 乘数：容量 = 真实 slot 记录，预算 = 机器级 limits）。
+// BusyTask 是占用它的逻辑任务；BusyAttempt / BusyLeaseID 是具体那一代执行 （task_attempts 的 attempt 与它那次 grant 的 lease）：同一逻辑任务换 attempt
 // 重试时可能同时占着旧 attempt 的槽，释放必须按这三列精确判定。
 type NodeInstance struct {
 	ID          string  `json:"id"`
@@ -126,7 +113,6 @@ var (
 	// ErrNoCapacity 节点没有任何可用实例槽位（原始绑定原语用；grant 路径用 ErrSlotUnavailable）。
 	ErrNoCapacity = errors.New("no_capacity")
 	// ErrSlotUnavailable 表示节点接受的 slot 此刻不可授权（未申报/已占/超出当前预算）。
-	//
 	// 语义与 task.reject 的 `slot_unavailable` 同源：不执行、不授 lease、不计 attempt，
 	// 任务回 pending + waiting_for_slot（有界退避）。绝不用 stale_config 伪装容量拒绝。
 	ErrSlotUnavailable = errors.New("slot_unavailable")
@@ -147,11 +133,11 @@ type InstanceSpec struct {
 // SlotObservation 是当前连接对某个物理槽位「此刻在跑什么」的**明确事实**。
 //
 // 它是槽位回收的唯一可信输入（G2 从 T3 最终帧映射；store 内部形状不镜像 wire）：
-//   - Busy 三态：nil = 未断言（未知），true = 明确仍在跑，false = 明确无进程；
-//   - busy=true 带 taskId/attempt/leaseId（已授权的执行）或 assignmentId/proposedAttempt
-//     （尚未 grant 的 reservation，**不伪造 lease**）；
-//   - busy=false 时必须带相符的历史 taskId/attempt/(leaseId)：无匹配引用的 idle 记录
-//     不能清旧 busy（rehello / 缺字段都不等于进程已死）。
+// - Busy 三态：nil = 未断言（未知），true = 明确仍在跑，false = 明确无进程；
+// - busy=true 带 taskId/attempt/leaseId（已授权的执行）或 assignmentId/proposedAttempt
+// （尚未 grant 的 reservation，**不伪造 lease**）；
+// - busy=false 时必须带相符的历史 taskId/attempt/(leaseId)：无匹配引用的 idle 记录
+// 不能清旧 busy（rehello / 缺字段都不等于进程已死）。
 //
 // C3a 起 Busy=true 的 reservation 事实会落进**真实槽账本**（node_instances：
 // busy_task + busy_attempt=proposedAttempt + busy_lease_id 为空 + busy_assignment_id
@@ -912,9 +898,9 @@ func recordReservationOn(ctx context.Context, ex queryExec, nodeID string, obs S
 // 旧判定是「槽位指向的任务已不在 running → 清槽」——那是拿数据库状态冒充物理回收
 // 事实：租约过期只吊销授权，进程组可能还在跑；hello 重连也不证明旧进程已死
 // （rehello ≠ reaped）。现在只有满足全部条件的观察才会回收：
-//   - Busy 显式为 false（缺字段/未提到的 slot 都是未知，不是空）；
-//   - 观察里带相符的历史 taskId/attempt/leaseId（无匹配引用的 idle 记录不能清旧 busy）；
-//   - 观察时刻不早于该绑定的建立时刻（旧快照不能放掉它没看见的新占用）。
+// - Busy 显式为 false（缺字段/未提到的 slot 都是未知，不是空）；
+// - 观察里带相符的历史 taskId/attempt/leaseId（无匹配引用的 idle 记录不能清旧 busy）；
+// - 观察时刻不早于该绑定的建立时刻（旧快照不能放掉它没看见的新占用）。
 //
 // 回收只清**那一条** (instance, task, attempt) 绑定，并把该 attempt 记上 reaped 事实；
 // 不改变任务 phase / token / 新 attempt 的槽。返回真正回收的槽数（无事实 = 0，不是假成功）。

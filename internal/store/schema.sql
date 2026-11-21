@@ -728,3 +728,22 @@ CREATE INDEX IF NOT EXISTS idx_playbook_installs_release
 -- 归属判据仍是 installed_from；查询走上面的 idx_playbook_installs_release，不加索引。
 -- +migration 3 playbook_uninstall
 ALTER TABLE playbook_installs ADD COLUMN uninstalled_at INTEGER NOT NULL DEFAULT 0;
+
+-- 包版本历史：PUT 把包体换掉时，旧的那份文件留在这里，于是「按 v1 再装一份」有东西可读。
+--
+-- 写入纪律（写侧唯一入口是 ReplacePlaybook）：内容没变就不写（同一个包体反复 PUT 不长历史）；
+-- 内容变了但版本号没动，**覆盖**这个版本号那一行——一个版本号只对应一份包体，否则
+-- 「按 v1 装」有两种答案。digest 与回执的 playbook.filesDigest 同一个算法（playbook.FilesDigest）。
+--
+-- 读路径不经过这张表：当前版本仍然以 playbooks.files 为准（每次 GET 都 join 历史是白付的钱）。
+-- playbook_id 是**历史 id，不是外键**，与回执同一条纪律：删包不连带删历史（也不因此失败）。
+-- +migration 4 playbook_versions
+CREATE TABLE IF NOT EXISTS playbook_versions (
+    playbook_id TEXT NOT NULL,
+    version     INTEGER NOT NULL,
+    files       TEXT NOT NULL DEFAULT '{}',
+    digest      TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL,
+    created_by  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (playbook_id, version)
+);

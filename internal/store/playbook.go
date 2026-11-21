@@ -13,20 +13,17 @@ import (
 	"github.com/zzjcool/anotify/internal/playbook"
 )
 
-// 预案（Playbook）领域（v4，playbook.md）：目录包 = 清单 + 回执，不是所有权；本文件是安装包在 store 的唯一落点。
-// 三条边界：
-//	① 包体是「文件集合」原文：`playbooks.files` 存 `{相对路径: 正文}`，render / install 每次从它 Parse（不另存解析态）；
-//	② 安装**只做加法**（I-P1）：只 INSERT 能力行 / 源行 / 边投影 / 回执行，想改已有东西的差异进回执 unapplied[]；
-//	③ 回执是**审计**不是锁：每次普通 install 写一行（dryRun 不写），删包不删回执，回执里的 ns / 原 slug / 原包 id 是快照。
-// 12 格动作矩阵与回执形状由纯包 `internal/playbook` 算（Plan / BuildReceipt），本文件只做「读快照 → INSERT create → 写回执」。
+// 预案（Playbook）领域（v4，playbook.md）：目录包 = 清单 + 回执，不是所有权；本文件是安装包在 store 的唯一落点。三条边界：
+// ① 包体是「文件集合」原文：`playbooks.files` 存 `{相对路径: 正文}`，render / install 每次从它 Parse（不另存解析态）；
+// ② 安装**只做加法**（I-P1）：只 INSERT 能力行 / 源行 / 边投影 / 回执行，想改已有东西的差异进回执 unapplied[]；
+// ③ 回执是**审计**不是锁：每次普通 install 写一行（dryRun 不写），删包不删回执，回执里的 ns / 原 slug / 原包 id 是快照。 12 格动作矩阵与回执形状由纯包 `internal/playbook` 算（Plan / BuildReceipt），本文件只做「读快照 → INSERT create → 写回执」。
 // 事务内读一律走 txExec（见 txexec.go）；任何读错误都不允许被当成「库是空的」。
 
 // 预案写路径的哨兵错误。
 var (
 	// ErrSlugTaken 表示同一命名空间里已有同 slug 的预案（POST 应翻 409 slug_taken）。
 	ErrSlugTaken = errors.New("store: playbook slug already used")
-	// ErrPlaybookSlugMismatch 表示路径里的 slug 与包内 metadata.name 不一致：包名就在入口文档里（D8：slug 不渲染、不依赖 values），
-	// 路径只是它的寻址；两者不一致时若照写，`GET /playbooks/<slug>` 读出来的包会自称另一个名字。
+	// ErrPlaybookSlugMismatch 表示路径里的 slug 与包内 metadata.name 不一致：包名就在入口文档里（D8：slug 不渲染、不依赖 values），路径只是它的寻址；两者不一致时若照写，`GET /playbooks/<slug>` 读出来的包会自称另一个名字。
 	ErrPlaybookSlugMismatch = errors.New("store: playbook slug does not match package metadata.name")
 )
 
@@ -55,8 +52,29 @@ type PlaybookRow struct {
 	UpdatedAt       int64 `json:"updatedAt"`
 }
 
-// PlaybookKept 是删除响应里「留下了什么」：能力写 `name@version`，源写名字。
-// 两个列表都来自 installed_from 反查（§7：比「再用 values 渲染一遍」精确）。
+// PlaybookVersionEntry 是版本历史的一行（读模型：不回包体原文，只回身份 + 摘要）。 digest 与回执的 `playbook.filesDigest` 同一个算法（playbook.FilesDigest），所以 「这次装的是哪一版」能与版本列表逐字对上，不用人眼比文件。
+type PlaybookVersionEntry struct {
+	Version     int    `json:"version"`
+	FilesDigest string `json:"filesDigest"`
+	CreatedAt   string `json:"createdAt"`
+	CreatedBy   string `json:"createdBy"`
+	// Current 标记这一行就是当前版本（当前版本的真身是 playbooks.files，这张表只留旧的那几份）。
+	Current bool `json:"current"`
+}
+
+// PlaybookVersionList 是 `GET …/playbooks/{slug}/versions` 的响应体（读模型，不建实例表）。
+type PlaybookVersionList struct {
+	// Total 是历史行数（= len(versions)；这里不截断，包的历史是十位量级）。
+	Total int `json:"total"`
+	// CurrentVersion 是当前版本号（`playbooks.version`，读路径仍以 `playbooks.files` 为准）。
+	CurrentVersion int                    `json:"currentVersion"`
+	Versions       []PlaybookVersionEntry `json:"versions"`
+}
+
+// ErrPlaybookVersionNotFound 表示要装的那个版本既不在历史里、也不是当前版本。
+var ErrPlaybookVersionNotFound = errors.New("store: playbook version not found")
+
+// PlaybookKept 是删除响应里「留下了什么」：能力写 `name@version`，源写名字。两个列表都来自 installed_from 反查（§7：比「再用 values 渲染一遍」精确）。
 type PlaybookKept struct {
 	Capabilities []string `json:"capabilities"`
 	Sources      []string `json:"sources"`
@@ -71,8 +89,7 @@ type PlaybookDeleteResult struct {
 	Note   string           `json:"note"`
 }
 
-// PlaybookInstallGroup 是实例清单（§4.10）的一个折叠组： `(ns, 原包 id, release, valuesDigest)`。
-// 一个组 = 一个 release 的一套 values；`attempts` 是这组 values 装了几次（组内回执行数），不是版本号。换一个 release（哪怕 values 一样）是另一套实例，单独立组。
+// PlaybookInstallGroup 是实例清单（§4.10）的一个折叠组： `(ns, 原包 id, release, valuesDigest)`。一个组 = 一个 release 的一套 values；`attempts` 是这组 values 装了几次（组内回执行数），不是版本号。换一个 release（哪怕 values 一样）是另一套实例，单独立组。
 type PlaybookInstallGroup struct {
 	// Release 是这组的安装级身份（Helm 语义：一个 release 一套实例）。
 	Release      string `json:"release"`
@@ -126,9 +143,13 @@ func scanPlaybookRow(row scanner) (*PlaybookRow, error) {
 	return &p, nil
 }
 
-// CreatePlaybook 存一份包（POST 语义）：Parse 做值无关的形状校验，同 slug 已存在 → ErrSlugTaken。
-// slug 为空时取包内 metadata.name；两者都给时必须一致。存储的是 Parse 返回的**原文文件集合**（pkg.Files），render / install 每次重新 Parse。
+// CreatePlaybook 存一份包（POST 语义）：Parse 做值无关的形状校验，同 slug 已存在 → ErrSlugTaken。 slug 为空时取包内 metadata.name；两者都给时必须一致。存储的是 Parse 返回的**原文文件集合**（pkg.Files），render / install 每次重新 Parse。
 func (d *DB) CreatePlaybook(ctx context.Context, namespaceID, slug string, files map[string]string, source string) (*PlaybookRow, error) {
+	return d.CreatePlaybookAs(ctx, namespaceID, slug, files, source, "")
+}
+
+// CreatePlaybookAs 是带**创建者**的 CreatePlaybook（`created_by` 落进版本历史）。 包的第一次落库同时是历史的第 1 行：不清两份写，否则「历史为空 + 当前版本有内容」 这种状态只能靠读侧猜（而猜错的代价是「按当前版本装」被回 404）。
+func (d *DB) CreatePlaybookAs(ctx context.Context, namespaceID, slug string, files map[string]string, source, createdBy string) (*PlaybookRow, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
@@ -162,7 +183,13 @@ func (d *DB) CreatePlaybook(ctx context.Context, namespaceID, slug string, files
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
-	if _, err := d.ExecContext(ctx,
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create playbook: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	ex := txExec{tx: tx}
+	if _, err := ex.execContext(ctx,
 		`INSERT INTO playbooks (`+playbookColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		row.ID, row.NamespaceID, row.Slug, row.Name, row.DisplayName, row.Description, row.Version,
 		string(rawFiles), row.Source, row.ResourceVersion, row.CreatedAt, row.UpdatedAt); err != nil {
@@ -170,6 +197,12 @@ func (d *DB) CreatePlaybook(ctx context.Context, namespaceID, slug string, files
 			return nil, fmt.Errorf("%w: %q", ErrSlugTaken, slug)
 		}
 		return nil, fmt.Errorf("create playbook: %w", err)
+	}
+	if err := recordPlaybookVersionOn(ctx, ex, row.ID, row.Version, pkg.Files, createdBy, now); err != nil {
+		return nil, fmt.Errorf("create playbook: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("create playbook: commit: %w", err)
 	}
 	return row, nil
 }
@@ -203,8 +236,7 @@ func (d *DB) ListPlaybooksPage(ctx context.Context, namespaceID string, afterAt 
 	return out, rows.Err()
 }
 
-// GetPlaybook 按 (namespace, slug) 取一份包（含原始 files；是否存在当前清单由它回答）。
-// 未命中返回 ErrNotFound。名字里带 playbook 是为了与命名空间/能力的 Get* 区分。
+// GetPlaybook 按 (namespace, slug) 取一份包（含原始 files；是否存在当前清单由它回答）。未命中返回 ErrNotFound。名字里带 playbook 是为了与命名空间/能力的 Get* 区分。
 func (d *DB) GetPlaybook(ctx context.Context, namespaceID, slug string) (*PlaybookRow, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -248,6 +280,11 @@ func (d *DB) ListPlaybooks(ctx context.Context, namespaceID string) ([]*Playbook
 // ReplacePlaybook 整体替换包体（PUT 语义）：同一信封 + CAS，缺 rv / 旧 rv 稳定哨兵。
 // **只换模板**：已装的能力 / 源一行不动，它们要等下一次 install 才会变化（§5 / §10）。
 func (d *DB) ReplacePlaybook(ctx context.Context, namespaceID, slug string, expectedVersion string, files map[string]string, source string) (*PlaybookRow, error) {
+	return d.ReplacePlaybookAs(ctx, namespaceID, slug, expectedVersion, files, source, "")
+}
+
+// ReplacePlaybookAs 是带**修改者**的 ReplacePlaybook。 换包体的同时管版本历史（同一个事务）：内容与库里那份**相同就不写**（反复 PUT 不长历史），不同才写一行（同版本号不同内容 → 覆盖这个版本号那一行，见 schema 块的注释）。
+func (d *DB) ReplacePlaybookAs(ctx context.Context, namespaceID, slug string, expectedVersion string, files map[string]string, source, createdBy string) (*PlaybookRow, error) {
 	if _, _, err := parseResourceVersion(expectedVersion); err != nil {
 		return nil, err
 	}
@@ -283,6 +320,8 @@ func (d *DB) ReplacePlaybook(ctx context.Context, namespaceID, slug string, expe
 	if err := checkResourceVersion(expectedVersion, row.ID, row.ResourceVersion); err != nil {
 		return nil, err
 	}
+	// 「内容变了」的判据是包体自己的 digest（与回执 / 版本列表同一个算法），不看 mtime / rv。
+	changed := playbook.FilesDigest(row.Files) != playbook.FilesDigest(pkg.Files)
 	now := Now()
 	if _, err := ex.execContext(ctx,
 		`UPDATE playbooks
@@ -292,6 +331,11 @@ func (d *DB) ReplacePlaybook(ctx context.Context, namespaceID, slug string, expe
 		pkg.Name, pkg.DisplayName, pkg.Description, pkg.Version, string(rawFiles), source, now,
 		namespaceID, slug, row.ID, row.ResourceVersion); err != nil {
 		return nil, fmt.Errorf("replace playbook: %w", err)
+	}
+	if changed {
+		if err := recordPlaybookVersionOn(ctx, ex, row.ID, pkg.Version, pkg.Files, createdBy, now); err != nil {
+			return nil, fmt.Errorf("replace playbook: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("replace playbook: commit: %w", err)
@@ -307,15 +351,24 @@ func (d *DB) ReplacePlaybook(ctx context.Context, namespaceID, slug string, expe
 	return row, nil
 }
 
-// RenderPlaybook 是 `render` 端点（§2.4）：只读包体 → Parse → Render。**纯只读**：不读安装冲突库、不写库、不产生回执
-// （D19：render 是 helm template，dryRun 才读库），所以它不可能因为库里已有同名能力而失败，也不会留下任何行；
+//	RenderPlaybook 是 `render` 端点（§2.4）：只读包体 → Parse → Render。**纯只读**：不读安装冲突库、不写库、不产生回执 （D19：render 是 helm template，dryRun 才读库），所以它不可能因为库里已有同名能力而失败，也不会留下任何行；
+//
 // release 只影响模板渲染（`{{release.name}}`），不读库，所以 render 不判 release 冲突。
 func (d *DB) RenderPlaybook(ctx context.Context, namespaceID, slug, release string, values map[string]any) (*playbook.RenderResult, error) {
+	return d.RenderPlaybookVersion(ctx, namespaceID, slug, release, 0, values)
+}
+
+// RenderPlaybookVersion 是带**版本钉住**的 RenderPlaybook：version <= 0 = 当前版本（逐字同旧行为）。 钉住的版本与 install 走同一个 resolvePlaybookFiles，预览与真装不会用两份不同的文件。
+func (d *DB) RenderPlaybookVersion(ctx context.Context, namespaceID, slug, release string, version int, values map[string]any) (*playbook.RenderResult, error) {
 	row, err := d.GetPlaybook(ctx, namespaceID, slug)
 	if err != nil {
 		return nil, err
 	}
-	pkg, err := playbook.Parse(row.Files)
+	files, _, err := resolvePlaybookFilesOn(ctx, d, row, version)
+	if err != nil {
+		return nil, err
+	}
+	pkg, err := playbook.Parse(files)
 	if err != nil {
 		return nil, err
 	}
@@ -325,18 +378,23 @@ func (d *DB) RenderPlaybook(ctx context.Context, namespaceID, slug, release stri
 // InstallPlaybook 在**一个 BEGIN IMMEDIATE 事务**里完成一次安装（§4.4 / §4.6）。
 // release 是安装级身份（Helm 语义）：空串 = 缺省 = 包名，同一个包可以有多个 release、各是一套实例；
 // **要复用的行是别的 release 装出来的**时 Plan 给出 release_conflict，本函数在写之前就返回（0 写）。顺序固定：
-//
-//	① 读包体（事务内，走 tx）
-//	② Render + 读库快照（installSnapshot，六个只读查询也走 tx）→ Plan
-//	③ 有 conflict → 返回 *playbook.Error（完整 details / valuesDigest / conflicts / hint），0 写
-//	④ INSERT 计划里的 **create 条目**（能力行 + next 投影；新源行 + token + targets 投影）
-//	⑤ INSERT 回执行（masked values + digest + 回执原文 + ns/原 slug/原包 id 快照）
-//	⑥ COMMIT；dryRun 在 ⑤ 之后 Rollback（同一路径，0 持久写）
-//
-// 边界（卡上红线，写代码时不要越过去）： - Plan 说 reuse 的条目**一行都不碰**：不能调 CreateCapability / UpdateSource 的折叠更新路径，
+// ① 读包体（事务内，走 tx；`version` 钉住就取历史那一份）
+// ② Render + 读库快照（installSnapshot，六个只读查询也走 tx）→ Plan
+// ③ 有 conflict → 返回 *playbook.Error（完整 details / valuesDigest / conflicts / hint），0 写
+// ④ INSERT 计划里的 **create 条目**（能力行 + next 投影；新源行 + token + targets 投影）
+// ⑤ INSERT 回执行（masked values + digest + 回执原文 + ns/原 slug/原包 id 快照）
+// ⑥ COMMIT；dryRun 在 ⑤ 之后 Rollback（同一路径，0 持久写）
+// 边界（卡上红线，写代码时不要越过去）：- Plan 说 reuse 的条目**一行都不碰**：不能调 CreateCapability / UpdateSource 的折叠更新路径，
 // 否则会偷改已存行的 next / displayName / targets（I-P1）。 - 事务内的读错误必须让整次安装失败：把查询失败当「空库」会装出一批本不该存在的行。
-//   - 不写 deployments / tasks / events dispatch：安装不部署，保留人工部署动作。
+// - 不写 deployments / tasks / events dispatch：安装不部署，保留人工部署动作。
 func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, slug, release string, values map[string]any, dryRun bool) (*playbook.Receipt, error) {
+	return d.InstallPlaybookVersion(ctx, namespaceID, slug, release, 0, values, dryRun)
+}
+
+// InstallPlaybookVersion 是带**版本钉住**的 InstallPlaybook：version <= 0 = 当前版本。
+// 回执里的 `playbook.version` / `playbook.filesDigest` 记的是**这次真的用的那一份**，
+// 所以 v1/v2 各装一份后，两份回执能各自指回自己的版本，不靠人眼比文件。
+func (d *DB) InstallPlaybookVersion(ctx context.Context, namespaceID, slug, release string, version int, values map[string]any, dryRun bool) (*playbook.Receipt, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
@@ -361,7 +419,11 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, slug, release str
 	if err != nil {
 		return nil, err
 	}
-	pkg, err := playbook.Parse(row.Files)
+	files, pinned, err := resolvePlaybookFilesOn(ctx, ex, row, version)
+	if err != nil {
+		return nil, err
+	}
+	pkg, err := playbook.Parse(files)
 	if err != nil {
 		return nil, err
 	}
@@ -379,6 +441,9 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, slug, release str
 	if planErr != nil {
 		return nil, planErr
 	}
+	// 回执的包身份记**这次真的用的那一版**（钉住的版本号 + 那份文件的 digest），
+	// 而不是包当下的版本：否则按 v1 装的回执会自称 v2。
+	plan.Playbook.Version = pinned
 
 	nsSlug, err := getNamespaceSlugOn(ctx, ex, namespaceID)
 	if err != nil {
@@ -643,6 +708,49 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 	return out, nil
 }
 
+// ListPlaybookVersions 是版本历史读模型（`GET …/playbooks/{slug}/versions`）：只回身份与摘要，不回包体原文。
+//
+// currentVersion 是**当前清单**的版本号（playbooks.version）：当前版本的真身是 playbooks.files，
+// 所以历史里那一行只做标记（current=true），读当前包体仍走 GetPlaybook（不 join 这张表）。
+// 迁移前建的老包可能一行历史都没有：Total=0 是对的，当前版本依旧能装（resolvePlaybookFilesOn 的第三条分支）。
+// 过滤带 namespace：历史表没有 ns 列，但读取仍必须被作用域约束（id 是从本 ns 的行上取的）。
+func (d *DB) ListPlaybookVersions(ctx context.Context, namespaceID, playbookID string, currentVersion int) (*PlaybookVersionList, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	out := &PlaybookVersionList{CurrentVersion: currentVersion, Versions: []PlaybookVersionEntry{}}
+	if strings.TrimSpace(playbookID) == "" {
+		return out, nil
+	}
+	rows, err := d.cachedQueryContext(ctx,
+		`SELECT v.version, v.digest, v.created_at, v.created_by
+		   FROM playbook_versions v
+		   JOIN playbooks p ON p.id = v.playbook_id AND p.namespace_id = ?
+		  WHERE v.playbook_id = ?
+		  ORDER BY v.version DESC`, namespaceID, playbookID)
+	if err != nil {
+		return nil, fmt.Errorf("list playbook versions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			e         PlaybookVersionEntry
+			createdAt int64
+		)
+		if err := rows.Scan(&e.Version, &e.FilesDigest, &createdAt, &e.CreatedBy); err != nil {
+			return nil, fmt.Errorf("scan playbook version: %w", err)
+		}
+		e.CreatedAt = time.Unix(createdAt, 0).UTC().Format(time.RFC3339)
+		e.Current = e.Version == currentVersion
+		out.Versions = append(out.Versions, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate playbook versions: %w", err)
+	}
+	out.Total = len(out.Versions)
+	return out, nil
+}
+
 // placeholdersFor 返回 n 个逗号分隔的 `?`（IN (...) 用）；n<=0 时调用方不该拼 SQL。
 func placeholdersFor(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
@@ -679,7 +787,7 @@ func (d *DB) GetPlaybookInstall(ctx context.Context, namespaceID, slug, installI
 		return nil, fmt.Errorf("decode playbook install receipt: %w", err)
 	}
 	if receipt.Install.Release == "" {
-		// 迁移前写的回执原文里没有 release；列上已经回填成包名。回执是**审计快照**， 不改它的原文，只在读的时候把「这次安装属于哪个 release」补齐——否则同一次 安装从实例清单（按列分组）点进来会显示成另一个身份。
+		// 迁移前写的回执原文里没有 release；列上已经回填成包名。回执是**审计快照**，不改它的原文，只在读的时候把「这次安装属于哪个 release」补齐——否则同一次 安装从实例清单（按列分组）点进来会显示成另一个身份。
 		receipt.Install.Release = release
 	}
 	return &receipt, nil

@@ -13,8 +13,7 @@ import (
 	"github.com/zzjcool/anotify/internal/sourcespec"
 )
 
-// 本文件是 Playbook 安装的**事务内实现细节**（playbook.go 是公开面）。
-// 为什么单独一个文件：安装路径上所有读都必须走当前事务（txExec），而 store 里「事务外读」的既有方法是 `*DB` 方法（走 per-DB 语句缓存）。
+// 本文件是 Playbook 安装的**事务内实现细节**（playbook.go 是公开面）。 为什么单独一个文件：安装路径上所有读都必须走当前事务（txExec），而 store 里「事务外读」的既有方法是 `*DB` 方法（走 per-DB 语句缓存）。
 // 混用会读到**另一个快照**：① 看不到本事务刚写的行（新源 targets 指向同包刚建的能力）；
 // ② 与提交之间出现「检查时成立、提交后不成立」的窗口（把读错当空库 → 多建一批行）。
 // 所以这里的每个查询都只经 ex，且把 error 交给调用方裁决（installSnapshot）。
@@ -47,8 +46,7 @@ func getNamespaceSlugOn(ctx context.Context, ex queryExec, namespaceID string) (
 	return slug, nil
 }
 
-// getSourceByNameOn 是事务内按名字取源（GetSourceByName 的只读 ex 版）：不能调用 GetSourceByName，
-// 它走 per-DB 语句缓存，在本事务里读的是另一条连接。
+// getSourceByNameOn 是事务内按名字取源（GetSourceByName 的只读 ex 版）：不能调用 GetSourceByName， 它走 per-DB 语句缓存，在本事务里读的是另一条连接。
 func getSourceByNameOn(ctx context.Context, ex queryExec, namespaceID, name string) (*Source, error) {
 	rows, err := ex.queryContext(ctx,
 		`SELECT `+sourceColumns+` FROM sources WHERE namespace_id = ? AND name = ?`,
@@ -128,8 +126,7 @@ func newInstallSnapshot(ctx context.Context, ex queryExec, namespaceID string) *
 	return &installSnapshot{ctx: ctx, ex: ex, namespaceID: namespaceID, owners: map[string]ownerRef{}}
 }
 
-// ownerOn 取 installed_from 指向的那次安装的 release——「这一行是谁装出来的」的答案。返回 found=false 表示**无主**，
-// 两种来源都算：空 installed_from（手工创建的行）、悬挂引用（回执被清理过）。悬挂引用刻意不报错：schema 上没有 FK
+// ownerOn 取 installed_from 指向的那次安装的 release——「这一行是谁装出来的」的答案。返回 found=false 表示**无主**， 两种来源都算：空 installed_from（手工创建的行）、悬挂引用（回执被清理过）。悬挂引用刻意不报错：schema 上没有 FK
 // 允许它存在（回执是审计，删包不删回执），而把一条脏引用当成「别人的 release」会让一次正常安装莫名 409 —— 报错代价更大。
 func (s *installSnapshot) ownerOn(installID string) ownerRef {
 	if installID == "" {
@@ -174,7 +171,6 @@ func (s *installSnapshot) fail(err error) {
 }
 
 // getCapabilityByFoldKeyLatestOn 按 foldKey 取**最高版本**那一行（安装快照专用）。
-//
 // 为什么必须 ORDER BY version DESC：同一个 foldKey 可以有多行（显式 v1 与 v3 正文相同）。
 // 省略 version 的安装（12 格第 2 行）必须确定性地复用最高版本——否则「复用哪一行」 取决于 SQLite 的返回顺序，skipped 的版本号与 unapplied 的比较对象都会漂移。
 // 直写路径的 getCapabilityByFoldKeyOn 保持原样（本函数只服务安装快照）。
@@ -478,6 +474,60 @@ func insertPlaybookInstallOn(ctx context.Context, ex queryExec, namespaceID stri
 		return fmt.Errorf("insert install receipt: %w", err)
 	}
 	return nil
+}
+
+// recordPlaybookVersionOn 给版本历史写一行（只在包体内容变化时被调用）。
+// 同一个版本号写不同内容时**覆盖**那行：一个版本号只对应一份包体，否则「按 vN 装」有两种答案。
+// digest 由 files 现算（与回执 `playbook.filesDigest` 同一算法），不接受调用方传值 —— 两处不同源就会
+// 出现「列表说的 digest 与装进去的不是同一份」。
+func recordPlaybookVersionOn(ctx context.Context, ex queryExec, playbookID string, version int, files map[string]string, createdBy string, now int64) error {
+	rawFiles, err := json.Marshal(files)
+	if err != nil {
+		return fmt.Errorf("marshal playbook version files: %w", err)
+	}
+	if _, err := ex.execContext(ctx,
+		`INSERT INTO playbook_versions (playbook_id, version, files, digest, created_at, created_by)
+		 VALUES (?,?,?,?,?,?)
+		 ON CONFLICT(playbook_id, version) DO UPDATE SET
+		   files = excluded.files, digest = excluded.digest,
+		   created_at = excluded.created_at, created_by = excluded.created_by`,
+		playbookID, version, string(rawFiles), playbook.FilesDigest(files), now, createdBy); err != nil {
+		return fmt.Errorf("record playbook version: %w", err)
+	}
+	return nil
+}
+
+// resolvePlaybookFilesOn 取「要装 / 要渲染的那一份包体」并回答它的版本号（钉住版本的核心）。
+//
+// 三条分支（顺序就是判据，不要重排）：
+// - version <= 0：当前版本 → `playbooks.files`（**逐字旧行为**：不查历史表、不多一次读）；
+// - 历史里有这一行：用它（这正是「v1 改完还能装回来」的代价）；
+// - 历史里没有、但它就是当前版本号：用 `playbooks.files`——迁移前建的老包没有历史行，
+// 而当前版本的内容一直在这一列上（不回退就会把老包的默认安装突然变成404）。
+//
+// 其余情况是 ErrPlaybookVersionNotFound（调用方翻 404）：指一个不存在的版本而静默换成当前版本，
+// 等于让用户以为装的是旧版。
+func resolvePlaybookFilesOn(ctx context.Context, ex queryExec, row *PlaybookRow, version int) (map[string]string, int, error) {
+	if version <= 0 {
+		return row.Files, row.Version, nil
+	}
+	var raw string
+	err := ex.queryRowContext(ctx,
+		`SELECT files FROM playbook_versions WHERE playbook_id = ? AND version = ?`, row.ID, version).Scan(&raw)
+	switch {
+	case err == nil:
+		files := map[string]string{}
+		if err := json.Unmarshal([]byte(raw), &files); err != nil {
+			return nil, 0, fmt.Errorf("decode playbook version %d files: %w", version, err)
+		}
+		return files, version, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return nil, 0, fmt.Errorf("get playbook version %d: %w", version, err)
+	case version == row.Version:
+		return row.Files, version, nil
+	default:
+		return nil, 0, fmt.Errorf("%w: 包 %q 没有版本 %d（当前 %d）", ErrPlaybookVersionNotFound, row.Slug, version, row.Version)
+	}
 }
 
 // keptPlaybookObjectsOn 反查删包后留下的对象（DELETE 响应的 kept）：能力写 `name@version`、源写名字，
