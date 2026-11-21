@@ -9,8 +9,7 @@
   .pb-check { padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); }
   .pb-warning { border: 1px solid var(--warn); border-radius: var(--r-md); padding: 14px; }
   .pb-warning h4 { color: var(--warn); }
-  /* PB-5：所有 JSON/原始文本都走 .code-block（头部 + 复制），这里是它的内容区
-     修饰：长行折行、限高滚动 —— 不再出现裸 <pre> 与横向被裁的代码块。 */
+  /* PB-5：所有 JSON/原始文本都走 .code-block（头部 + 复制）——这里是它的内容区，长行折行、限高滚动。 */
   .pb-code {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -19,9 +18,7 @@
     font-size: 11.5px;
     line-height: 1.6;
   }
-  /* PB-5 / CP-6：原生 <input type=file>（英文「Choose File / No file chosen」、
-     与全站 .input 尺寸不一致）换成自建选择框；input 透明铺满，仍然可聚焦、
-     仍然接收文件。 */
+  /* PB-5 / CP-6：原生 <input type=file>（英文「Choose File / No file chosen」、与全站 .input 尺寸不一致）换成自建选择框。 */
   .pb-file {
     position: relative;
     display: flex;
@@ -84,7 +81,25 @@
   .pb-template textarea { min-height: 280px; }
   .pb-group { border-top: 1px solid var(--line); padding: 14px 0; }
   .pb-section { margin-top: 16px; }
-  #pb-summary { min-height: 80px; }
+  /* #521：顶部状态行 —— 一行事实（版本 · 实例数 · 体检摘要），不占卡片。 */
+  .pb-status { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px; min-height: 24px; margin-top: 14px; }
+  .pb-status-fact { font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+  .pb-status-fact + .pb-status-fact::before { content: "·"; margin-right: 10px; color: var(--faint); }
+  /* #521：默认折叠的状态区（版本历史 / 体检 / 原始包 / 删除）——原生 <details>。 */
+  .pb-details > summary { cursor: pointer; }
+  .pb-details[open] > summary { margin-bottom: 12px; }
+  /* #521：安装抽屉 —— 复用全站 .modal-backdrop/.modal-panel，只把面板改成右侧整高一片。 */
+  .pb-drawer { align-items: stretch; justify-content: flex-end; padding: 0; }
+  .pb-drawer-panel {
+    max-width: min(520px, 100%);
+    height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
+    border-block: 0;
+    border-right: 0;
+    overflow-wrap: anywhere;
+  }
+  #pb-summary { min-height: 24px; }
   [hidden] { display: none !important; }
 </style>
 {{end}}
@@ -104,57 +119,16 @@
       <div class="page-actions">
         <a id="pb-back" href="playbooks.html" class="btn btn-ghost">{{t "pb.back"}}</a>
         <button id="btn-rescan" type="button" class="btn btn-ghost">{{t "pb.rescan"}}</button>
+        {{/* #521：一页只有一个主操作。它只负责开抽屉；真正的提交按钮在抽屉里
+             （#btn-install，id 不变，e2e 仍按 id 点）。 */}}
+        <button id="pb-install-open" type="button" class="btn btn-primary">{{t "pb.v4.open_install"}}</button>
       </div>
     </div>
     <div id="pb-load-state" aria-live="polite"></div>
-    <section id="pb-summary" class="card card-pad" aria-busy="true"></section>
+    {{/* 状态行：checkup() 把「版本 / 实例数 / 体检」三件事写进这里的 data-status 节点。
+         失败路径仍然清空 + hidden（#380 的契约：不留空圆角容器）。 */}}
+    <section id="pb-summary" class="pb-status" aria-busy="true"></section>
     <div id="pb-content" hidden>
-      <section class="card card-pad">
-        <h3 class="card-title">{{t "uxaudit.work.checkup_title"}}</h3>
-        <div id="pb-conditions" class="pb-checks"></div>
-        <div id="pb-items" class="pb-checks"></div>
-        <div id="pb-unapplied" class="pb-section"></div>
-      </section>
-
-      <section id="pb-values-section" class="card card-pad">
-        <h3 class="card-title">{{t "pb.v4.values"}}</h3>
-        <div id="pb-schema-state" aria-live="polite"></div>
-        <div id="pb-values" class="pb-values pb-section"></div>
-        <div class="field pb-section">
-          <label class="field-label" for="pb-release">{{t "pb.v4.release"}}</label>
-          <input id="pb-release" class="input mono" autocomplete="off" spellcheck="false" />
-          <p class="field-hint">{{t "pb.v4.release_hint"}}</p>
-        </div>
-        <details class="pb-section">
-          <summary>{{t "pb.v4.values_json"}}</summary>
-          <label class="field-label" for="pb-values-json">{{t "pb.v4.values_json_hint"}}</label>
-          <textarea id="pb-values-json" class="textarea mono" rows="5" spellcheck="false"></textarea>
-          <button id="pb-use-json" type="button" class="btn btn-ghost btn-sm">{{t "pb.v4.use_json"}}</button>
-        </details>
-        <div class="page-actions pb-section">
-          {{/* PB-6：三个按钮原本是「渲染（纯预览）/ 试装（冲突检查，零写入）/ 安装（只新增）」，
-               宽度不齐且一眼读不完；可见文案缩成 2~4 个字，完整语义留在 title/aria-label，
-               id 一个都没动（e2e 按 id 点）。 */}}
-          <button id="btn-render" type="button" class="btn btn-ghost"
-            title="{{t "pb.v4.render"}}" aria-label="{{t "pb.v4.render"}}">{{t "uxaudit.work.render_short"}}</button>
-          <button id="btn-dry-run" type="button" class="btn btn-ghost"
-            title="{{t "pb.v4.dry_run"}}" aria-label="{{t "pb.v4.dry_run"}}">{{t "uxaudit.work.dry_run_short"}}</button>
-          <button id="btn-install" type="button" class="btn btn-primary"
-            title="{{t "pb.v4.install"}}" aria-label="{{t "pb.v4.install"}}">{{t "uxaudit.work.install_short"}}</button>
-        </div>
-        <p class="field-hint pb-section">{{t "pb.v4.actions_hint"}}</p>
-        <div id="pb-action-state" aria-live="polite" class="pb-section"></div>
-        <div id="pb-preview" class="pb-section"></div>
-        <div id="pb-receipt" class="pb-section"></div>
-      </section>
-
-      <section class="card card-pad">
-        <h3 class="card-title" title="{{t "pb.v4.versions_hint"}}">{{t "pb.v4.versions"}}</h3>
-        <p id="pb-current-version" class="mono field-hint"></p>
-        <div id="pb-versions" aria-live="polite"></div>
-        <div id="pb-version-state" class="pb-section" aria-live="polite"></div>
-      </section>
-
       <section class="card card-pad">
         <div class="card-head">
           {{/* C-5：这里曾经还有一个「重新体检」，与页头那个重复；安装记录跟着页头的
@@ -163,10 +137,37 @@
         </div>
         <div id="pb-installs" aria-live="polite"></div>
         <div id="pb-uninstall-result" class="pb-section" aria-live="polite"></div>
+        {{/* 动作结果（试装/安装/单次回执）是状态展示，不是第二个主操作：动作发生后
+             才出现，首屏与「只看清单」的路径上一直 hidden。 */}}
+        <div id="pb-result" class="pb-section" hidden>
+          <div id="pb-action-state" aria-live="polite"></div>
+          <div id="pb-preview"></div>
+          <div id="pb-receipt"></div>
+        </div>
       </section>
 
-      <section id="pb-template-section" class="card card-pad">
-        <h3 class="card-title">{{t "pb.v4.template"}}</h3>
+      <details id="pb-versions-section" class="card card-pad pb-section pb-details">
+        <summary title="{{t "pb.v4.versions_hint"}}">
+          <span class="card-title">{{t "pb.v4.versions"}}</span>
+          <span id="pb-versions-brief" class="field-hint"></span>
+        </summary>
+        <p id="pb-current-version" class="mono field-hint"></p>
+        <div id="pb-versions" aria-live="polite"></div>
+        <div id="pb-version-state" class="pb-section" aria-live="polite"></div>
+      </details>
+
+      <details id="pb-checkup-section" class="card card-pad pb-section pb-details">
+        <summary>
+          <span class="card-title">{{t "uxaudit.work.checkup_title"}}</span>
+          <span id="pb-checkup-brief" class="field-hint"></span>
+        </summary>
+        <div id="pb-conditions" class="pb-checks"></div>
+        <div id="pb-items" class="pb-checks"></div>
+        <div id="pb-unapplied" class="pb-section"></div>
+      </details>
+
+      <details id="pb-template-section" class="card card-pad pb-section pb-details">
+        <summary><span class="card-title">{{t "pb.v4.template"}}</span></summary>
         <div class="pb-template">
           <div class="field">
             <label for="pb-file-path" class="field-label">{{t "pb.v4.file_path"}}</label>
@@ -207,14 +208,67 @@
         </div>
         <p id="pb-template-rv" class="mono field-hint"></p>
         <div id="pb-template-state" aria-live="polite"></div>
-      </section>
+      </details>
 
-      <section class="card card-pad">
-        <h3 class="card-title">{{t "pb.v4.delete_section"}}</h3>
+      <details id="pb-danger-section" class="card card-pad pb-section pb-details">
+        <summary><span class="card-title">{{t "pb.v4.delete_section"}}</span></summary>
         <p class="card-sub">{{t "pb.v4.delete_hint"}}</p>
         <button id="pb-delete" type="button" class="btn btn-danger pb-section">{{t "pb.v4.delete_manifest"}}</button>
         <div id="pb-delete-state" class="pb-section" aria-live="polite"></div>
-      </section>
+      </details>
+    </div>
+  </div>
+</div>
+
+{{/* #521：安装抽屉。挂在 #page-main 之外 —— .reveal 的 transform 会给 position:fixed
+     造包含块，抽屉就不再相对视口定位（与 capabilities.html 的弹层同一条规则）。
+     里面是「装一次要做完的全部输入」：值 → 实例名 → 版本 → 提交；
+     渲染/试装是核对手段，收进「高级」。 */}}
+<div id="pb-install-drawer" class="modal-backdrop hidden pb-drawer" role="dialog" aria-modal="true" aria-labelledby="pb-drawer-title">
+  <div class="modal-panel pb-drawer-panel">
+    <div class="modal-head">
+      <h3 id="pb-drawer-title">{{t "pb.v4.drawer_title"}}</h3>
+      <button id="pb-drawer-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.close"}}">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="pb-values-section">
+        <p class="field-label">{{t "pb.v4.values"}}</p>
+        <div id="pb-schema-state" aria-live="polite"></div>
+        <div id="pb-values" class="pb-values pb-section"></div>
+      </div>
+      <div class="field pb-section">
+        <label class="field-label" for="pb-release">{{t "pb.v4.release"}}</label>
+        <input id="pb-release" class="input mono" autocomplete="off" spellcheck="false" />
+        <p class="field-hint">{{t "pb.v4.release_hint"}}</p>
+      </div>
+      <div class="field pb-section">
+        <label class="field-label" for="pb-version-select">{{t "pb.v4.version_pick"}}</label>
+        <select id="pb-version-select" class="select mono"></select>
+      </div>
+      <details class="pb-section pb-details">
+        <summary><span class="field-label">{{t "pb.v4.values_json"}}</span></summary>
+        <label class="field-label" for="pb-values-json">{{t "pb.v4.values_json_hint"}}</label>
+        <textarea id="pb-values-json" class="textarea mono" rows="5" spellcheck="false"></textarea>
+        <button id="pb-use-json" type="button" class="btn btn-ghost btn-sm">{{t "pb.v4.use_json"}}</button>
+      </details>
+      <details class="pb-section pb-details">
+        <summary><span class="field-label">{{t "pb.v4.advanced"}}</span></summary>
+        {{/* PB-6：三个按钮原本是「渲染（纯预览）/ 试装（冲突检查，零写入）/ 安装（只新增）」，
+             宽度不齐且一眼读不完；可见文案缩成 2~4 个字，完整语义留在 title/aria-label，
+             id 一个都没动（e2e 按 id 点）。#521 把前两个收进「高级」—— 它们是核对手段，
+             不是第二个主操作。 */}}
+        <div class="page-actions pb-section">
+          <button id="btn-render" type="button" class="btn btn-ghost"
+            title="{{t "pb.v4.render"}}" aria-label="{{t "pb.v4.render"}}">{{t "uxaudit.work.render_short"}}</button>
+          <button id="btn-dry-run" type="button" class="btn btn-ghost"
+            title="{{t "pb.v4.dry_run"}}" aria-label="{{t "pb.v4.dry_run"}}">{{t "uxaudit.work.dry_run_short"}}</button>
+        </div>
+        <p class="field-hint">{{t "pb.v4.actions_hint"}}</p>
+      </details>
+    </div>
+    <div class="modal-foot">
+      <button id="btn-install" type="button" class="btn btn-primary"
+        title="{{t "pb.v4.install"}}" aria-label="{{t "pb.v4.install"}}">{{t "uxaudit.work.install_short"}}</button>
     </div>
   </div>
 </div>
@@ -224,7 +278,7 @@
 <script>
   (() => {
     const { api, ready, nsPath, readScope: getScope, model, el: dom, loadErrorNode, copyText,
-      confirmDanger, undoBar, errorBar, t: sharedT } = Anotify;
+      confirmDanger, undoBar, errorBar, openModal, closeModal, t: sharedT } = Anotify;
     const t = (key, vars = {}) => {
       let value = window.AnotifyI18n[key] || key;
       for (const [name, text] of Object.entries(vars)) value = value.replaceAll("{" + name + "}", text);
@@ -235,11 +289,9 @@
     const name = new URLSearchParams(location.search).get("id") || "";
     Anotify.mountLayout({ active: "playbooks", title: t("pb.title"), subtitle: t("pb.v4.detail_hint") });
     let resource, schema, draft, filePath, templateRV;
-    let fields = [], jsonValues = null, loading = false;
+    let fields = [], jsonValues = null, loading = false, currentVersion = 0;
     const path = suffix => nsPath("playbooks", name) + (suffix || "");
-    /* PB-5：所有 JSON / 原始文本一律渲染成 .code-block（头部 + 复制），
-     * 不再出现裸 <pre>（审计 CP-5：keys/docs 有头有复制，这里却是裸文本）。
-     * copyText(btn, () => text) 用闭包取文本，避免把整段 JSON 塞进 DOM 属性。 */
+    /* PB-5：JSON / 原始文本一律走 .code-block（头部 + 复制）；copyText 用闭包取文本，不塞进 DOM 属性。 */
     function code(data, label) {
       const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
       const wrap = el("div", "code-block");
@@ -274,37 +326,61 @@
       }
       host.append(box);
     }
+    /* 状态行：三件事分别由 checkup()/versions()/installs() 写入；整行每次重建（#380 靠这个清空）。 */
+    const status = { version: "", instances: "", checkup: "" };
+    let lastReceiptId = "", sourceHint = "";
+    function renderStatus() {
+      const host = $("pb-summary");
+      host.replaceChildren();
+      for (const key of ["version", "instances", "checkup"]) {
+        if (!status[key]) continue;
+        const fact = el("span", "pb-status-fact", status[key]);
+        fact.dataset.status = key;
+        host.append(fact);
+      }
+      if (lastReceiptId) {
+        const button = el("button", "btn btn-ghost btn-sm", t("pb.v4.last_install") + ": " + lastReceiptId);
+        button.type = "button";
+        button.addEventListener("click", () => singleReceipt(lastReceiptId));
+        host.append(button);
+      }
+      if (sourceHint) host.append(el("span", "mono field-hint", sourceHint));
+    }
+    function checkupBrief(count, ready) {
+      if (count) return t("pb.v4.checkup_attention", { n: String(count) });
+      return ready ? t("pb.v4.checkup_ok") : t("pb.v4.checkup_incomplete");
+    }
     function checkup() {
-      const pb = model.playbook(resource), status = pb.status;
+      const pb = model.playbook(resource), state = pb.status;
       $("pb-name").textContent = pb.displayName || pb.slug;
       $("pb-slug").textContent = pb.namespace + " / " + pb.slug + " · " + t("sources.v4.rv") + " " + pb.resourceVersion;
-      $("pb-badge").textContent = t(status.ready ? "pb.status.ready" : "pb.v4.not_ready");
-      $("pb-badge").className = "badge " + (status.ready ? "badge-success" : "badge-warn");
-      $("pb-summary").replaceChildren(el("p", "card-title", t(status.ready ? "pb.status.ready" : "pb.v4.not_ready")));
-      /* v4 的 PlaybookStatus 没有 blocker（见 api/resource.yaml），「优先处理 + 手动操作」
-       * 在真实数据下永不渲染 —— 已按用户裁决下线，连同 manualAction()。 */
-      if (status.lastInstallId) {
-        const button = el("button", "btn btn-ghost btn-sm", t("pb.v4.last_install") + ": " + status.lastInstallId);
-        button.addEventListener("click", () => singleReceipt(status.lastInstallId));
-        $("pb-summary").append(button);
-      }
-      if (resource.status.source) $("pb-summary").append(el("p", "mono field-hint", resource.status.source));
+      $("pb-badge").textContent = t(state.ready ? "pb.status.ready" : "pb.v4.not_ready");
+      $("pb-badge").className = "badge " + (state.ready ? "badge-success" : "badge-warn");
+      /* v4 的 PlaybookStatus 没有 blocker（api/resource.yaml），「优先处理 + 手动操作」永不渲染，已下线。 */
+      lastReceiptId = state.lastInstallId || "";
+      sourceHint = resource.status.source || "";
       $("pb-conditions").replaceChildren();
-      for (const condition of status.conditions) {
+      for (const condition of state.conditions) {
         const item = el("div", "pb-check"); item.dataset.condition = condition.type;
         item.append(el("span", "badge " + (condition.status === "True" ? "badge-success" : "badge-warn"), condition.type + " · " + condition.status), el("p", "field-hint", [condition.reason, condition.message, (condition.members || []).join(", ")].filter(Boolean).join(" · ")));
         $("pb-conditions").append(item);
       }
       $("pb-items").replaceChildren();
-      for (const row of status.items) {
+      for (const row of state.items) {
         const item = el("div", "pb-check"); item.dataset.kind = row.kind; item.dataset.state = row.state;
         item.append(resourceLink(row.kind, row.name + (row.version ? "@" + row.version : "")), el("span", "badge " + (row.state === "ok" ? "badge-neutral" : "badge-warn"), row.state));
         if (row.targets) item.append(code(row.targets));
         $("pb-items").append(item);
       }
-      if (!status.items.length) $("pb-items").append(el("p", "field-hint", t("pb.v4.not_installed")));
-      $("pb-items").append(code(status.sources));
-      showUnapplied($("pb-unapplied"), status.unapplied);
+      if (!state.items.length) $("pb-items").append(el("p", "field-hint", t("pb.v4.not_installed")));
+      $("pb-items").append(code(state.sources));
+      showUnapplied($("pb-unapplied"), state.unapplied);
+      const brief = checkupBrief(state.unapplied.length, state.ready);
+      status.checkup = brief;
+      $("pb-checkup-brief").textContent = brief;
+      /* 默认折叠；「有未生效差异」是唯一需要立刻看见的状态，这时展开。 */
+      $("pb-checkup-section").open = state.unapplied.length > 0;
+      renderStatus();
     }
     function valuesForm(nextSchema) {
       schema = nextSchema || { type: "object", properties: {} };
@@ -360,6 +436,7 @@
       return value;
     }
     function receiptView(receipt) {
+      revealResult();
       const r = model.receipt(receipt); const host = $("pb-receipt");
       host.replaceChildren(el("h4", "card-title", t(r.install.dryRun ? "pb.v4.dry_receipt" : "pb.v4.receipt")), code({ playbook: r.playbook, source: r.source, namespace: r.namespace, install: r.install, values: r.values, valuesDigest: r.valuesDigest }, t("uxaudit.work.code_receipt")));
       showUnapplied($("pb-preview"), r.unapplied);
@@ -381,22 +458,33 @@
       host.append(grid, el("p", "field-hint", t("pb.v4.manual_deploy_hint")));
       const manual = el("a", "btn btn-ghost", t("pb.v4.manual_deploy")); manual.href = scoped("capabilities"); host.append(manual);
     }
+    function revealResult() { $("pb-result").hidden = false; }
     async function action(mode) {
       const buttons = ["btn-render", "btn-dry-run", "btn-install"].map($);
       buttons.forEach(b => b.disabled = true);
+      revealResult();
       $("pb-action-state").textContent = t("pb.v4.loading"); $("pb-preview").replaceChildren(); $("pb-receipt").replaceChildren();
+      $("pb-version-state").textContent = "";
       try {
         const input = values();
         const release = $("pb-release").value;
+        /* 版本只对「真的装」有意义：渲染与试装仍按当前版本核对。 */
+        const picked = mode === "install" ? Number($("pb-version-select").value) || currentVersion : currentVersion;
         const body = mode === "render" ? { values: input } : { values: input, dryRun: mode === "dry" };
         if (release !== "") body.release = release;
+        if (mode === "install" && picked !== currentVersion) body.version = picked;
         const result = await api(path(mode === "render" ? "/render" : "/install"), { method: "POST", body: JSON.stringify(body) });
         if (mode === "render") {
           const secrets = valueSecrets(schema, input);
           $("pb-preview").replaceChildren(el("h4", "card-title", t("pb.v4.rendered")), code(previewMask(result, secrets), t("uxaudit.work.code_rendered")));
         } else {
           receiptView(result);
-          if (mode === "install") { await refreshSummary(); await installs(); }
+          if (mode === "install") {
+            if (body.version) $("pb-version-state").textContent = t("pb.v4.version_installed", { n: String(body.version) });
+            await refreshSummary(); await installs();
+            /* 装完就收抽屉：下一步要看的是「实例列表多了一组」。失败时不动抽屉（输入留着改）。 */
+            closeDrawer();
+          }
         }
         $("pb-action-state").textContent = t(mode === "render" ? "pb.v4.rendered_hint" : mode === "dry" ? "pb.v4.dry_hint" : "pb.v4.installed_hint");
       } catch (error) {
@@ -416,7 +504,7 @@
         }
       } finally { buttons.forEach(b => b.disabled = false); }
     }
-    /* 版本历史：只显示「有哪几版、每一版的内容指纹」，每行一个「按此版本安装」（用当前表单的 values / 实例名，只把版本钉住）。 */
+    /* 版本历史：只显示「有哪几版、每一版的内容指纹」——装哪一版是抽屉里的选择。 */
     let versionsCache = [];
     function versionRow(entry) {
       const row = el("div", "pb-group");
@@ -428,12 +516,6 @@
       row.append(head);
       row.append(el("p", "field-hint mono", t("pb.v4.version_digest") + ": " + shortDigest(entry.filesDigest)));
       if (entry.createdAt) row.append(el("p", "field-hint", entry.createdAt));
-      const installButton = el("button", "btn btn-ghost btn-sm", t("pb.v4.install_version"));
-      installButton.type = "button";
-      installButton.dataset.action = "install-version";
-      installButton.dataset.version = String(entry.version);
-      installButton.addEventListener("click", () => installVersion(entry.version, installButton));
-      row.append(installButton);
       return row;
     }
     async function versions() {
@@ -442,31 +524,24 @@
       try {
         const data = await api(path("/versions"));
         if (!Array.isArray(data.versions) || typeof data.currentVersion !== "number") throw new Error(t("pb.v4.version_load_failed"));
+        currentVersion = data.currentVersion;
         versionsCache = data.versions;
         $("pb-current-version").textContent = t("pb.v4.current_version").replace("{n}", String(data.currentVersion));
+        $("pb-versions-brief").textContent = t("pb.v4.versions_brief", { n: String(data.versions.length) });
+        status.version = currentVersion ? t("pb.v4.status_version", { n: String(currentVersion) }) : "";
+        renderStatus();
+        /* 抽屉里的版本选择：默认当前版本，其余历史按需切（装旧版是显式动作）。 */
+        const picker = $("pb-version-select");
+        picker.replaceChildren();
+        for (const entry of data.versions) {
+          const label = t("pb.v4.version_n").replace("{n}", String(entry.version)) + (entry.current ? " · " + t("pb.v4.version_current_badge") : "");
+          picker.append(new Option(label, String(entry.version)));
+        }
+        if (data.versions.some(entry => entry.current)) picker.value = String(data.currentVersion);
         host.replaceChildren();
         for (const entry of data.versions) host.append(versionRow(entry));
         if (!data.versions.length) host.append(el("p", "field-hint", t("pb.v4.version_empty")));
       } catch (error) { host.replaceChildren(loadErrorNode(error, versions)); }
-    }
-    async function installVersion(version, button) {
-      button.disabled = true;
-      $("pb-version-state").textContent = t("pb.v4.installing_version").replace("{n}", String(version));
-      try {
-        const input = values();
-        const release = $("pb-release").value;
-        const body = { values: input, version };
-        if (release !== "") body.release = release;
-        const result = await api(path("/install"), { method: "POST", body: JSON.stringify(body) });
-        receiptView(result);
-        $("pb-version-state").textContent = t("pb.v4.version_installed").replace("{n}", String(version));
-        await refreshSummary(); await installs(); await versions();
-      } catch (error) {
-        const hint = error.reason === "version_not_found" ? el("p", "field-hint", t("pb.v4.version_unknown")) : null;
-        const node = loadErrorNode(error);
-        $("pb-version-state").replaceChildren(...(hint ? [hint, node] : [node]));
-        button.disabled = false;
-      }
     }
     function shortDigest(digest) {
       const text = String(digest || "");
@@ -478,6 +553,8 @@
       try {
         const data = await api(path("/installs"));
         if (!Array.isArray(data.installs) || typeof data.total !== "number") throw new Error(t("pb.v4.invalid_installs"));
+        status.instances = t("pb.v4.status_instances", { n: String(data.total) });
+        renderStatus();
         const host = $("pb-installs");
         host.replaceChildren(el("p", "field-hint", t("pb.v4.group_count", { n: data.total })));
         const byRelease = new Map();
@@ -498,6 +575,7 @@
               .join(" · ");
             item.append(el("p", "field-label mono", shortDigest(group.valuesDigest)), el("p", "field-hint", t("pb.v4.attempts_n", { n: group.attempts }) + " · " + refs));
             const open = el("button", "btn btn-ghost btn-sm", t("pb.v4.single_receipt") + " · " + group.lastInstallId);
+            open.type = "button";
             open.addEventListener("click", () => singleReceipt(group.lastInstallId));
             item.append(open); section.append(item);
           }
@@ -542,7 +620,7 @@
       try {
         const receipt = await api(path("/installs/" + encodeURIComponent(id)));
         receiptView(receipt); $("pb-receipt").scrollIntoView({ behavior: "smooth" });
-      } catch (error) { $("pb-receipt").replaceChildren(loadErrorNode(error)); }
+      } catch (error) { revealResult(); $("pb-receipt").replaceChildren(loadErrorNode(error)); }
     }
     async function refreshSummary() {
       resource = await api(path()); checkup();
@@ -562,10 +640,16 @@
       draft = pb.files; templateRV = pb.resourceVersion; filePicker("playbook.yaml");
       if (resetValues) { valuesForm(pb.valuesSchema); $("pb-release").value = pb.slug || name; }
     }
-    /* #380：徽章必须两条路径都收敛。「正在读取…」只在 checkup() 里被改写，
-       404/409/网络错误时原来会永久停在 loading，并留下一个空的 #pb-summary 圆角容器。
-       失败分支把徽章改成 badge-error + 「载入失败」，并把空容器移除（hidden）；
-       重试（#btn-rescan / loadErrorNode 的重试按钮）会把它复位成 loading 再走一遍。 */
+    /* 抽屉：开关走共享的 openModal/closeModal（Esc / 焦点归还 / 退场动画都在那边）。 */
+    function openDrawer() {
+      openModal($("pb-install-drawer"));
+      const first = $("pb-values").querySelector("input, select, textarea") || $("pb-release");
+      if (first) first.focus({ preventScroll: true });
+    }
+    function closeDrawer() { closeModal($("pb-install-drawer")); }
+    /* #380：徽章必须两条路径都收敛。「正在读取…」只在 checkup() 里被改写，404/409/网络错误
+       会永久停在 loading 并留下一个空的 #pb-summary 圆角容器。失败分支改成 badge-error +
+       「载入失败」并移除空容器（hidden）；重试会把它复位成 loading 再走一遍。 */
     function loadingBadge() {
       $("pb-badge").textContent = t("pb.v4.loading");
       $("pb-badge").className = "badge badge-neutral";
@@ -597,8 +681,7 @@
     });
     $("pb-remove-file").addEventListener("click", async () => {
       if (filePath === "playbook.yaml") { $("pb-template-state").textContent = t("pb.v4.entry_required"); return; }
-      /* #378：删掉草稿里的一个文件只是本地动作（没提交过），所以「撤销」也纯本地 ——
-       * 删之前留一份值，撤销时把它放回 draft 并重新选中那个文件；不涉及任何 API。 */
+      /* #378：删草稿里的文件是纯本地动作，「撤销」也就纯本地：删前留一份值，撤销时放回 draft。 */
       // 这一步之后会弹「已删除 · 撤销」条，所以弹层如实说「5 秒内可以撤销」。
       if (!(await confirmDanger({ body: t("pb.v4.remove_confirm", { path: filePath }), undo: true }))) return;
       /* 删掉的 key 要先抓成局部量：filePath 是模块级变量，撤销条 5 秒后触发时它已经被 filePicker() 改成了别的文件。 */
@@ -660,14 +743,13 @@
     });
     $("pb-delete").addEventListener("click", async () => {
       if (!(await confirmDanger({ body: t("pb.v4.delete_confirm"), undo: true }))) return;
-      /* #378：删除是真的 DELETE，撤销不是延迟提交（关页面就丢），而是用删除前抓的
-       * 整份包文档重建 —— 所以快照必须在 DELETE 之前拿。 */
+      /* #378：删除是真 DELETE，撤销靠删除前抓的整份包文档重建 —— 快照必须在 DELETE 之前拿。 */
       const snapshot = { name, namespace: getScope().namespace, files: draft };
       $("pb-delete").disabled = true;
       try {
         const response = await api(path("?resourceVersion=" + encodeURIComponent(resource.metadata.resourceVersion)), { method: "DELETE" });
         $("pb-delete-state").replaceChildren(el("h4", "card-title", t("pb.v4.deleted")), code(response));
-        for (const id of ["pb-save-template", "btn-render", "btn-dry-run", "btn-install", "btn-rescan"]) $(id).disabled = true;
+        for (const id of ["pb-save-template", "btn-render", "btn-dry-run", "btn-install", "btn-rescan", "pb-install-open"]) $(id).disabled = true;
         undoBar({
           message: sharedT("common.undo.deleted", "已删除「{name}」").replace("{name}", snapshot.name),
           onUndo: async () => {
@@ -688,6 +770,9 @@
     $("btn-dry-run").addEventListener("click", () => action("dry"));
     $("btn-install").addEventListener("click", () => action("install"));
     $("btn-rescan").addEventListener("click", load);
+    $("pb-install-open").addEventListener("click", openDrawer);
+    $("pb-drawer-close").addEventListener("click", closeDrawer);
+    $("pb-install-drawer").addEventListener("click", event => { if (event.target === $("pb-install-drawer")) closeDrawer(); });
     document.addEventListener("DOMContentLoaded", load);
   })();
 </script>

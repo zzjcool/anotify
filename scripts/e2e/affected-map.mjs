@@ -134,7 +134,8 @@ export const SUITE_SURFACES = {
 		paths: ["cmd/anode/**", "internal/protocol/**", "internal/ws/**", "internal/artifact/**"],
 	},
 	playbook_release: {
-		why: "#505 预案安装的 release 身份（缺省 release=包名 / 多实例 / 跨 release 409 / 模板透传）+#510 uninstall（按 release 撤行 / kept / 幂等）+#511 包版本历史（内容变了才留版 / 按版本装 v1 与 v2 并存 / 回执 version+filesDigest / 404 version_not_found）",
+		why: "#505 预案安装的 release 身份（缺省 release=包名 / 多实例 / 跨 release 409 / 模板透传）+#510 uninstall（按 release 撤行 / kept / 幂等）+#511 包版本历史（内容变了才留版 / 按版本装 v1 与 v2 并存 / 回执 version+filesDigest / 404 version_not_found）；#524 该页同时登记 pages 与 paths（两种登记方式都算命中）",
+		pages: ["playbook"],
 		paths: ["internal/playbook/**", "internal/store/playbook*.go", "internal/server/resource_playbook.go", "web-src/pages/playbook.html"],
 	},
 

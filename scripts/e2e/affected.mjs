@@ -187,29 +187,32 @@ export function selectE2E({ files, suites, table, pages = [] }) {
 			ignored.push({ file, why: ni.why });
 			continue;
 		}
-		// ③ 页面：`web-src/pages/<p>.html` 与生成物 `web/<p>.html`
+		// ③ 页面：`web-src/pages/<p>.html` 与生成物 `web/<p>.html`（同一个页面的两种写法）
+		// pages 与 paths 都能登记页面：只查 pages 会让登记在 paths 里的页面默认漏跑（#524），故取并集。
 		const page = pageOf(file);
 		if (page) {
 			if (!knownPages.has(page)) {
-				// 页面名不在站点页面清单里（新增页/改名/打错）⇒ 矩阵类套件的 PAGES 常量
-				// 未必包含它，不能假定「ALL 套件会跑到」。
+				// 不在清单里（新增页/改名/打错）⇒ 不能假定「ALL 套件会跑到」。
 				unknown.push({ file, why: `页面 ${page} 不在 web-src/pages 清单里，无法判定谁覆盖它` });
 				continue;
 			}
-			const owners = suites.filter((s) => {
+			const pageSrc = `web-src/pages/${page}.html`;
+			const owners = [];
+			for (const s of suites) {
 				const row = surfaces[s];
-				if (!row) return false;
-				return row.pages === "ALL" || (Array.isArray(row.pages) && row.pages.includes(page));
-			});
+				if (!row) continue;
+				if (row.pages === "ALL" || (Array.isArray(row.pages) && row.pages.includes(page))) {
+					owners.push([s, `${file} 是它访问的页面${row.pages === "ALL" ? "（矩阵遍历全部页面）" : ""}`]);
+				} else if (Array.isArray(row.paths) && row.paths.some((q) => globMatch(q, file) || globMatch(q, pageSrc))) {
+					owners.push([s, `${file} 落在它登记的页面路径里`]);
+				}
+			}
 			if (owners.length === 0) {
 				// 页面没有任何套件登记 ⇒ 不能判定它有没有被别的套件间接触达
 				unknown.push({ file, why: `页面 ${page} 在所有套件的映射面里都没登记` });
 				continue;
 			}
-			for (const s of owners) {
-				const row = surfaces[s];
-				hit(s, `${file} 是它访问的页面${row.pages === "ALL" ? "（矩阵遍历全部页面）" : ""}`);
-			}
+			for (const [s, why] of owners) hit(s, why);
 			continue;
 		}
 		// ④ 单套件自身：改套件只看它自己

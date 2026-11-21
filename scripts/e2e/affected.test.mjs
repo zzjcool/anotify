@@ -138,6 +138,12 @@ const COUPLED = [
 		mustNot: ["admin_flow", "auth_flow", "passkeys", "routing"],
 	},
 	{
+		why: "#524 改预案页：该页在 playbook_release 里登记在 paths（不是 pages），页面分支取并集才会命中 —— 否则 release/版本/卸载套件默认漏跑",
+		files: ["web-src/pages/playbook.html"],
+		must: ["playbook_release", "frontend"],
+		mustNot: ["api_contract", "passkeys", "routing", "node_v4", "ws_protocol"],
+	},
+	{
 		why: "改协议包：帧形状变了，节点面套件与契约套件必须重跑",
 		files: ["internal/protocol/doc.go"],
 		must: ["ws_protocol", "node_v4", "contract", "api_contract"],
@@ -215,6 +221,66 @@ test("fail-closed：没有套件登记的页面名 ⇒ 全量", () => {
 	// 造一个真实存在的页面名之外的路径：走 pageOf 但不属于任何套件的页面集合
 	const r = pick(["web-src/pages/does-not-exist.html"]);
 	assert.ok(r.full, "没有套件覆盖的页面必须触发全量");
+});
+
+test("#524：页面走 pages ∪ paths 的并集 —— playbook_release 不登记 pages 也必须命中（证的是并集，不是补数据）", () => {
+	const files = ["web-src/pages/playbook.html"];
+	const r = pickE2E(files);
+	assert.ok(r.selected.includes("playbook_release"), `实际选中 ${r.selected.join(",")}`);
+	const noPages = {
+		...TABLE,
+		SUITE_SURFACES: {
+			...SUITE_SURFACES,
+			playbook_release: { ...SUITE_SURFACES.playbook_release, pages: undefined },
+		},
+	};
+	const r2 = pickE2E(files, noPages);
+	assert.ok(
+		r2.selected.includes("playbook_release"),
+		"只靠 paths 也必须命中 —— 否则根因（页面分支不看 paths）没修，只是把数据补了一遍",
+	);
+	assert.match(String(r2.reasons.playbook_release), /页面路径/, "命中的理由必须说明来自 paths 分支");
+});
+
+test("#524：同一个页面的源与产物（web-src/pages/x.html / web/x.html）选中同一批套件", () => {
+	const src = pickE2E(["web-src/pages/playbook.html"]);
+	const gen = pickE2E(["web/playbook.html"]);
+	assert.ok(src.selected.includes("playbook_release"));
+	assert.deepEqual(gen.selected, src.selected, "两种写法算出两套答案 = 改了产物那一半漏跑");
+});
+
+test("#524 反向 1：并集不许把「改任意页面」扩成暴涨或全量（capabilities.html）", () => {
+	const r = pickE2E(["web-src/pages/capabilities.html"]);
+	assert.equal(r.full, null, `不该触发全量：${r.full}`);
+	const allPaged = SUITES.filter((s) => SUITE_SURFACES[s]?.pages === "ALL").length;
+	const declared = SUITES.filter(
+		(s) => Array.isArray(SUITE_SURFACES[s]?.pages) && SUITE_SURFACES[s].pages.includes("capabilities"),
+	).length;
+	assert.ok(declared > 0, "前置：capabilities 至少被一个套件的 pages 登记");
+	assert.ok(
+		r.selected.length <= allPaged + declared,
+		`选中 ${r.selected.length} 个，超上限 ${allPaged}（ALL）+ ${declared}（登记）：${r.selected.join(",")}`,
+	);
+	assert.ok(!r.selected.includes("playbook_release"), "别的页面不许被 playbook 的 paths 登记带走");
+});
+
+test("#524 反向 2：无人登记的页面仍然 fail-closed（paths 匹配不等于「有人覆盖」）", () => {
+	const orphan = "no-suite-page";
+	const r = selectE2E({
+		files: [`web-src/pages/${orphan}.html`],
+		suites: SUITES,
+		table: TABLE,
+		pages: [...PAGES, orphan],
+	});
+	assert.equal(r.unknown.length, 0, "页面在站点清单里，不该记成「不认识的名字」");
+	const matrices = SUITES.filter((s) => SUITE_SURFACES[s]?.pages === "ALL");
+	assert.ok(matrices.length > 0, "前置：至少一个矩阵类套件");
+	assert.deepEqual(
+		r.selected,
+		[...matrices].sort(),
+		`无登记页面只该由矩阵类覆盖，实际 ${r.selected.join(",")}（缺口 = 静默通过，满 = 扩成全量）`,
+	);
+	assert.ok(!r.selected.includes("playbook_release"));
 });
 
 test("跳过清单必须带原因（不是空壳）", () => {
