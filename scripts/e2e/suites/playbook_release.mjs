@@ -5,6 +5,7 @@ import * as V from "../lib/v4.mjs";
 const SUITE = "playbook_release";
 const NS = V.DEFAULT_NS;
 const VALUES = { project: "demo" };
+const UNINST_VALUES = { project: "uninst" };
 
 const PB = {
 	list: () => V.P.playbooks(NS),
@@ -12,6 +13,7 @@ const PB = {
 	render: (slug) => `${V.P.playbook(NS, slug)}/render`,
 	installs: (slug) => `${V.P.playbook(NS, slug)}/installs`,
 	installById: (slug, id) => `${V.P.playbook(NS, slug)}/installs/${encodeURIComponent(id)}`,
+	release: (slug, rel) => `${V.P.playbook(NS, slug)}/releases/${encodeURIComponent(rel)}`,
 };
 
 const VALUES_BLOCK = `    type: object
@@ -123,6 +125,26 @@ function rowCounts(ctx) {
 		capability_versions: V.countRows(ctx.dbPath, "capability_versions"),
 		sources: V.countRows(ctx.dbPath, "sources"),
 	};
+}
+
+function uninstall(ctx, slug, rel, query = "") {
+	const path = PB.release(slug, rel) + (query ? "?" + query : "");
+	return H.req(ctx.base, path, { session: ctx.session, method: "DELETE" });
+}
+
+function dbRows(ctx, sql, args = []) {
+	return V.withDB(ctx.dbPath, (db) => db.prepare(sql).all(...args));
+}
+
+function dbFingerprint(dbPath) {
+	return V.withDB(dbPath, (db) =>
+		JSON.stringify({
+			capability_versions: db.prepare("SELECT * FROM capability_versions ORDER BY id").all(),
+			sources: db.prepare("SELECT * FROM sources ORDER BY id").all(),
+			edges: db.prepare("SELECT * FROM edges ORDER BY namespace_id, from_is_source, from_ref, to_ref").all(),
+			playbook_installs: db.prepare("SELECT * FROM playbook_installs ORDER BY id").all(),
+		}),
+	);
 }
 
 async function partLegacyDefaults(ctx) {
@@ -322,9 +344,187 @@ async function partInvalidRelease(ctx) {
 	H.eq("坏 release 不留回执（实例组数 0）", list.total, 0);
 }
 
+async function partUninstallRemovesReleaseOnly(ctx) {
+	console.log("--- 6. 卸载一个 release 只撤它装出的行（#510）---");
+	const slug = "pb-uninstall";
+	await createPackage(ctx, slug, {
+		"playbook.yaml": entryDoc(slug, ["capabilities/review.yaml", "capabilities/fixer.yaml"], ["sources/on-push.yaml"]),
+		"capabilities/review.yaml": capabilityDoc("{{release.name}}-{{values.project}}-review", []),
+		"capabilities/fixer.yaml": capabilityDoc("{{release.name}}-{{values.project}}-fixer", [], [
+			"{{release.name}}-{{values.project}}-review",
+		]),
+		"sources/on-push.yaml": sourceDoc("{{release.name}}-{{values.project}}-on-push", [
+			"{{release.name}}-{{values.project}}-review",
+		]),
+	});
+
+	const ra = await install(ctx, slug, "a", UNINST_VALUES);
+	V.expectStatus("release a 安装（2 能力 + 1 源）→ 200", ra, 200);
+	const rb = await install(ctx, slug, "b", UNINST_VALUES);
+	V.expectStatus("release b 安装 → 200", rb, 200);
+	const aInstallId = ra.json?.install?.id;
+	const before = rowCounts(ctx);
+
+	const res = await uninstall(ctx, slug, "a");
+	V.expectStatus("卸载 release a → 200", res, 200);
+	const doc = res.json || {};
+	H.eq("动作文档回显 release", doc.release, "a");
+	H.eq("首次卸载 alreadyUninstalled=false", doc.alreadyUninstalled, false);
+	H.eq("removed.capabilities 只列 a 装出的两行（按名字排序）", doc.removed?.capabilities, ["a-uninst-fixer@1", "a-uninst-review@1"]);
+	H.eq("removed.sources 只列 a 装出的源", doc.removed?.sources, ["a-uninst-on-push"]);
+	H.eq("kept 是空数组（没有同名的手工/他人行）", doc.kept, []);
+	H.check("installIds 只有 1 条（a 只装了一次）", Array.isArray(doc.installIds) && doc.installIds.length === 1, JSON.stringify(doc.installIds));
+	H.eq("installIds[0] 就是 a 的回执 id", doc.installIds?.[0], aInstallId);
+	H.check(
+		"uninstalledAt 是能被 Date.parse 解出的时间",
+		typeof doc.uninstalledAt === "string" && !Number.isNaN(Date.parse(doc.uninstalledAt)),
+		String(doc.uninstalledAt),
+	);
+	H.check("note 非空（回执保留、他人对象不删的说明）", typeof doc.note === "string" && doc.note.length > 0, String(doc.note));
+
+	const caps = await listNames(ctx, V.P.capabilities(NS), "能力");
+	H.check("a 的两个能力都不在列表里", !caps.includes("a-uninst-review") && !caps.includes("a-uninst-fixer"), caps.join(","));
+	H.check("b 的两个能力仍在列表里", caps.includes("b-uninst-review") && caps.includes("b-uninst-fixer"), caps.join(","));
+	const srcs = await listNames(ctx, V.P.sources(NS), "源");
+	H.check("a 的源不在列表里", !srcs.includes("a-uninst-on-push"), srcs.join(","));
+	H.check("b 的源仍在列表里", srcs.includes("b-uninst-on-push"), srcs.join(","));
+
+	const list = await readInstalls(ctx, slug, "卸载 a 后的包");
+	H.eq("已卸载的 release 不再出现在实例清单里", list.total, 1);
+	H.eq("清单里只剩 release b", list.groups[0]?.release, "b");
+
+	const one = await H.req(ctx.base, PB.installById(slug, aInstallId), { session: ctx.session });
+	V.expectStatus("a 的回执仍能单条读（回执是审计）→ 200", one, 200);
+	H.eq("单条回执仍然说 release=a", one.json?.install?.release, "a");
+
+	const after = rowCounts(ctx);
+	H.eq("卸载不删能力历史行（capability_versions 行数不变）", after.capability_versions, before.capability_versions);
+	H.eq("卸载删掉 a 的源行（sources -1）", after.sources, before.sources - 1);
+
+	const nsId = await H.defaultNamespaceId(ctx.base, ctx.session);
+	const countWhere = (sql, args) => dbRows(ctx, sql, args).length;
+	const capNames = (pattern, live) =>
+		dbRows(
+			ctx,
+			`SELECT name FROM capability_versions
+			  WHERE namespace_id = ? AND name LIKE ? AND deleted_at IS ${live ? "NULL" : "NOT NULL"}
+			  ORDER BY name`,
+			[nsId, pattern],
+		).map((r) => r.name);
+	H.eq("库里 a 的 2 行能力都打了 deleted_at（软删不物理删）", capNames("a-uninst-%", false), ["a-uninst-fixer", "a-uninst-review"]);
+	H.eq("库里 a 的能力没有一行还可见", capNames("a-uninst-%", true), []);
+	H.eq("库里 b 的 2 行能力仍可见（一行没动）", capNames("b-uninst-%", true), ["b-uninst-fixer", "b-uninst-review"]);
+	const srcRows = (name) => countWhere("SELECT name FROM sources WHERE namespace_id = ? AND name = ?", [nsId, name]);
+	H.eq("库里 a 的源已经删行", srcRows("a-uninst-on-push"), 0);
+	H.eq("库里 b 的源还在", srcRows("b-uninst-on-push"), 1);
+	const edgeFrom = (name) => countWhere("SELECT from_ref FROM edges WHERE namespace_id = ? AND from_is_source = 0 AND from_ref = ?", [nsId, name]);
+	H.eq("a-uninst-fixer 的出边随行撤掉", edgeFrom("a-uninst-fixer"), 0);
+	H.check("b-uninst-fixer 的出边还在", edgeFrom("b-uninst-fixer") > 0, String(edgeFrom("b-uninst-fixer")));
+}
+
+async function partUninstallKeepsManualRow(ctx) {
+	console.log("--- 7. 同名手工行进 kept[] 且不删（#510）---");
+	const slug = "pb-uninstall-share";
+	await createPackage(ctx, slug, {
+		"playbook.yaml": entryDoc(slug, ["capabilities/review.yaml"], ["sources/on-push.yaml"]),
+		"capabilities/review.yaml": capabilityDoc("share-{{values.project}}-review", []),
+		"sources/on-push.yaml": sourceDoc("{{release.name}}-share-{{values.project}}-on-push", ["share-{{values.project}}-review"]),
+	});
+
+	const ra = await install(ctx, slug, "a");
+	V.expectStatus("release a 安装 → 200", ra, 200);
+	const manual = await V.createCapability(
+		ctx.base,
+		ctx.session,
+		NS,
+		V.capabilityBody({
+			name: "share-demo-review",
+			run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\necho manual\n" } },
+		}),
+	);
+	V.expectStatus("手工再建同名能力（内容不同）→ 201", manual, 201);
+	H.eq("手工行落在 v2（同名新内容分配 max+1）", manual.json?.metadata?.version, 2);
+	const read = await H.req(ctx.base, V.P.capability(NS, "share-demo-review"), { session: ctx.session });
+	V.expectStatus("GET 同名能力 → 200", read, 200);
+	H.eq("读回来的名字就是它", read.json?.metadata?.name, "share-demo-review");
+	H.eq("读回来的是 v2", read.json?.metadata?.version, 2);
+
+	const res = await uninstall(ctx, slug, "a");
+	V.expectStatus("卸载 release a（同名手工行在场）→ 200", res, 200);
+	const doc = res.json || {};
+	H.eq("kept 只有一条", Array.isArray(doc.kept) ? doc.kept.length : -1, 1);
+	H.eq("kept 说清留下谁、哪版、为什么", doc.kept?.[0], {
+		kind: "capability",
+		name: "share-demo-review",
+		version: 2,
+		reason: "manual",
+	});
+	H.eq("removed.capabilities 仍是本 release 的 v1", doc.removed?.capabilities, ["share-demo-review@1"]);
+	H.eq("removed.sources 仍是本 release 的源", doc.removed?.sources, ["a-share-demo-on-push"]);
+
+	const still = await H.req(ctx.base, V.P.capability(NS, "share-demo-review"), { session: ctx.session });
+	V.expectStatus("手工行没被删：GET 仍 200", still, 200);
+	H.eq("手工行仍是 v2", still.json?.metadata?.version, 2);
+
+	const nsId = await H.defaultNamespaceId(ctx.base, ctx.session);
+	const rows = dbRows(
+		ctx,
+		"SELECT version, deleted_at FROM capability_versions WHERE namespace_id = ? AND name = ? ORDER BY version",
+		[nsId, "share-demo-review"],
+	);
+	H.eq("同名两版都在库里（软删不是物理删）", rows.map((r) => r.version), [1, 2]);
+	H.check("v1（本 release 装的）已软删", rows[0]?.deleted_at !== null && rows[0]?.deleted_at !== undefined, JSON.stringify(rows[0]));
+	H.check("v2（手工的）仍可见", rows[1]?.deleted_at === null, JSON.stringify(rows[1]));
+}
+
+async function partUninstallIdempotent(ctx) {
+	console.log("--- 8. 第二次卸载是 0 变化的幂等（#510）---");
+	const slug = "pb-uninstall";
+	const first = await uninstall(ctx, slug, "b");
+	V.expectStatus("卸载 release b → 200", first, 200);
+	const d1 = first.json || {};
+	H.eq("first.alreadyUninstalled=false", d1.alreadyUninstalled, false);
+	H.eq("first.removed.capabilities 是 b 的两行", d1.removed?.capabilities, ["b-uninst-fixer@1", "b-uninst-review@1"]);
+	H.eq("first.removed.sources 是 b 的源", d1.removed?.sources, ["b-uninst-on-push"]);
+
+	const before = dbFingerprint(ctx.dbPath);
+	const second = await uninstall(ctx, slug, "b");
+	V.expectStatus("再卸一次 release b → 200", second, 200);
+	const d2 = second.json || {};
+	H.eq("第二次 alreadyUninstalled=true", d2.alreadyUninstalled, true);
+	H.eq("第二次 removed.capabilities 是 []", d2.removed?.capabilities, []);
+	H.eq("第二次 removed.sources 是 []", d2.removed?.sources, []);
+	H.eq("第二次 kept 是 []", d2.kept, []);
+	H.check("第二次 installIds 非空（幂等也返回审计锚点）", Array.isArray(d2.installIds) && d2.installIds.length === 1, JSON.stringify(d2.installIds));
+	H.eq("第二次 installIds 与第一次相同", d2.installIds, d1.installIds);
+	H.eq("第二次 uninstalledAt 与第一次相同（标记不刷新）", d2.uninstalledAt, d1.uninstalledAt);
+
+	const after = dbFingerprint(ctx.dbPath);
+	H.check("第二次卸载后库指纹逐字节相同（0 写）", after === before, `before ${before.length} 字节 vs after ${after.length} 字节`);
+}
+
+async function partUninstallErrors(ctx) {
+	console.log("--- 9. 卸载的错误面与 0 写（#510）---");
+	const slug = "pb-uninstall-share";
+	const before = dbFingerprint(ctx.dbPath);
+	const cases = [
+		["release 不存在", "nope", "", 404, "release_not_found"],
+		["installId 与该 release 对不上", "a", "installId=ins_nope", 409, "install_conflict"],
+		["release 形状错", "Prod", "", 400, "invalid_playbook"],
+	];
+	for (const [why, rel, query, code, reason] of cases) {
+		const r = await uninstall(ctx, slug, rel, query);
+		V.expectReason(`卸载${why} → ${code}`, r, code, reason);
+		H.eq(`${why}之后库指纹不变（0 写）`, dbFingerprint(ctx.dbPath), before);
+	}
+	const missing = await H.req(ctx.base, PB.release("pb-does-not-exist", "a"), { session: ctx.session, method: "DELETE" });
+	V.expectReason("包不存在 → 404", missing, 404, "NotFound");
+	H.eq("包不存在之后库指纹不变（0 写）", dbFingerprint(ctx.dbPath), before);
+}
+
 async function main() {
 	H.startTimer();
-	console.log("=== SUITE: playbook_release（#505 安装 release 身份）===");
+	console.log("=== SUITE: playbook_release（#505 安装 release 身份 / #510 按 release 卸载）===");
 	const server = await H.startServer({ suiteName: SUITE, rpId: "localhost" });
 	try {
 		const seeded = H.seed(server.dbPath, "e2e");
@@ -334,6 +534,10 @@ async function main() {
 		await partCrossReleaseConflict(ctx);
 		await partTemplatePassthrough(ctx);
 		await partInvalidRelease(ctx);
+		await partUninstallRemovesReleaseOnly(ctx);
+		await partUninstallKeepsManualRow(ctx);
+		await partUninstallIdempotent(ctx);
+		await partUninstallErrors(ctx);
 	} finally {
 		server.stop();
 	}

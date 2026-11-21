@@ -127,9 +127,8 @@ const (
 	// parityPairsFloor 是 parityPairs() 的对数（含 auth/ingress/agent 的全部 DTO 与协议帧）。
 	// 192 → 196：上面那四个 observed 子 schema 各自进 pair（虽然能从 CapabilityStatus
 	// 递归到达，但「可达」不等于「被单独钉住」——具名 DTO 都单独成对）。
-	// 196 → 202：启停/试跑的六对 DTO（disable body、test body、test 回执、
-	// warning、审计条目、审计列表）。
-	parityPairsFloor = 202
+	// 196 → 202：启停/试跑的六对 DTO；202 → 204：#510 卸载响应两对（结果 / kept 行）。
+	parityPairsFloor = 204
 	// bareMountFloor 是 bareMountSpec() 的条目数。
 	bareMountFloor = 27
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底）。
@@ -142,18 +141,18 @@ const (
 	// `GET/PUT /v1/nodes/{name}/yaml`，实现见 `resource_node_yaml.go`）。
 	// 124 → 126：两条**只读** YAML 读面（IA ③④：
 	// `GET /v1/namespaces/{name}/yaml`、`GET /v1/system/yaml`）。
-	// 126 → 127：命名空间的 YAML 写面（#476 阶段 2：`PUT /v1/namespaces/{name}/yaml`）——
-	// YAML 成为命名空间 vars 的唯一编辑面。
-	muxPatternCount = 127
+	// 126 → 127：命名空间的 YAML 写面（#476 阶段 2：`PUT /v1/namespaces/{name}/yaml`）。
+	// 127 → 128：`DELETE …/playbooks/{slug}/releases/{release}`（#510 实例卸载）。
+	muxPatternCount = 128
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 39
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数。
 	// 230 → 234：status.observed 从自由 object 改成四个具名 schema
 	// （CapabilityObserved + Emit + Prune + Tasks，CONTRACT-observed）。
-	// 234 → 240：启停/试跑六个具名 schema（CapabilityDisableRequest /
-	// CapabilityTestRequest / CapabilityTestReceipt / CapabilityTestWarning /
-	// CapabilityAuditEntry / CapabilityAuditList）。
-	specSchemaFloor = 240
+	// 234 → 240：启停/试跑六个具名 schema（CapabilityDisableRequest / CapabilityTestRequest /
+	// CapabilityTestReceipt / CapabilityTestWarning / CapabilityAuditEntry / CapabilityAuditList）；
+	// 240 → 242：#510 卸载响应的结果与 kept 行。
+	specSchemaFloor = 242
 )
 
 // ---------- 测试入口 ----------
@@ -195,9 +194,9 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 	// 129 → 133：+4 能力的启停/试跑/审计端点（enable / disable / test / audit）。
 	// 133 → 135：+2 Node 文档 YAML 读/写（IA 重构 ②）。
 	// 135 → 137：+2 只读 YAML（IA ③④：Namespace 文档 / SystemConfig 文档）。
-	// 137 → 138：+1 命名空间的 YAML 写面（#476 阶段 2，`PUT /v1/namespaces/{name}/yaml`）。
-	if len(ops) != 138 {
-		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 138（137 + Namespace 文档的 PUT yaml）", len(ops))
+	// 137 → 138：+1 命名空间的 YAML 写面（#476 阶段 2）；138 → 139：+1 实例卸载（#510 的 DELETE releases）。
+	if len(ops) != 139 {
+		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 139（138 + #510 的实例卸载 DELETE）", len(ops))
 	}
 	// 至少一条来自 components.pathItems（agent.yaml 四条 + events/ingress 的共享 pathItem）。
 	fromPathItems := 0
@@ -3071,6 +3070,8 @@ func parityPairs() []parityPair {
 		{GoLabel: "store.PlaybookInstallGroup", File: "resource.yaml", Schema: "PlaybookInstallGroup", Sample: store.PlaybookInstallGroup{}},
 		{GoLabel: "store.PlaybookDeleteResult", File: "resource.yaml", Schema: "PlaybookDeleteResult", Sample: store.PlaybookDeleteResult{}},
 		{GoLabel: "store.PlaybookKept", File: "resource.yaml", Schema: "PlaybookKept", Sample: store.PlaybookKept{}},
+		{GoLabel: "store.PlaybookUninstallResult", File: "resource.yaml", Schema: "PlaybookUninstallResult", Sample: store.PlaybookUninstallResult{}},
+		{GoLabel: "store.PlaybookUninstallKept", File: "resource.yaml", Schema: "PlaybookUninstallKept", Sample: store.PlaybookUninstallKept{}},
 
 		// ---- namespace / system config ----
 		{GoLabel: "namespaceCounts", File: "resource.yaml", Schema: "NamespaceCounts", Sample: namespaceCounts{}},
