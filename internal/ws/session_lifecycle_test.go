@@ -2,11 +2,10 @@ package ws
 
 // 本文件钉住**会话写生命周期**的两条边界（#340 第四轮复审 m-1 / m-2）。
 //
-//  1. 调用方的 ctx 只结束**它自己的等待**，不拥有拆掉节点会话的权力：
-//     session.go 的写超时上下文用 context.WithoutCancel，不继承调用方可取消性。
-//     这条修复原先只有 internal/server 里**统计性**的护栏（空闲机 -count=200 不复现、
-//     带负载约 1%/次）。这里的用例把它变成**确定性**的：真实 WS 连接 + 客户端故意不读
-//     造成的阻塞写，一步一步只在事件（写计数 / ctx.Done）上推进，没有 sleep 断言。
+//  1. 调用方的 ctx 只结束**它自己的等待**，不拥有拆掉节点会话的权力（session.go 的写
+//     超时上下文用 context.WithoutCancel）。这条修复原先只有 internal/server 里统计性
+//     的护栏（空闲机 -count=200 不复现、带负载约 1%/次）；这里的用例把它变成确定性的：
+//     真 WS 连接 + 客户端故意不读造成的阻塞写，只在事件（写计数 / ctx.Done）上推进。
 //  2. 「进入即取消」不得被当成写失败：Send 返回可判别的 ErrSendCanceled，
 //     detachSessionOnWriteFailure 据此放过会话；真实写失败仍按原逻辑关会话。
 
@@ -29,23 +28,19 @@ import (
 
 const (
 	// bigFrameBytes 是阻塞写的载荷大小：必须明显大于「客户端不读时内核能缓冲的量」
-	// （loopback 的 sndbuf + rcvbuf 合计约 10MiB 量级），否则写会在调用方 deadline
-	// 之前就完成，用例前提不成立——下面「Send 不能先返回」的前提断言会直接报出来，
-	// 不会静默通过。
+	// （loopback 的 sndbuf + rcvbuf 合计约 10MiB 量级），否则写会在调用方 deadline 之前
+	// 就完成 —— 下面「Send 不能先返回」的前提断言会直接报出来，不会静默通过。
 	bigFrameBytes = 32 << 20
-	// callerDeadline 是调用方 ctx 的到期时间（真实触发路径是 HTTP 请求的 r.Context()
-	// 到期、或客户端读到帧后立刻断开）。
-	//
-	// 它的计时起点锚在「服务端已经写出这条帧的第一笔」这个**事件**上（见下面的 arm 顺序），
-	// 而不是锚在 Send 调用上：后者还要先跑 32MiB 的 json 编码，deadline 会被编码吃光，
-	// 取消就落到写开始之前了（那是另一条路径，不是本用例要复现的窗口）。
+	// callerDeadline 是调用方 ctx 的到期时间（真实触发路径是 HTTP 请求的 r.Context() 到期、
+	// 或客户端读到帧后立刻断开）。计时起点锚在「服务端已写出这条帧的第一笔」这个**事件**上
+	// （见下面的 arm 顺序），而不是锚在 Send 调用上：后者还要先跑 32MiB 的 json 编码，
+	// deadline 会被编码吃光，取消就落到写开始之前了（那是另一条路径）。
 	callerDeadline = 40 * time.Millisecond
 	// sessionSettleLimit 等「会话退干净（detach 的库写已落）」的上限：单条会话退出是
 	// 毫秒级，超时就是确证失败，不是 flake。
 	sessionSettleLimit = 5 * time.Second
-	// writeStartLimit 等「服务端开始写这条大帧」的上限。比其它界限宽得多，因为它后面
-	// 还带着 Send 内部对 32MiB 帧的 json 编码（高负载下可能到秒级）——这只是一个上界，
-	// 不是等待时长。
+	// writeStartLimit 等「服务端开始写这条大帧」的上限。比其它界限宽得多，因为后面还带着
+	// Send 内部对 32MiB 帧的 json 编码（高负载下可能到秒级）——它只是一个上界，不是等待时长。
 	writeStartLimit = 30 * time.Second
 )
 
@@ -135,13 +130,11 @@ func (l countingListener) Accept() (net.Conn, error) {
 
 // newCountingServer 在同一个 hub 前面再挂一个带写计数的 server，并把 fixture 的
 // `e.server` 指过去（`e.dial`/`e.dialNode` 都读它）。`newEnv` 自带的那个 server 本用例
-// 不用，它的 cleanup（注册时就绑定了旧值）照常关。
-//
-// 不去改 fixture_test.go 的 newEnv：本轮改动边界不动共享夹具。
+// 不用，它的 cleanup（注册时就绑定了旧值）照常关；新连接也走 e.handle（#525 的屏障）。
 func newCountingServer(t *testing.T, e *env) *writeCounter {
 	t.Helper()
 	counter := &writeCounter{}
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(e.hub.ServeHTTP))
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(e.handle))
 	srv.Listener = countingListener{Listener: srv.Listener, counter: counter}
 	srv.Start()
 	t.Cleanup(srv.Close)
@@ -152,12 +145,10 @@ func newCountingServer(t *testing.T, e *env) *writeCounter {
 // TestSessionSendWriteSurvivesCallerCancel 是 #340 m-1 的确定性回归。
 //
 // 复现的正是 context.WithoutCancel 存在的理由：coder/websocket 的写超时是
-// `context.AfterFunc(ctx, …c.close())` 实现的，而那个 AfterFunc 要到 writeFrame 的
-// defer 里才解除。所以只要写 ctx 继承调用方的可取消性，**帧已经写到 socket 之后、
-// defer 之前**的调用方取消就会关掉整条节点会话（真实表现：节点在线却没回包 →
-// 503 node_offline，而不是调用方自己的 504）。
-//
-// 时序全部由事件驱动（无 sleep 断言）：
+// `context.AfterFunc(ctx, …c.close())` 实现的，而那个 AfterFunc 要到 writeFrame 的 defer
+// 里才解除。所以只要写 ctx 继承调用方的可取消性，**帧已经写到 socket 之后、defer 之前**的
+// 调用方取消就会关掉整条节点会话（真实表现：节点在线却没回包 → 503 node_offline，而不是
+// 调用方自己的 504）。时序全部由事件驱动（无 sleep 断言）：
 //
 //	服务的计数事件 → 证明写已经开始（setupWriteTimeout 已注册）
 //	ctx.Done()     → 调用方期限在**写阻塞中**到期（这就是那个窗口）
@@ -261,13 +252,10 @@ func TestSessionSendWriteSurvivesCallerCancel(t *testing.T) {
 	closeConnAndWaitSettled(t, e, conn)
 }
 
-// TestSessionSendWriteTimeoutStillClosesSession 钉住 WithoutCancel 修复的**另一半**：
-// 调用方的取消不再拥有拆会话的权力，但写的边界仍由 hub.writeTimeout 给——写超时是
-// 「这条连接已经不可用」，必须按真实写失败处理（关会话），而不是被当成调用方取消。
-//
-// 为什么值得单独一条：把 `context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)`
-// 里的超时也去掉（即彻底没有写边界）时，其余用例仍全绿：它们全都不依赖「写会被
-// 超时打断」。本用例用同一条 32MiB 阻塞写（客户端始终不读）+ 200ms 写上限把它钉住。
+// TestSessionSendWriteTimeoutStillClosesSession 钉住 WithoutCancel 修复的**另一半**：调用方
+// 的取消不再拥有拆会话的权力，但写的边界仍由 hub.writeTimeout 给——写超时是「这条连接已经
+// 不可用」，必须按真实写失败处理（关会话），而不是被当成调用方取消。判别性是必要的：把那
+// 个超时也去掉（彻底没有写边界）时其余用例仍全绿，本用例用 32MiB 阻塞写 + 200ms 上界钉住。
 func TestSessionSendWriteTimeoutStillClosesSession(t *testing.T) {
 	e := newEnv(t)
 	// 本用例的主角就是这个上界：客户端不读 ⇒ 32MiB 写必然阻塞到它到期。

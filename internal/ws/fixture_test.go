@@ -33,7 +33,23 @@ type env struct {
 	tokenHash string
 	hub       *Hub
 	server    *httptest.Server
+	settle    *sessionSettle
 	now       int64
+}
+
+// handle 是挂到 httptest server 上的入口：把「这条连接还在被处理」记成事件，夹具才能
+// 在关连接之后确定性等会话退出（#525）。换 server 的用例（newCountingServer）也必须走它。
+func (e *env) handle(w http.ResponseWriter, r *http.Request) {
+	e.settle.enter()
+	defer e.settle.exit()
+	e.hub.ServeHTTP(w, r)
+}
+
+// sessionCount 读 hub 注册表里的活跃会话数（同包测试可以直接读，但要持锁）。
+func (e *env) sessionCount() int {
+	e.hub.mu.Lock()
+	defer e.hub.mu.Unlock()
+	return len(e.hub.sessions)
 }
 
 func testDB(t *testing.T) *store.DB {
@@ -74,8 +90,21 @@ func newEnv(t *testing.T) *env {
 		WithHelloTimeout(2*time.Second),
 		WithWriteTimeout(2*time.Second),
 	)
-	e.server = httptest.NewServer(http.HandlerFunc(e.hub.ServeHTTP))
-	t.Cleanup(e.server.Close)
+	e.settle = newSessionSettle()
+	e.server = httptest.NewServer(http.HandlerFunc(e.handle))
+	// 收尾顺序（LIFO）：各 dial 的 conn.Close → server.Close → **等会话真的退完** →
+	// db.Close → TempDir 的 RemoveAll。少了第三步，RemoveAll 会与服务端 detach 的两笔写
+	// （MarkNodeOffline / MarkInstancesDead）抢同一目录的 WAL/-shm（#525 的假红）。
+	t.Cleanup(func() {
+		e.server.Close()
+		if left, ok := e.settle.wait(sessionSettleLimit); !ok {
+			t.Fatalf("关连接后 %s 内仍有 %d 条会话没退出（detach 的库写会与 db.Close/临时目录删除抢 WAL）",
+				sessionSettleLimit, left)
+		}
+		if n := e.sessionCount(); n != 0 {
+			t.Fatalf("会话都退了，hub 注册表里还有 %d 条会话（detach 没摘干净）", n)
+		}
+	})
 	return e
 }
 
@@ -228,16 +257,15 @@ func (e *env) readRaw(t *testing.T, conn *websocket.Conn, d time.Duration) (any,
 	return frame, data, nil
 }
 
-// handled 用一次 config.get → welcome 往返做**有序屏障**：serveSession 单 goroutine
-// 串行处理帧，welcome 回到客户端即证明此前所有上行帧的 handler 已返回（含不回 ack
-// 的拒绝路径）与它们的 DB 写已完成。用于替代固定 sleep 的「读 DB 看没变」断言。
+// handled 用一次 config.get → welcome 往返做**有序屏障**：serveSession 单 goroutine 串行
+// 处理帧，welcome 回到客户端即证明此前所有上行帧的 handler 已返回（含不回 ack 的拒绝
+// 路径）与它们的 DB 写已完成。用于替代固定 sleep 的「读 DB 看没变」断言。
 //
 // 时序依据（session.go 的 serveSession）：Read → 方向过滤 → Decode → dispatchFrame
 // （同步调用 handler）→ TouchNode 全在同一个读循环 goroutine 里；config.get 的 handler
-// 是 h.sendWelcome，必然排在此前每一帧的 handler 返回之后才执行。因此欢迎帧到达 ⇒
-// 之前那些帧要么已处理完、要么已经让会话关闭（此时这里直接 Fatal，而不是静默通过）。
-// 若前面的 handler 回了任何帧（ack/grant 之类），它会先于 welcome 到达——本 helper
-// 顺带就是「没有收到 ack」的判别性断言。
+// 是 h.sendWelcome，必然排在此前每一帧的 handler 返回之后。所以欢迎帧到达 ⇒ 之前那些帧
+// 要么已处理完、要么已经让会话关闭（此时这里直接 Fatal）；若前面的 handler 回过帧，它
+// 会先于 welcome 到达 —— 本 helper 顺带就是「没有收到 ack」的判别性断言。
 func (e *env) handled(t *testing.T, conn *websocket.Conn) {
 	t.Helper()
 	e.send(t, conn, &protocol.ConfigGetFrame{Type: protocol.FrameConfigGet})
