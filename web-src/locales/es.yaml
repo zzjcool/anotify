@@ -2401,6 +2401,18 @@ pb:
     uninstall_kept_n: "Se conservaron {n} objetos que no le pertenecen (detalle abajo)."
     uninstall_already: "Esta instancia ya estaba desinstalada; ahora no hubo cambios."
     uninstall_reason: "Motivos en el detalle: creado a mano, pertenece a otra instancia o todavía lo reutiliza otra instancia."
+    versions: "Historial de versiones"
+    versions_hint: "Cada guardado que cambia el paquete conserva una versión; guardar el mismo contenido no añade nada. Puedes instalar cualquiera."
+    current_version: "Versión actual {n}"
+    version_n: "Versión {n}"
+    version_current_badge: "Actual"
+    version_digest: "Huella del contenido"
+    install_version: "Instalar esta versión"
+    installing_version: "Instalando la versión {n}…"
+    version_installed: "Instalada la versión {n}; el recibo está abajo."
+    version_empty: "Aún no hay versiones (la primera se crea al guardar)."
+    version_load_failed: "No se pudo cargar el historial de versiones"
+    version_unknown: "Esa versión no existe o ya no es la actual. Actualiza e inténtalo de nuevo."
 
 node:
   artifacts:

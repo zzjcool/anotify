@@ -2403,6 +2403,18 @@ pb:
     uninstall_kept_n: "保留了 {n} 个不属于它的对象（明细见下）。"
     uninstall_already: "这个实例此前已卸载，本次没有改动。"
     uninstall_reason: "明细里的原因：不属于这次安装（手工创建）、属于另一个实例、仍被另一个实例复用。"
+    versions: "版本历史"
+    versions_hint: "每次改包且内容不同就留一版；内容相同的保存不产生新版本。可以按任意一版安装。"
+    current_version: "当前版本 {n}"
+    version_n: "版本 {n}"
+    version_current_badge: "当前"
+    version_digest: "内容指纹"
+    install_version: "按此版本安装"
+    installing_version: "正在按版本 {n} 安装…"
+    version_installed: "已按版本 {n} 安装；回执见下方。"
+    version_empty: "还没有版本记录（包体第一次保存后出现）。"
+    version_load_failed: "版本历史载入失败"
+    version_unknown: "指定版本不存在或已不是当前版本，请刷新后再试。"
 
 node:
   artifacts:

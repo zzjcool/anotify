@@ -47,7 +47,6 @@
 	const isoNow = () => iso(now());
 
 	// clone 深拷贝演示数据，避免调用方改到 state 里的原对象。
-	//
 	// JSON.parse 会抛（带 undefined/循环引用时），而这个函数在每个 mock
 	// handler 里都用——一处抛错就整页白屏。降级成原值比整个页面挂掉好：
 	// 数据是假的，能看就行。
@@ -184,8 +183,8 @@
 
 	// 把引用解析成能力行；解析不到返回 null。
 	//
-	//   `name`     → 该名字的最高版本（= latest，升级自动生效）
-	//   `name@ver` → 那一版（钉死）
+	// `name`     → 该名字的最高版本（= latest，升级自动生效）
+	// `name@ver` → 那一版（钉死）
 	//
 	// 版本历史在 mock 里存于 `row.versions`（归档行），所以钉死旧版本也要能解析：
 	// 归档行返回一个只含 `{ns,name,version,digest,archived}` 的视图 —— 它有
@@ -234,8 +233,8 @@
 	// ---------- 种子：节点（cluster-scoped）----------
 	//
 	// `reports` 是**节点上报**的 mock 内部表示（真后端是 anode 的注册帧）：
-	//   声明了哪些命令、能解析哪些值。它们不直接上 wire —— Node.status 只有
-	//   契约里那些字段（见 deriveNodeStatus）。
+	// 声明了哪些命令、能解析哪些值。它们不直接上 wire —— Node.status 只有
+	// 契约里那些字段（见 deriveNodeStatus）。
 	(function initNodes() {
 		state.nodes = [
 			{
@@ -1440,10 +1439,10 @@
 	}
 
 	// 写请求的公共校验（v4 纪律）：
-	//   ① 顶层只认四个键（+ warnings），未知字段 → 400 unknown_field；
-	//   ② `status` 只读 → 400 status_not_writable；
-	//   ③ kind 必须匹配 → 400 kind_mismatch；
-	//   ④ metadata.namespace 与路径不符 → 400 namespace_mismatch。
+	// ① 顶层只认四个键（+ warnings），未知字段 → 400 unknown_field；
+	// ② `status` 只读 → 400 status_not_writable；
+	// ③ kind 必须匹配 → 400 kind_mismatch；
+	// ④ metadata.namespace 与路径不符 → 400 namespace_mismatch。
 	const ENVELOPE_KEYS = ["apiVersion", "kind", "metadata", "spec", "status"];
 	function validateWriteBody(body, kind, ns) {
 		if (!body || typeof body !== "object") return badRequest("BadRequest", "请求体必须是 JSON 对象");
@@ -1640,10 +1639,10 @@
 	// ---------- 派生：能力 status ----------
 	//
 	// 四个 condition 的 reason 用 api-conventions §4.3 的封闭词表：
-	//   Implemented        Valid | Invalid
-	//   NodesAvailable     Valid | NoMatchingNode | CommandMissing | ValueMissing | ConfigPending | NodeOffline | NamespaceUnauthorized
-	//   DownstreamResolved Valid | NotFound
-	//   Deployed           Valid | NotDeployed | Stale
+	// Implemented        Valid | Invalid
+	// NodesAvailable     Valid | NoMatchingNode | CommandMissing | ValueMissing | ConfigPending | NodeOffline | NamespaceUnauthorized
+	// DownstreamResolved Valid | NotFound
+	// Deployed           Valid | NotDeployed | Stale
 	//
 	// 全部在**读时**从事实算：capabilities.spec / nodes 上报 / deployments / tasks / events。
 	function capCandidates(ns) {
@@ -1896,10 +1895,10 @@
 	function deriveSourceStatus(row) {
 		const declared = row.targets || [];
 		// 与真实读模型逐字对齐（resource_source.go·srcEnvelopeOf / srcHealth）：
-		//   · health 只看 enabled 与“**声明**了出口没有”（ok / blocked / disabled）；
-		//     引用解析不到**不降级**——“哪个引用不存在”是派发事实（pending[]/任务
-		//     剪枝留痕）说的，不是读模型猜的；
-		//   · targetsResolved 是「声明了至少一个出口」（boolean），不是“全部能解析”。
+		// · health 只看 enabled 与“**声明**了出口没有”（ok / blocked / disabled）；
+		// 引用解析不到**不降级**——“哪个引用不存在”是派发事实（pending[]/任务
+		// 剪枝留痕）说的，不是读模型猜的；
+		// · targetsResolved 是「声明了至少一个出口」（boolean），不是“全部能解析”。
 		let health = "ok";
 		if (!row.enabled) health = "disabled";
 		else if (!declared.length) health = "blocked";
@@ -2198,10 +2197,10 @@
 	// ---------- 源的模板求值 / 派发计划 ----------
 	//
 	// `targets[].params` 只认 `$(payload)` / `$(payload.a.b)`（source.md §4.1）：
-	//   · 整个值**恰好**是一个引用 → 保留原类型；
-	//   · 掺了任何常量（哪怕只是一个空格）→ 字符串拼接；
-	//   · 取不到 → 剪枝 `param_missing`（不静默给空）；
-	//   · `$(vars.…)` / `$(params.…)` 在源参数里是**配置错误**（400 invalid_source_config）。
+	// · 整个值**恰好**是一个引用 → 保留原类型；
+	// · 掺了任何常量（哪怕只是一个空格）→ 字符串拼接；
+	// · 取不到 → 剪枝 `param_missing`（不静默给空）；
+	// · `$(vars.…)` / `$(params.…)` 在源参数里是**配置错误**（400 invalid_source_config）。
 	const REF_RE = /\$\(([^)]*)\)/g;
 
 	function templateRefs(value) {
@@ -3728,6 +3727,12 @@
 		if ("source" in spec) return badRequest(typeof spec.source === "string" && spec.source.startsWith("oci://") ? "oci_pull_failed" : "oci_unsupported", "Mock cannot pull an OCI registry; upload a self-contained file map or use the real server");
 		const pkg = pbPackage(spec.files, name);
 		const row = Object.assign({}, existing || {}, { ns, name, root: pkg.root, files: clone(spec.files), source: null, rv: nextRV(), uid: existing?.uid || nextUID("pb"), createdAt: existing?.createdAt || isoNow() });
+		// 版本历史与真服务端同判据：内容变了才留一版，同版本号改内容覆盖那一行。
+		const digest = mockDigest(stableStringify(spec.files));
+		const declared = pkg.root.metadata.version || 1;
+		const history = (existing?.versions || []).filter(v => v.version !== declared);
+		if (!existing || mockDigest(stableStringify(existing.files)) !== digest) history.push({ version: declared, digest, at: isoNow(), by: ME.id, files: clone(spec.files) });
+		row.versions = history.sort((a, b) => a.version - b.version);
 		if (existing) state.playbooks.splice(state.playbooks.indexOf(existing), 1, row); else state.playbooks.push(row);
 		return json(pbResource(row), updating ? 200 : 201);
 	}
@@ -3744,14 +3749,31 @@
 	for (const action of ["render", "install"]) on("POST", new RegExp("^/v1/namespaces/([^/]+)/playbooks/([^/]+)/" + action + "$"), pbRequest(ctx => {
 		const ns = decodeURIComponent(ctx.m[1]); const miss = nsMissing(ns); if (miss) return miss;
 		const row = pbFind(ns, decodeURIComponent(ctx.m[2])); if (!row) return notFound("Playbook ");
-		if (!pbObject(ctx.body || {}) || Object.keys(ctx.body || {}).some(k => !["values", "release", ...(action === "install" ? ["dryRun"] : [])].includes(k))) return badRequest("unknown_field", action === "install" ? "Only values, release and dryRun are accepted" : "Only values and release are accepted");
-		const rendered = pbRender(row, ctx.body?.values, ctx.body?.release);
+		if (!pbObject(ctx.body || {}) || Object.keys(ctx.body || {}).some(k => !["values", "release", "version", ...(action === "install" ? ["dryRun"] : [])].includes(k))) return badRequest("unknown_field", action === "install" ? "Only values, release, version and dryRun are accepted" : "Only values, release and version are accepted");
+		const want = ctx.body?.version;
+		if (want != null && (!Number.isInteger(want) || want < 1)) return badRequest("invalid_playbook", "version must be a positive integer");
+		let pinned = row; let pinnedVersion = row.root.metadata.version || 1;
+		if (want != null && want !== (row.root.metadata.version || 1)) {
+			const entry = (row.versions || []).find(v => v.version === want);
+			if (!entry) return statusErr(404, "version_not_found", "No such package version");
+			pinned = Object.assign({}, row, { files: entry.files || row.files }); pinnedVersion = want;
+		}
+		const rendered = pbRender(pinned, ctx.body?.values, ctx.body?.release);
 		if (action === "render") return json(pbRenderResult(rendered));
 		const dryRun = ctx.body?.dryRun === true;
-		const plan = pbPlan(row, rendered, dryRun); if (plan.error) return plan.error;
+		const plan = pbPlan(pinned, rendered, dryRun); if (plan.error) return plan.error;
+		plan.receipt.playbook.version = pinnedVersion;
+		plan.receipt.playbook.filesDigest = mockDigest(stableStringify(pinned.files));
 		if (!dryRun) pbCommit(row, plan);
 		return json(plan.receipt);
 	}));
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/playbooks\/([^/]+)\/versions$/, ctx => {
+		const ns = decodeURIComponent(ctx.m[1]); const miss = nsMissing(ns); if (miss) return miss;
+		const row = pbFind(ns, decodeURIComponent(ctx.m[2])); if (!row) return notFound("Playbook ");
+		const current = row.root.metadata.version || 1;
+		const versions = (row.versions || []).slice().sort((a, b) => b.version - a.version);
+		return json({ total: versions.length, currentVersion: current, versions: versions.map(v => ({ version: v.version, filesDigest: v.digest, createdAt: v.at, createdBy: v.by, current: v.version === current })) });
+	});
 	on("GET", /^\/v1\/namespaces\/([^/]+)\/playbooks\/([^/]+)\/installs(?:\/([^/]+))?$/, ctx => {
 		const ns = decodeURIComponent(ctx.m[1]); const miss = nsMissing(ns); if (miss) return miss;
 		const name = decodeURIComponent(ctx.m[2]); const row = pbFind(ns, name);
@@ -3784,9 +3806,9 @@
 	// ===== 能力（ns 私有）=====
 	//
 	// 写入期的版本规则按 capability.md §3：
-	//   foldKey/digest 都**不含** `spec.next` 与 `metadata.displayName` —— 改路由不产生
-	//   新版本、digest 也不变；改 params/requires/lifecycle/concurrency/run 一定产生
-	//   新版本；显式版本的内容不可变（同版本正文不同 → 400 version_content_immutable）。
+	// foldKey/digest 都**不含** `spec.next` 与 `metadata.displayName` —— 改路由不产生
+	// 新版本、digest 也不变；改 params/requires/lifecycle/concurrency/run 一定产生
+	// 新版本；显式版本的内容不可变（同版本正文不同 → 400 version_content_immutable）。
 	// mock 里同样实现，页面才能演示“改 run 出新版本 / 只改 next 不换版本”。
 	function stableStringify(v) {
 		if (v === null || typeof v !== "object") return JSON.stringify(v);
@@ -4015,9 +4037,9 @@
 			receiptPolicy: clone(current.receiptPolicy || {}),
 			receiptRef: current.receiptRef,
 		};
-		//   · 更大的版本号 → 旧当前版进历史，新行成为“当前”；
-		//   · 更小的显式版本号（“空洞”）→ 直接进历史，**不把当前版本降下去**
-		//     （真服务也是每版本一行，当前 = max）。
+		// · 更大的版本号 → 旧当前版进历史，新行成为“当前”；
+		// · 更小的显式版本号（“空洞”）→ 直接进历史，**不把当前版本降下去**
+		// （真服务也是每版本一行，当前 = max）。
 		if (version < current.version) {
 			const entry = {
 				version: version,
@@ -4203,11 +4225,11 @@
 	// 能力启停 + 手动试跑（#432）。
 	//
 	// 形状与真后端逐字一致（internal/server/resource_capability.go）：
-	//   · enable/disable 回**整个 Capability 信封**，`status.enabled` 由开关派生，
-	//     能力行的 resourceVersion **不变**（动作 POST 不套 CAS、不产生新版本）；
-	//   · test 回 `{traceId, origin:"test", tasks[], pruned[], warnings[]}`，空列表恒 `[]`；
-	//     未部署在真后端是 `200 + warnings`（不是 4xx），mock 只说同一句话；
-	//   · audit 回非信封 `{items:[...]}`，最新在前。
+	// · enable/disable 回**整个 Capability 信封**，`status.enabled` 由开关派生，
+	// 能力行的 resourceVersion **不变**（动作 POST 不套 CAS、不产生新版本）；
+	// · test 回 `{traceId, origin:"test", tasks[], pruned[], warnings[]}`，空列表恒 `[]`；
+	// 未部署在真后端是 `200 + warnings`（不是 4xx），mock 只说同一句话；
+	// · audit 回非信封 `{items:[...]}`，最新在前。
 	//
 	// 审计只活在本次页面会话里（不写 state）：刷新即清空，避免预览把「你刚才点过什么」
 	// 伪装成服务端历史。actor 用 mock 会话主体，不是伪造的 usr_*。
