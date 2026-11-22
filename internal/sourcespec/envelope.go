@@ -22,6 +22,8 @@ const (
 
 // Envelope 是 config.envelope（三个维度各自可缺省）。
 type Envelope struct {
+	// Items 只在 kind=poll 上有意义：响应里事件数组的位置（"." = 根即数组，#532）。
+	Items      string         `json:"items,omitempty"`
 	Type       *FieldSource   `json:"type,omitempty"`
 	DeliveryID *FieldSource   `json:"deliveryId,omitempty"`
 	Payload    *PayloadSource `json:"payload,omitempty"`
@@ -105,8 +107,9 @@ func envelopeSources(fields map[string]json.RawMessage) (map[string]json.RawMess
 	return obj, nil
 }
 
-// normalizeEnvelope 校验归一 config.envelope（缺省 / null → nil）。
-func normalizeEnvelope(fields map[string]json.RawMessage) (*Envelope, error) {
+// normalizeEnvelope 校验归一 config.envelope（缺省 / null → nil）。withItems 只有 poll 为真：
+// `items` 是拉取型的第四指针，webhook 不认（那里的载荷是单条投递，没有数组可定位）。
+func normalizeEnvelope(fields map[string]json.RawMessage, withItems bool) (*Envelope, error) {
 	obj, err := envelopeSources(fields)
 	if err != nil || obj == nil {
 		return nil, err
@@ -114,6 +117,15 @@ func normalizeEnvelope(fields map[string]json.RawMessage) (*Envelope, error) {
 	out := &Envelope{}
 	for _, key := range sortedFieldKeys(obj) {
 		switch key {
+		case "items":
+			if !withItems {
+				err = errf("config.envelope 不认字段 %q（允许：deliveryId / payload / type）", key)
+				break
+			}
+			var text string
+			if err = json.Unmarshal(nonNull(obj[key], `""`), &text); err == nil {
+				out.Items, err = ParsePointerOrRoot(text)
+			}
 		case "type":
 			out.Type, err = normalizeFieldSource(obj[key], "type", true)
 		case "deliveryId":
@@ -121,7 +133,11 @@ func normalizeEnvelope(fields map[string]json.RawMessage) (*Envelope, error) {
 		case "payload":
 			out.Payload, err = normalizePayloadSource(obj[key])
 		default:
-			err = errf("config.envelope 不认字段 %q（允许：deliveryId / payload / type）", key)
+			if withItems {
+				err = errf("config.envelope 不认字段 %q（允许：deliveryId / items / payload / type）", key)
+			} else {
+				err = errf("config.envelope 不认字段 %q（允许：deliveryId / payload / type）", key)
+			}
 		}
 		if err != nil {
 			return nil, err

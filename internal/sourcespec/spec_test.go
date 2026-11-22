@@ -17,10 +17,10 @@ func timeAt(s string) time.Time {
 	return t
 }
 
-// TestKindsRegistry 验 kind 注册表只有三个内置项，判定走查表。
+// TestKindsRegistry 验 kind 注册表只有四个内置项（#532 加入 poll），判定走查表。
 func TestKindsRegistry(t *testing.T) {
 	got := Kinds()
-	want := []string{"cron", "webhook", "manual"}
+	want := []string{"cron", "webhook", "manual", "poll"}
 	if len(got) != len(want) {
 		t.Fatalf("Kinds() = %v, want %v", got, want)
 	}

@@ -2764,7 +2764,7 @@ components:
       properties:
         kind:
           type: string
-          description: "源类型（如 `webhook` / `cron`）；创建后不可变"
+          description: "源类型（`webhook` / `cron` / `manual` / `poll`）；创建后不可变"
         enabled: {type: boolean}
         config:
           type: object
@@ -2788,8 +2788,27 @@ components:
             数字段表示数组下标，不支持通配/函数）。任一指针取不到时：`type` 回落源名、
             `deliveryId` 不去重、`payload` → 400。
 
-            `config.payload` 对三个 kind **同语义**（静态打底 + 入站一层覆盖，冲突时
+            `config.payload` 对四个 kind **同语义**（静态打底 + 入站一层覆盖，冲突时
             入站覆盖静态）；webhook 以前接受但静默丢弃，本版起真生效。
+
+            `kind: poll`（#532）的键（拉取型传输，只做 http-json）：
+
+              url:       https://api.github.com/advisories?per_page=50   # 必填，只允许 https
+              headers:   { Accept: application/vnd.github+json }         # 可选，≤20 项
+              secretRef: { name: gh-token, header: Authorization, prefix: "Bearer " }
+              schedule:  { expr: "*/5 * * * *", tz: UTC }                # 与 cron 同一套表达式
+              timeoutMs: 10000        # 默认 10000，夹到 [1000, 60000]
+              maxItems:  100          # 默认 100，硬上限 500；超限 = 该轮失败不截断
+              allowInsecure: false    # 只给 e2e：允许 http + 跳过私网判据
+              envelope:  { items: ".", type: {pointer: type}, deliveryId: {pointer: id}, payload: {pointer: ""} }
+
+            `envelope.items` 是**第四个指针**：在响应里定位事件数组（`.` = 顶层数组，`$.data` /
+            `data.items` 都行）；空/非数组 → 该次轮询失败（不是「0 条」）。其余三指针是**每个
+            item 内部**的路径，方言与 webhook 完全同一套（共用 `walkPath`）。
+
+            `secretRef.name` 指向命名空间凭据：值是 write-only 的 `secret`（写一次即落库，读取
+            永不回显，PATCH 省略 = 保留），`sources.config` 里只有引用。引用不存在且本次没给
+            `secret` → 400（`details.causes[].field = config.secretRef`）。
           additionalProperties: true
         targets:
           type: array
@@ -2797,7 +2816,7 @@ components:
     SourceStatus:
       type: object
       description: "只读派生面"
-      required: [hookUrl, enabled, health, targetsResolved, lastError]
+      required: [hookUrl, enabled, health, targetsResolved, lastError, consecutiveFailures, skippedOverlaps]
       properties:
         hookUrl:
           type: string
@@ -2805,11 +2824,27 @@ components:
         lastFiredAt:
           type: string
           format: date-time
-          description: "省略 = 从未触发"
+          description: "省略 = 从未触发；`kind: poll` 的语义是最近一次**成功**轮询"
         nextFireAt:
           type: string
           format: date-time
-          description: "cron 源下次触发；省略 = 无排期"
+          description: "cron / poll 源的下次触发；省略 = 无排期"
+        cursor:
+          type: string
+          description: |
+            `kind: poll` 的不透明游标（服务端不解释）：上一次**整轮成功**响应的
+            `ETag` / `Last-Modified`，下一轮作为 `If-None-Match` 发回。失败时不前进，
+            省缺 = 还没有游标。
+        lastPollAt:
+          type: string
+          format: date-time
+          description: "`kind: poll` 最近一次**完成**的轮询（成功或失败都推进）；省略 = 从未轮询"
+        consecutiveFailures:
+          type: integer
+          description: "`kind: poll` 连续失败数（成功清零）；其它 kind 恒 0"
+        skippedOverlaps:
+          type: integer
+          description: "`kind: poll` 因上一轮未结束而跳过的 tick 数（不重叠纪律）；其它 kind 恒 0"
         enabled: {type: boolean}
         health:
           type: string
@@ -2818,7 +2853,9 @@ components:
         lastError:
           type: string
           nullable: true
-          description: "恒 `null`：v4 没有「源的最后一次错误」这个落库事实"
+          description: |
+            最近一次失败的人话（脱敏；`kind: poll` 落库）。没有失败事实时恒 `null`。
+            非 poll 源目前没有这个落库事实，恒 `null`。
     Source:
       type: object
       required: [apiVersion, kind, metadata, spec, status]

@@ -790,6 +790,8 @@ func TestSourcePayloadSchemaRoundTrip(t *testing.T) {
 			cfg = `{"expr":"0 3 * * *","payloadSchema":` + rawSchema + `}`
 		case SourceKindWebhook:
 			cfg = `{"token":"src_tok","payloadSchema":` + rawSchema + `}`
+		case SourceKindPoll:
+			cfg = `{"url":"https://example.com/a","schedule":{"expr":"*/5 * * * *"},"payloadSchema":` + rawSchema + `}`
 		}
 		src := &Source{
 			NamespaceID: nsID, Name: "带契约的源-" + kind, Kind: kind,

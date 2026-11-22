@@ -31,10 +31,11 @@ const (
 	KindCron    = "cron"
 	KindWebhook = "webhook"
 	KindManual  = "manual"
+	KindPoll    = "poll"
 )
 
 // kindRegistry 是本期注册表快照（只读）。
-var kindRegistry = []string{KindCron, KindWebhook, KindManual}
+var kindRegistry = []string{KindCron, KindWebhook, KindManual, KindPoll}
 
 // Kinds 返回合法 kind（拷贝；调用方可安全修改）。
 func Kinds() []string {
@@ -110,6 +111,15 @@ type Config struct {
 	// Envelope / Signature 是 webhook 的适配层（#513）：从哪取三元组、用哪种签名口径。
 	Envelope  *Envelope
 	Signature *Signature
+	// URL / Headers / SecretRef / Schedule / TimeoutMs / MaxItems / AllowInsecure 是
+	// kind=poll 的拉取参数（#532），缺省已在此处补齐。
+	URL           string
+	Headers       map[string]string
+	SecretRef     *SecretRef
+	Schedule      PollSchedule
+	TimeoutMs     int
+	MaxItems      int
+	AllowInsecure bool
 }
 
 // ParseConfig 把 config 字节按 kind 解释成结构化形态（坏字节 → 零值，不报错）。
@@ -152,11 +162,38 @@ func ParseConfig(kind string, raw json.RawMessage) Config {
 		}
 	}
 	if kind == KindWebhook {
-		if env, err := normalizeEnvelope(fields); err == nil {
+		if env, err := normalizeEnvelope(fields, false); err == nil {
 			cfg.Envelope = env
 		}
 		if sig, err := normalizeSignature(fields); err == nil {
 			cfg.Signature = sig
+		}
+	}
+	if kind == KindPoll {
+		_ = json.Unmarshal(fields["url"], &cfg.URL)
+		if v, ok := fields["headers"]; ok {
+			_ = json.Unmarshal(v, &cfg.Headers)
+		}
+		if v, ok := fields["secretRef"]; ok {
+			var ref SecretRef
+			if json.Unmarshal(v, &ref) == nil && ref.Name != "" {
+				cfg.SecretRef = &ref
+			}
+		}
+		if v, ok := fields["schedule"]; ok {
+			_ = json.Unmarshal(v, &cfg.Schedule)
+		}
+		_ = json.Unmarshal(fields["timeoutMs"], &cfg.TimeoutMs)
+		_ = json.Unmarshal(fields["maxItems"], &cfg.MaxItems)
+		_ = json.Unmarshal(fields["allowInsecure"], &cfg.AllowInsecure)
+		if cfg.TimeoutMs <= 0 {
+			cfg.TimeoutMs = DefaultPollTimeoutMs
+		}
+		if cfg.MaxItems <= 0 {
+			cfg.MaxItems = DefaultPollMaxItems
+		}
+		if env, err := normalizeEnvelope(fields, true); err == nil {
+			cfg.Envelope = env
 		}
 	}
 	return cfg

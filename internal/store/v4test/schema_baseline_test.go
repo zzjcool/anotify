@@ -28,6 +28,7 @@ var baselineTables = []string{
 	"emits",
 	"events",
 	"namespace_configs",
+	"namespace_secrets",
 	"namespaces",
 	"node_configs",
 	"node_instances",
@@ -202,6 +203,7 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 		"sources": {
 			"id", "namespace_id", "name", "display_name", "kind", "config", "targets", "enabled",
 			"last_fired_at", "next_fire_at", "installed_from", "resource_version", "created_at",
+			"poll_cursor", "last_poll_at", "consecutive_failures", "skipped_overlaps", "last_error",
 		},
 	}
 	for table, want := range wantCols {
@@ -587,15 +589,15 @@ func TestSchemaBaselineLayoutMarkerIsSeparateFromLedger(t *testing.T) {
 	if got := rawUserVersion(t, path); got != 4 {
 		t.Fatalf("新库 PRAGMA user_version = %d, want 4（v4 布局格式标记）", got)
 	}
-	if v, err := db.SchemaVersion(); err != nil || v != 5 {
-		t.Fatalf("SchemaVersion = %d, %v; want 5（记账 = 块数，不是布局标记）", v, err)
+	if v, err := db.SchemaVersion(); err != nil || v != 6 {
+		t.Fatalf("SchemaVersion = %d, %v; want 6（记账 = 块数，不是布局标记）", v, err)
 	}
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&n); err != nil {
 		t.Fatalf("count schema_version: %v", err)
 	}
-	if n != 5 {
-		t.Fatalf("schema_version 行数 = %d, want 5（baseline + release + 卸载标记 + 包版本历史 + router 结局表）", n)
+	if n != 6 {
+		t.Fatalf("schema_version 行数 = %d, want 6（baseline + release + 卸载标记 + 包版本历史 + router 结局表 + 轮询状态）", n)
 	}
 }
 
