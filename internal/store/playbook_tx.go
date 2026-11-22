@@ -473,8 +473,6 @@ func insertPlaybookInstallOn(ctx context.Context, ex queryExec, namespaceID stri
 		receipt.Install.Release, now); err != nil {
 		return fmt.Errorf("insert install receipt: %w", err)
 	}
-	// 依赖索引（#534）：回执里的 dependencies 是审计原文，锁判定要能在 SQL 侧看见这些行。
-	// 与回执同一次事务写入；dryRun 靠事务回滚，不需要分支。
 	for _, dep := range receipt.Dependencies {
 		if _, err := ex.execContext(ctx,
 			`INSERT INTO playbook_install_requires (namespace_id, install_id, capability, version)

@@ -152,7 +152,6 @@ type PlanResult struct {
 	Capabilities []PlannedCapability
 	Sources      []PlannedSource
 
-	// Dependencies 是解析到的外部依赖（顺序 = spec.requires 的声明顺序）。
 	Dependencies []Dependency
 
 	// schema 是 spec.values 的解析形态：BuildReceipt 打码要用（不导出，避免两份真相）。
@@ -217,7 +216,6 @@ func PlanForRelease(pkg *Package, values map[string]any, release string, existin
 	if err != nil {
 		return nil, err
 	}
-	// 外部依赖：自引用（400）→ 版本不够/不存在（409）；先于 12 格矩阵，依赖类错误优先。
 	deps, err := resolveRequires(pkg.Requires, rendered.Capabilities, existing)
 	if err != nil {
 		return nil, err

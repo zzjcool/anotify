@@ -175,7 +175,6 @@ func TestBuildReceiptNilPlan(t *testing.T) {
 	}
 }
 
-// TestReceiptDependenciesEmptyIsArray 验 D8：没有 requires 时 dependencies 序列化成 []（不是 null）。
 func TestReceiptDependenciesEmptyIsArray(t *testing.T) {
 	pkg := newBundle().withStandard().pkg(t)
 	plan, err := Plan(pkg, baseValues(), newFakeExisting())
@@ -200,7 +199,6 @@ func TestReceiptDependenciesEmptyIsArray(t *testing.T) {
 	}
 }
 
-// TestReceiptDependenciesNilPlan 验 plan==nil 的分支同样给 []（回执形状不因分支而变）。
 func TestReceiptDependenciesNilPlan(t *testing.T) {
 	r := BuildReceipt(nil, nil, "", InstallMeta{ID: "ins_x", At: ts, Namespace: "ns"})
 	raw, err := json.Marshal(r)
@@ -212,7 +210,6 @@ func TestReceiptDependenciesNilPlan(t *testing.T) {
 	}
 }
 
-// TestReceiptDependenciesFilled 验有依赖时逐条对上（能力名 + 版本，顺序 = 声明顺序）。
 func TestReceiptDependenciesFilled(t *testing.T) {
 	pkg := newBundle().withStandard().setRequires("- capability: inventory\n  minVersion: 2\n").pkg(t)
 	ex := newFakeExisting().

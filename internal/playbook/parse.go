@@ -194,7 +194,6 @@ func applyEntry(pkg *Package, tree map[string]any) error {
 	}
 	pkg.CapabilityPaths = caps
 	pkg.SourcePaths = srcs
-	// spec.requires 的形状在这里判（值无关）；解析/自引用/版本比对是安装期（plan.go）。
 	reqs, err := parseRequires(spec, EntryFile)
 	if err != nil {
 		return err

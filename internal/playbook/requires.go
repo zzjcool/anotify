@@ -7,46 +7,38 @@ import (
 	"github.com/zzjcool/anotify/internal/artifact"
 )
 
-// MaxRequires 是 spec.requires 的条目上限（含）；同一 capability 出现两次也是 400。
 const MaxRequires = 32
 
-// Requirement 是 spec.requires 的一条声明（MinVersion 省略（0）= 任意已装版本）。
 type Requirement struct {
 	Capability string `json:"capability"`
 	MinVersion int    `json:"minVersion,omitempty"`
 }
 
-// Dependency 是一条解析成功的依赖（进回执 dependencies[]）：能力名 + 安装时可见的最高版本。
 type Dependency struct {
 	Capability string `json:"capability"`
 	Version    int    `json:"version"`
 }
 
-// Cause 是一条逐点校验结论（wire 上是 Status.details.causes[] 的一项，三键形状不扩）。
 type Cause struct {
 	Reason  string `json:"reason,omitempty"`
 	Message string `json:"message,omitempty"`
 	Field   string `json:"field,omitempty"`
 }
 
-// 只认这两个键：capability 是字面量，不参与 `{{values.*}}` 渲染。
 const (
 	requireKeyCapability = "capability"
 	requireKeyMinVersion = "minVersion"
 )
 
-// requireField 拼一条 cause 的字段路径（形如 spec.requires[0].capability）。
 func requireField(i int, suffix string) string {
 	return fmt.Sprintf("spec.requires[%d]%s", i, suffix)
 }
 
-// requiresError 把收集到的 causes 一次性报到 400 invalid_playbook 上。
 func requiresError(where string, causes []Cause) *Error {
 	return errf(CodeInvalidPlaybook, "%s 的 spec.requires 不合法（%d 条问题，见 details.causes）",
 		where, len(causes)).withCauses(causes...)
 }
 
-// parseRequires 读 spec.requires 的**形状**（写入期，值无关）：全部问题收集成 causes 后一次报。
 func parseRequires(spec map[string]any, where string) ([]Requirement, error) {
 	raw, ok := spec["requires"]
 	if !ok || raw == nil {
@@ -147,8 +139,6 @@ func parseRequires(spec map[string]any, where string) ([]Requirement, error) {
 	return out, nil
 }
 
-// resolveRequires 解析声明侧依赖（安装期：**先自引用（400）、再逐条解析（409）**），
-// 满足时按声明顺序返回 Dependency（版本 = 命名空间里当前可见的最高版本）。
 func resolveRequires(reqs []Requirement, installed []*artifact.Artifact, existing Existing) ([]Dependency, error) {
 	if len(reqs) == 0 {
 		return nil, nil

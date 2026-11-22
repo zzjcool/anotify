@@ -49,7 +49,6 @@ const (
 	MaxSources      = 32
 	// MaxPathLen 是引用路径长度上限。
 	MaxPathLen = 255
-	// MaxNameLen 是包名（slug）长度上限。
 	MaxNameLen = 64
 )
 
@@ -117,7 +116,6 @@ const (
 	NoteNoNode = "no_node"
 )
 
-// NoteCodes 返回 notes 的封闭码表（拷贝；调用方可安全修改）。
 func NoteCodes() []string {
 	return []string{
 		NoteRoutingUnapplied, NoteTargetsUnapplied, NoteUnreachable,
@@ -156,12 +154,10 @@ func (e *Error) Error() string {
 	return e.Code + ": " + e.Message
 }
 
-// errf 造一个带码错误。
 func errf(code, format string, args ...any) *Error {
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}
 }
 
-// withDetails 给错误挂结构化补充（返回同一个错误，便于 `return nil, errf(...).with(...)`）。
 func (e *Error) withDetails(details map[string]any) *Error {
 	if len(details) == 0 {
 		return e
@@ -175,7 +171,6 @@ func (e *Error) withDetails(details map[string]any) *Error {
 	return e
 }
 
-// withCauses 给错误追加逐点结论（返回同一个错误，便于 `return nil, errf(...).withCauses(...)`）。
 func (e *Error) withCauses(causes ...Cause) *Error {
 	e.Causes = append(e.Causes, causes...)
 	return e
@@ -190,7 +185,6 @@ func Code(err error) string {
 	return ""
 }
 
-// IsCode 报告 err 是否带指定领域码。
 func IsCode(err error, code string) bool { return Code(err) == code }
 
 // Package 是一个已解析的目录包。

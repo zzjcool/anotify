@@ -133,7 +133,6 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		return
 	}
 
-	// #534 D11：能力被已生效的预案安装依赖 → 409（删除是「不可以」，不是「删了一半」）。
 	var locked *store.CapabilityLockedError
 	if errors.As(err, &locked) {
 		writeStatus(w, http.StatusConflict, playbook.CodeDependencyLocked, locked.Error(), capabilityLockDetails(locked))
@@ -238,7 +237,6 @@ func writeAPIError(w http.ResponseWriter, err error) {
 	}
 }
 
-// capabilityLockDetails 把依赖锁的消费者清单翻成 causes[]（一条一个 release，field 指认删除目标的 name）。
 func capabilityLockDetails(e *store.CapabilityLockedError) *statusDetails {
 	causes := make([]statusCause, 0, len(e.Consumers))
 	for _, c := range e.Consumers {

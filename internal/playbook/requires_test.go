@@ -10,7 +10,6 @@ import (
 	"github.com/zzjcool/anotify/internal/artifact"
 )
 
-// requireCausesOf 取 requires 类错误的逐点结论（这些错误必须带 causes）。
 func requireCausesOf(t *testing.T, err error) []Cause {
 	t.Helper()
 	if err == nil {
@@ -23,7 +22,6 @@ func requireCausesOf(t *testing.T, err error) []Cause {
 	return pbErr.Causes
 }
 
-// TestParseRequiresWriteTime 是写入期的八种形状：每种断言错误码 + causes[0].field。
 func TestParseRequiresWriteTime(t *testing.T) {
 	tooMany := &strings.Builder{}
 	for i := 0; i <= MaxRequires; i++ {
@@ -106,7 +104,6 @@ func TestParseRequiresWriteTime(t *testing.T) {
 	}
 }
 
-// TestParseRequiresCollectsAllProblems 验「一次报全部」：三条毛病凑一包，causes 一条不少。
 func TestParseRequiresCollectsAllProblems(t *testing.T) {
 	err := newBundle().setRequires("- capability: Bad\n  minimum: 1\n- capability: ok-cap\n  minVersion: 0\n").pkgErr(t)
 	assertCode(t, err, CodeInvalidPlaybook)
@@ -125,7 +122,6 @@ func TestParseRequiresCollectsAllProblems(t *testing.T) {
 	}
 }
 
-// TestParseRequiresValid 验合法声明按书写顺序落进 Package.Requires（minVersion 省略 = 0）。
 func TestParseRequiresValid(t *testing.T) {
 	pkg := newBundle().setRequires("- capability: inventory\n  minVersion: 2\n- capability: audit\n").pkg(t)
 	want := []Requirement{{Capability: "inventory", MinVersion: 2}, {Capability: "audit"}}
@@ -134,7 +130,6 @@ func TestParseRequiresValid(t *testing.T) {
 	}
 }
 
-// TestParseRequiresOmitted 验省略 → nil（对照组：没有 requires 的包与今天逐字一致）。
 func TestParseRequiresOmitted(t *testing.T) {
 	if pkg := newBundle().withStandard().pkg(t); pkg.Requires != nil {
 		t.Fatalf("没有 spec.requires 的包不该解析出 Requires: %+v", pkg.Requires)
@@ -144,7 +139,6 @@ func TestParseRequiresOmitted(t *testing.T) {
 	}
 }
 
-// TestResolveRequires 是安装期的四种落点：不存在 / 版本不够 / 满足 / 自引用。
 func TestResolveRequires(t *testing.T) {
 	t.Run("missing_capability", func(t *testing.T) {
 		_, err := resolveRequires([]Requirement{{Capability: "inventory"}}, nil, newFakeExisting())
@@ -212,7 +206,6 @@ func TestResolveRequires(t *testing.T) {
 	})
 
 	t.Run("self_reference_wins_over_missing", func(t *testing.T) {
-		// D6：自引用（400）先于依赖未满足（409），且不再跑解析。
 		installed := []*artifact.Artifact{{Metadata: artifact.Metadata{Name: "audit"}}}
 		_, err := resolveRequires([]Requirement{
 			{Capability: "audit"},

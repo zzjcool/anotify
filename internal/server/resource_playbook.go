@@ -825,7 +825,6 @@ type playbookStatusDoc struct {
 	Details    any    `json:"details,omitempty"`
 }
 
-// statusCausesOf 把 requires 类错误的逐点结论翻成 wire causes（D5：复用三键，不扩 StatusCause）。
 func statusCausesOf(e *playbook.Error) []statusCause {
 	if e == nil || len(e.Causes) == 0 {
 		return nil
@@ -837,7 +836,6 @@ func statusCausesOf(e *playbook.Error) []statusCause {
 	return out
 }
 
-// statusDetailsOf 只在有 causes 时给 details（D7：无 causes 的错误响应逐字不变）。
 func statusDetailsOf(e *playbook.Error) *statusDetails {
 	causes := statusCausesOf(e)
 	if len(causes) == 0 {
@@ -847,7 +845,6 @@ func statusDetailsOf(e *playbook.Error) *statusDetails {
 }
 
 // writePlaybookAPIError 是 Playbook 端点错误映射的唯一实现。
-//
 // 顺序：领域冲突（要带结构化 details）→ 依赖类 409（requires 未满足 / 能力被锁）→ 其它 playbook.Error（封闭码表 → 400/404） → store 哨兵（slug_mismatch）→ 通用 writeAPIError（含 CAS 家族与 404）。
 func writePlaybookAPIError(w http.ResponseWriter, err error) {
 	if err == nil {

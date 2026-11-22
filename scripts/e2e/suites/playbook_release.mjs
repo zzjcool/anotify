@@ -22,7 +22,6 @@ const VALUES_BLOCK = `    type: object
     properties:
       project: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,20}$' }`;
 
-// requiresBlock 渲染 spec.requires；null = 整个字段都不写（对照组要区分「省略」与「显式 []」）。
 function requiresBlock(reqs) {
 	if (reqs === null) return "";
 	if (reqs.length === 0) return "  requires: []\n";
@@ -725,7 +724,6 @@ function createPackageRaw(ctx, slug, requires) {
 async function partRequires(ctx) {
 	console.log("--- 11. requires 依赖锁：缺依赖零写 / 版本不够 / 满足即装 / 删除被锁（#534）---");
 
-	// ① 缺依赖：建包只看形状（201），安装那一刻才解析（409 + 一行不写）。
 	const missingSlug = "pb-req-missing";
 	await createPackage(ctx, missingSlug, {
 		"playbook.yaml": entryDoc(missingSlug, ["capabilities/review.yaml"], [], 0, [{ capability: "nope" }]),
@@ -749,7 +747,6 @@ async function partRequires(ctx) {
 		`before ${beforeMissing.length} 字节 vs after ${afterMissing.length} 字节`,
 	);
 
-	// ② 版本不够：inventory 建两版（v2 可见），minVersion: 3 必须被拒。
 	const capabilityOf = (script) =>
 		V.capabilityBody({
 			name: "inventory",
@@ -801,7 +798,6 @@ async function partRequires(ctx) {
 	);
 	H.eq("依赖锁的包照旧装出自己的能力", ok.json?.created?.capabilities, ["req-ok-review@1"]);
 
-	// ④ 锁：有已生效的安装依赖它就不能删，卸载那个 release 之后同一个令牌能删。
 	const invPath = V.P.capability(NS, "inventory");
 	const invBefore = await H.req(ctx.base, invPath, { session: ctx.session });
 	V.expectStatus("锁判定前 GET inventory → 200", invBefore, 200);
@@ -830,7 +826,6 @@ async function partRequires(ctx) {
 	const capNamesAfter = await listNames(ctx, V.P.capabilities(NS), "删依赖后的能力");
 	H.check("inventory 已不在能力列表里", !capNamesAfter.includes("inventory"), capNamesAfter.join(","));
 
-	// ⑤ 写入期形状：建包端点就是 400，causes 指到 spec.requires[i].…
 	const badShapes = [
 		["未知键", [{ capability: "inventory", bogus: 1 }], /^spec\.requires\[0\]\.bogus$/],
 		["minVersion: 0", [{ capability: "inventory", minVersion: 0 }], /^spec\.requires\[0\]\.minVersion$/],
@@ -855,7 +850,6 @@ async function partRequires(ctx) {
 	V.expectReason("自引用只能在安装期判 → 400 invalid_playbook", self, 400, "invalid_playbook");
 	H.eq("自引用的 causes[0].field", self.json?.details?.causes?.[0]?.field, "spec.requires[0].capability");
 
-	// ⑥ 对照组：省略 requires 与显式 requires: [] 都不能被 requires 逻辑误伤。
 	const noneSlug = "pb-req-none";
 	await createPackage(ctx, noneSlug, {
 		"playbook.yaml": entryDoc(noneSlug, ["capabilities/review.yaml"], [], 0, null),

@@ -1,9 +1,5 @@
 package server
 
-// Playbook requires（#534）的传输面验收：requires 未满足 / 能力被依赖锁是 409 且带 details.causes，
-// 写入期形状错仍是 400 但同样带 causes；无 requires 的错误走的是同两条分支，响应体必须与今天一致（D7）。
-// 领域语义（解析顺序、版本判定）由 internal/playbook 覆盖，这里只判 wire 形状（D5）。
-
 import (
 	"context"
 	"encoding/json"
@@ -21,7 +17,6 @@ type pbReqCause struct {
 	Field   string `json:"field"`
 }
 
-// pbReqStatusDoc 是带 causes 的 Status 响应；Details 用指针，nil 即「响应体里没有 details 键」。
 type pbReqStatusDoc struct {
 	Kind    string `json:"kind"`
 	Code    int    `json:"code"`
@@ -40,7 +35,6 @@ func (d pbReqStatusDoc) causes(t *testing.T) []pbReqCause {
 	return d.Details.Causes
 }
 
-// pbReqReceipt 只取回执里 requires 相关的部分。
 type pbReqReceipt struct {
 	Kind         string `json:"kind"`
 	Dependencies []struct {
@@ -58,14 +52,12 @@ func decodeRequiresStatus(t *testing.T, raw []byte) pbReqStatusDoc {
 	return doc
 }
 
-// pbReqBundle 在最小包上追加 spec.requires（对齐入口文档的 spec 缩进）。
 func pbReqBundle(slug, requires string) map[string]string {
 	files := pbTestBundle(slug)
 	files["playbook.yaml"] = strings.TrimRight(files["playbook.yaml"], "\n") + "\n  requires: " + requires + "\n"
 	return files
 }
 
-// createRequiresCapability 手工建一个能力（依赖目标），返回它的 CAS 令牌。
 func (e *playbookTestEnv) createRequiresCapability(t *testing.T, name string, version int) string {
 	t.Helper()
 	rec := e.do(t, "POST", "/v1/namespaces/"+e.nsID+"/capabilities",
@@ -81,7 +73,6 @@ func (e *playbookTestEnv) deleteRequiresCapability(t *testing.T, name, rv string
 	return e.do(t, "DELETE", "/v1/namespaces/"+e.nsID+"/capabilities/"+name+"?resourceVersion="+rv, nil)
 }
 
-// TestPlaybookInstallRequiresMissingCapability：requires 点名一个不存在的能力 → 409 且一行不写。
 func TestPlaybookInstallRequiresMissingCapability(t *testing.T) {
 	env := newPlaybookTestEnv(t)
 	slug := "req-missing"
@@ -107,7 +98,6 @@ func TestPlaybookInstallRequiresMissingCapability(t *testing.T) {
 	}
 }
 
-// TestPlaybookInstallRequiresVersionTooLow：可见版本低于 minVersion → 409，message 同时给 need/have。
 func TestPlaybookInstallRequiresVersionTooLow(t *testing.T) {
 	env := newPlaybookTestEnv(t)
 	env.withCapabilities(t)
@@ -132,7 +122,6 @@ func TestPlaybookInstallRequiresVersionTooLow(t *testing.T) {
 	}
 }
 
-// TestPlaybookInstallRequiresSatisfiedRecordsDependencies：满足时安装成功，回执记下解析结果。
 func TestPlaybookInstallRequiresSatisfiedRecordsDependencies(t *testing.T) {
 	env := newPlaybookTestEnv(t)
 	env.withCapabilities(t)
@@ -153,7 +142,6 @@ func TestPlaybookInstallRequiresSatisfiedRecordsDependencies(t *testing.T) {
 	}
 }
 
-// TestPlaybookCreateRequiresInvalidName：写入期形状错仍是 400 invalid_playbook，但现在带 causes（D7）。
 func TestPlaybookCreateRequiresInvalidName(t *testing.T) {
 	env := newPlaybookTestEnv(t)
 	slug := "req-badname"
@@ -171,7 +159,6 @@ func TestPlaybookCreateRequiresInvalidName(t *testing.T) {
 	}
 }
 
-// TestCapabilityDeleteLockedByPlaybookRequires：被已生效安装依赖的能力删除 → 409，卸载该 release 后 204。
 func TestCapabilityDeleteLockedByPlaybookRequires(t *testing.T) {
 	env := newPlaybookTestEnv(t)
 	env.withCapabilities(t)
@@ -213,8 +200,6 @@ func TestCapabilityDeleteLockedByPlaybookRequires(t *testing.T) {
 	}
 }
 
-// TestPlaybookInstallWithoutRequiresKeepsResponseShape 是 D7 的对照组：无 requires 的包
-// 走这两条错误分支时响应体逐字不变 —— 不许凭空长出 causes，也不许多出 details 键。
 func TestPlaybookInstallWithoutRequiresKeepsResponseShape(t *testing.T) {
 	env := newPlaybookTestEnv(t)
 	ctx := context.Background()
@@ -224,7 +209,6 @@ func TestPlaybookInstallWithoutRequiresKeepsResponseShape(t *testing.T) {
 		t.Fatalf("首次 install 应 200, got %d: %s", code, raw)
 	}
 
-	// 冲突分支（playbook_conflict 的 details 是矩阵专用形状）：不含 causes。
 	row, err := env.db.GetPlaybook(ctx, env.nsID, slug)
 	if err != nil {
 		t.Fatalf("get playbook: %v", err)
@@ -242,7 +226,6 @@ func TestPlaybookInstallWithoutRequiresKeepsResponseShape(t *testing.T) {
 		t.Fatalf("无 requires 的 playbook_conflict 不该带 causes: %s", body)
 	}
 
-	// 兜底 400 分支（values 形状错）：无 causes 时 details 键整体不出现。
 	rec = env.do(t, "POST", env.path("/"+slug+"/install"), map[string]any{"values": map[string]any{}})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("values 缺失应 400, got %d: %s", rec.Code, rec.Body.String())

@@ -129,7 +129,6 @@ func (b *bundle) source(path, body string) *bundle { b.srcs[path] = body; return
 func (b *bundle) extra(path, body string) *bundle  { b.extras[path] = body; return b }
 func (b *bundle) setValues(values string) *bundle  { b.values = values; return b }
 
-// setRequires 写一段 spec.requires 的 YAML 片段（缩进由 entry 统一加）。
 func (b *bundle) setRequires(requires string) *bundle { b.requires = requires; return b }
 
 // files 拼出 `{相对路径: 正文}`（含 playbook.yaml）。
@@ -237,7 +236,6 @@ func mustRender(t *testing.T, pkg *Package, values map[string]any) *RenderResult
 	return out
 }
 
-// renderErr 渲染并返回错误。
 func renderErr(t *testing.T, pkg *Package, values map[string]any) error {
 	t.Helper()
 	_, err := Render(pkg, values)

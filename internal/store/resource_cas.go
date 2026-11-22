@@ -129,8 +129,6 @@ func (d *DB) DeleteCapability(ctx context.Context, namespaceID, name, expectedVe
 	if err := checkResourceVersion(expectedVersion, cur.ID, cur.ResourceVersion); err != nil {
 		return err
 	}
-	// 依赖锁（#534）：有已生效的安装依赖这个名字就整事务回滚（0 写）——
-	// 删掉它会让那些包的下一次执行缺依赖，而这种失败是隐形的。
 	consumers, err := capabilityConsumersOn(ctx, ex, namespaceID, name)
 	if err != nil {
 		return fmt.Errorf("delete capability: %w", err)

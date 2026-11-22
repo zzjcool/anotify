@@ -787,7 +787,6 @@ func (d *DB) GetPlaybookInstall(ctx context.Context, namespaceID, slug, installI
 		return nil, fmt.Errorf("decode playbook install receipt: %w", err)
 	}
 	if receipt.Dependencies == nil {
-		// requires 之前写的旧回执里没有这个键；读出时归一成 []，空列表纪律不因写入时间而破。
 		receipt.Dependencies = []playbook.Dependency{}
 	}
 	if receipt.Install.Release == "" {

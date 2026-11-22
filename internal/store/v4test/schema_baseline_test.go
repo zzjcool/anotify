@@ -195,7 +195,6 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 			"playbook_id", "version", "files", "digest", "created_at", "created_by",
 		},
 		"playbook_install_requires": {
-			// install_id 是回执 id（删回执级联删依赖行）；一份安装每个能力一行（PK install_id+capability）。
 			"namespace_id", "install_id", "capability", "version",
 		},
 		"playbook_installs": {

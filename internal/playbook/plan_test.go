@@ -596,7 +596,6 @@ func TestPlanReservedSourceNameEmptyExistingCreateReuse(t *testing.T) {
 	}
 }
 
-// TestPlanRequires 验 requires 进 Plan 的接线：不足 → 409 + causes；满足 → 进 Dependencies。
 func TestPlanRequires(t *testing.T) {
 	t.Run("version_too_low_rejects_install", func(t *testing.T) {
 		pkg := newBundle().withStandard().setRequires("- capability: inventory\n  minVersion: 3\n").pkg(t)
@@ -632,7 +631,6 @@ func TestPlanRequires(t *testing.T) {
 		if !reflect.DeepEqual(plan.Dependencies, want) {
 			t.Fatalf("plan.Dependencies = %+v，期望 %+v", plan.Dependencies, want)
 		}
-		// 矩阵照旧（依赖不改变 12 格的判定）。
 		if got := plan.Created.Capabilities; !sameStrings(got, []string{"a-fixer@1", "a-review@1"}) {
 			t.Fatalf("created.capabilities = %v", got)
 		}
@@ -652,8 +650,6 @@ func TestPlanRequires(t *testing.T) {
 	})
 }
 
-// TestPlanWithoutRequiresIsUnchanged 是对照组：requires 省略时计划与改动前逐字一致
-// （同一个标准包，Created / Skipped / Notes 与 TestPlanMatrix 行 1 的期望相同）。
 func TestPlanWithoutRequiresIsUnchanged(t *testing.T) {
 	pkg := newBundle().withStandard().pkg(t)
 	if pkg.Requires != nil {
