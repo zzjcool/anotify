@@ -825,15 +825,38 @@ type playbookStatusDoc struct {
 	Details    any    `json:"details,omitempty"`
 }
 
+func statusCausesOf(e *playbook.Error) []statusCause {
+	if e == nil || len(e.Causes) == 0 {
+		return nil
+	}
+	out := make([]statusCause, 0, len(e.Causes))
+	for _, c := range e.Causes {
+		out = append(out, statusCause{Reason: c.Reason, Message: c.Message, Field: c.Field})
+	}
+	return out
+}
+
+func statusDetailsOf(e *playbook.Error) *statusDetails {
+	causes := statusCausesOf(e)
+	if len(causes) == 0 {
+		return nil
+	}
+	return &statusDetails{Causes: causes}
+}
+
 // writePlaybookAPIError 是 Playbook 端点错误映射的唯一实现。
-//
-// 顺序：领域冲突（要带结构化 details）→ 其它 playbook.Error（封闭码表 → 400/404） → store 哨兵（slug_mismatch）→ 通用 writeAPIError（含 CAS 家族与 404）。
+// 顺序：领域冲突（要带结构化 details）→ 依赖类 409（requires 未满足 / 能力被锁）→ 其它 playbook.Error（封闭码表 → 400/404） → store 哨兵（slug_mismatch）→ 通用 writeAPIError（含 CAS 家族与 404）。
 func writePlaybookAPIError(w http.ResponseWriter, err error) {
 	if err == nil {
 		return
 	}
 	var pbErr *playbook.Error
 	if errors.As(err, &pbErr) {
+		// #534 D5：requires 的两种结论是「声明与现状不符」（409），不是「你输入写错了」（400）。
+		if pbErr.Code == playbook.CodeDependencyMissing || pbErr.Code == playbook.CodeDependencyLocked {
+			writeStatus(w, http.StatusConflict, pbErr.Code, pbErr.Message, statusDetailsOf(pbErr))
+			return
+		}
 		if pbErr.Code == playbook.CodeReleaseConflict {
 			// 409（不是 400）：这不是「你输入的内容有问题」，而是「这个对象已经有主人」。
 			// details 指认到 owner（release + 回执 id），两条出路在 hint 里。
@@ -864,7 +887,7 @@ func writePlaybookAPIError(w http.ResponseWriter, err error) {
 		if pbErr.Code == playbook.CodeNotFound {
 			code = http.StatusNotFound
 		}
-		writeStatus(w, code, pbErr.Code, pbErr.Message, nil)
+		writeStatus(w, code, pbErr.Code, pbErr.Message, statusDetailsOf(pbErr))
 		return
 	}
 	if errors.Is(err, store.ErrPlaybookSlugMismatch) {

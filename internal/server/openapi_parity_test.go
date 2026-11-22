@@ -3107,6 +3107,8 @@ func parityPairs() []parityPair {
 		{GoLabel: "playbook.UnappliedEntry", File: "resource.yaml", Schema: "PlaybookUnappliedEntry", Sample: playbook.UnappliedEntry{}},
 		{GoLabel: "playbook.Receipt", File: "resource.yaml", Schema: "PlaybookReceipt", Sample: playbook.Receipt{}},
 		{GoLabel: "playbook.RenderResult", File: "resource.yaml", Schema: "PlaybookRenderResult", Sample: playbook.RenderResult{}},
+		{GoLabel: "playbook.Requirement", File: "resource.yaml", Schema: "PlaybookRequirement", Sample: playbook.Requirement{}},
+		{GoLabel: "playbook.Dependency", File: "resource.yaml", Schema: "PlaybookDependency", Sample: playbook.Dependency{}},
 		{GoLabel: "store.PlaybookInstallList", File: "resource.yaml", Schema: "PlaybookInstallList", Sample: store.PlaybookInstallList{}},
 		{GoLabel: "store.PlaybookVersionList", File: "resource.yaml", Schema: "PlaybookVersionList", Sample: store.PlaybookVersionList{}},
 		{GoLabel: "store.PlaybookVersionEntry", File: "resource.yaml", Schema: "PlaybookVersionEntry", Sample: store.PlaybookVersionEntry{}},

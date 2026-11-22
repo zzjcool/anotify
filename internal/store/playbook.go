@@ -786,6 +786,9 @@ func (d *DB) GetPlaybookInstall(ctx context.Context, namespaceID, slug, installI
 	if err := json.Unmarshal([]byte(raw), &receipt); err != nil {
 		return nil, fmt.Errorf("decode playbook install receipt: %w", err)
 	}
+	if receipt.Dependencies == nil {
+		receipt.Dependencies = []playbook.Dependency{}
+	}
 	if receipt.Install.Release == "" {
 		// 迁移前写的回执原文里没有 release；列上已经回填成包名。回执是**审计快照**，不改它的原文，只在读的时候把「这次安装属于哪个 release」补齐——否则同一次 安装从实例清单（按列分组）点进来会显示成另一个身份。
 		receipt.Install.Release = release

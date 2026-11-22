@@ -197,6 +197,12 @@ paths:
       tags: [capabilities]
       security: [{session: []}]
       summary: "删除能力版本（CAS 走 query，无请求体）"
+      description: |
+        逻辑删除该名字的**全部可见版本**，不级联改引用方（`next` / 源 `targets` 悬空由派生状态报出来）。
+        例外是依赖锁（#534）：该能力被**已生效安装**的预案 `spec.requires` 引用时返回 409
+        `dependency_locked`，`details.causes[]` 一条一个消费者（`message` 带 playbook slug + release）。
+        锁只统计**清单仍在**的安装 —— 删掉预案清单后那条回执已经没有可卸载的入口，不再锁能力；
+        卸载对应 release 后放行。
       parameters:
         - $ref: '#/components/parameters/ResourceVersionQuery'
       responses:
@@ -856,6 +862,16 @@ paths:
       description: |
         安装冲突（库里已有行不许改）→ **400** `playbook_conflict`（不是 409），
         `details` 带 `valuesDigest` / `conflicts[]` / `hint`，整包原子 0 写。
+
+        包声明的外部依赖（`spec.requires`）未满足 → **409**，同样一行不写；
+        `details.causes[]` 逐条带 `field` / `message`，`field` 形如
+        `spec.requires[0].capability`，判断依据写在 `message` 的字面里：
+        - `dependency_missing`：依赖的能力在命名空间里没有可见版本（`message` 含
+          `need: N, have: none`），或可见版本低于 `minVersion`（`message` 含
+          `need: N, have: M`）；
+        - `dependency_locked`：能力被已生效的安装依赖着（与
+          `DELETE …/capabilities/{name}` 共用同一个 reason）。
+        `dryRun: true` 走同一条路径，所以 400 / 409 一样会发（只是不落库）。
       requestBody:
         required: false
         content:
@@ -870,6 +886,7 @@ paths:
         '400': {$ref: '#/components/responses/Status400'}
         '401': {$ref: '#/components/responses/AuthError401'}
         '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
         '500': {$ref: '#/components/responses/Status500'}
 
   /v1/namespaces/{namespace}/playbooks/{slug}/versions:
@@ -1996,7 +2013,7 @@ components:
         message: {type: string}
         field:
           type: string
-          description: "出错字段路径（如 `spec.config.token`、`blocking`）"
+          description: "出错字段路径（如 `spec.config.token`、`blocking`；requires 类 400/409 的 field 形如 `spec.requires[0].capability`、`spec.requires[0].minVersion`）"
     StatusDetails:
       type: object
       description: |
@@ -2005,6 +2022,9 @@ components:
         `valuesDigest` / `conflicts[]` / `hint`（`playbook_conflict` 是 400 专用形状）；
         `release_conflict`（409）带 `name` / `kind` / `ownerRelease` / `ownerInstallId`
         与同形状的 `conflicts[]`（这一行是哪个 release 装出来的）。
+        `causes[]` 是三键 `{reason, message, field}`（不因依赖类错误而扩展）；
+        其中 requires 类 400/409 的 field 形如 `spec.requires[0].capability`、
+        `spec.requires[0].minVersion`，版本不足的判据在 `message` 的 `need:` / `have:` 字面里。
       properties:
         causes:
           type: array
@@ -2985,6 +3005,38 @@ components:
         files:
           type: object
           additionalProperties: {type: string}
+    PlaybookRequirement:
+      type: object
+      description: |
+        包入口 `playbook.yaml` 的 `spec.requires` 一条：**包外依赖** —— 本包不安装它
+        （也不替它造版本），只要求安装这一刻命名空间里已经有它（由别的包或手工创建提供）。
+        `minVersion` 省略 = 任意已装版本。上界 32 条（含）；同一 `capability` 重复出现 = 400。
+        写入期错误是 400 `invalid_playbook`，`details.causes[].field` 形如
+        `spec.requires[0].capability`、`spec.requires[0].minVersion`。
+      required: [capability]
+      properties:
+        capability:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9._-]{0,62}$'
+          description: "被依赖能力的名字（字面量：不参与 `{{values.*}}` 渲染，按能力名规则校验）"
+        minVersion:
+          type: integer
+          minimum: 1
+          description: "至少要有的可见版本；省略 = 任意已装版本。显式写了但小于 1（含非整数）→ 400"
+      additionalProperties: false
+    PlaybookDependency:
+      type: object
+      description: |
+        安装回执里的这条依赖**当时解析到**的可见版本（`dependencies[]` 的一项）：
+        安装那一刻命名空间里该能力的最高版本。它是一次安装的审计原文，
+        依赖锁的判定不看回执（看库里的依赖索引）。
+      required: [capability, version]
+      properties:
+        capability: {type: string}
+        version:
+          type: integer
+          description: "安装那一刻该能力的可见最高版本"
+      additionalProperties: false
     PlaybookCondition:
       type: object
       required: [type, status]
@@ -3096,7 +3148,13 @@ components:
           items: {$ref: '#/components/schemas/Playbook'}
     PlaybookWrite:
       type: object
-      description: "整份包体（`playbook.yaml` 是唯一根清单，不复制第二份并行 spec）"
+      description: |
+        整份包体（`playbook.yaml` 是唯一根清单，不复制第二份并行 spec）。
+        `spec.files` 里的 `playbook.yaml` 可以用 `spec.requires` 声明**包外依赖**
+        （形状见 `PlaybookRequirement`：`[{capability, minVersion?}]`，上界 32 条）。
+        创建/替换期的形状错误是 400 `invalid_playbook`，`details.causes[].field` 形如
+        `spec.requires[0].capability`、`spec.requires[0].minVersion`。
+        「依赖是否满足」不在这里判（创建只是把声明落库），安装期才解析。
       required: [apiVersion, kind, metadata, spec]
       properties:
         apiVersion: {type: string, enum: [anotify/v1]}
@@ -3246,6 +3304,13 @@ components:
         pending:
           type: array
           items: {type: string}
+        dependencies:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookDependency'}
+          description: |
+            本次安装解析到的外部依赖（`spec.requires` 逐条：能力名 + 当时可见的最高版本）。
+            没有依赖时是 `[]`（不是 `null`）。**不在 `required` 里**：这个键是 #534 才加的，
+            更早的回执读出来时同样归一成 `[]` —— 客户端按「缺省 = 空数组」处理。
         notes:
           type: array
           items: {$ref: '#/components/schemas/PlaybookNote'}
@@ -4031,7 +4096,9 @@ components:
     Status409:
       description: |
         冲突：`resource_version_conflict`（带 `details.current.resourceVersion`）、
-        `AlreadyExists`、`Conflict`、`slug_taken`、`source_name_used`、`node_offline` 等
+        `AlreadyExists`、`Conflict`、`slug_taken`、`source_name_used`、`node_offline`、
+        `dependency_missing`（`spec.requires` 的能力没有可见版本 / 版本不够）、
+        `dependency_locked`（能力被已生效的安装依赖着）等
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Status'}

@@ -2,6 +2,7 @@ package playbook
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -171,5 +172,72 @@ func TestBuildReceiptNilPlan(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"capabilities":[]`) {
 		t.Fatalf("空回执也要给 [] 而不是 null: %s", raw)
+	}
+}
+
+func TestReceiptDependenciesEmptyIsArray(t *testing.T) {
+	pkg := newBundle().withStandard().pkg(t)
+	plan, err := Plan(pkg, baseValues(), newFakeExisting())
+	if err != nil {
+		t.Fatalf("安装计划失败: %v", err)
+	}
+	r := BuildReceipt(plan, plan.Values, plan.ValuesDigest, InstallMeta{ID: "ins_1", At: ts, Namespace: "ns"})
+	if r.Dependencies == nil {
+		t.Fatalf("Receipt.Dependencies 必须是 []（不是 nil）")
+	}
+	raw, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("回执序列化: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("回执 JSON 解析: %v", err)
+	}
+	list, ok := decoded["dependencies"].([]any)
+	if !ok || len(list) != 0 {
+		t.Fatalf("dependencies 必须是 []（空列表不是 null）: %s", raw)
+	}
+}
+
+func TestReceiptDependenciesNilPlan(t *testing.T) {
+	r := BuildReceipt(nil, nil, "", InstallMeta{ID: "ins_x", At: ts, Namespace: "ns"})
+	raw, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("序列化: %v", err)
+	}
+	if !strings.Contains(string(raw), `"dependencies":[]`) {
+		t.Fatalf("空回执也要给 dependencies: [] 而不是 null: %s", raw)
+	}
+}
+
+func TestReceiptDependenciesFilled(t *testing.T) {
+	pkg := newBundle().withStandard().setRequires("- capability: inventory\n  minVersion: 2\n").pkg(t)
+	ex := newFakeExisting().
+		withCap("inventory", 1, "sha256:f1", "sha256:d1").
+		withCap("inventory", 2, "sha256:f2", "sha256:d2")
+	plan, err := Plan(pkg, baseValues(), ex)
+	if err != nil {
+		t.Fatalf("安装计划失败: %v", err)
+	}
+	r := BuildReceipt(plan, plan.Values, plan.ValuesDigest, InstallMeta{ID: "ins_2", At: ts, Namespace: "ns"})
+	want := []Dependency{{Capability: "inventory", Version: 2}}
+	if !reflect.DeepEqual(r.Dependencies, want) {
+		t.Fatalf("Receipt.Dependencies = %+v，期望 %+v", r.Dependencies, want)
+	}
+	raw, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("回执序列化: %v", err)
+	}
+	var decoded struct {
+		Dependencies []map[string]any `json:"dependencies"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("回执解析: %v", err)
+	}
+	if len(decoded.Dependencies) != 1 {
+		t.Fatalf("dependencies = %s", raw)
+	}
+	if decoded.Dependencies[0]["capability"] != "inventory" || decoded.Dependencies[0]["version"] != float64(2) {
+		t.Fatalf("dependencies[0] = %+v", decoded.Dependencies[0])
 	}
 }

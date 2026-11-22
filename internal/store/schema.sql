@@ -614,13 +614,11 @@ CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_a
 
 -- 安装回执：每次 install 一行（dryRun 不写）。values 是有效 values，
 -- values_digest 对未打码的值取哈希；receipt 是回执原文。
---
--- playbook_id 是**历史 id，不是外键**：删一个 playbook 清单不该连带删掉它装过的回执
--- （回执是「这次安装做了什么」的审计，也是 capability_versions/sources.installed_from
--- 指向的锚点）。带 ON DELETE CASCADE 的外键会让删包同时抹掉回执并留下悬挂引用；
--- 带 RESTRICT 的外键会让删包永远失败。所以这里不放 live-parent 外键，
--- 而是把「当时是谁」**快照**进回执自己：原 id + 原 slug + 原命名空间 slug。
--- 快照好之后，playbook 行消失也不影响读回执（也不会把同名重建的新包认成来源）。
+-- playbook_id 是**历史 id，不是外键**：删清单不该连带删它装过的回执（回执是审计，也是
+-- capability_versions/sources.installed_from 指向的锚点）。CASCADE 会抹掉回执并留悬挂引用，
+-- RESTRICT 会让删包永远失败，所以不放 live-parent 外键，而是把「当时是谁」**快照**进回执
+-- 自己：原 id + 原 slug + 原命名空间 slug。快照好之后 playbook 行消失也不影响读回执
+-- （也不会把同名重建的新包认成来源）。
 CREATE TABLE IF NOT EXISTS playbook_installs (
     id                TEXT PRIMARY KEY,
     namespace_id      TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
@@ -766,3 +764,16 @@ CREATE TABLE IF NOT EXISTS namespace_secrets (
     updated_at   INTEGER NOT NULL,
     PRIMARY KEY (namespace_id, name)
 );
+
+-- 依赖索引（#534）：回执的 dependencies 不可查，而「这能力还有谁在用」必须在 SQL 侧看得见（锁判定只认 uninstalled_at = 0 的回执）。
+-- +migration 7 playbook_requires
+CREATE TABLE IF NOT EXISTS playbook_install_requires (
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    install_id   TEXT NOT NULL REFERENCES playbook_installs(id) ON DELETE CASCADE,
+    capability   TEXT NOT NULL,
+    version      INTEGER NOT NULL,
+    PRIMARY KEY (install_id, capability)
+);
+
+CREATE INDEX IF NOT EXISTS idx_playbook_requires_capability
+    ON playbook_install_requires(namespace_id, capability);

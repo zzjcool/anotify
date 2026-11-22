@@ -2,8 +2,10 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
+	"github.com/zzjcool/anotify/internal/playbook"
 	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/sourcespec"
 	"github.com/zzjcool/anotify/internal/store"
@@ -131,6 +133,12 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		return
 	}
 
+	var locked *store.CapabilityLockedError
+	if errors.As(err, &locked) {
+		writeStatus(w, http.StatusConflict, playbook.CodeDependencyLocked, locked.Error(), capabilityLockDetails(locked))
+		return
+	}
+
 	switch {
 	case errors.Is(err, store.ErrAuthRequired):
 		writeStatus(w, http.StatusUnauthorized, reasonUnauthorized, "authentication required", nil)
@@ -227,6 +235,21 @@ func writeAPIError(w http.ResponseWriter, err error) {
 	default:
 		writeStatus(w, http.StatusInternalServerError, reasonInternal, err.Error(), nil)
 	}
+}
+
+func capabilityLockDetails(e *store.CapabilityLockedError) *statusDetails {
+	causes := make([]statusCause, 0, len(e.Consumers))
+	for _, c := range e.Consumers {
+		causes = append(causes, statusCause{
+			Reason:  playbook.CodeDependencyLocked,
+			Field:   "name",
+			Message: fmt.Sprintf("预案 %q 的 release %q 依赖它（先卸载该 release）", c.Playbook, c.Release),
+		})
+	}
+	if len(causes) == 0 {
+		return nil
+	}
+	return &statusDetails{Causes: causes}
 }
 
 // sourceConfigReason 决定 `invalid_source_config` 的顶层 reason（#519）：纯「一个未知键」的错

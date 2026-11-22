@@ -426,8 +426,7 @@ func foreignSourceRowsOn(ctx context.Context, ex queryExec, namespaceID, name st
 
 // sharedReleaseRefsOn 收集「别的仍生效的 release 记为 skipped（复用）」的引用 → 那个 release。
 //
-// 只读 uninstalled_at = 0 的回执，且排除本 release 自己的那批：同 release 的后续安装
-// 记下的 skipped 是复用自己上一轮的行，撤销它正是本次要做的。
+// 只读 uninstalled_at = 0 的回执，并排除本 release 自己的那批：同 release 后续安装记下的 skipped 是复用自己上一轮的行，撤销它正是本次要做的。
 func sharedReleaseRefsOn(ctx context.Context, ex queryExec, namespaceID string, installIDs []string) (map[string]string, map[string]string, error) {
 	caps, srcs := map[string]string{}, map[string]string{}
 	rows, err := ex.queryContext(ctx,

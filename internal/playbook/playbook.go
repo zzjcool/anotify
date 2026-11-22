@@ -49,7 +49,6 @@ const (
 	MaxSources      = 32
 	// MaxPathLen 是引用路径长度上限。
 	MaxPathLen = 255
-	// MaxNameLen 是包名（slug）长度上限。
 	MaxNameLen = 64
 )
 
@@ -85,6 +84,10 @@ const (
 	// CodeReleaseConflict 是「这条要复用的行是**另一个 release** 装出来的」：
 	// 认领别人的行会让两份实例共用一个能力 / 源，所以整包拒绝、0 写入（409）。
 	CodeReleaseConflict = "release_conflict"
+	// CodeDependencyMissing 是 spec.requires 点名的能力不存在或版本不够（409）。
+	CodeDependencyMissing = "dependency_missing"
+	// CodeDependencyLocked 是能力被已生效安装的 requires 依赖着，不许删（409，由 store 产生）。
+	CodeDependencyLocked = "dependency_locked"
 
 	// 分发期（OCI）。本包不做网络拉取，只留码位给将来的一致口径（§11）。
 	CodeOCIUnsupported    = "oci_unsupported"
@@ -113,7 +116,6 @@ const (
 	NoteNoNode = "no_node"
 )
 
-// NoteCodes 返回 notes 的封闭码表（拷贝；调用方可安全修改）。
 func NoteCodes() []string {
 	return []string{
 		NoteRoutingUnapplied, NoteTargetsUnapplied, NoteUnreachable,
@@ -141,6 +143,8 @@ type Error struct {
 	Code    string         `json:"code"`
 	Message string         `json:"message"`
 	Details map[string]any `json:"details,omitempty"`
+	// Causes 是逐点校验结论（requires 类错误的 details.causes[]；其它错误恒空）。
+	Causes []Cause `json:"causes,omitempty"`
 }
 
 func (e *Error) Error() string {
@@ -150,12 +154,10 @@ func (e *Error) Error() string {
 	return e.Code + ": " + e.Message
 }
 
-// errf 造一个带码错误。
 func errf(code, format string, args ...any) *Error {
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}
 }
 
-// withDetails 给错误挂结构化补充（返回同一个错误，便于 `return nil, errf(...).with(...)`）。
 func (e *Error) withDetails(details map[string]any) *Error {
 	if len(details) == 0 {
 		return e
@@ -169,6 +171,11 @@ func (e *Error) withDetails(details map[string]any) *Error {
 	return e
 }
 
+func (e *Error) withCauses(causes ...Cause) *Error {
+	e.Causes = append(e.Causes, causes...)
+	return e
+}
+
 // Code 返回错误的领域码；不是本包错误时返回空串（调用方据此判断"是不是可翻译成 400 的领域错"）。
 func Code(err error) string {
 	var e *Error
@@ -178,7 +185,6 @@ func Code(err error) string {
 	return ""
 }
 
-// IsCode 报告 err 是否带指定领域码。
 func IsCode(err error, code string) bool { return Code(err) == code }
 
 // Package 是一个已解析的目录包。
@@ -204,6 +210,8 @@ type Package struct {
 	// CapabilityPaths / SourcePaths 是 spec.capabilities / spec.sources（相对路径，按书写顺序）。
 	CapabilityPaths []string `json:"capabilityPaths"`
 	SourcePaths     []string `json:"sourcePaths"`
+	// Requires 是 spec.requires（装这个包之前，命名空间里必须已有的能力）。
+	Requires []Requirement `json:"requires,omitempty"`
 }
 
 // Source 是一份**渲染后**的源文档（源没有 version：身份就是名字，kind 创建后不可变）。
@@ -321,6 +329,8 @@ type Receipt struct {
 	External     []string         `json:"external"`
 	Pending      []string         `json:"pending"`
 	Notes        []Note           `json:"notes"`
+	// Dependencies 是这次安装解析到的外部依赖（恒为 []，不是 null：空列表纪律）。
+	Dependencies []Dependency `json:"dependencies"`
 }
 
 // emptyCreated 保证 created / skipped 的列表序列化成 `[]` 而不是 `null`（空列表纪律）。

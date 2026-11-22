@@ -164,7 +164,7 @@ func applyEntry(pkg *Package, tree map[string]any) error {
 	if spec == nil {
 		return errf(CodeInvalidPlaybook, "%s 缺 spec（values 与引用清单的家）", EntryFile)
 	}
-	if err := checkKeys(spec, []string{"values", "capabilities", "sources"}, EntryFile, "spec"); err != nil {
+	if err := checkKeys(spec, []string{"values", "capabilities", "sources", "requires"}, EntryFile, "spec"); err != nil {
 		return err
 	}
 
@@ -194,6 +194,11 @@ func applyEntry(pkg *Package, tree map[string]any) error {
 	}
 	pkg.CapabilityPaths = caps
 	pkg.SourcePaths = srcs
+	reqs, err := parseRequires(spec, EntryFile)
+	if err != nil {
+		return err
+	}
+	pkg.Requires = reqs
 	return nil
 }
 

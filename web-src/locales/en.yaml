@@ -1356,6 +1356,7 @@ caps:
     body: 'Delete "{name}"? Only this capability is removed and nothing is cascaded: other capabilities or sources that reference it will fail to resolve (reported by status).'
     conflict: 'This capability was just changed elsewhere (409). Reloaded the latest version token {rv}; confirm and click delete again. No automatic retry.'
     deleting: 'Deleting…'
+    locked: 'Required by these playbooks; uninstall the matching release first, then delete.'
     rv: 'Current version token: {rv}'
     submit: 'Delete'
     title: 'Delete capability'
@@ -2385,6 +2386,7 @@ pb:
     atomic_conflict: "Atomic package conflict: zero resource or receipt writes."
     release_conflict: "Instance name conflict: the names to reuse belong to another instance. Nothing was written."
     release_conflict_owner: "Owned by {release} (install receipt {id})"
+    dependency_missing: "Dependencies not satisfied: install these capabilities in this namespace first."
     invalid_installs: "Server did not return a valid grouped installs view."
     group_count: "{n} install groups"
     release_group: "{release} · {n} groups"

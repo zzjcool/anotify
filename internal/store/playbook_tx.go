@@ -473,6 +473,14 @@ func insertPlaybookInstallOn(ctx context.Context, ex queryExec, namespaceID stri
 		receipt.Install.Release, now); err != nil {
 		return fmt.Errorf("insert install receipt: %w", err)
 	}
+	for _, dep := range receipt.Dependencies {
+		if _, err := ex.execContext(ctx,
+			`INSERT INTO playbook_install_requires (namespace_id, install_id, capability, version)
+			 VALUES (?,?,?,?)`,
+			namespaceID, receipt.Install.ID, dep.Capability, dep.Version); err != nil {
+			return fmt.Errorf("insert install requirement %s: %w", dep.Capability, err)
+		}
+	}
 	return nil
 }
 

@@ -1356,6 +1356,7 @@ caps:
     body: '确认删除「{name}」？删除只删这个能力本身，不级联改引用方：其它能力或源引用它会解析不到（由 status 报缺失）。'
     conflict: '这个能力刚被别人改过（409）。已重新载入最新版本令牌 {rv}；请确认后再点一次删除，不会自动重试。'
     deleting: '删除中…'
+    locked: '被这些预案依赖，先卸载对应 release 再删'
     rv: '当前版本令牌：{rv}'
     submit: '删除'
     title: '删除能力'
@@ -2387,6 +2388,7 @@ pb:
     atomic_conflict: "整包冲突：所有资源与回执零写入。"
     release_conflict: "实例名冲突：要复用的名字属于另一个实例，本次零写入。"
     release_conflict_owner: "占用方：{release}（安装记录 {id}）"
+    dependency_missing: "依赖未满足：先在本命名空间装好这些能力"
     invalid_installs: "服务端未返回有效的 installs 折叠视图。"
     group_count: "{n} 组安装参数"
     release_group: "{release} · {n} 组"

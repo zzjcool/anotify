@@ -34,6 +34,7 @@ var baselineTables = []string{
 	"node_instances",
 	"nodes",
 	"passkeys",
+	"playbook_install_requires",
 	"playbook_installs",
 	"playbook_versions",
 	"playbooks",
@@ -192,6 +193,9 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 			// playbook_id 是**历史 id**（无 live-parent 外键）：删包不连带删历史。
 			// digest 与回执的 playbook.filesDigest 同一算法，current 版本仍以 playbooks.files 为准。
 			"playbook_id", "version", "files", "digest", "created_at", "created_by",
+		},
+		"playbook_install_requires": {
+			"namespace_id", "install_id", "capability", "version",
 		},
 		"playbook_installs": {
 			// playbook_id 是**历史 id**（无 live-parent 外键），slug/ns 快照让删包后
@@ -589,15 +593,15 @@ func TestSchemaBaselineLayoutMarkerIsSeparateFromLedger(t *testing.T) {
 	if got := rawUserVersion(t, path); got != 4 {
 		t.Fatalf("新库 PRAGMA user_version = %d, want 4（v4 布局格式标记）", got)
 	}
-	if v, err := db.SchemaVersion(); err != nil || v != 6 {
-		t.Fatalf("SchemaVersion = %d, %v; want 6（记账 = 块数，不是布局标记）", v, err)
+	if v, err := db.SchemaVersion(); err != nil || v != 7 {
+		t.Fatalf("SchemaVersion = %d, %v; want 7（记账 = 块数，不是布局标记）", v, err)
 	}
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&n); err != nil {
 		t.Fatalf("count schema_version: %v", err)
 	}
-	if n != 6 {
-		t.Fatalf("schema_version 行数 = %d, want 6（baseline + release + 卸载标记 + 包版本历史 + router 结局表 + 轮询状态）", n)
+	if n != 7 {
+		t.Fatalf("schema_version 行数 = %d, want 7（baseline + release + 卸载标记 + 包版本历史 + router 结局表 + 轮询状态 + 依赖索引）", n)
 	}
 }
 
