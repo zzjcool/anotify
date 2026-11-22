@@ -1920,6 +1920,26 @@ sources:
       poll_hint: 'The schedule uses the same syntax as a timer; an empty targets list is valid (events are collected but nothing is dispatched).'
       poll_example: "Fetch source example"
       poll_example_fill: "Insert example"
+    poll_transport: 'Poll transport'
+    poll_transport_hint: 'The server pulls this address on the schedule'
+    poll_url_hint: 'Must be https; local or .test test addresses need an explicit opt-in in YAML'
+    poll_url_required: 'A pull address is required'
+    poll_headers: 'Request headers'
+    poll_headers_hint: 'Up to 10; names take no spaces or colons, values take no line breaks'
+    poll_header_add: 'Add a header'
+    poll_header_key: 'Header name'
+    poll_header_value: 'Header value'
+    poll_header_dup: 'Duplicate header'
+    poll_limits_hint: 'Timeout 1000-120000 ms (default 10000), items per round 1-500 (default 100)'
+    poll_cred: 'Credential reference'
+    poll_cred_hint: 'The value is write-only: never echoed back, and an empty box keeps the current credential'
+    poll_cred_name: 'Credential name'
+    poll_cred_header: 'Header to inject'
+    poll_cred_prefix: 'Value prefix (optional)'
+    poll_secret: 'Credential value (write-only)'
+    poll_secret_set: 'Write-only: leaving it empty keeps the stored value, an empty box never overwrites it'
+    poll_cred_pair: 'Fill in both the credential name and the header, or leave both empty'
+    poll_env_whole: 'Use the whole item as the payload'
     draft_dry: "Draft preview (no save needed)"
     namespace: "Namespace"
     rv: 'Version token'
