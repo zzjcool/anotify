@@ -65,8 +65,7 @@ async function readRows(page, hostId) {
 	}, hostId);
 }
 
-/* 行级 YAML diff：键序稳定，按「行集合」比较就够（值改动 = 一行换一行）。
- * 打印原文，报告里的前后 diff 就是从这里摘的（要求「贴前后 diff 原文」）。 */
+/* 行级 YAML diff：键序稳定，按「行集合」比较就够（值改动 = 一行换一行）。打印原文，报告里的前后 diff 就是从这里摘的（要求「贴前后 diff 原文」）。 */
 function lineDiff(before, after) {
 	const a = before.split("\n");
 	const b = after.split("\n");
@@ -147,16 +146,75 @@ function namespaceDocShell(text) {
 	return yamlWithoutLine(yamlWithoutSection(text, "spec"), "resourceVersion:");
 }
 
-/* 点保存并等**真的** PUT …/yaml 回执（不是等本地行状态变化 —— 那只证明点了按钮）。 */
+/* 超时现场：表格里现在有哪些 key（带 deleted/editing/missing 标记）、保存按钮是否 enabled、状态文案。 */
+async function varsFacts(page) {
+	return page.evaluate(() => {
+		const rows = (id) => {
+			const host = document.getElementById(id);
+			if (!host) return null;
+			return Array.from(host.querySelectorAll("tbody tr")).map((tr) => {
+				const flags = ["deleted", "editing", "missing"].filter((k) => tr.dataset[k] === "true");
+				return (tr.dataset.key || "") + (flags.length ? ":" + flags.join("+") : "");
+			});
+		};
+		const button = (id) => {
+			const el = document.getElementById(id);
+			return el ? { disabled: el.disabled === true, label: el.textContent.trim() } : null;
+		};
+		const state = (id) => {
+			const el = document.getElementById(id);
+			return el ? el.textContent.trim() : "";
+		};
+		return {
+			nodeRows: rows("node-vars-table"),
+			namespaceRows: rows("namespace-effective-vars"),
+			nodeSave: button("node-vars-save"),
+			namespaceSave: button("namespace-vars-save"),
+			nodeState: state("node-vars-state"),
+			namespaceState: state("namespace-vars-state"),
+		};
+	});
+}
+
+/* 点保存并等**真的** PUT …/yaml 回执（不是等本地行状态变化 —— 那只证明点了按钮）。等不到时把现场拼进错误：一次 timeout 三个字什么都说明不了（#544）。 */
 async function saveAndWait(page, saveSelector, pathSuffix) {
-	const [response] = await Promise.all([
-		page.waitForResponse((resp) => resp.request().method() === "PUT" && new URL(resp.url()).pathname.endsWith(pathSuffix), { timeout: 15000 }),
-		page.locator(saveSelector).click(),
-	]);
-	if (response.status() !== 200) {
-		throw new Error(`保存失败：HTTP ${response.status()} ${await response.text()}`);
+	const before = await page.evaluate((sel) => {
+		const el = document.querySelector(sel);
+		return el ? { found: true, disabled: el.disabled === true } : { found: false };
+	}, saveSelector);
+	const writes = []; // 浏览器真正发出的写请求：点禁用按钮、handler 提前 return 都不发
+	const onRequest = (req) => {
+		if (req.method() !== "GET") writes.push(req.method() + " " + req.url());
+	};
+	page.on("request", onRequest);
+	try {
+		const [response] = await Promise.all([
+			page.waitForResponse((resp) => resp.request().method() === "PUT" && new URL(resp.url()).pathname.endsWith(pathSuffix), { timeout: 15000 }),
+			page.locator(saveSelector).click(),
+		]);
+		if (response.status() !== 200) {
+			throw new Error(`保存失败：HTTP ${response.status()} ${await response.text()}`);
+		}
+		return response;
+	} catch (e) {
+		let facts;
+		try {
+			facts = await varsFacts(page);
+		} catch (inner) {
+			facts = { unreadable: String(inner) };
+		}
+		const nsSide = saveSelector.includes("namespace");
+		const rows = nsSide ? facts.namespaceRows : facts.nodeRows;
+		const button = nsSide ? facts.namespaceSave : facts.nodeSave;
+		const state = nsSide ? facts.namespaceState : facts.nodeState;
+		console.error(`--- 保存超时现场（${pathSuffix} · ${saveSelector}）---\n${JSON.stringify(facts, null, 1)}`); // 全量落 stderr（runner 印在失败套件输出里）；抛出去的只留结论（受 harness 300 字截断）
+		throw new Error(
+			`等不到写 ${pathSuffix}：${e.message}\n` +
+				`按钮(点击前)=${JSON.stringify(before)} 按钮(现在)=${JSON.stringify(button)} 点击后写请求=${JSON.stringify(writes)} 表格=${JSON.stringify(rows)} 状态=${JSON.stringify(state)}`,
+		);
+	} finally {
+		page.off("request", onRequest);
 	}
-	return response;
 }
 
 async function main() {
