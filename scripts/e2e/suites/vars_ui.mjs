@@ -271,7 +271,7 @@ async function saveAndWait(page, saveSelector, pathSuffix, settle) { // settle(g
 		const rows = nsSide ? facts.namespaceRows : facts.nodeRows;
 		const button = nsSide ? facts.namespaceSave : facts.nodeSave;
 		const state = nsSide ? facts.namespaceState : facts.nodeState;
-		console.error(`--- 保存超时现场（${pathSuffix} · ${saveSelector}）---\n${JSON.stringify(facts, null, 1)}`); // 全量落 stderr（runner 印在失败套件输出里）；抛出去的只留结论（受 harness 300 字截断）
+		console.log(`--- 保存超时现场（${pathSuffix} · ${saveSelector}）---\n${JSON.stringify(facts, null, 1)}`); // 必须落 stdout：runner 只透传 stdout，stderr 会丢（parallel_runner.mjs:394）
 		throw new Error(
 			`等不到写 ${pathSuffix}：${e.message}\n` +
 				`按钮(点击前)=${JSON.stringify(before)} 按钮(现在)=${JSON.stringify(button)} 点击后写请求=${JSON.stringify(writes)} 表格=${JSON.stringify(rows)} 状态=${JSON.stringify(state)}`,
