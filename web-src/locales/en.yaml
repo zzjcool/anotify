@@ -1795,6 +1795,8 @@ nodes:
     vars_save: "Save this table"
     vars_reset: "Discard changes"
     vars_reset_confirm: "Discard unsaved table changes and redraw from the server?"
+    vars_refresh_paused: "Unsaved changes: refresh paused"
+    vars_refresh_confirm: "Refreshing redraws the table from the server and drops the unsaved changes. Refresh anyway?"
     vars_saved: "Saved: table changes were written into the same YAML document."
     vars_no_changes: "No changes."
     vars_finish_edit: "Apply or cancel the row you are editing first."

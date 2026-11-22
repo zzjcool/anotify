@@ -5,11 +5,9 @@
  *   ① 值 / 来源与服务端 `status.effectiveVars` **逐键一致**（页面不自己猜来源层）；
  *   ② 「被哪些能力用到」= 当前 ns 能力读面的 `spec.requires.values` 聚合；
  *   ③ 被能力要求但没有生效值 → 红标（`data-missing="true"` + ⚠ 必填）；
- *   ④ 阶段 2 的增删改**序列化进同一份 YAML 文档**，走 `PUT …/yaml`：
- *      改一个 var → YAML 只有该键（+resourceVersion）变化，其它行逐字不变；
- *      删一个 var → YAML 只消失那个键；
- *      前端拒非法名字（1FOO / FOO-BAR），后端对非法名字 400；
- *      UI 对 `/config` 的写调用 = 0（守卫的运行时对照：写请求只出现 `/yaml`）。
+ *   ④ 阶段 2 的增删改**序列化进同一份 YAML 文档**，走 `PUT …/yaml`：改一个 var → YAML 只有该键
+ *      （+resourceVersion）变化，其它行逐字不变；删一个 var → YAML 只消失那个键；前端拒非法名字
+ *      （1FOO / FOO-BAR），后端对非法名字 400；UI 对 `/config` 的写调用 = 0（写请求只出现 `/yaml`）。
  *
  * 造数全走真实产品路径：能力（信封）→ 节点（登记 + spec.vars）→ 命名空间默认 vars。
  * 明确不做的：不直插库、不 mock 端点、不读 `.config` 写入口来"造"页面状态。
@@ -378,7 +376,6 @@ async function main() {
 		const missingNote = await page.locator("#node-vars-missing").innerText();
 		H.check("红标汇总文案说明有 1 个缺口", /1/.test(missingNote), missingNote);
 
-		// 只读加载不该发出任何写请求。
 		H.check("阶段 1 加载零写请求", loads.length === 0, JSON.stringify(loads));
 		H.check("节点页无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 160));
 		await page.close();
@@ -617,6 +614,101 @@ async function main() {
 	const bareAfter = (await H.req(server.base, barePath, { session: s.session })).json?.yaml || "";
 	H.check("边界：被拒的写没有落库（文档逐字未变）", bareAfter === bareBefore,
 		JSON.stringify({ before: bareBefore, after: bareAfter }));
+
+	/* ================= #546：刷新不许静默吃掉未保存的编辑 ================= */
+	console.log("--- #546：后台刷新 / 手动刷新遇未保存改动 ---");
+	{
+		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
+		await primeScope(ctx);
+		await injectSession(ctx, s.session, server.base);
+		const page = await ctx.newPage();
+		const errs = [];
+		page.on("pageerror", (e) => errs.push(String(e)));
+		const nodeReads = [];
+		page.on("request", (req) => {
+			const u = new URL(req.url());
+			if (req.method() === "GET" && u.pathname === "/v1/nodes/" + NODE && u.searchParams.get("namespace") === NS) nodeReads.push(req.url());
+		});
+		await page.goto(server.base + "/node.html?id=" + NODE, { waitUntil: "load", timeout: 15000 });
+		await H.waitForAppReady(page, "workspace");
+		await page.locator('#node-vars-table tr[data-key="NODE_ONLY"] [data-act="vars-edit"]').waitFor({ timeout: 10000 });
+
+		const state = () => page.evaluate(() => {
+			const cell = document.querySelector('#node-vars-table tr[data-key="NODE_ONLY"] td.vars-value');
+			const save = document.getElementById("node-vars-save");
+			const paused = document.getElementById("node-vars-paused");
+			return { value: cell ? cell.textContent.trim() : null, saveDisabled: save.disabled === true, paused: !paused.hidden, pausedText: paused.textContent.trim() };
+		});
+		/* 后台刷新由「切回标签页」触发：headless 里 document.visibilityState 永远是 visible，切不出真的
+		 * hidden → visible，所以派发同名事件驱动同一个 handler（守卫本身才是被测对象）。 */
+		const background = () => page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+		const frame = () => page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+		const expects = await page.evaluate(() => ({ paused: window.Anotify.t("nodes.v4.vars_refresh_paused"), confirm: window.Anotify.t("nodes.v4.vars_refresh_confirm") }));
+
+		console.log("--- ① 改一行不保存 → 后台刷新整轮跳过（输入 / 脏标记 / 提示都在，且一个读请求都不发）---");
+		await openVarsEditor(page, "#node-vars-table", '#node-vars-table tr[data-key="NODE_ONLY"] [data-act="vars-edit"]');
+		await page.locator('#node-vars-table tr[data-editing="true"] input[data-field="value"]').fill("draft-546");
+		await page.locator('#node-vars-table [data-act="vars-apply"]').click();
+		const readsBeforeBackground = nodeReads.length;
+		await background();
+		await frame();
+		const afterBackground = await state();
+		H.eq("① 后台刷新后行里还是未保存的草稿", afterBackground.value, "draft-546");
+		H.eq("① 后台刷新后保存按钮仍 enabled", afterBackground.saveDisabled, false);
+		H.eq("① 跳过时表格上方给一行说明", [afterBackground.paused, afterBackground.pausedText], [true, expects.paused]);
+		H.eq("① 整轮跳过：没有发出任何节点读请求", nodeReads.length, readsBeforeBackground);
+
+		console.log("--- ② 还没 apply 的那一行（没有脏标记）也活过后台刷新 ---");
+		await openVarsEditor(page, "#node-vars-table", "#node-vars-add", "name");
+		await page.locator('#node-vars-table tr[data-editing="true"] input[data-field="name"]').fill("PENDING_546");
+		await page.locator('#node-vars-table tr[data-editing="true"] input[data-field="value"]').fill("pending-value");
+		await background();
+		await frame();
+		H.eq("② 后台刷新不吃掉编辑中的那一行", await page.locator('#node-vars-table tr[data-editing="true"] input[data-field="value"]').inputValue(), "pending-value");
+		await page.locator('#node-vars-table [data-act="vars-cancel"]').click();
+
+		console.log("--- ③ 用户点刷新照样脏 → 先确认；取消 → 输入原样保留、整次刷新没发生 ---");
+		const readsBeforeCancel = nodeReads.length;
+		await page.locator("#node-refresh").click();
+		await page.locator("#anotify-dialog [data-dialog-ok]").waitFor({ state: "visible", timeout: 5000 });
+		H.eq("③ 手动刷新遇未保存改动 → 先出确认框，文案与「放弃改动」同一套口径", (await page.locator("#anotify-dialog-body").innerText()).trim(), expects.confirm);
+		await page.locator("#anotify-dialog [data-dialog-cancel]").click();
+		await page.locator("#anotify-dialog").waitFor({ state: "hidden", timeout: 5000 });
+		const afterCancel = await state();
+		H.eq("③ 取消刷新 → 草稿原样保留", afterCancel.value, "draft-546");
+		H.eq("③ 取消刷新 → 保存按钮仍 enabled", afterCancel.saveDisabled, false);
+		H.eq("③ 取消整次刷新：没有发出任何节点读请求", nodeReads.length, readsBeforeCancel);
+
+		console.log("--- ④ 确认刷新 → 按服务器当前值重建，脏标记与提示一起收掉 ---");
+		await page.locator("#node-refresh").click();
+		await page.locator("#anotify-dialog [data-dialog-ok]").click();
+		await page.waitForFunction(() => {
+			const cell = document.querySelector('#node-vars-table tr[data-key="NODE_ONLY"] td.vars-value');
+			return cell && cell.textContent.trim() === "node-value-v2" && document.getElementById("node-vars-save").disabled === true;
+		}, null, { timeout: STATE_WAIT });
+		const afterConfirm = await state();
+		H.eq("④ 确认刷新 → 表格回到服务器当前值", afterConfirm.value, "node-value-v2");
+		H.eq("④ 刷新真的发生后暂停提示自己收掉", afterConfirm.paused, false);
+
+		console.log("--- ⑤ 对照组：没改动时后台刷新照常生效（表格跟着服务器更新，不弹确认框）---");
+		const nodeDoc = (await H.req(server.base, V.P.node(NODE) + "/yaml", { session: s.session })).json;
+		const bumped = String(nodeDoc.yaml).replace(/^(\s*)NODE_ONLY: .*$/m, "$1NODE_ONLY: server-bumped-546");
+		H.check("⑤ 对照组造数：节点的 NODE_ONLY 行被改到 server-bumped-546", bumped !== nodeDoc.yaml, bumped.slice(0, 160));
+		V.expectStatus("⑤ 对照组造数：直接 PUT 节点 YAML", await H.req(server.base, V.P.node(NODE) + "/yaml", { session: s.session, method: "PUT", body: { yaml: bumped } }), 200);
+		const readsBeforeClean = nodeReads.length;
+		await background();
+		await page.waitForFunction(() => {
+			const cell = document.querySelector('#node-vars-table tr[data-key="NODE_ONLY"] td.vars-value');
+			return cell && cell.textContent.trim() === "server-bumped-546";
+		}, null, { timeout: STATE_WAIT });
+		H.check("⑤ 未改动时刷新照常生效：真的重读了节点读面并重建了表格", nodeReads.length > readsBeforeClean, `${readsBeforeClean} → ${nodeReads.length}`);
+		H.eq("⑤ 不脏时后台刷新不弹确认框", await page.locator("#anotify-dialog:not(.hidden)").count(), 0);
+		H.eq("⑤ 不脏时没有暂停提示", (await state()).paused, false);
+		H.check("节点页无 JS pageerror（#546 阶段）", errs.length === 0, errs[0]?.slice(0, 160));
+		await page.close();
+		await ctx.close();
+	}
 
 	const passed = H.summary("vars_ui");
 	await browser.close();

@@ -7,6 +7,7 @@
   .c2-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
   .c2-json { min-height: 110px; font-family: var(--font-mono); }
   .c2-state { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .vars-paused { color: var(--warn); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
   /* 错误态颜色在 ui.css 的「状态语义修饰 is-*」一节（#372）。 */
   .c2-row { padding: 10px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
   .c2-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
@@ -139,6 +140,7 @@
     <section class="card card-pad" id="node-vars-card">
       <div class="card-title">{{t "nodes.v4.vars_table_title"}}</div>
       <p class="c2-note">{{t "nodes.v4.vars_table_hint"}}</p>
+      <p id="node-vars-paused" class="vars-paused" role="status" hidden>{{t "nodes.v4.vars_refresh_paused"}}</p>
       <div id="node-vars-table"></div>
       <p id="node-vars-missing" class="c2-note" role="status" hidden></p>
       <div class="c2-actions">
@@ -181,21 +183,24 @@
   const errorText = e => e.status === 409 && e.reason === 'resource_version_conflict' ? t('stale') : t('error') + ': ' + (e.reason || '') + ' ' + e.message;
   const write = (url, body, method = 'PUT') => A.api(url, { method, body: JSON.stringify(body) });
 
-  /* #476：vars 表格状态。varsRows = 服务端事实折成的行；varsEditing = 正在编辑的那一行；
-     varsDirty = 有未保存改动（保存按钮也跟着它走）。 */
+  /* #476：varsRows = 服务端事实折成的行；varsEditing = 正在编辑的那一行；varsDirty = 有未保存改动。 */
   const VT = window.AnotifyVars;
   let varsRows = [], varsEditing = null, varsRequired = {}, varsDirty = false, varsSeq = 0;
   /* ---------- #476：可视化 vars 表格（值 / 来源 / 谁要 / 缺） ----------
-   * 数据全来自既有读面：`GET /v1/nodes/{name}?namespace=<侧栏作用域>` 的
-   * status.effectiveVars（来源由服务端逐键解析）+ 当前 ns 能力读面的
-   * `spec.requires.values`。页面不拿三层变量表自己猜来源，也不新造后端端点。
-   * 写的是**节点默认层**（Node.spec.vars）：保存把整份 Node 文档序列化成 YAML，
-   * 走 `PUT /v1/nodes/{name}/yaml` —— 唯一的编辑面（`/config` 只剩读投影）。 */
+   * 数据全来自既有读面：节点读面的 status.effectiveVars（来源由服务端逐键解析）+ 能力读面的
+   * `spec.requires.values`（不自己猜来源层，也不新造后端端点）。写的是**节点默认层**：
+   * 保存把整份文档序列化进 `PUT /v1/nodes/{name}/yaml` —— 唯一编辑面（`/config` 只剩读投影）。 */
   const varsSourceLabel = src => src === 'local' ? t('vars_source_local') : src === 'node' ? t('vars_source_node') : src === 'namespace' ? t('vars_source_namespace') : '—';
   const varsErrText = code => t('vars_err_' + code);
   const varsNs = () => (A.readScope() || {}).namespace || '';
   const varsSetState = (text, error = false) => msg('node-vars-state', text, error);
   const varsMarkDirty = () => { varsDirty = true; $('node-vars-save').disabled = false; };
+  /* #546：刷新分三种口径 —— 用户点的（页头刷新按钮，先确认）、后台的（切回标签页时重读，
+     遇草稿整轮跳过）、确认过或刚写完的（force）。编辑框里还没 apply 的字没有脏标记，
+     一并算草稿：重建同样会静默吃掉它。
+     跳过时只在表格上方留一行说明，下一次真的刷新成功就收掉。 */
+  const varsDraft = () => varsDirty || !!varsEditing;
+  const varsPaused = on => { $('node-vars-paused').hidden = !on; };
   function varsCell(cls, label, text) {
     const cell = make('td', cls, text); cell.dataset.label = label; return cell;
   }
@@ -203,7 +208,9 @@
     const button = make('button', 'btn btn-ghost btn-sm', label);
     button.type = 'button'; button.dataset.act = act; button.onclick = onclick; return button;
   }
-  async function refreshVars() {
+  async function refreshVars(force = false) {
+    if (!force && varsDraft()) return varsPaused(true);
+    varsPaused(false);
     const seq = ++varsSeq, ns = varsNs();
     const query = ns ? '?namespace=' + encodeURIComponent(ns) : '';
     try {
@@ -224,7 +231,7 @@
       $('node-vars-save').disabled = !varsDirty;
     } catch (e) {
       if (seq !== varsSeq) return;
-      $('node-vars-table').replaceChildren(A.loadErrorNode(e, refreshVars));
+      $('node-vars-table').replaceChildren(A.loadErrorNode(e, () => refreshVars(true)));
     }
   }
   function varsPlainRow(row) {
@@ -327,7 +334,7 @@
   };
   $('node-vars-reset').onclick = async () => {
     if (varsDirty && !(await A.confirmDanger({ body: t('vars_reset_confirm') }))) return;
-    varsSetState(''); await refreshVars();
+    varsSetState(''); await refreshVars(true);
   };
   $('node-vars-save').onclick = async () => {
     if (varsEditing) return varsSetState(t('vars_finish_edit'), true);
@@ -416,14 +423,12 @@
   }
 
   /* ---------- ② Node YAML：唯一的编辑面与写入口 ----------
-   * 读面与写面是同一份文本：`#node-yaml-text` 永远是服务端 GET 回来的原文，输入框
-   * 只在用户没手改（yamlDirty 为假）时跟着它走。
-   *
-   * 表单编辑的是**同一份文档**：`YD.edit` 用服务端原文当起点，只替换表单真的改了的键
-   * （`spec.vars`），再用同一份序列化写回文本。所以「表单不认识的字段」不会因为保存被
-   * 丢掉：读面多一个键，这里原样带回去。解析与校验仍在服务端，问题带行号与字段名回显到
-   * #node-yaml-errors；这里的 parse 只为编辑提供模型，读不懂时表单拒绝改写（不猜、
-   * 不兜底成空 —— 猜一份恰好就是把用户没改的字段写没）。
+   * 读面与写面是同一份文本：`#node-yaml-text` 永远是服务端 GET 回来的原文，输入框只在用户
+   * 没手改（yamlDirty 为假）时跟着它走。表单编辑的是**同一份文档**：`YD.edit` 拿服务端原文
+   * 当起点，只替换表单真的改了的键（`spec.vars`）再序列化写回文本 —— 「表单不认识的字段」
+   * 不会因为保存被丢掉：读面多一个键，这里原样带回去。解析与校验仍在服务端，问题带行号与
+   * 字段名回显到 #node-yaml-errors；这里的 parse 只为编辑提供模型，读不懂时表单拒绝改写
+   * （不猜、不兜底成空 —— 猜一份恰好就是把用户没改的字段写没）。
    * 问题非空时调用方不得渲染：那是把「读不懂」写成「用户清空了」。 */
   const YD = window.AnotifyYamlDoc;
   let yamlDirty = false, yamlModel = null;
@@ -684,13 +689,17 @@
     catch (e) { msg('node-action-state', errorText(e), true); } finally { $('node-rotate').disabled = false; }
   };
   $('node-token-close').onclick = () => { $('node-token').textContent = ''; $('node-token-result').hidden = true; };
-  async function boot() {
+  /* #546：后台刷新（切回标签页）—— 非用户主动，所以走守卫；不脏时照旧按服务端事实重建。 */
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && n) refreshVars();
+  });
+  async function boot(force = false) {
     if (!name) { $('node-load-state').replaceChildren(emptyState(x('no_param_title'), x('no_param'))); return; }
     $('node-load-state').textContent = t('loading'); $('node-load-state').setAttribute('aria-busy', 'true');
     try {
       await A.ready();
       await loadFacts(); await loadRelated(); $('node-body').hidden = false; $('node-load-state').replaceChildren();
-      await refreshVars();
+      await refreshVars(force);
       /* 刷新不覆盖正在编辑的草稿：loadYAML 只在 yamlDirty 为假时才回填输入框。 */
       await loadConfig(); await loadYAML();
     } catch (e) {
@@ -701,12 +710,16 @@
       $('node-load-state').replaceChildren(emptyState(
         notFound ? A.t('common.err.title.not_found', '找不到这个内容') : A.t('common.request_failed'),
         notFound ? t('not_found') : t('load_failed'),
-        boot,
+        () => boot(true),
       ));
     }
     finally { $('node-load-state').removeAttribute('aria-busy'); }
   }
-  $('node-refresh').onclick = () => boot();
+  $('node-refresh').onclick = async () => {
+    const draft = varsDraft();
+    if (draft && !(await A.confirmDanger({ body: t('vars_refresh_confirm') }))) return;
+    await boot(draft);
+  };
   boot();
 })();
 </script>
