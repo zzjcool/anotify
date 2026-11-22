@@ -46,6 +46,14 @@
    宽度与 #src-modal 对齐（同一页面的弹层保持同一块面）。 */
 #src-yaml-modal .modal-panel{width:min(760px,calc(100vw - 24px))}
 #src-yaml-input{min-height:22rem}
+.src-yaml-sample{margin-top:8px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);min-width:0} /* 拉取源示例：折叠块里是可复制的整份文档，窄屏下折行而不是横滚 */
+.src-yaml-sample>summary{padding:6px 10px;font-size:11px;color:var(--muted);cursor:pointer;list-style:none}
+.src-yaml-sample>summary::-webkit-details-marker{display:none}
+.src-yaml-sample>summary::before{content:"▸";margin-right:6px;color:var(--faint)}
+.src-yaml-sample[open]>summary::before{content:"▾"}
+.src-yaml-sample>summary:hover{color:var(--text)}
+.src-yaml-sample .code-body{margin:0;max-height:16rem;white-space:pre-wrap;overflow-wrap:anywhere;border-top:1px solid var(--line)}
+.src-yaml-sample .btn{margin:8px 10px 10px}
 .source-graph{min-height:320px;width:100%;min-width:0}
 .source-loading{padding:24px;color:var(--muted)}
 /* #377 列表规模化：搜索框 + 「20 条 + 加载更多」。
@@ -147,6 +155,41 @@ spellcheck="false"
 aria-label="{{t "sources.v4.yaml_create.title"}}"
 ></textarea>
 <p class="field-hint">{{t "sources.v4.yaml_create.hint"}}</p>
+<p class="field-hint">
+{{t "sources.v4.yaml_create.poll_hint"}}
+</p>
+<details class="src-yaml-sample" id="src-yaml-sample">
+<summary>
+{{t "sources.v4.yaml_create.poll_example"}}
+</summary>
+<pre id="src-yaml-sample-body" class="code-body mono">apiVersion: anotify/v1
+kind: Source
+metadata:
+  name: gh-advisories
+spec:
+  kind: poll
+  enabled: true
+  config:
+    url: https://api.github.com/advisories?per_page=20
+    schedule:
+      expr: "*/5 * * * *"
+      tz: UTC
+    timeoutMs: 10000
+    maxItems: 100
+    envelope:
+      items: "."
+      type:
+        pointer: type
+      deliveryId:
+        pointer: id
+      payload:
+        whole: true
+  targets: []
+</pre>
+<button type="button" class="btn btn-ghost btn-sm" id="src-yaml-sample-fill">
+{{t "sources.v4.yaml_create.poll_example_fill"}}
+</button>
+</details>
 <div id="src-yaml-msg" class="field-error" role="alert">
 </div>
 </div>
@@ -602,7 +645,7 @@ function render(){
       name:m.name
     });
     const badges=el("div","src-badges");
-    badges.append(badge(m.kind,"badge-neutral"));
+    badges.append(badge(A.sourceKindLabel(m.kind),"badge-neutral"));
     badges.append(m.enabled ? badge(t("enabled"),"badge-success") : badge(t("disabled"),"badge-neutral"));
     badges.append(badge(m.health || "—",healthTone(m.health)));
     badges.append(m.targetsResolved ? badge(xt("resolved_yes"),"badge-accent") : badge(xt("resolved_no"),"badge-neutral"));
@@ -707,6 +750,12 @@ function closeYamlEditor(clear){
   if(clear)$("src-yaml-input").value="";
 }
 $("btn-new-yaml").onclick=openYamlEditor;
+$("src-yaml-sample-fill").onclick=()=>{ // 填入示例只把折叠块里的文档抄进 textarea（示例正文只有一份，就是这个 pre）
+  const input=$("src-yaml-input"),sample=$("src-yaml-sample-body");
+  yamlMsg([]);
+  input.value=String(sample.textContent||"").trim()+"\n";
+  input.focus();
+};
 $("src-yaml-cancel").onclick=()=>closeYamlEditor(false);
 $("src-yaml-modal").addEventListener("click",event=>{
   if(event.target===event.currentTarget)closeYamlEditor(false);

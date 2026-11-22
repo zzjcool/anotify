@@ -1917,6 +1917,9 @@ sources:
       cancel: "Cancel"
       created: "Source created from YAML"
       empty: "Paste a YAML document first"
+      poll_hint: 'The schedule uses the same syntax as a timer; an empty targets list is valid (events are collected but nothing is dispatched).'
+      poll_example: "Fetch source example"
+      poll_example_fill: "Insert example"
     draft_dry: "Draft preview (no save needed)"
     namespace: "Namespace"
     rv: 'Version token'
@@ -1965,6 +1968,7 @@ sources:
     cron: Timer
     webhook: Webhook
     manual: Manual
+    poll: Poll
     github: 'GitHub'
   next_fire: next {t}
   manual_hint: Fires when you click Run
@@ -2627,6 +2631,27 @@ source_detail:
   updated: 'Updated'
   last_poll: 'Last poll'
   consecutive_failures: 'Consecutive failures'
+  poll_config: 'Fetch config'
+  poll_url: 'URL'
+  poll_schedule: 'Schedule'
+  poll_timeout: 'Request timeout'
+  poll_max_items: 'Max items per run'
+  poll_envelope: 'Envelope pointers'
+  poll_env_hint: 'All four pointers are optional; when omitted the defaults below apply.'
+  poll_env_items: 'Items array'
+  poll_env_type: 'Event type'
+  poll_env_delivery: 'Dedupe key'
+  poll_env_payload: 'Payload'
+  poll_env_default_items: 'whole response'
+  poll_env_default_type: 'source name'
+  poll_env_default_delivery: 'no dedupe'
+  poll_env_default_payload: 'whole item'
+  poll_status: 'Poll status'
+  poll_never: 'Not polled yet'
+  poll_skipped: 'Skipped overlaps'
+  poll_cursor: 'Cursor'
+  poll_cursor_none: 'No cursor yet (written after the first successful run)'
+  poll_error_none: 'No failures recorded'
   hook_url: 'Hook URL'
   secret_set_yes: 'HMAC secret is set (write-only)'
   secret_set_no: 'No HMAC secret'

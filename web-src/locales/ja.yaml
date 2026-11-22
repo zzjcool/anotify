@@ -1917,6 +1917,9 @@ sources:
       cancel: "キャンセル"
       created: "YAML からソースを作成しました"
       empty: "先に YAML ドキュメントを貼り付けてください"
+      poll_hint: 'スケジュールはタイマーと同じ書式です。targets が空でも有効です（イベントは受け取りますが、何も配信しません）。'
+      poll_example: "ポーリングソースの例"
+      poll_example_fill: "例を入力"
     draft_dry: "下書きをプレビュー（保存不要）"
     namespace: "名前空間"
     rv: 'バージョントークン'
@@ -1965,6 +1968,7 @@ sources:
     cron: タイマー
     webhook: Webhook
     manual: 手動
+    poll: ポーリング
     github: 'GitHub'
   next_fire: 次回 {t}
   manual_hint: 「今すぐ実行」を押すと発火します
@@ -2627,6 +2631,27 @@ source_detail:
   updated: '更新日時'
   last_poll: '最終ポーリング'
   consecutive_failures: '連続失敗'
+  poll_config: 'ポーリング設定'
+  poll_url: 'URL'
+  poll_schedule: 'スケジュール'
+  poll_timeout: '1 回のタイムアウト'
+  poll_max_items: '1 回の最大件数'
+  poll_envelope: 'エンベロープ指定'
+  poll_env_hint: '4 つの指定はいずれも省略でき、省略時は下記の既定値になります。'
+  poll_env_items: '要素の配列'
+  poll_env_type: 'イベント種別'
+  poll_env_delivery: '重複キー'
+  poll_env_payload: 'ペイロード'
+  poll_env_default_items: 'レスポンス全体'
+  poll_env_default_type: 'ソース名'
+  poll_env_default_delivery: '重複排除なし'
+  poll_env_default_payload: '要素全体'
+  poll_status: 'ポーリング状態'
+  poll_never: 'まだポーリングしていません'
+  poll_skipped: '重なりによるスキップ'
+  poll_cursor: 'カーソル'
+  poll_cursor_none: 'カーソルはまだありません（初回成功後に保存されます）'
+  poll_error_none: '失敗の記録はありません'
   hook_url: 'Hook URL'
   secret_set_yes: 'HMAC 署名は設定済み（書き込み専用）'
   secret_set_no: 'HMAC 署名なし'
