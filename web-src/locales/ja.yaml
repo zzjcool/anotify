@@ -1920,6 +1920,26 @@ sources:
       poll_hint: 'スケジュールはタイマーと同じ書式です。targets が空でも有効です（イベントは受け取りますが、何も配信しません）。'
       poll_example: "ポーリングソースの例"
       poll_example_fill: "例を入力"
+    poll_transport: 'ポーリング転送'
+    poll_transport_hint: 'スケジュールに従ってこの URL をサーバーが取得します'
+    poll_url_hint: 'https のみ。ローカルや .test のテスト用アドレスは YAML で明示的な許可が必要です'
+    poll_url_required: '取得先の URL は必須です'
+    poll_headers: 'リクエストヘッダー'
+    poll_headers_hint: '最大 10 件。名前に空白とコロンは使えず、値に改行は使えません'
+    poll_header_add: 'ヘッダーを追加'
+    poll_header_key: 'ヘッダー名'
+    poll_header_value: 'ヘッダー値'
+    poll_header_dup: 'ヘッダー名が重複しています'
+    poll_limits_hint: 'タイムアウト 1000〜120000 ミリ秒（既定 10000）、1 回の上限 1〜500 件（既定 100）'
+    poll_cred: '認証情報の参照'
+    poll_cred_hint: '値は書き込み専用で保存後に表示されません。空欄なら現在の値を維持します'
+    poll_cred_name: '認証情報の名前'
+    poll_cred_header: '注入するヘッダー'
+    poll_cred_prefix: '値の前置き（任意）'
+    poll_secret: '認証情報の値（書き込み専用）'
+    poll_secret_set: '書き込み専用です。空欄なら保存済みの値が維持され、空欄で上書きされることはありません'
+    poll_cred_pair: '認証情報の名前とヘッダーは両方入力するか、両方空欄にしてください'
+    poll_env_whole: '項目全体をペイロードにする'
     draft_dry: "下書きをプレビュー（保存不要）"
     namespace: "名前空間"
     rv: 'バージョントークン'

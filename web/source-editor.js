@@ -6,13 +6,11 @@
  *   · 取数、写信封、CAS/409、草稿试运行、变量建议、字段级错误都在这里；
  *   · 调用方只提供上下文：要编辑的资源（或 null = 新建）、命名空间、保存成功后的回调。
  *
- * 用法：
- *   await Anotify.sourceEditor.open({ resource, namespace, onSaved });
- *   Anotify.sourceEditor.close();
+ * 用法：await Anotify.sourceEditor.open({ resource, namespace, onSaved })；close() 关闭。
  *
- * 深链：
- *   · sources.html?edit=<name>      → 列表页打开本弹层（行为与历史上一致）；
- *   · source-detail.html?…&edit=1   → 详情页加载完后打开本弹层。
+ * 深链（同一份 DOM，e2e 锚点一致）：
+ *   · sources.html?edit=<name>     → 列表页打开；
+ *   · source-detail.html?…&edit=1  → 详情页加载完后打开。
  */
 (function () {
   "use strict";
@@ -71,9 +69,10 @@ ${A.t("sources.v4.display")}
 ${A.t("sources.v4.kind")}
 </label>
 <select id="f-kind" class="select">
-<option value="cron">cron</option>
-<option value="webhook">webhook</option>
-<option value="manual">manual</option>
+<option value="cron">${A.t("sources.kind.cron")}</option>
+<option value="webhook">${A.t("sources.kind.webhook")}</option>
+<option value="manual">${A.t("sources.kind.manual")}</option>
+<option value="poll">${A.t("sources.kind.poll")}</option>
 </select>
 <p class="field-hint">
 ${A.t("sources.v4.immutable")}
@@ -83,7 +82,7 @@ ${A.t("sources.v4.immutable")}
 <div class="src-cols">
 <div class="field">
 <label class="field-label" for="f-expr">
-${A.t("sources.v4.expr")}
+<span id="f-expr-label">${A.t("sources.v4.expr")}</span>
 </label>
 <input id="f-expr" class="input"  />
 </div>
@@ -101,6 +100,116 @@ ${A.t("sources.v4.tz")}
 <button type="button" class="btn btn-ghost btn-sm" data-cron="0 * * * *">${A.t("sources.preset.hourly")}</button>
 <button type="button" class="btn btn-ghost btn-sm" data-cron="0 3 * * *">${A.t("sources.preset.daily3")}</button>
 <button type="button" class="btn btn-ghost btn-sm" data-cron="0 9 * * 1-5">${A.t("sources.preset.weekdays9")}</button>
+</div>
+</div>
+<div id="f-poll-wrap" class="hidden">
+<div class="src-group">
+<div class="src-group-head"><span class="src-group-title">${t("poll_transport")}</span><span class="src-group-hint">${t("poll_transport_hint")}</span></div>
+<div class="field">
+<label class="field-label" for="f-poll-url">
+${A.t("source_detail.poll_url")}
+</label>
+<input id="f-poll-url" class="input mono" />
+<p id="f-poll-url-error" class="field-error hidden" role="alert"></p>
+<p class="field-hint">
+${t("poll_url_hint")}
+</p>
+</div>
+<div class="field">
+<div class="field-label">
+${t("poll_headers")}
+</div>
+<div id="f-poll-headers" class="source-form">
+</div>
+<button id="add-poll-header" type="button" class="btn btn-ghost">
+${t("poll_header_add")}
+</button>
+<p id="f-poll-headers-error" class="field-error hidden" role="alert"></p>
+<p class="field-hint">
+${t("poll_headers_hint")}
+</p>
+</div>
+<div class="src-cols">
+<div class="field">
+<label class="field-label" for="f-poll-timeout">
+${A.t("source_detail.poll_timeout")}
+</label>
+<input id="f-poll-timeout" class="input" type="number" min="1000" max="120000" step="1000" />
+</div>
+<div class="field">
+<label class="field-label" for="f-poll-maxitems">
+${A.t("source_detail.poll_max_items")}
+</label>
+<input id="f-poll-maxitems" class="input" type="number" min="1" max="500" />
+</div>
+</div>
+<p class="field-hint">
+${t("poll_limits_hint")}
+</p>
+<div class="src-group-head"><span class="src-group-title">${t("poll_cred")}</span><span class="src-group-hint">${t("poll_cred_hint")}</span></div>
+<div class="src-cols">
+<div class="field">
+<label class="field-label" for="f-poll-cred-name">
+${t("poll_cred_name")}
+</label>
+<input id="f-poll-cred-name" class="input mono" />
+</div>
+<div class="field">
+<label class="field-label" for="f-poll-cred-header">
+${t("poll_cred_header")}
+</label>
+<input id="f-poll-cred-header" class="input mono" />
+</div>
+</div>
+<div class="field">
+<label class="field-label" for="f-poll-cred-prefix">
+${t("poll_cred_prefix")}
+</label>
+<input id="f-poll-cred-prefix" class="input mono" />
+</div>
+<div class="field">
+<label class="field-label" for="f-poll-secret">
+${t("poll_secret")}
+</label>
+<input id="f-poll-secret" class="input" type="password" autocomplete="new-password" />
+<p class="field-hint">
+${t("poll_secret_set")}
+</p>
+</div>
+</div>
+<div class="src-group">
+<div class="src-group-head"><span class="src-group-title">${A.t("source_detail.poll_envelope")}</span><span class="src-group-hint">${A.t("source_detail.poll_env_hint")}</span></div>
+<div class="src-cols">
+<div class="field">
+<label class="field-label" for="f-env-items">
+${A.t("source_detail.poll_env_items")}
+</label>
+<input id="f-env-items" class="input mono" />
+</div>
+<div class="field">
+<label class="field-label" for="f-env-type">
+${A.t("source_detail.poll_env_type")}
+</label>
+<input id="f-env-type" class="input mono" />
+</div>
+</div>
+<div class="src-cols">
+<div class="field">
+<label class="field-label" for="f-env-delivery">
+${A.t("source_detail.poll_env_delivery")}
+</label>
+<input id="f-env-delivery" class="input mono" />
+</div>
+<div class="field">
+<label class="field-label" for="f-env-payload">
+${A.t("source_detail.poll_env_payload")}
+</label>
+<input id="f-env-payload" class="input mono" />
+</div>
+</div>
+<label class="field-label">
+<input id="f-env-payload-whole" type="checkbox" /> ${t("poll_env_whole")}
+</label>
 </div>
 </div>
 <div id="f-hook-wrap" class="hidden">
@@ -229,6 +338,12 @@ ${A.t("sources.v4.save")}
   let EVENTS = [];
   let CAPS = [];
   let editorSeq = 0;
+  /* poll 的 headers/secretRef/allowInsecure 不在读投影里 —— 打开时另读原始 config 当基底。 */
+  let POLLCFG = null;
+  let KIND = null;
+  const POLL_HEADER_MAX = 10;
+  const POLL_TIMEOUT_DEFAULT = 10000;
+  const POLL_MAXITEMS_DEFAULT = 100;
 
   /* 当前命名空间：调用方给的资源 ns 优先（详情页深链的权威来源），否则才用持久化 scope。 */
   function nsNow() {
@@ -332,6 +447,21 @@ async function openEditor(src){
   $("f-token").value="";
   $("f-secret").value="";
   $("dry-payload").value="";
+  KIND=null;
+  POLLCFG=null;
+  resetPollForm();
+  if(m?.kind==="poll"){
+    try{
+      const doc=await request(m.name,null,"","GET");
+      if(seq!==editorSeq)return;
+      POLLCFG=(doc.spec||{
+      }).config||{
+      };
+      fillPollForm(POLLCFG);
+    }catch(err){
+      error($("form-result"),err);
+    }
+  }
   $("f-targets").replaceChildren(...(m?.targets||[]).map(targetRow));
   $("source-capabilities").replaceChildren(...CAPS.map(cap=>{
     const opt=el("option");opt.value=cap.metadata.name;return opt;
@@ -356,10 +486,93 @@ async function openEditor(src){
 
 function syncKind(){
   const kind=$("f-kind").value;
-  $("f-cron-wrap").classList.toggle("hidden",kind!=="cron");
+  const prev=KIND;
+  KIND=kind;
+  /* poll 的排期与 cron 是同一套输入（同一个 #f-expr/#f-tz/#cron-presets），只是标签换成「排期」。 */
+  $("f-cron-wrap").classList.toggle("hidden",kind!=="cron"&&kind!=="poll");
+  $("f-expr-label").textContent=kind==="poll" ? A.t("source_detail.poll_schedule") : t("expr");
+  $("f-poll-wrap").classList.toggle("hidden",kind!=="poll");
   $("f-hook-wrap").classList.toggle("hidden",kind!=="webhook");
   $("f-payload-wrap").classList.toggle("hidden",kind==="webhook");
+  if(prev&&prev!==kind)clearKindFields(prev);
   suggest();
+}
+/* 新建时切 kind：另一类的字段必须当场清掉，不能只在提交时忽略（否则草稿里还留着 webhook 的 token）。 */
+function clearKindFields(prev){
+  if(prev==="webhook"){
+    $("f-token").value="";
+    $("f-secret").value="";
+    $("f-sample").value="";
+    $("hook-read").replaceChildren();
+  }
+  if(prev==="poll")resetPollForm();
+}
+function failField(field,message){
+  const err=new Error(message);
+  err.field=field;
+  return err;
+}
+function headerRow(key="",value=""){
+  const row=el("div","source-target");
+  const kLabel=el("label","field-label",t("poll_header_key"));
+  const k=el("input","input mono");
+  k.value=key;
+  kLabel.append(k);
+  const vLabel=el("label","field-label",t("poll_header_value"));
+  const v=el("input","input mono");
+  v.value=value;
+  vLabel.append(v);
+  row.append(kLabel,vLabel,action("remove_target",()=>{
+    row.remove();
+    syncHeaderCap();
+  }));
+  return row;
+}
+function syncHeaderCap(){
+  $("add-poll-header").disabled=$("f-poll-headers").children.length>=POLL_HEADER_MAX;
+}
+function resetPollForm(){
+  for(const id of ["f-poll-url","f-poll-cred-name","f-poll-cred-header","f-poll-cred-prefix","f-poll-secret","f-env-items","f-env-type","f-env-delivery"])$(id).value="";
+  $("f-poll-timeout").value=POLL_TIMEOUT_DEFAULT;
+  $("f-poll-maxitems").value=POLL_MAXITEMS_DEFAULT;
+  $("f-poll-headers").replaceChildren(headerRow());
+  $("f-env-payload-whole").checked=false;
+  $("f-env-payload").value="";
+  $("f-env-payload").disabled=false;
+  flagField("f-poll-url","");
+  flagField("f-poll-headers","");
+  syncHeaderCap();
+}
+function fillPollForm(cfg){
+  const sched=cfg.schedule||{
+  };
+  const ref=cfg.secretRef||{
+  };
+  const env=cfg.envelope||{
+  };
+  $("f-expr").value=sched.expr||"*/15 * * * *";
+  $("f-tz").value=sched.tz||"Local";
+  $("f-poll-url").value=cfg.url||"";
+  $("f-poll-timeout").value=cfg.timeoutMs==null ? POLL_TIMEOUT_DEFAULT : cfg.timeoutMs;
+  $("f-poll-maxitems").value=cfg.maxItems==null ? POLL_MAXITEMS_DEFAULT : cfg.maxItems;
+  $("f-poll-cred-name").value=ref.name||"";
+  $("f-poll-cred-header").value=ref.header||"";
+  $("f-poll-cred-prefix").value=ref.prefix||"";
+  const rows=Object.entries(cfg.headers||{
+  }).map(([k,v])=>headerRow(k,v));
+  $("f-poll-headers").replaceChildren(...(rows.length ? rows : [headerRow()]));
+  $("f-env-items").value=env.items||"";
+  $("f-env-type").value=(env.type||{
+  }).pointer||"";
+  $("f-env-delivery").value=(env.deliveryId||{
+  }).pointer||"";
+  const whole=(env.payload||{
+  }).whole===true;
+  $("f-env-payload-whole").checked=whole;
+  $("f-env-payload").value=whole ? "" : (env.payload||{
+  }).pointer||"";
+  $("f-env-payload").disabled=whole;
+  syncHeaderCap();
 }
 function schemaPaths(schema,root="payload"){
   return Object.entries(schema?.properties||{
@@ -407,19 +620,23 @@ function suggest(){
 }
 function writeSource(){
   const kind=$("f-kind").value;
-  const config={
+  /* poll 的 config 是整体替换：从存储的原始 config 出发只覆盖表单 own 的键；
+     allowInsecure / sample 这些表单不提供的键必须原样留着（#540 的原始缺陷）。 */
+  const config=kind==="poll" ? pollConfig() : {
     payloadSchema:json($("f-payload-schema"),true)||null
   };
-  if(kind==="cron"){
-    config.expr=$("f-expr").value.trim();
-    config.tz=$("f-tz").value.trim()||"Local";
-  }if(kind==="webhook"){
-    config.sample=json($("f-sample"));
-    for(const key of ["token","secret"]){
-      const value=$("f-"+key).value.trim();
-      if(value)config[key]=value;
-    }
-  }else config.payload=json($("f-payload"));
+  if(kind!=="poll"){
+    if(kind==="cron"){
+      config.expr=$("f-expr").value.trim();
+      config.tz=$("f-tz").value.trim()||"Local";
+    }if(kind==="webhook"){
+      config.sample=json($("f-sample"));
+      for(const key of ["token","secret"]){
+        const value=$("f-"+key).value.trim();
+        if(value)config[key]=value;
+      }
+    }else config.payload=json($("f-payload"));
+  }
   const targets=[...$("f-targets").children].map(row=>({
     capability:row.querySelector("input").value.trim(),params:json(row.querySelector("textarea"))
   }));
@@ -443,6 +660,83 @@ function writeSource(){
       kind,enabled:$("f-enabled").checked,config,targets
     }
   };
+}
+function setOrDrop(cfg,key,value){
+  const empty=value==null||(typeof value==="object"&&!Array.isArray(value)&&!Object.keys(value).length);
+  if(empty)delete cfg[key];
+  else cfg[key]=value;
+}
+function intOr(box,dflt){
+  const raw=box.value.trim();
+  const n=Number(raw);
+  return raw!==""&&Number.isFinite(n) ? Math.trunc(n) : dflt;
+}
+function collectHeaders(){
+  const out={
+  };
+  for(const row of $("f-poll-headers").children){
+    const inputs=row.querySelectorAll("input");
+    const key=inputs[0].value.trim();
+    if(!key)continue;
+    if(Object.prototype.hasOwnProperty.call(out,key))throw failField("f-poll-headers",t("poll_header_dup")+": "+key);
+    out[key]=inputs[1].value;
+  }
+  return out;
+}
+function collectSecretRef(){
+  const name=$("f-poll-cred-name").value.trim();
+  const header=$("f-poll-cred-header").value.trim();
+  const prefix=$("f-poll-cred-prefix").value;
+  if(!name&&!header)return null;
+  if(!name||!header)throw failField("f-poll-cred-name",t("poll_cred_pair"));
+  const ref={
+    name,header
+  };
+  if(prefix!=="")ref.prefix=prefix;
+  return ref;
+}
+function collectEnvelope(){
+  const env={
+  };
+  const items=$("f-env-items").value.trim();
+  const type=$("f-env-type").value.trim();
+  const delivery=$("f-env-delivery").value.trim();
+  const payload=$("f-env-payload").value.trim();
+  if(items)env.items=items;
+  if(type)env.type={
+    pointer:type
+  };
+  if(delivery)env.deliveryId={
+    pointer:delivery
+  };
+  if($("f-env-payload-whole").checked)env.payload={
+    whole:true
+  };
+  else if(payload)env.payload={
+    pointer:payload
+  };
+  return Object.keys(env).length ? env : null;
+}
+function pollConfig(){
+  const cfg=POLLCFG ? JSON.parse(JSON.stringify(POLLCFG)) : {
+  };
+  const url=$("f-poll-url").value.trim();
+  if(!url)throw failField("f-poll-url",t("poll_url_required"));
+  cfg.url=url;
+  cfg.schedule={
+    expr:$("f-expr").value.trim(),tz:$("f-tz").value.trim()||"Local"
+  };
+  cfg.timeoutMs=intOr($("f-poll-timeout"),POLL_TIMEOUT_DEFAULT);
+  cfg.maxItems=intOr($("f-poll-maxitems"),POLL_MAXITEMS_DEFAULT);
+  setOrDrop(cfg,"headers",collectHeaders());
+  setOrDrop(cfg,"secretRef",collectSecretRef());
+  setOrDrop(cfg,"envelope",collectEnvelope());
+  setOrDrop(cfg,"payload",json($("f-payload"),true));
+  setOrDrop(cfg,"payloadSchema",json($("f-payload-schema"),true));
+  const secret=$("f-poll-secret").value;
+  if(secret!=="")cfg.secret=secret;
+  else delete cfg.secret;
+  return cfg;
 }
 function flagField(id,message){
   const input=$(id),box=$(id+"-error");
@@ -475,9 +769,9 @@ function flagField(id,message){
     }catch(err){
       error($("form-result"),err);
       // 校验类错误：字段红框 + 立即可见的 toast（W2-4）
-      if(err.field==="name")flagField("f-name",err.message);
+      if(err.field)flagField(err.field,err.message);
+      else A.toast([err.reason,err.message].filter(Boolean).join(": ")||t("save_failed"),"error");
       if(err.field==="targets")A.toast(err.message,"error");
-      else if(!err.field)A.toast([err.reason,err.message].filter(Boolean).join(": ")||t("save_failed"),"error");
       if(A.isConflict(err)||err.reason==="resource_version_required"){
         $("form-result").append(el("p","field-hint",t("draft_preserved")));
         $("reload-draft").classList.remove("hidden");
@@ -491,12 +785,9 @@ function flagField(id,message){
     const btn=$("btn-dry");
     btn.disabled=true;
     try{
-      /* 未保存源的 dry-run 请求体是 InlinePreviewBody（api/ingress.yaml），它的
-       * `source` 是 InlineSourceDraft：metadata 只认 name/displayName，
-       * additionalProperties:false。草稿的 namespace 由 URL 路径与授权决定，
-       * 把写信封的 metadata.namespace 一起发过去会被严格解码拒掉（400
-       * unknown_field “metadata.namespace is not writable”）。所以这里只挑
-       * 草稿允许的键，spec 原样保留（它就是「这次试运行要预览的源」）。 */
+      /* 未保存源的 dry-run 请求体是 InlinePreviewBody：`source` 是 InlineSourceDraft，
+       * metadata 只认 name/displayName（additionalProperties:false），把写信封的
+       * metadata.namespace 一起发过去会被严格解码拒掉。所以只挑草稿允许的键。 */
       const envelope=writeSource();
       const source={
         apiVersion:envelope.apiVersion,
@@ -538,6 +829,8 @@ function flagField(id,message){
     A.closeModal($("src-modal"));
     $("f-token").value="";
     $("f-secret").value="";
+    $("f-poll-secret").value="";
+    POLLCFG=null;
     flagField("f-name","");
     EDITING=null;
     if (done) {
@@ -570,6 +863,17 @@ function syncScrollHint(){
     $("f-name").addEventListener("input", () => flagField("f-name", ""));
     $("f-kind").onchange = syncKind;
     $("add-target").onclick = () => $("f-targets").append(targetRow());
+    $("add-poll-header").onclick = () => {
+      if ($("f-poll-headers").children.length >= POLL_HEADER_MAX) return;
+      $("f-poll-headers").append(headerRow());
+      flagField("f-poll-headers", "");
+      syncHeaderCap();
+    };
+    $("f-env-payload-whole").onchange = () => {
+      const whole = $("f-env-payload-whole").checked;
+      if (whole) $("f-env-payload").value = "";
+      $("f-env-payload").disabled = whole;
+    };
     for (const btn of document.querySelectorAll("#cron-presets [data-cron]")) {
       btn.onclick = () => {
         $("f-expr").value = btn.getAttribute("data-cron");

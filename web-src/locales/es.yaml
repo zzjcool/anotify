@@ -1920,6 +1920,26 @@ sources:
       poll_hint: 'La programación usa la misma sintaxis que un temporizador; una lista de targets vacía es válida (se reciben eventos pero no se despacha nada).'
       poll_example: "Ejemplo de fuente de sondeo"
       poll_example_fill: "Insertar ejemplo"
+    poll_transport: 'Transporte de sondeo'
+    poll_transport_hint: 'El servidor consulta esta dirección según la programación'
+    poll_url_hint: 'Debe ser https; las direcciones de prueba locales o .test requieren habilitación explícita en YAML'
+    poll_url_required: 'La dirección de consulta es obligatoria'
+    poll_headers: 'Cabeceras de la petición'
+    poll_headers_hint: 'Máximo 10; el nombre no lleva espacios ni dos puntos, el valor no lleva saltos de línea'
+    poll_header_add: 'Añadir una cabecera'
+    poll_header_key: 'Nombre de la cabecera'
+    poll_header_value: 'Valor de la cabecera'
+    poll_header_dup: 'Cabecera duplicada'
+    poll_limits_hint: 'Tiempo límite 1000-120000 ms (por defecto 10000), elementos por ronda 1-500 (por defecto 100)'
+    poll_cred: 'Referencia de credencial'
+    poll_cred_hint: 'El valor solo se escribe y nunca se devuelve; si lo dejas vacío se mantiene la credencial actual'
+    poll_cred_name: 'Nombre de la credencial'
+    poll_cred_header: 'Cabecera a inyectar'
+    poll_cred_prefix: 'Prefijo del valor (opcional)'
+    poll_secret: 'Valor de la credencial (solo escritura)'
+    poll_secret_set: 'Solo escritura: si lo dejas vacío se mantiene el valor guardado y un campo vacío nunca lo sobrescribe'
+    poll_cred_pair: 'Rellena el nombre de la credencial y la cabecera, o deja ambos vacíos'
+    poll_env_whole: 'Usar el elemento completo como carga útil'
     draft_dry: "Vista previa de borrador (sin guardar)"
     namespace: "Espacio de nombres"
     rv: 'Token de versión'

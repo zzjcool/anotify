@@ -1922,6 +1922,26 @@ sources:
       poll_hint: '排期与定时器同语法；目标留空也合法（只收事件，不派发任务）。'
       poll_example: "拉取源示例"
       poll_example_fill: "填入示例"
+    poll_transport: '拉取传输'
+    poll_transport_hint: '服务端按排期主动拉取这个地址'
+    poll_url_hint: '必须 https；本机或 .test 的测试地址需在 YAML 里显式放行'
+    poll_url_required: '拉取地址必须有'
+    poll_headers: '请求头'
+    poll_headers_hint: '最多 10 项；名称不含空格与冒号，值里不许有换行'
+    poll_header_add: '加一项请求头'
+    poll_header_key: '请求头名称'
+    poll_header_value: '请求头值'
+    poll_header_dup: '请求头重名'
+    poll_limits_hint: '单次超时 1000–120000 毫秒（默认 10000），单轮条目上限 1–500（默认 100）'
+    poll_cred: '凭据引用'
+    poll_cred_hint: '值只写不读：保存后不回显，留空表示不改动已有凭据'
+    poll_cred_name: '凭据名称'
+    poll_cred_header: '注入的请求头'
+    poll_cred_prefix: '值前缀（可选）'
+    poll_secret: '凭据值（只写）'
+    poll_secret_set: '凭据值只写不读：留空表示不改动，已设置的不会被空框覆盖'
+    poll_cred_pair: '凭据名称与请求头要么都填、要么都留空'
+    poll_env_whole: '整个条目作为载荷'
     draft_dry: "草稿试运行（无需保存）"
     namespace: "命名空间"
     rv: '版本令牌'
