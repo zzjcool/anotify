@@ -37,16 +37,14 @@ async function injectSession(ctx, sessionValue, base) {
 	]);
 }
 
-/* 「scope = default」必须落在页面脚本读到 localStorage 之前。节点页没有自己的 ns
- * 选择器（IA：节点是节点维度），它的有效值表跟着侧栏作用域走。 */
+/* 「scope = default」必须落在页面脚本读到 localStorage 之前：节点页没有自己的 ns 选择器（IA：节点是节点维度），它的有效值表跟着侧栏作用域走。 */
 async function primeScope(ctx) {
 	await ctx.addInitScript((ns) => {
 		window.localStorage.setItem("anotify.scope", JSON.stringify({ namespace: ns }));
 	}, NS);
 }
 
-/* 行级快照：名字 / 值 / 来源 / 是否红标 / 来源单元格原文。 */
-async function readRows(page, hostId) {
+async function readRows(page, hostId) { // 行级快照：名字 / 值 / 来源 / 是否红标 / 来源单元格原文
 	return page.evaluate((id) => {
 		const host = document.getElementById(id);
 		if (!host) return null;
@@ -65,8 +63,7 @@ async function readRows(page, hostId) {
 	}, hostId);
 }
 
-/* 行级 YAML diff：键序稳定，按「行集合」比较就够（值改动 = 一行换一行）。
- * 打印原文，报告里的前后 diff 就是从这里摘的（要求「贴前后 diff 原文」）。 */
+/* 行级 YAML diff：键序稳定，按「行集合」比较就够（值改动 = 一行换一行）。打印原文，报告里的前后 diff 就是从这里摘的（要求「贴前后 diff 原文」）。 */
 function lineDiff(before, after) {
 	const a = before.split("\n");
 	const b = after.split("\n");
@@ -147,16 +144,141 @@ function namespaceDocShell(text) {
 	return yamlWithoutLine(yamlWithoutSection(text, "spec"), "resourceVersion:");
 }
 
-/* 点保存并等**真的** PUT …/yaml 回执（不是等本地行状态变化 —— 那只证明点了按钮）。 */
-async function saveAndWait(page, saveSelector, pathSuffix) {
-	const [response] = await Promise.all([
-		page.waitForResponse((resp) => resp.request().method() === "PUT" && new URL(resp.url()).pathname.endsWith(pathSuffix), { timeout: 15000 }),
-		page.locator(saveSelector).click(),
-	]);
-	if (response.status() !== 200) {
-		throw new Error(`保存失败：HTTP ${response.status()} ${await response.text()}`);
+/* 超时现场：表格里现在有哪些 key（带 deleted/editing/missing 标记）、保存按钮是否 enabled、状态文案。 */
+async function varsFacts(page) {
+	return page.evaluate(() => {
+		const rows = (id) => {
+			const host = document.getElementById(id);
+			if (!host) return null;
+			return Array.from(host.querySelectorAll("tbody tr")).map((tr) => {
+				const flags = ["deleted", "editing", "missing"].filter((k) => tr.dataset[k] === "true");
+				return (tr.dataset.key || "") + (flags.length ? ":" + flags.join("+") : "");
+			});
+		};
+		const button = (id) => {
+			const el = document.getElementById(id);
+			return el ? { disabled: el.disabled === true, label: el.textContent.trim() } : null;
+		};
+		const state = (id) => {
+			const el = document.getElementById(id);
+			return el ? el.textContent.trim() : "";
+		};
+		return {
+			nodeRows: rows("node-vars-table"),
+			namespaceRows: rows("namespace-effective-vars"),
+			nodeSave: button("node-vars-save"),
+			namespaceSave: button("namespace-vars-save"),
+			nodeState: state("node-vars-state"),
+			namespaceState: state("namespace-vars-state"),
+		};
+	});
+}
+
+/* 保存收尾（#544）：PUT 回执之后前端还有一段串行重载，最后一跳把表格从服务端重建 —— 本地还没落库的删行、还没提交的编辑器正是被它冲掉的，所以下一步操作必须等在这段收尾之后。 */
+const STATE_WAIT = 30000; // 等页面状态的上界刻意与 Playwright 动作自动等待同量级：不能比它刚替掉的等待更紧（否则把「慢」换成「红」）
+function watchInflight(page) { // 页面里还有几个请求在飞：等收尾真的停下用（不睡觉、不猜 URL）
+	const open = new Set(), waiters = new Set();
+	const release = () => {
+		if (open.size) return;
+		for (const wake of waiters) wake();
+		waiters.clear();
+	};
+	page.on("request", (req) => open.add(req));
+	page.on("requestfinished", (req) => { open.delete(req); release(); });
+	page.on("requestfailed", (req) => { open.delete(req); release(); });
+	return {
+		idle: (timeout = 15000) => new Promise((resolve, reject) => {
+			if (!open.size) return resolve();
+			let timer = null;
+			const wake = () => {
+				if (timer) clearTimeout(timer);
+				resolve();
+			};
+			timer = setTimeout(() => {
+				waiters.delete(wake);
+				reject(new Error(`还有 ${open.size} 个请求在飞：${Array.from(open).map((r) => r.method() + " " + r.url()).join(" · ")}`));
+			}, timeout);
+			waiters.add(wake);
+		}),
+	};
+}
+
+async function waitVarsRerender(page, net, node, ns, gate) { // 收尾最后一跳：重建表格的那两个 GET + 空网 + 一帧（node.html:349 / namespace.html:357）；只在 gate.put 之后到达的回执算这次保存的
+	const u = (resp) => new URL(resp.url());
+	const isNodes = (resp) => gate.put && resp.request().method() === "GET" && u(resp).pathname === "/v1/nodes/" + node && u(resp).searchParams.get("namespace") === ns;
+	const isCaps = (resp) => gate.put && resp.request().method() === "GET" && u(resp).pathname === "/v1/namespaces/" + ns + "/capabilities";
+	try {
+		await Promise.all([page.waitForResponse(isNodes, { timeout: 15000 }), page.waitForResponse(isCaps, { timeout: 15000 })]);
+	} catch (e) {
+		throw new Error(`等不到表格重建（保存收尾里必出现 GET /v1/nodes/<node>?namespace=<ns> 与 GET /v1/namespaces/<ns>/capabilities）：${e.message}`);
 	}
-	return response;
+	await net.idle();
+	await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+}
+
+async function deleteVarsRow(page, net, tableSel, key, saveSelector) { // 删掉的行不消失、只变 data-deleted=true（还能撤销），所以判据是标删而不是 count=0
+	await net.idle(); // 点之前先确认上一次收尾停了：否则这次删除会被它的重建冲掉
+	await page.locator(`${tableSel} tr[data-key="${key}"] [data-act="vars-delete"]`).click();
+	await page.waitForFunction(
+		([tbl, k, save]) => {
+			const tr = document.querySelector(`${tbl} tbody tr[data-key="${k}"]`);
+			const btn = document.querySelector(save);
+			return !!tr && tr.dataset.deleted === "true" && !!btn && btn.disabled === false;
+		},
+		[tableSel, key, saveSelector],
+		{ timeout: STATE_WAIT },
+	);
+}
+
+async function openVarsEditor(page, tableSel, clickSelector, field = "value") { // 「先点后填」：点开编辑器后先等输入框真的在，再 fill（挡的是渲染延迟；挡重建的是 saveAndWait 的收尾等待）
+	await page.locator(clickSelector).click();
+	await page.locator(`${tableSel} tr[data-editing="true"] input[data-field="${field}"]`).waitFor({ state: "visible", timeout: STATE_WAIT });
+}
+
+/* 点保存并等**真的** PUT …/yaml 回执（不是等本地行状态变化 —— 那只证明点了按钮）。等不到时把现场拼进错误：一次 timeout 三个字什么都说明不了（#544）。 */
+async function saveAndWait(page, saveSelector, pathSuffix, settle) { // settle(gate)：收尾等待（waitVarsRerender）；点击前就注册，只认 gate.put 之后的回执
+	const before = await page.evaluate((sel) => {
+		const el = document.querySelector(sel);
+		return el ? { found: true, disabled: el.disabled === true } : { found: false };
+	}, saveSelector);
+	const writes = []; // 浏览器真正发出的写请求：点禁用按钮、handler 提前 return 都不发
+	const onRequest = (req) => {
+		if (req.method() !== "GET") writes.push(req.method() + " " + req.url());
+	};
+	page.on("request", onRequest);
+	const gate = { put: false };
+	const put = page.waitForResponse((resp) => resp.request().method() === "PUT" && new URL(resp.url()).pathname.endsWith(pathSuffix), { timeout: 15000 });
+	// 收尾锚点必须在点击**之前**注册：waitForResponse 只看注册之后派发的事件，而一次 read 的多条消息可能在同一 macrotask 连发 —— 等 PUT 回执再注册会连同收尾回执一起漏掉（#544 审查 F1）；gate.put 挡住早于这次保存的回执。
+	const tail = settle ? settle(gate) : null;
+	if (tail) tail.catch((e) => console.error(`（保存未成功，忽略收尾等待的报错）${e.message}`)); // 只在 PUT 自己失败的路上用得上
+	try {
+		const [response] = await Promise.all([put, page.locator(saveSelector).click()]);
+		if (response.status() !== 200) {
+			throw new Error(`保存失败：HTTP ${response.status()} ${await response.text()}`);
+		}
+		gate.put = true; // 到此为止：以后到达的重建回执才是这次保存的收尾（收尾最后一跳离 PUT 还有 3 段串行往返）
+		if (tail) await tail;
+		return response;
+	} catch (e) {
+		if (gate.put) throw e; // PUT 已 200：是收尾自己等不到，别把标题写成「等不到写 …/yaml」（#544 审查 F4）
+		let facts;
+		try {
+			facts = await varsFacts(page);
+		} catch (inner) {
+			facts = { unreadable: String(inner) };
+		}
+		const nsSide = saveSelector.startsWith("#namespace");
+		const rows = nsSide ? facts.namespaceRows : facts.nodeRows;
+		const button = nsSide ? facts.namespaceSave : facts.nodeSave;
+		const state = nsSide ? facts.namespaceState : facts.nodeState;
+		console.log(`--- 保存超时现场（${pathSuffix} · ${saveSelector}）---\n${JSON.stringify(facts, null, 1)}`); // 必须落 stdout：runner 只透传 stdout，stderr 会丢（parallel_runner.mjs:394）
+		throw new Error(
+			`等不到写 ${pathSuffix}：${e.message}\n` +
+				`按钮(点击前)=${JSON.stringify(before)} 按钮(现在)=${JSON.stringify(button)} 点击后写请求=${JSON.stringify(writes)} 表格=${JSON.stringify(rows)} 状态=${JSON.stringify(state)}`,
+		);
+	} finally {
+		page.off("request", onRequest);
+	}
 }
 
 async function main() {
@@ -319,6 +441,8 @@ async function main() {
 		const page = await ctx.newPage();
 		const errs = [];
 		page.on("pageerror", (e) => errs.push(String(e)));
+		const net = watchInflight(page);
+		const settle = (gate) => waitVarsRerender(page, net, NODE, NS, gate);
 		const writes = [];
 		page.on("request", (req) => { if (req.method() !== "GET") writes.push(req.method() + " " + req.url()); });
 		await page.goto(server.base + "/node.html?id=" + NODE, { waitUntil: "load", timeout: 15000 });
@@ -326,10 +450,10 @@ async function main() {
 		await page.locator('#node-vars-table tr[data-key="NODE_ONLY"] [data-act="vars-edit"]').waitFor({ timeout: 10000 });
 
 		// —— 改一个 var：NODE_ONLY: node-value → node-value-v2
-		await page.locator('#node-vars-table tr[data-key="NODE_ONLY"] [data-act="vars-edit"]').click();
+		await openVarsEditor(page, "#node-vars-table", '#node-vars-table tr[data-key="NODE_ONLY"] [data-act="vars-edit"]');
 		await page.locator('#node-vars-table tr[data-editing="true"] input[data-field="value"]').fill("node-value-v2");
 		await page.locator('#node-vars-table [data-act="vars-apply"]').click();
-		await saveAndWait(page, "#node-vars-save", "/yaml");
+		await saveAndWait(page, "#node-vars-save", "/yaml", settle);
 		await page.waitForFunction(() => {
 			const cell = document.querySelector('#node-vars-table tr[data-key="NODE_ONLY"] td.vars-value');
 			return cell && cell.textContent.trim() === "node-value-v2";
@@ -365,8 +489,8 @@ async function main() {
 			JSON.stringify(writes));
 
 		// —— 删一个 var：SOURCE_ROOT 从节点默认层消失
-		await page.locator('#node-vars-table tr[data-key="SOURCE_ROOT"] [data-act="vars-delete"]').click();
-		await saveAndWait(page, "#node-vars-save", "/yaml");
+		await deleteVarsRow(page, net, "#node-vars-table", "SOURCE_ROOT", "#node-vars-save");
+		await saveAndWait(page, "#node-vars-save", "/yaml", settle);
 		await page.waitForFunction(() => {
 			const tr = document.querySelector('#node-vars-table tr[data-key="SOURCE_ROOT"]');
 			return tr && tr.dataset.missing === "true";
@@ -400,18 +524,22 @@ async function main() {
 		const page = await ctx.newPage();
 		const errs = [];
 		page.on("pageerror", (e) => errs.push(String(e)));
+		const net = watchInflight(page);
+		const settle = (gate) => waitVarsRerender(page, net, NODE, NS, gate);
 		const writes = [];
 		page.on("request", (req) => { if (req.method() !== "GET") writes.push(req.method() + " " + req.url()); });
 		await page.goto(server.base + "/namespace.html?name=" + NS, { waitUntil: "load", timeout: 15000 });
 		await H.waitForAppReady(page, "workspace");
 		await page.selectOption("#namespace-node", NODE);
 		await page.locator('#namespace-effective-vars tr[data-key="NS_ONLY"] [data-act="vars-edit"]').waitFor({ timeout: 10000 });
+		await net.idle(); // 切节点触发的 loadEffective 还没停：不等它，下面开编辑器会被它的重建收掉
+		await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => done()))); // idle 看不见链上的下一跳，补一帧让同步重绘落地
 
 		// —— 改命名空间默认值：NS_ONLY: ns-value → ns-value-v2
-		await page.locator('#namespace-effective-vars tr[data-key="NS_ONLY"] [data-act="vars-edit"]').click();
+		await openVarsEditor(page, "#namespace-effective-vars", '#namespace-effective-vars tr[data-key="NS_ONLY"] [data-act="vars-edit"]');
 		await page.locator('#namespace-effective-vars tr[data-editing="true"] input[data-field="value"]').fill("ns-value-v2");
 		await page.locator('#namespace-effective-vars [data-act="vars-apply"]').click();
-		await saveAndWait(page, "#namespace-vars-save", "/yaml");
+		await saveAndWait(page, "#namespace-vars-save", "/yaml", settle);
 		await page.waitForFunction(() => {
 			const cell = document.querySelector('#namespace-effective-vars tr[data-key="NS_ONLY"] td.vars-value');
 			return cell && cell.textContent.trim() === "ns-value-v2";
@@ -432,7 +560,7 @@ async function main() {
 			JSON.stringify(writes));
 
 		// —— 非法名字：前端即时拒（apply 禁用 + 说明文案）
-		await page.locator("#namespace-vars-add").click();
+		await openVarsEditor(page, "#namespace-effective-vars", "#namespace-vars-add", "name");
 		await page.locator('#namespace-effective-vars tr[data-editing="true"] input[data-field="name"]').fill("1FOO");
 		await page.locator('#namespace-effective-vars tr[data-editing="true"] input[data-field="value"]').fill("x");
 		H.check("1FOO：前端即时禁用「确定」", await page.locator('#namespace-effective-vars [data-act="vars-apply"]').isDisabled(), "apply 仍可点");
@@ -456,10 +584,10 @@ async function main() {
 		H.check("后端拒绝消息点名非法键", String(badPut.json?.message || "").includes("1FOO"), badPut.text.slice(0, 200));
 
 		// —— 新增一个「被要求但缺失」的名字（JAVA_HOME）：填上后红标消失
-		await page.locator('#namespace-effective-vars tr[data-key="JAVA_HOME"] [data-act="vars-fill"]').click();
+		await openVarsEditor(page, "#namespace-effective-vars", '#namespace-effective-vars tr[data-key="JAVA_HOME"] [data-act="vars-fill"]');
 		await page.locator('#namespace-effective-vars tr[data-editing="true"] input[data-field="value"]').fill("/usr/lib/jvm/e2e");
 		await page.locator('#namespace-effective-vars [data-act="vars-apply"]').click();
-		await saveAndWait(page, "#namespace-vars-save", "/yaml");
+		await saveAndWait(page, "#namespace-vars-save", "/yaml", settle);
 		await page.waitForFunction(() => {
 			const tr = document.querySelector('#namespace-effective-vars tr[data-key="JAVA_HOME"]');
 			return tr && tr.dataset.missing === "false";
