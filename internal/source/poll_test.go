@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -167,6 +168,7 @@ func TestPollFailureKeepsCursorAndBacksOff(t *testing.T) {
 	var fail bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if fail {
+			w.Header().Set("ETag", `"v2"`)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -349,5 +351,32 @@ func TestPollSecretRefResolvesCredential(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "config.secretRef") {
 		t.Fatalf("缺失凭据引用必须写入期 400（cause 带 config.secretRef）: %v", err)
+	}
+}
+
+func TestBlockPrivateDialGuardsActualIP(t *testing.T) {
+	for _, address := range []string{"127.0.0.1:80", "169.254.169.254:80", "10.1.2.3:443", "[fd00::1]:443", "[::1]:443"} {
+		if err := blockPrivateDial("tcp", address, nil); err == nil {
+			t.Errorf("dial 到 %s 必须被拒（DNS rebinding 的第二道闸）", address)
+		}
+	}
+	if err := blockPrivateDial("tcp", "93.184.216.34:443", nil); err != nil {
+		t.Errorf("公网地址必须放行: %v", err)
+	}
+}
+
+func TestSameHostRedirectPolicy(t *testing.T) {
+	req := func(host string) *http.Request {
+		return &http.Request{URL: &url.URL{Scheme: "https", Host: host}}
+	}
+	if err := sameHostRedirect(req("api.example.com"), []*http.Request{req("api.example.com")}); err != nil {
+		t.Fatalf("同主机重定向应放行: %v", err)
+	}
+	if err := sameHostRedirect(req("evil.example.com"), []*http.Request{req("api.example.com")}); err == nil {
+		t.Fatal("跨主机重定向必须拒绝")
+	}
+	four := []*http.Request{req("a"), req("a"), req("a"), req("a")}
+	if err := sameHostRedirect(req("a"), four); err == nil {
+		t.Fatal("超过 3 跳必须拒绝")
 	}
 }

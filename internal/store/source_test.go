@@ -1014,3 +1014,130 @@ func TestSourceTargetInvalidErrorType(t *testing.T) {
 		t.Fatalf("DB 故障不得被归成参数错误, got %v", dbErr)
 	}
 }
+
+func pollSrc(nsID, name, config, capability string) *Source {
+	return &Source{
+		NamespaceID: nsID,
+		Name:        name,
+		Kind:        SourceKindPoll,
+		Config:      json.RawMessage(config),
+		Enabled:     true,
+		Targets:     []sourcespec.Target{{Capability: capability}},
+	}
+}
+
+func TestSourcePollStateRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	sourceFixtureCap(t, db, nsID, "demo.poll")
+
+	src := pollSrc(nsID, "poll-state", `{"url":"https://example.com/feed","schedule":{"expr":"*/5 * * * *"}}`, "demo.poll")
+	if err := db.CreateSource(ctx, src); err != nil {
+		t.Fatalf("建 poll 源: %v", err)
+	}
+	got, err := db.GetSource(ctx, nsID, src.ID)
+	if err != nil {
+		t.Fatalf("取源: %v", err)
+	}
+	if got.NextFireAt == nil {
+		t.Fatalf("poll 源必须有 next_fire_at（与 cron 同列）: %+v", got)
+	}
+	if got.PollCursor != "" || got.LastPollAt != nil || got.ConsecutiveFailures != 0 || got.SkippedOverlaps != 0 || got.LastError != "" {
+		t.Fatalf("新源轮询状态必须全空: %+v", got)
+	}
+	due, err := db.ListDueSourcesOfKind(ctx, SourceKindPoll, *got.NextFireAt, 10)
+	if err != nil || len(due) != 1 || due[0].ID != src.ID {
+		t.Fatalf("poll 到点必须被取出: %v %+v", err, due)
+	}
+
+	if err := db.MarkSourcePolled(ctx, src.ID, PollOutcome{
+		Success: true, Cursor: `"etag-1"`, PolledAt: 1000, NextFire: 4000,
+	}); err != nil {
+		t.Fatalf("成功写回: %v", err)
+	}
+	got, _ = db.GetSource(ctx, nsID, src.ID)
+	if got.PollCursor != `"etag-1"` || got.LastPollAt == nil || *got.LastPollAt != 1000 ||
+		got.LastFiredAt == nil || *got.LastFiredAt != 1000 || got.NextFireAt == nil || *got.NextFireAt != 4000 {
+		t.Fatalf("成功写回不一致: %+v", got)
+	}
+
+	if err := db.MarkSourcePolled(ctx, src.ID, PollOutcome{
+		PolledAt: 5000, NextFire: 5300, Failures: 2, Error: "HTTP 500",
+	}); err != nil {
+		t.Fatalf("失败写回: %v", err)
+	}
+	got, _ = db.GetSource(ctx, nsID, src.ID)
+	if got.PollCursor != `"etag-1"` {
+		t.Fatalf("失败不得动游标: %q", got.PollCursor)
+	}
+	if got.ConsecutiveFailures != 2 || got.LastError != "HTTP 500" {
+		t.Fatalf("失败必须留痕: %+v", got)
+	}
+	if got.LastPollAt == nil || *got.LastPollAt != 5000 || got.LastFiredAt == nil || *got.LastFiredAt != 1000 {
+		t.Fatalf("lastPollAt 每轮推进、lastFiredAt 只在成功轮推进: %+v", got)
+	}
+	if got.NextFireAt == nil || *got.NextFireAt != 5300 {
+		t.Fatalf("退避后的 next_fire_at 没落库: %+v", got)
+	}
+
+	if err := db.BumpSourceSkippedOverlaps(ctx, src.ID); err != nil {
+		t.Fatalf("跳过计数: %v", err)
+	}
+	if err := db.BumpSourceSkippedOverlaps(ctx, src.ID); err != nil {
+		t.Fatalf("跳过计数: %v", err)
+	}
+	if got, _ = db.GetSource(ctx, nsID, src.ID); got.SkippedOverlaps != 2 {
+		t.Fatalf("skipped_overlaps = %d, want 2", got.SkippedOverlaps)
+	}
+
+	renamed := *got
+	renamed.DisplayName = "改名"
+	if err := db.UpdateSource(ctx, &renamed); err != nil {
+		t.Fatalf("改元数据: %v", err)
+	}
+	after, _ := db.GetSource(ctx, nsID, src.ID)
+	if after.PollCursor != `"etag-1"` || after.ConsecutiveFailures != 2 || after.SkippedOverlaps != 2 || after.LastError != "HTTP 500" {
+		t.Fatalf("改元数据不得清掉轮询状态: %+v", after)
+	}
+}
+
+func TestNamespaceCredentialResolvesPollSecretRef(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	sourceFixtureCap(t, db, nsID, "demo.polsec")
+
+	const withSecret = `{"url":"https://example.com/feed","schedule":{"expr":"*/5 * * * *"},
+		"secretRef":{"name":"gh","header":"Authorization","prefix":"Bearer "},"secret":"tok-1"}`
+	if err := db.CreateSource(ctx, pollSrc(nsID, "poll-sec-1", withSecret, "demo.polsec")); err != nil {
+		t.Fatalf("带 secret 建源: %v", err)
+	}
+	value, err := db.GetNamespaceSecret(ctx, nsID, "gh")
+	if err != nil || value != "tok-1" {
+		t.Fatalf("凭据必须落库: %q %v", value, err)
+	}
+	list, err := db.ListSources(ctx, nsID)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("列源: %v", err)
+	}
+	if strings.Contains(string(list[0].Config), "tok-1") || !strings.Contains(string(list[0].Config), `"gh"`) {
+		t.Fatalf("config 只许有引用、不许有值: %s", list[0].Config)
+	}
+
+	const reuse = `{"url":"https://example.com/other","schedule":{"expr":"*/5 * * * *"},
+		"secretRef":{"name":"gh","header":"Authorization"}}`
+	if err := db.CreateSource(ctx, pollSrc(nsID, "poll-sec-2", reuse, "demo.polsec")); err != nil {
+		t.Fatalf("复用同一凭据建源: %v", err)
+	}
+
+	missing := strings.Replace(reuse, `"gh"`, `"nope"`, 1)
+	err = db.CreateSource(ctx, pollSrc(nsID, "poll-sec-3", missing, "demo.polsec"))
+	var causes *sourcespec.CausesError
+	if !errors.As(err, &causes) || len(causes.Causes) == 0 || causes.Causes[0].Field != "config.secretRef" {
+		t.Fatalf("缺失凭据引用必须带 config.secretRef 的 cause: %v", err)
+	}
+	if !errors.Is(err, ErrInvalidSourceConfig) {
+		t.Fatalf("仍要能用 ErrInvalidSourceConfig 判别: %v", err)
+	}
+}
