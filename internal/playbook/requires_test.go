@@ -70,6 +70,12 @@ func TestParseRequiresWriteTime(t *testing.T) {
 			field:    "spec.requires[0].minVersion",
 		},
 		{
+			name:     "min_version_null",
+			requires: "- capability: inventory\n  minVersion:\n",
+			code:     CodeInvalidPlaybook,
+			field:    "spec.requires[0].minVersion",
+		},
+		{
 			name:     "duplicate",
 			requires: "- capability: inventory\n- capability: inventory\n",
 			code:     CodeInvalidPlaybook,

@@ -197,6 +197,12 @@ paths:
       tags: [capabilities]
       security: [{session: []}]
       summary: "删除能力版本（CAS 走 query，无请求体）"
+      description: |
+        逻辑删除该名字的**全部可见版本**，不级联改引用方（`next` / 源 `targets` 悬空由派生状态报出来）。
+        例外是依赖锁（#534）：该能力被**已生效安装**的预案 `spec.requires` 引用时返回 409
+        `dependency_locked`，`details.causes[]` 一条一个消费者（`message` 带 playbook slug + release）。
+        锁只统计**清单仍在**的安装 —— 删掉预案清单后那条回执已经没有可卸载的入口，不再锁能力；
+        卸载对应 release 后放行。
       parameters:
         - $ref: '#/components/parameters/ResourceVersionQuery'
       responses:

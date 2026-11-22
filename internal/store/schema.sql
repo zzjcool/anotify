@@ -765,8 +765,7 @@ CREATE TABLE IF NOT EXISTS namespace_secrets (
     PRIMARY KEY (namespace_id, name)
 );
 
--- 依赖索引（#534）：回执的 dependencies 不可查，而「这能力还有谁在用」必须在 SQL 侧看得见。
--- 行由安装按回执逐条写入，随回执/命名空间级联删；锁判定只认 uninstalled_at = 0 的回执。
+-- 依赖索引（#534）：回执的 dependencies 不可查，而「这能力还有谁在用」必须在 SQL 侧看得见（锁判定只认 uninstalled_at = 0 的回执）。
 -- +migration 7 playbook_requires
 CREATE TABLE IF NOT EXISTS playbook_install_requires (
     namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,

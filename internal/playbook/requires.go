@@ -117,7 +117,7 @@ func parseRequires(spec map[string]any, where string) ([]Requirement, error) {
 		}
 
 		minVersion := 0
-		if v, ok := entry[requireKeyMinVersion]; ok && v != nil {
+		if v, ok := entry[requireKeyMinVersion]; ok {
 			n, isInt := toInt(v)
 			if !isInt || n < 1 {
 				causes = append(causes, Cause{

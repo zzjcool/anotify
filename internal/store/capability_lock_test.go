@@ -180,3 +180,32 @@ func TestGetPlaybookInstallLegacyReceiptGetsEmptyDependencies(t *testing.T) {
 		t.Fatalf("旧回执的 Dependencies = %#v, want []playbook.Dependency{}", got.Dependencies)
 	}
 }
+
+func TestDeleteCapabilityUnlockedWhenConsumerManifestDeleted(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	if err := db.CreateCapability(ctx, clCap(nsID, "inventory", 1)); err != nil {
+		t.Fatalf("create inventory: %v", err)
+	}
+	pbCreate(t, db, nsID, "consumes", clBundle("consumes", "  requires:\n    - capability: inventory\n"))
+	if _, err := db.InstallPlaybook(ctx, nsID, "consumes", "blue", pbValues("demo"), false); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if consumers := clConsumers(t, db, nsID, "inventory"); len(consumers) != 1 {
+		t.Fatalf("清单还在时消费者 = %+v，期望 1 条", consumers)
+	}
+	if _, err := db.DeletePlaybook(ctx, nsID, "consumes", pbVersionToken(t, db, nsID, "consumes")); err != nil {
+		t.Fatalf("delete playbook manifest: %v", err)
+	}
+	if consumers := clConsumers(t, db, nsID, "inventory"); len(consumers) != 0 {
+		t.Fatalf("清单已删后消费者 = %+v，期望空（那条回执既看不见也卸不掉）", consumers)
+	}
+	cur, err := db.GetCapability(ctx, nsID, "inventory", 1)
+	if err != nil {
+		t.Fatalf("get inventory: %v", err)
+	}
+	if err := db.DeleteCapability(ctx, nsID, "inventory", ResourceVersion(cur.ID, cur.ResourceVersion)); err != nil {
+		t.Fatalf("清单删掉后能力仍被锁死: %v", err)
+	}
+}

@@ -25,11 +25,13 @@ func (e *CapabilityLockedError) Error() string {
 		e.Capability, strings.Join(names, ", "))
 }
 
+// capabilityConsumersOn 只统计**清单仍在**的安装：清单删了那条回执既看不见也卸不掉（卸载按 playbook_id 找回执）。
 func capabilityConsumersOn(ctx context.Context, ex queryExec, namespaceID, name string) ([]DependencyConsumer, error) {
 	rows, err := ex.queryContext(ctx,
 		`SELECT pi.playbook_slug, pi.release
 		   FROM playbook_install_requires r
 		   JOIN playbook_installs pi ON pi.id = r.install_id
+		   JOIN playbooks pb ON pb.id = pi.playbook_id AND pb.namespace_id = r.namespace_id
 		  WHERE r.namespace_id = ? AND r.capability = ? AND pi.uninstalled_at = 0
 		  GROUP BY pi.playbook_slug, pi.release
 		  ORDER BY pi.playbook_slug, pi.release`, namespaceID, name)
