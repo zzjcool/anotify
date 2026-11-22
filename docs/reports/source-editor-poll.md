@@ -34,7 +34,7 @@ url」→ 400；或者把 kind 一起改了 → 400 `source_kind_immutable`。�
 
 | # | 要做 | 落点 | 判据（e2e / 静态） |
 | --- | --- | --- | --- |
-| 1 | 下拉加 `poll`，选中显示**传输配置表单**（不是原始 JSON 框） | `web/source-editor.js`：kind 四选一（文案走 `sources.kind.*`）；新增 `#f-poll-wrap` 一段两块：① 传输 = `url` + `headers` 键值对增删（上限 10，行内 `remove_target` 删行、`#add-poll-header` 加行）+ `secretRef{name,header,prefix}` + 只写 `secret` + `timeoutMs` / `maxItems`；② 信封 = `items` / `type` / `deliveryId` / `payload` 四指针 + 「整个条目作为载荷」开关（`payload: {whole: true}` 的还原通道）。排期复用 cron 的 `#f-expr` / `#f-tz` / `#cron-presets`，标签换成「排期」 | `POLL-EDIT-02` / `POLL-EDIT-03` |
+| 1 | 下拉加 `poll`，选中显示**传输配置表单**（不是原始 JSON 框） | `web/source-editor.js`：kind 四选一（文案走 `sources.kind.*`）；新增 `#f-poll-wrap` 一段两块：① 传输 = `url` + `headers` 键值对增删（上限 10，行内 `remove_target` 删行、`#add-poll-header` 加行）+ `secretRef{name,header,prefix}` + 只写 `secret` + `timeoutMs` / `maxItems`；② 信封 = `items` / `type` / `deliveryId` / `payload` 四指针 + 「整个条目作为载荷」开关（`payload: {whole: true}` 的还原通道）。排期复用 cron 的 `#f-expr` / `#f-tz` / `#cron-presets`，标签换成「排期」 | `POLL-EDIT-02` / `POLL-EDIT-03` / `POLL-EDIT-09`（重名请求头客户端拦住；重新打开无残留错误提示） |
 | 2 | 已存在源的 kind **只读** | 沿用既有的 `$("f-kind").disabled = !!src`（语义与 `source_kind_immutable` 对齐：不是「能点但保存失败」） | `POLL-EDIT-02`（`isDisabled() === true`）+ `POLL-EDIT-07`（真 PATCH 换 kind 仍然 400） |
 | 3 | 保存走现有 PATCH；读回不回显 secret | 保存仍走 `request(name, body, "", "PATCH")`；`#f-poll-secret` 永远渲染成空框（只写），留空 = 不改动（服务端 `resolveSourceSecretOn` 此时只校验命名空间凭据**存在**） | `POLL-EDIT-01` / `03` / `04`（提交体无 `secret`；读面与页面文本都没有明文） |
 | 4 | 新建时切 kind 清掉另一类的字段 | `syncKind()` 记住上一个 kind，切走时 `clearKindFields(prev)`：webhook → 清 `#f-token` / `#f-secret` / `#f-sample` / `#hook-read`；poll → `resetPollForm()`。**当场清 UI**，不是只在提交时忽略 | `POLL-EDIT-08`（表单三个框当场变空 + POST 体里没有 `token` / `secret` / `sample` / `hookUrl`） |
@@ -90,18 +90,18 @@ url」→ 400；或者把 kind 一起改了 → 400 `source_kind_immutable`。�
 `POLL-EDIT-05`，diff 就一行 `- allowInsecure: true`。也就是说验收 2 那条断言自己就够抓住这个 bug，
 不依赖前面任何一条 wire 断言。
 
-两条改回去之后再跑一遍：`1 通过 / 0 失败`（9 条 behavior assertion）。
+两条改回去之后再跑一遍：`1 通过 / 0 失败`（10 条 behavior assertion）。
 
 ## 6. 门禁数字
 
 复算命令：`make ci`、`make e2e-affected`、`node scripts/check-comment-density.mjs`。
 
-- `make ci` → **exit 0**（含 `contract` / `lint-go` / `fe` / `check-comment-density` / `test-frontend` /
+- `make ci` → **exit 0**（在最终提交上复跑过一次，含 `contract` / `lint-go` / `fe` / `check-comment-density` / `test-frontend` /
   `go test ./... -shuffle=on` / `check-annotations` / `check-doc-links` 等全部目标）。
-- `make e2e-affected` → **全绿**：16/16 个请求套件达标（断言 **1061 通过 / 0 失败**，wall clock 430.5s）。
+- `make e2e-affected` → **全绿**：16/16 个请求套件达标（断言 **1061 通过 / 0 失败**，wall clock 430.0s）。
   本次改动命中 16 个浏览器套件：`web/source-editor.js` 与 `web-src/locales/**` 都是页面共用资源，
   按 `affected` 的口径它们把 12 个真实权威套件 + 4 个 explicit-mock 套件全拉进来了。
-  - `frontend`（real，211.5s / 360s 预算）45 通过 / 0 失败，含新登记的 `source-poll-edit`（9 条断言）。
+  - `frontend`（real，211.0s / 360s 预算）45 通过 / 0 失败，含新登记的 `source-poll-edit`（10 条断言，`POLL-EDIT-01`～`09` + 一次 `clean()` 几何检查）。
   - 其余：`i18n` 33/0 · `i18n_coverage` 44/0 · `ui_shift` 87/0 · `ux_regression_19_23` 8/0 ·
     `vars_ui` 74/0 · `lang_hint` 86/0 · `cli_auth` 133/0 · `passkey_enroll` 85/0 · `admin_flow` 52/0 ·
     `deeplink` 50/0 · `auth_flow` 49/0 · `recovery_next` 16/0 · `events_paging` 179/0 · `p2_guards` 42/0 ·
