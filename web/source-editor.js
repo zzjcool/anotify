@@ -539,6 +539,8 @@ function resetPollForm(){
   $("f-env-payload-whole").checked=false;
   $("f-env-payload").value="";
   $("f-env-payload").disabled=false;
+  flagField("f-poll-url","");
+  flagField("f-poll-headers","");
   syncHeaderCap();
 }
 function fillPollForm(cfg){
