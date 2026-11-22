@@ -66,7 +66,8 @@ func pollSecretOf(kind string, raw json.RawMessage) string {
 	return fields.Secret
 }
 
-// resolveSourceSecretOn 落本轮 secret 并保证 secretRef 可解析：没给值又查不到 → 400（cause 带 config.secretRef）。
+// resolveSourceSecretOn 落本轮 secret 并保证 secretRef 可解析：没给值又查不到 → 400
+// （cause 带 config.secretRef，前端点得到那一行）。
 func resolveSourceSecretOn(ctx context.Context, ex queryExec, namespaceID, kind string, cfg json.RawMessage, secret string) error {
 	if kind != SourceKindPoll {
 		return nil

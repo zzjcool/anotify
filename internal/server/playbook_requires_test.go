@@ -73,6 +73,16 @@ func (e *playbookTestEnv) deleteRequiresCapability(t *testing.T, name, rv string
 	return e.do(t, "DELETE", "/v1/namespaces/"+e.nsID+"/capabilities/"+name+"?resourceVersion="+rv, nil)
 }
 
+func (e *playbookTestEnv) installDryRun(t *testing.T, slug, release string, values map[string]any) (int, []byte) {
+	t.Helper()
+	body := map[string]any{"values": values, "dryRun": true}
+	if release != "" {
+		body["release"] = release
+	}
+	rec := e.do(t, "POST", e.path("/"+slug+"/install"), body)
+	return rec.Code, rec.Body.Bytes()
+}
+
 func TestPlaybookInstallRequiresMissingCapability(t *testing.T) {
 	env := newPlaybookTestEnv(t)
 	slug := "req-missing"
@@ -95,6 +105,50 @@ func TestPlaybookInstallRequiresMissingCapability(t *testing.T) {
 	}
 	if n := env.capCount(t); n != 0 {
 		t.Fatalf("409 必须一行不写, got %d 个能力", n)
+	}
+}
+
+func TestPlaybookInstallRequiresDryRunUsesSamePath(t *testing.T) {
+	env := newPlaybookTestEnv(t)
+	slug := "req-dry"
+	env.create(t, slug, pbReqBundle(slug, `[{capability: nope}]`))
+
+	code, raw := env.installDryRun(t, slug, "d", pbTestValues("demo"))
+	if code != http.StatusConflict {
+		t.Fatalf("dryRun 也应 409, got %d: %s", code, raw)
+	}
+	dryDoc := decodeRequiresStatus(t, raw)
+	if dryDoc.Kind != kindStatus || dryDoc.Reason != "dependency_missing" {
+		t.Fatalf("dryRun 应 409 Status{dependency_missing}, got %+v", dryDoc)
+	}
+	dryCauses := dryDoc.causes(t)
+	if len(dryCauses) != 1 || dryCauses[0].Field != "spec.requires[0].capability" {
+		t.Fatalf("dryRun 的 cause 应指到 spec.requires[0].capability, got %+v", dryCauses)
+	}
+	if n := env.capCount(t); n != 0 {
+		t.Fatalf("dryRun 的 409 也必须一行不写, got %d 个能力", n)
+	}
+	if n := env.installCount(t, slug); n != 0 {
+		t.Fatalf("dryRun 的 409 不该留回执, got %d 条安装", n)
+	}
+
+	code, raw = env.install(t, slug, "d", pbTestValues("demo"))
+	if code != http.StatusConflict {
+		t.Fatalf("同一个包真装也应 409（不是只有 dryRun 才拒）, got %d: %s", code, raw)
+	}
+	realDoc := decodeRequiresStatus(t, raw)
+	if realDoc.Reason != "dependency_missing" {
+		t.Fatalf("真装应 409 dependency_missing, got %+v", realDoc)
+	}
+	realCauses := realDoc.causes(t)
+	if len(realCauses) != 1 || realCauses[0].Field != dryCauses[0].Field || realCauses[0].Message != dryCauses[0].Message {
+		t.Fatalf("dryRun 与真装应同一判据: dryRun %+v vs 真装 %+v", dryCauses, realCauses)
+	}
+	if n := env.capCount(t); n != 0 {
+		t.Fatalf("真装 409 也必须一行不写, got %d 个能力", n)
+	}
+	if n := env.installCount(t, slug); n != 0 {
+		t.Fatalf("真装 409 不该留回执, got %d 条安装", n)
 	}
 }
 

@@ -91,6 +91,9 @@ func TestDeleteCapabilityLockedByRequires(t *testing.T) {
 	if _, err := db.InstallPlaybook(ctx, nsID, "consumes", "blue", pbValues("demo"), false); err != nil {
 		t.Fatalf("install: %v", err)
 	}
+	if err := db.CreateCapability(ctx, clCap(nsID, "other", 1)); err != nil {
+		t.Fatalf("create other: %v", err)
+	}
 	cur, err := db.GetCapability(ctx, nsID, "inventory", 1)
 	if err != nil {
 		t.Fatalf("get inventory: %v", err)
@@ -113,6 +116,16 @@ func TestDeleteCapabilityLockedByRequires(t *testing.T) {
 	}
 	if again, err := db.GetCapability(ctx, nsID, "inventory", 1); err != nil || again.ResourceVersion != cur.ResourceVersion {
 		t.Fatalf("锁拒绝改动了能力行（应当 0 写）: %+v, %v", again, err)
+	}
+	other, err := db.GetCapability(ctx, nsID, "other", 1)
+	if err != nil {
+		t.Fatalf("get other: %v", err)
+	}
+	if err := db.DeleteCapability(ctx, nsID, "other", ResourceVersion(other.ID, other.ResourceVersion)); err != nil {
+		t.Fatalf("锁只认被 requires 点名的能力，没被依赖的 other 照旧可删: %v", err)
+	}
+	if _, err := db.GetCapability(ctx, nsID, "other", 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("other 删除后仍可见: %v", err)
 	}
 
 	if _, err := db.UninstallPlaybookRelease(ctx, nsID, "consumes", "blue", ""); err != nil {

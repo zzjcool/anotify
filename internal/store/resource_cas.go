@@ -108,7 +108,7 @@ func updateCapabilityOn(ctx context.Context, ex queryExec, cur *CapabilityVersio
 	return &updated, nil
 }
 
-// DeleteCapability hides all visible versions, retaining pinned bodies and incoming references.
+// DeleteCapability hides all visible versions, retaining pinned bodies and incoming references; 被已生效安装的 requires 依赖时返回 *CapabilityLockedError（409），整事务 0 写。
 func (d *DB) DeleteCapability(ctx context.Context, namespaceID, name, expectedVersion string) error {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return ErrNamespaceRequired

@@ -64,6 +64,12 @@ func TestParseRequiresWriteTime(t *testing.T) {
 			field:    "spec.requires[0].capability",
 		},
 		{
+			name:     "capability_not_string",
+			requires: "- capability: 42\n",
+			code:     CodeInvalidPlaybook,
+			field:    "spec.requires[0].capability",
+		},
+		{
 			name:     "min_version_zero",
 			requires: "- capability: inventory\n  minVersion: 0\n",
 			code:     CodeInvalidPlaybook,
@@ -72,6 +78,18 @@ func TestParseRequiresWriteTime(t *testing.T) {
 		{
 			name:     "min_version_null",
 			requires: "- capability: inventory\n  minVersion:\n",
+			code:     CodeInvalidPlaybook,
+			field:    "spec.requires[0].minVersion",
+		},
+		{
+			name:     "min_version_negative",
+			requires: "- capability: inventory\n  minVersion: -1\n",
+			code:     CodeInvalidPlaybook,
+			field:    "spec.requires[0].minVersion",
+		},
+		{
+			name:     "min_version_not_integer",
+			requires: "- capability: inventory\n  minVersion: two\n",
 			code:     CodeInvalidPlaybook,
 			field:    "spec.requires[0].minVersion",
 		},
@@ -108,6 +126,17 @@ func TestParseRequiresWriteTime(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("at_max_requires_passes", func(t *testing.T) {
+		exact := &strings.Builder{}
+		for i := 0; i < MaxRequires; i++ {
+			fmt.Fprintf(exact, "- capability: cap-%02d\n", i)
+		}
+		pkg := newBundle().setRequires(exact.String()).pkg(t)
+		if len(pkg.Requires) != MaxRequires {
+			t.Fatalf("正好 %d 条（含）应通过: len = %d", MaxRequires, len(pkg.Requires))
+		}
+	})
 }
 
 func TestParseRequiresCollectsAllProblems(t *testing.T) {
@@ -145,6 +174,13 @@ func TestParseRequiresOmitted(t *testing.T) {
 	}
 }
 
+func TestParseRequiresExplicitNullIsOmitted(t *testing.T) {
+	pkg := newBundle().setRequires("null\n").pkg(t)
+	if pkg.Requires != nil {
+		t.Fatalf("spec.requires: null 应按省略处理: %+v", pkg.Requires)
+	}
+}
+
 func TestResolveRequires(t *testing.T) {
 	t.Run("missing_capability", func(t *testing.T) {
 		_, err := resolveRequires([]Requirement{{Capability: "inventory"}}, nil, newFakeExisting())
@@ -161,6 +197,21 @@ func TestResolveRequires(t *testing.T) {
 		}
 		if !strings.Contains(causes[0].Message, "need: 0") {
 			t.Fatalf("省略 minVersion 的 need 是 0: %q", causes[0].Message)
+		}
+	})
+
+	t.Run("two_missing_capabilities_aggregate", func(t *testing.T) {
+		_, err := resolveRequires([]Requirement{{Capability: "alpha"}, {Capability: "beta"}}, nil, newFakeExisting())
+		assertCode(t, err, CodeDependencyMissing)
+		causes := requireCausesOf(t, err)
+		if len(causes) != 2 {
+			t.Fatalf("两条都不满足应各报一条 cause: %+v", causes)
+		}
+		want := []string{"spec.requires[0].capability", "spec.requires[1].capability"}
+		for i, field := range want {
+			if causes[i].Field != field {
+				t.Fatalf("causes[%d].Field = %q，期望 %q（全部 causes: %+v）", i, causes[i].Field, field, causes)
+			}
 		}
 	})
 

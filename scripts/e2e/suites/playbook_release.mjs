@@ -33,7 +33,7 @@ function requiresBlock(reqs) {
 	return `  requires:\n${rows.join("\n")}\n`;
 }
 
-function entryDoc(slug, caps, srcs, version = 0, requires = []) {
+function entryDoc(slug, caps, srcs, version = 0, requires = null) {
 	const list = (key, paths) =>
 		paths.length === 0
 			? `  ${key}: []`
@@ -830,7 +830,7 @@ async function partRequires(ctx) {
 		["未知键", [{ capability: "inventory", bogus: 1 }], /^spec\.requires\[0\]\.bogus$/],
 		["minVersion: 0", [{ capability: "inventory", minVersion: 0 }], /^spec\.requires\[0\]\.minVersion$/],
 		["非法能力名", [{ capability: "Bad_Name" }], /^spec\.requires\[0\]\.capability$/],
-		["同能力重复声明", [{ capability: "inventory" }, { capability: "inventory" }], /^spec\.requires\[\d\]\.capability$/],
+		["同能力重复声明", [{ capability: "inventory" }, { capability: "inventory" }], /^spec\.requires\[1\]\.capability$/],
 	];
 	let n = 0;
 	for (const [why, reqs, want] of badShapes) {
