@@ -74,7 +74,7 @@ document.addEventListener('visibilitychange', () => {
 | --- | --- | --- |
 | 单套件 | `./scripts/e2e/run_all.sh vars_ui` | **91 通过 / 0 失败**，套件 4.9s（合计 8.6s），`mode=real` |
 | 改动自适应 | `make e2e-affected` | **16/16 套件通过，断言 1078 通过 / 0 失败**，430.3s；authority real 12 / explicit-mock 4；预算水位 frontend 212s/360s |
-| PR 门禁 | `make ci` | **exit 0**（182s，含 `check-i18n-keys` / `check-ui-copy` / `check-classes` / `check-annotations` / `check-comment-density` / `check-doc-links`） |
+| PR 门禁 | `make ci` | **exit 0**（157s，最终树；含 `check-i18n-keys` / `check-ui-copy` / `check-classes` / `check-annotations` / `check-comment-density` / `check-doc-links`） |
 | i18n 键 | `node scripts/check-i18n-keys.mjs` | 4 份 locale 键集合一致，2428 key / 2218 引用点全有词条 |
 | 死类 | `node scripts/check-classes.mjs` | 869 个类全部有定义（新增 `.vars-paused` 在页面内联 `<style>` 里） |
 | 文案 | `node scripts/check-ui-copy.mjs` | 通过（新增两条例外豁免不动） |
