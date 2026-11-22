@@ -157,7 +157,7 @@ export async function sourcePoll(d) {
       const res = await inner(input, init);
       const url = typeof input === 'string' ? input : (input && input.url) || '';
       if (!/\/v1\/namespaces\/[^/]+\/sources(\/|\?|$)/.test(url)) return res;
-      const body = await res.clone().json().catch(() => null);
+      const body = await res.clone().json();
       if (!body) return res;
       const rows = Array.isArray(body.items) ? body.items : [body];
       let touched = false;
