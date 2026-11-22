@@ -748,21 +748,21 @@ type PollOutcome struct {
 // MarkSourcePolled 落一轮轮询的终局。
 func (d *DB) MarkSourcePolled(ctx context.Context, id string, out PollOutcome) error {
 	var (
-		cursor   string
-		firedAt  any
-		lastErrs = ""
+		cursor  any
+		firedAt any
+		lastErr string
 	)
 	if out.Success {
 		cursor, firedAt = out.Cursor, out.PolledAt
 	} else {
-		lastErrs = out.Error
+		lastErr = out.Error
 	}
 	if _, err := d.ExecContext(ctx,
 		`UPDATE sources
-		    SET poll_cursor = ?, last_poll_at = ?, consecutive_failures = ?,
+		    SET poll_cursor = COALESCE(?, poll_cursor), last_poll_at = ?, consecutive_failures = ?,
 		        last_error = ?, next_fire_at = ?, last_fired_at = COALESCE(?, last_fired_at)
 		  WHERE id = ?`,
-		cursor, out.PolledAt, out.Failures, lastErrs, out.NextFire, firedAt, id); err != nil {
+		cursor, out.PolledAt, out.Failures, lastErr, out.NextFire, firedAt, id); err != nil {
 		return fmt.Errorf("mark source polled: %w", err)
 	}
 	return nil
