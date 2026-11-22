@@ -224,7 +224,7 @@ $ go test ./internal/store/ -run TestNamespaceCredentialResolvesPollSecretRef -v
 
 ## 5. 门禁数字（本次实测）
 
-### 5.1 `make ci`（exit 0 · 2m33s）
+### 5.1 `make ci`（exit 0 · 3m07s）
 
 ```text
 $ export PATH=/usr/local/go/bin:$PATH && time make ci
@@ -242,7 +242,7 @@ $ export PATH=/usr/local/go/bin:$PATH && time make ci
 ✅ 秘密扫描通过：扫描 861 文件 / 检测器 17 / 命中 0 / 放行 3
 ✅ 临时目录零残留（隔离 TMPDIR 内本次新增 = 0）
 
-real    2m32.842s
+real    3m06.896s
 EXIT=0
 ```
 
@@ -251,7 +251,7 @@ EXIT=0
 `sourcespec` 的重复段落合并（-35 行），`internal/source` 净增 0（poll 的注释与压缩掉的旧注释抵消），
 `internal/server` 净增 0。基线**只降未升**（目录基线 74 → 75 是新增 `scripts/lib: 0`）。
 
-### 5.2 `make e2e-affected`（exit 0 · 7m22s · 30/30 套件）
+### 5.2 `make e2e-affected`（exit 0 · 7m20s · 30/30 套件）
 
 ```text
 $ make e2e-affected
@@ -260,17 +260,17 @@ $ make e2e-affected
   orphans deploy live_agent node_v4 playbook_release i18n i18n_coverage frontend vars_ui lang_hint
   cli_auth passkey_enroll admin_flow deeplink auth_flow ux_regression_19_23 recovery_next
   events_paging ui_shift p2_guards admin_login
-  ✅ routing            343通过/0失败   7.1s  mode=real     ← 含新增 §14 的 48 条
+  ✅ routing            425通过/0失败   9.0s  mode=real     ← 含新增 §14 的 48 条（另有 #522 的 §13）
   ✅ persistence        130通过/0失败  30.2s  mode=real
   ✅ frontend            43通过/0失败 209.1s  mode=real
   ✅ ui_shift            87通过/0失败 187.4s  mode=explicit-mock
   …（30 个套件）
 
-✅ E2E 全绿：30/30 个请求套件均达标（断言 2857 通过 / 0 失败）
+✅ E2E 全绿：30/30 个请求套件均达标（断言 2940 通过 / 0 失败）
   case 级重试：首次 incomplete 0 条 · 首次 timeout 0 条 · 重试通过 0
   套件级重试：0 个套件
   ✅ 临时目录零残留（隔离 TMPDIR 内本次新增 = 0）
-real    7m22.522s · EXIT=0
+real    7m20.302s · EXIT=0
 ```
 
 `known-env-failures.json` 的 `entries` 仍是 `[]`（本次没有新增任何「已知环境失败」豁免）。
