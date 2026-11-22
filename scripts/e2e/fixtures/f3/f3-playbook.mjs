@@ -13,12 +13,13 @@ kind: Capability
 metadata:\n  name: '{{values.project}}-fixer'\nspec:\n  next: []\n  run:\n    entrypoint: run.sh\n    files:\n      run.sh: |\n        #!/bin/sh\n        echo 'fix {{values.project}}'\n`,
   'sources/on-push.yaml': `apiVersion: anotify/v1
 kind: Source
-metadata:\n  name: '{{values.project}}-push'\nspec:\n  kind: webhook\n  config: {}\n  targets:\n    - capability: '{{values.project}}-review'\n      params: { repo: '$(payload.repo)', env: '{{values.env}}' }\n`,
+metadata:\n  name: '{{values.project}}-push'\nspec:\n  kind: webhook\n  config:\n    secret: 'e2e-hook-secret'\n  targets:\n    - capability: '{{values.project}}-review'\n      params: { repo: '$(payload.repo)', env: '{{values.env}}' }\n`,
   'README.md': 'A self-contained package; deploy manually after install.\n',
 };
 const envelope = (map, rv) => ({ apiVersion: 'anotify/v1', kind: 'Playbook',
   metadata: { name: 'project-chain', namespace: 'default', ...(rv == null ? {} : { resourceVersion: rv }) }, spec: { files: map } });
 const credential = 'hmac-browser-exact-secret-sentinel';
+const hookSecret = 'e2e-hook-secret'; // #536：源的 config.secret 用字面量（writeOnly values 会要求每次 render/install 都传值）。
 
 export async function playbook(d,mode){
  const {page,calls,req,check,shot,clean}=d;
@@ -178,10 +179,10 @@ export async function playbook(d,mode){
     assert.equal(groups.installs[0].lastInstallId, second.response.install.id); assert.equal(groups.installs[0].values.credential, '***');
     assert.ok(!JSON.stringify(groups).includes(credential));
     assert.equal((await req(basePath+'/installs/'+first.response.install.id)).install.id, first.response.install.id);
-    // 打开「单次回执」的那个按钮。install 组里现在还有 code-block 头部的复制按钮
-    // （.copy-btn）与每个 release 的卸载按钮（[data-action="uninstall"]，#510），
-    // 所以这里显式排除它们——strict mode 下 `#pb-installs button` 会命中多个。
-    await page.locator('#pb-installs button:not(.copy-btn):not([data-action="uninstall"])').click();
+    // 打开「单次回执」的那个按钮。install 组里现在还有 code-block 头部的复制按钮（.copy-btn）、
+    // 每个 release 的卸载按钮（[data-action="uninstall"]，#510）和「查看 YAML」
+    // （[data-action="release-yaml"]，#536），所以这里显式排除它们——strict mode 会命中多个。
+    await page.locator('#pb-installs button:not(.copy-btn):not([data-action="uninstall"]):not([data-action="release-yaml"])').click();
     await page.waitForFunction(id => __c1Calls.some(c => c.url.endsWith('/installs/' + id)), second.response.install.id);
     assert.match(await page.locator('#pb-receipt').innerText(), /Install|receipt/i);
     assert.ok(!((await page.locator('#pb-receipt').innerText()).includes(credential)));
@@ -194,6 +195,36 @@ export async function playbook(d,mode){
     assert.ok(await sourceRefs.count() >= 1, '回执里源的引用必须链到 source-detail.html（实际：' + await page.locator('#pb-receipt').innerText() + '）');
     assert.match(await sourceRefs.first().getAttribute('href'), /^source-detail\.html\?namespace=default&name=/);
     assert.equal(await page.locator('#pb-receipt a[href^="source.html"]').count(), 0, '不得再链回已删除的 source.html');
+    await page.locator('#pb-installs [data-action="release-yaml"]').first().click(); // #536：实例 YAML 抽屉读多文档正文（能力整体在源之前，凭据只以 secretSet 出现）。
+    await page.locator('#pb-yaml-drawer').waitFor({ state: 'visible' });
+    await page.locator('#pb-yaml-text').waitFor();
+    const releaseYaml = await page.locator('#pb-yaml-text').evaluate(node => node.textContent);
+    assert.equal(releaseYaml.split('\n').filter(line => line.trim() === '---').length, 3, '2 能力 + 1 源 → 3 段 --- 文档：' + releaseYaml);
+    for (const ref of ['name: a-review', 'name: a-fixer', 'name: a-push']) assert.ok(releaseYaml.includes(ref), '导出缺 ' + ref + '：' + releaseYaml);
+    const pushAt = releaseYaml.indexOf('name: a-push');
+    assert.ok(releaseYaml.indexOf('name: a-review') < pushAt && releaseYaml.indexOf('name: a-fixer') < pushAt, '能力文档整体在源文档之前：' + releaseYaml);
+    assert.match(releaseYaml, /secretSet: true/, '源的凭据只以 secretSet 出现');
+    assert.ok(!releaseYaml.includes(hookSecret), '导出不得回显 config.secret 原文');
+    assert.ok(!releaseYaml.includes('config.secret') && !/^\s*token:/m.test(releaseYaml), '导出不得回显 secret/token 键');
+    await shot('release-yaml-export');
+    await page.locator('#pb-yaml-close').click();
+    await page.locator('#pb-yaml-drawer').waitFor({ state: 'hidden' });
+    assert.equal(await page.locator('#pb-yaml-drawer').isVisible(), false, '关掉后抽屉不可见');
+    check('#536 instance YAML drawer: 3 documents caps-first, secret only as secretSet, no credential/config.secret/token, closes clean');
+    const emptyEntry = 'apiVersion: anotify/v1\nkind: Playbook\nmetadata:\n  name: empty-pkg\nspec:\n  capabilities: []\n  sources: []\n'; // #536 空实例：只装 playbook.yaml → objects: 0，正文没有任何文档。
+    await req('/v1/namespaces/default/playbooks', { method: 'POST', body: JSON.stringify({ ...envelope({ 'playbook.yaml': emptyEntry }), metadata: { name: 'empty-pkg', namespace: 'default' } }) });
+    assert.equal((await req('/v1/namespaces/default/playbooks/empty-pkg/install', { method: 'POST', body: JSON.stringify({ values: { project: 'a' } }) })).install.release, 'empty-pkg');
+    await goto('playbook', 'namespace=default&id=empty-pkg');
+    await page.locator('#pb-installs [data-action="release-yaml"]').first().click();
+    await page.locator('#pb-yaml-drawer').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#pb-yaml-empty').isVisible(), true, '0 对象实例直接给空态');
+    assert.ok((await page.locator('#pb-yaml-empty').innerText()).trim().length > 0, '空态文案非空');
+    assert.equal(await page.locator('#pb-yaml-text').count(), 0, '空态不得留空的 <pre>/<code>');
+    assert.equal((await calls()).filter(call => call.url.endsWith('/yaml')).length, 0, '0 对象空态不发请求');
+    await shot('release-yaml-empty');
+    await page.locator('#pb-yaml-close').click();
+    await page.locator('#pb-yaml-drawer').waitFor({ state: 'hidden' });
+    check('#536 zero-object instance: empty-state node, no request, no empty <pre>');
     check('Render differs from dryRun; all-state0 dry run, real repeat creates new receipts, digest-fold group/single receipt, exact writeOnly mask/provenance and manual-only deploy CTA');
     await clean('install');
   }

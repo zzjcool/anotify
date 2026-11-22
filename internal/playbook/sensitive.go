@@ -469,9 +469,8 @@ func maskActualTargets(declared, actual []sourcespec.Target, sets []targetSensit
 // 名字对得上时还返回 `knownParams`（同名 target 的全部 param key 并集）：旧行里出现、而当前 包里已不存在的 key 也一律打码（`maskTargetAt`）。这条覆盖“同名能力内把 writeOnly 派生
 // param 改名/删除”的两轮安装——旧 key 不在任何敏感集里，但旧值仍可能来自 writeOnly。
 //
-// 历史口径是「退到该源全部敏感集的并集」，一旦新包里该源已无任何 writeOnly 引用（并集为空），
-// `maskTargetAt` 因 `!allParams && len(keys)==0` 原样返回 ⇒ actual 整侧零打码（review major，
-// 明文落库并可被 GET/history 读回）。回归见 `TestPlanUnappliedActualMasksWholeGroupWhenDeclaredRenamesExport`。
+// 口径「退到该源全部敏感集的并集」在并集为空时会整侧零打码（review major），
+// 回归见 `TestPlanUnappliedActualMasksWholeGroupWhenDeclaredRenamesExport`。
 func inheritSensitivity(declared []sourcespec.Target, sets []targetSensitivity,
 	capability string) targetSensitivity {
 	name := refName(strings.TrimSpace(capability))

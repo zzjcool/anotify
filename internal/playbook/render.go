@@ -335,14 +335,11 @@ func interpolateValue(v any, scope renderScope, at string) (any, error) {
 	}
 }
 
-// interpolateString 求值一个字符串叶子（§1.4 的类型规则）。
+// interpolateString 求值一个字符串叶子（§1.4 的类型规则）：整个值恰好只有一个引用 →
+// **保留原类型**；掺了常量 → 字符串拼接；对象/数组拼进字符串 → `render_type_mismatch`。
 //
-//   - 整个值恰好只有一个引用 → **保留原类型**（`replicas: '{{values.n}}'` 是数字）；
-//
-// - 掺了任何常量 → **字符串拼接**（非字符串按 JSON 文本拼入）； - 对象/数组拼进字符串 → `render_type_mismatch`。
-//
-// 只替换恰好匹配 `{{values.<路径>}}` / `{{release.name}}` 的片段；其它 `{{…}}`（`{{payload.x}}`）、
-// `$NAME`、`${…}`、`$(…)` 原样透传。但 `release.` 开头的其它写法是 400——它看起来像 引用，静默当字面量会让作者以为名字按 release 分开了。
+// 只替换恰好匹配 `{{values.<路径>}}` / `{{release.name}}` 的片段；其它 `{{…}}`、`$NAME`、
+// `${…}`、`$(…)` 原样透传。`release.` 开头的其它写法是 400（看起来像引用，静默当字面量会误导）。
 func interpolateString(s string, scope renderScope, at string) (any, error) {
 	tokens := tokenizeTemplate(s)
 	refs := 0

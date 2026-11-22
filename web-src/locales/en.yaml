@@ -2396,6 +2396,10 @@ pb:
     release_group: "{release} · {n} groups"
     single_receipt: "Read full single receipt"
     no_installs: "No normal installs (dry-runs are not recorded)."
+    view_yaml: "View YAML"
+    yaml_title: "Instance YAML"
+    yaml_empty: "This instance has no objects to show"
+    yaml_load_failed: "Failed to load YAML"
     raw_missing: 'Raw <code>spec.files</code> / <code>playbook.yaml</code> missing; a summary cannot be saved as a template.'
     missing_id: "Missing package slug."
     invalid_path: "Invalid or duplicate file path; use a relative package path."

@@ -2396,6 +2396,10 @@ pb:
     release_group: "{release} · {n} grupos"
     single_receipt: "Leer recibo individual completo"
     no_installs: "Sin instalaciones normales (las simulaciones no se registran)."
+    view_yaml: "Ver YAML"
+    yaml_title: "YAML de la instancia"
+    yaml_empty: "Esta instancia no tiene objetos que mostrar"
+    yaml_load_failed: "No se pudo cargar el YAML"
     raw_missing: 'Falta <code>spec.files</code> / <code>playbook.yaml</code> original; no se puede guardar el resumen como plantilla.'
     missing_id: "Falta el nombre del paquete."
     invalid_path: "Ruta inválida o duplicada; use una ruta relativa."
