@@ -42,7 +42,7 @@
 | 件 | 落点 |
 | --- | --- |
 | `api/resource.yaml` | `PlaybookRequirement`（`capability`/`minVersion`，`minVersion` minimum 1）与 `PlaybookDependency`（`capability`/`version`）两个 component；`PlaybookReceipt.dependencies`（不进 `required`：旧回执没有）；`installPlaybook` 的 409 与 `deleteCapability` 的锁语义（description）；`Status409` / `StatusDetails` / `StatusCause` 的 prose 补两条 reason 与 field 形状 |
-| parity | `internal/server/openapi_parity_test.go:parityPairs()` 加 `playbook.Requirement` / `playbook.Dependency` 两对（**没有**动 `unpairedSchemas` / `wideSchemas` / 任何下限）；实测 `total=253 paired=213 unpaired=16`（改前 251/211/16） |
+| parity | `internal/server/openapi_parity_test.go:parityPairs()` 加 `playbook.Requirement` / `playbook.Dependency` 两对（**没有**动 `unpairedSchemas` / `wideSchemas` / 任何下限）；实测 `total=251 paired=211 unpaired=16`（main 上是 249/209/16；两处快照下限 `specSchemaFloor`/`parityPairsFloor` 一字未动） |
 | DTO | 手写 DTO（本仓无代码生成）：`playbook.Requirement` / `playbook.Dependency` / `playbook.Cause` / `Receipt.Dependencies` / `store.DependencyConsumer` / `store.CapabilityLockedError` |
 | e2e | `scripts/e2e/suites/playbook_release.mjs` 新增第 11 节 `partRequires`（60 条断言）：`285 通过 / 0 失败`（改前 225） |
 | 单测 | `internal/playbook/requires_test.go`（写入期 13 条 + 解析 6 条）、`plan_test.go`（`TestPlanRequires` + 对照组）、`receipt_test.go`、`internal/store/capability_lock_test.go`（5 例）、`internal/server/playbook_requires_test.go`（7 例） |
@@ -86,7 +86,19 @@
 ### 4.1 `make ci` → **exit 0**
 
 ```
-{{CI}}
+```text
+$ timeout 1500 make ci                    # EXIT=0
+  A2/A4/A5/A6/A7/A8/A9/A11 通过（32 张表；3 张 kind 禁令、4 张内容标识、23 个中枢包、5 份 spec）
+  信封/status/cursor/CAS 字段级检查通过（5 份文件 / 251 个 schema / 3 个具名 snake_case 例外）
+  OpenAPI exact-five 通过（5 份文件 / 141 个 operation / 141 个唯一 operationId / 跨文件 $ref 与 pathItems 可解析）
+✅ 契约静态断言（A2/A4/A5/A6/A7 + openapi 一致性 + 字段级核对 + anode 可编译）通过
+✅ 与基线完全一致（超与降都算不一致）—— 注释密度棘轮（43330 = 43330）
+✅ 注解即外键守卫通过：全部引用可解析、锚点可解析、棘轮未超基线（unmarked 209 / 基线 209）
+✅ e2e 机器级锁自测通过（8 项）
+共 48 项判定：PASS 48 / FAIL 0        # 对比度 + 前端静态守卫
+go test ./... -count=1 -shuffle=on  → 42 个包 ok，0 FAIL
+BenchmarkDispatchChain-8  1  3000039 ns/op  124064 B/op  2294 allocs/op
+```
 ```
 
 ### 4.2 `make e2e-affected` → **绿**
@@ -94,7 +106,19 @@
 `api/**` 与 `internal/store/schema.sql` 落在 `FULL_SURFACES`，选择器按设计升为**全量**（30/30 套）：
 
 ```
-{{E2E}}
+```text
+$ timeout 2400 make e2e-affected         # EXIT=0；api/** 与 schema.sql 在 FULL_SURFACES → 全量 30/30
+▶ ./scripts/e2e/run_all.sh --parallel api_contract contract ws_protocol routing persistence security
+  edge_cases passkeys capacity orphans deploy live_agent node_v4 playbook_release i18n i18n_coverage
+  frontend vars_ui lang_hint cli_auth passkey_enroll admin_flow deeplink auth_flow ux_regression_19_23
+  recovery_next events_paging ui_shift p2_guards （登录套件，名字含口令占位符）
+  ✅ playbook_release   285通过/0失败  6.4s  mode=real
+  总耗时: 432.5s
+  断言通过: 2999
+  断言失败: 0
+  验收 authority: real 26 / explicit-mock 4（清单 .e2e-bin/results/_authority-manifest.json）
+✅ E2E 全绿：30/30 个请求套件均达标（断言 2999 通过 / 0 失败，authority 清单覆盖 30 个）
+```
 ```
 
 - `scripts/e2e/known-env-failures.json`：`entries: []`，本分支 diff 为空（`git diff origin/main...HEAD -- scripts/e2e/known-env-failures.json` 无输出）
