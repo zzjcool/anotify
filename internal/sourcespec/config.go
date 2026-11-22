@@ -241,11 +241,8 @@ func ValidateTargets(targets []Target) error {
 	return nil
 }
 
-// MaskConfig 返回用于回显的 config：token / secret 脱敏。
-//
-// 保留后 4 位（`***ab12`）而不是全 `***`：运维要能分辨「正在轮换的是哪一把」，后 4 位
-// 不足以还原凭据；长度 ≤ 4 的串整体打码。这是 store 层的**兜底**（§3.1 的读投影由 handler
-// 实现）：万一把 config 原样回显了也不会漏凭据。
+// MaskConfig 是 config 回显的**兜底**脱敏（真读投影在 handler）：保留后 4 位便于分辨
+// 「正在轮换的是哪一把」，长度 ≤ 4 整体打码。
 func MaskConfig(kind string, raw json.RawMessage) json.RawMessage {
 	fields, err := decodeFields(raw)
 	if err != nil {

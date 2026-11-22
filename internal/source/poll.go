@@ -1,5 +1,4 @@
-// Package poll 执行 kind=poll 源的轮询：抓取 → 逐条入站 → 写回游标/退避/跳过计数。
-package poll
+package source
 
 import (
 	"context"
@@ -11,23 +10,25 @@ import (
 
 	"log/slog"
 
-	"github.com/zzjcool/anotify/internal/source"
 	"github.com/zzjcool/anotify/internal/sourcespec"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
 const (
-	DefaultTick      = 5 * time.Second
-	DefaultBatch     = 100
-	backoffCap       = 30 * time.Minute
-	neverFireHorizon = 366 * 24 * time.Hour
+	PollDefaultTick  = 5 * time.Second
+	PollDefaultBatch = 100
+	pollBackoffCap   = 30 * time.Minute
+	pollNeverFire    = 366 * 24 * time.Hour
 )
 
-// Runner 是唯一的轮询执行器（一个进程一份）。in-flight 集合只存活在内存里：
-// 不重叠是**进程内**纪律（本仓没有 leader 选举，单实例部署）。
-type Runner struct {
+// Poller 是唯一的轮询执行器，靠进程内 in-flight 集合保证不重叠（单实例部署，无 leader 选举）。
+//
+// 三条不变量：① 游标只在整轮成功后前进（失败沿用旧游标，下一轮重抓同一批、靠 deliveryId
+// 幂等去重）；② 上一轮没结束的 tick 只记 skippedOverlaps，不排队不并发；③ 失败退避
+// min(base << (failures-1), 30min)，429 的 Retry-After 优先，成功清零。
+type Poller struct {
 	db       *store.DB
-	sources  *source.Service
+	services *Service
 	log      *slog.Logger
 	now      func() time.Time
 	resolve  resolverFunc
@@ -38,23 +39,23 @@ type Runner struct {
 	inflight map[string]struct{}
 }
 
-type Option func(*Runner)
+type Option func(*Poller)
 
 func WithClock(now func() time.Time) Option {
-	return func(r *Runner) { r.now = now }
+	return func(r *Poller) { r.now = now }
 }
 
 func WithResolver(fn func(ctx context.Context, host string) ([]net.IP, error)) Option {
-	return func(r *Runner) { r.resolve = fn }
+	return func(r *Poller) { r.resolve = fn }
 }
 
-func New(db *store.DB, sources *source.Service, log *slog.Logger, opts ...Option) *Runner {
+func NewPoller(db *store.DB, services *Service, log *slog.Logger, opts ...Option) *Poller {
 	if log == nil {
 		log = slog.Default()
 	}
-	r := &Runner{
+	r := &Poller{
 		db:       db,
-		sources:  sources,
+		services: services,
 		log:      log,
 		now:      time.Now,
 		resolve:  defaultResolver,
@@ -80,9 +81,9 @@ func defaultResolver(ctx context.Context, host string) ([]net.IP, error) {
 	return out, nil
 }
 
-func (r *Runner) Run(ctx context.Context, tick time.Duration) error {
+func (r *Poller) Run(ctx context.Context, tick time.Duration) error {
 	if tick <= 0 {
-		tick = DefaultTick
+		tick = PollDefaultTick
 	}
 	timer := time.NewTicker(tick)
 	defer timer.Stop()
@@ -98,10 +99,9 @@ func (r *Runner) Run(ctx context.Context, tick time.Duration) error {
 	}
 }
 
-// Sweep 取一轮到点的 poll 源，逐个起 goroutine（tick 不被慢源卡住 —— 卡住的下个 tick
-// 记一次 skippedOverlaps，而不是排队）。
-func (r *Runner) Sweep(ctx context.Context) (int, error) {
-	sources, err := r.db.ListDueSourcesOfKind(ctx, store.SourceKindPoll, r.now().Unix(), DefaultBatch)
+// Sweep 取到点的 poll 源逐个起 goroutine：tick 不被慢源卡住，卡住的下个 tick 记 skippedOverlaps。
+func (r *Poller) Sweep(ctx context.Context) (int, error) {
+	sources, err := r.db.ListDueSourcesOfKind(ctx, store.SourceKindPoll, r.now().Unix(), PollDefaultBatch)
 	if err != nil {
 		return 0, err
 	}
@@ -122,7 +122,7 @@ func (r *Runner) Sweep(ctx context.Context) (int, error) {
 	return started, nil
 }
 
-func (r *Runner) begin(id string) bool {
+func (r *Poller) begin(id string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, busy := r.inflight[id]; busy {
@@ -132,13 +132,13 @@ func (r *Runner) begin(id string) bool {
 	return true
 }
 
-func (r *Runner) done(id string) {
+func (r *Poller) done(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.inflight, id)
 }
 
-func (r *Runner) round(ctx context.Context, src *store.Source) {
+func (r *Poller) round(ctx context.Context, src *store.Source) {
 	started := r.now()
 	cfg := sourcespec.ParseConfig(sourcespec.KindPoll, src.Config)
 	out := store.PollOutcome{PolledAt: started.Unix(), Cursor: src.PollCursor}
@@ -164,37 +164,36 @@ func (r *Runner) round(ctx context.Context, src *store.Source) {
 	}
 }
 
-func (r *Runner) successNextFire(src *store.Source, now time.Time) int64 {
+func (r *Poller) successNextFire(src *store.Source, now time.Time) int64 {
 	next, err := sourcespec.NextPollTime(src.Config, now)
 	if err != nil || next.IsZero() {
-		return now.Add(neverFireHorizon).Unix()
+		return now.Add(pollNeverFire).Unix()
 	}
 	return next.Unix()
 }
 
-// failureNextFire 的间隔是 min(base << (failures-1), 30min)，429 的 Retry-After 优先。
-func (r *Runner) failureNextFire(src *store.Source, now time.Time, failures int, retry time.Duration) int64 {
+func (r *Poller) failureNextFire(src *store.Source, now time.Time, failures int, retry time.Duration) int64 {
 	delay := retry
 	if delay <= 0 {
-		base := backoffCap
+		base := pollBackoffCap
 		if next, err := sourcespec.NextPollTime(src.Config, now); err == nil && next.After(now) {
 			base = next.Sub(now)
 		}
-		if base <= 0 || base > backoffCap {
-			base = backoffCap
+		if base <= 0 || base > pollBackoffCap {
+			base = pollBackoffCap
 		}
 		delay = base
-		for i := 1; i < failures && delay < backoffCap; i++ {
+		for i := 1; i < failures && delay < pollBackoffCap; i++ {
 			delay *= 2
 		}
 	}
-	if delay > backoffCap {
-		delay = backoffCap
+	if delay > pollBackoffCap {
+		delay = pollBackoffCap
 	}
 	return now.Add(delay).Unix()
 }
 
-func (r *Runner) items(cfg sourcespec.Config, doc any) ([]any, error) {
+func (r *Poller) items(cfg sourcespec.Config, doc any) ([]any, error) {
 	path := "."
 	if cfg.Envelope != nil && cfg.Envelope.Items != "" {
 		path = cfg.Envelope.Items
@@ -209,13 +208,13 @@ func (r *Runner) items(cfg sourcespec.Config, doc any) ([]any, error) {
 	return items, nil
 }
 
-func (r *Runner) ingest(ctx context.Context, src *store.Source, cfg sourcespec.Config, items []any) error {
+func (r *Poller) ingest(ctx context.Context, src *store.Source, cfg sourcespec.Config, items []any) error {
 	for i, item := range items {
 		in, err := inputFor(src, cfg, item)
 		if err != nil {
 			return fmt.Errorf("poll: 第 %d 条 item 不合法: %w", i, err)
 		}
-		if _, err := r.sources.Ingest(ctx, in); err != nil {
+		if _, err := r.services.Ingest(ctx, in); err != nil {
 			return fmt.Errorf("poll: 第 %d 条 item 入站失败: %w", i, err)
 		}
 	}

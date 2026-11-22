@@ -471,6 +471,10 @@ function render(res) {
     pair(t("sources.v4.namespace", "命名空间"), m.namespace, { muted: !m.namespace }),
     pair(t("source_detail.resolved", "目标解析"), resolved, { plain: true, muted: !m.targetsResolved }),
     pair(t("sources.v4.last_fire", "最近触发时间"), fmtTime(m.lastFiredAt), { muted: !m.lastFiredAt }),
+    pair(t("source_detail.last_poll", "最近轮询"), fmtTime(m.lastPollAt), { muted: !m.lastPollAt }),
+    pair(t("source_detail.consecutive_failures", "连续失败"), String(m.consecutiveFailures), {
+      muted: !(m.consecutiveFailures > 0),
+    }),
     pair(t("source_detail.created", "创建时间"), fmtTime(res && res.metadata ? res.metadata.creationTimestamp : null), {
       muted: !(res && res.metadata && res.metadata.creationTimestamp),
     }),

@@ -3883,6 +3883,10 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			health: st.health == null ? null : st.health,
 			lastFiredAt: st.lastFiredAt == null ? null : st.lastFiredAt,
 			nextFireAt: st.nextFireAt == null ? null : st.nextFireAt,
+			lastPollAt: st.lastPollAt == null ? null : st.lastPollAt,
+			consecutiveFailures: st.consecutiveFailures == null ? 0 : st.consecutiveFailures,
+			skippedOverlaps: st.skippedOverlaps == null ? 0 : st.skippedOverlaps,
+			cursor: st.cursor == null ? null : st.cursor,
 			// 契约 api-conventions §7.2：boolean（所有 target 可解析才是 true）。
 			// 明细在 trace/events 的 dispatched/pruned 里，不在这里再存一份数组。
 			targetsResolved: !!st.targetsResolved,

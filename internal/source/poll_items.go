@@ -1,23 +1,22 @@
-package poll
+package source
 
 import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/zzjcool/anotify/internal/source"
 	"github.com/zzjcool/anotify/internal/sourcespec"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// inputFor 把一条 item 翻成一次标准入站：三个指针**在 item 内部**取值，缺省与 #515 同义
+// inputFor 把一条 item 翻成一次标准入站：三个指针在 item 内部取值，缺省同 #515
 // （type → 源名、deliveryId → 不去重、payload → 整个 item）。
-func inputFor(src *store.Source, cfg sourcespec.Config, item any) (source.Input, error) {
-	in := source.Input{Source: src, Type: src.Name}
+func inputFor(src *store.Source, cfg sourcespec.Config, item any) (Input, error) {
+	in := Input{Source: src, Type: src.Name}
 	env := cfg.Envelope
 	if env == nil {
 		raw, err := marshalItem(item)
 		if err != nil {
-			return source.Input{}, err
+			return Input{}, err
 		}
 		in.Payload = raw
 		return in, nil
@@ -32,13 +31,13 @@ func inputFor(src *store.Source, cfg sourcespec.Config, item any) (source.Input,
 	if env.Payload != nil && !env.Payload.Whole {
 		found, ok := sourcespec.LookupIn(item, env.Payload.Pointer)
 		if !ok {
-			return source.Input{}, fmt.Errorf("payload 指针 %q 在该条 item 上取不到", env.Payload.Pointer)
+			return Input{}, fmt.Errorf("payload 指针 %q 在该条 item 上取不到", env.Payload.Pointer)
 		}
 		value = found
 	}
 	raw, err := marshalItem(value)
 	if err != nil {
-		return source.Input{}, err
+		return Input{}, err
 	}
 	in.Payload = raw
 	return in, nil

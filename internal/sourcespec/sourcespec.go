@@ -1,8 +1,6 @@
-// Package sourcespec 是 Anotify v4 **源（Source / 触发器）**文档与配置的唯一纯校验源。
-//
-// 同一套判据要在三处用（store 写路径 / playbook 安装比较 / 拒绝理由展示），抄两遍必然
-// 漂移（症状是「保存说没问题、安装说不一样」），所以本包只做**纯函数**：不 import 本项目
-// 任何包、不碰 IO/环境/随机数，config 进出都是 `json.RawMessage`（调用方拿到什么就存什么）。语义基线是 `api/` 与测试，冲突时以它们为准。
+// Package sourcespec 是源（Source / 触发器）文档与配置的唯一纯校验源：同一套判据要在 store
+// 写路径 / playbook 安装比较 / 拒绝理由展示三处用，抄两遍必然漂移。所以只做纯函数（不 import
+// 本项目任何包、不碰 IO/环境/随机数），config 进出都是 `json.RawMessage`。语义基线是 `api/` 与测试。
 package sourcespec
 
 import (

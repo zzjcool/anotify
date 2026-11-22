@@ -1,4 +1,4 @@
-package poll
+package source
 
 import (
 	"context"
@@ -14,7 +14,6 @@ import (
 
 	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/route"
-	"github.com/zzjcool/anotify/internal/source"
 	"github.com/zzjcool/anotify/internal/sourcespec"
 	"github.com/zzjcool/anotify/internal/store"
 )
@@ -22,9 +21,9 @@ import (
 type fixture struct {
 	db   *store.DB
 	ns   *store.Namespace
-	svc  *source.Service
+	svc  *Service
 	now  time.Time
-	runs *Runner
+	runs *Poller
 }
 
 func newFixture(t *testing.T, cfg string) *fixture {
@@ -56,12 +55,12 @@ func newFixture(t *testing.T, cfg string) *fixture {
 	}); err != nil {
 		t.Fatalf("建 poll 源: %v", err)
 	}
-	svc := source.New(db, route.New(db))
+	svc := New(db, route.New(db))
 	f := &fixture{db: db, ns: ns, svc: svc, now: time.Date(2026, 11, 22, 3, 0, 0, 0, time.UTC)}
 	if next := f.source(t).NextFireAt; next != nil {
 		f.now = time.Unix(*next, 0)
 	}
-	f.runs = New(db, svc, nil, WithClock(func() time.Time { return f.now }))
+	f.runs = NewPoller(db, svc, nil, WithClock(func() time.Time { return f.now }))
 	return f
 }
 
@@ -101,7 +100,6 @@ func pollBody(ids ...string) string {
 const pollEnvelopeCfg = `{"url":%q,"schedule":{"expr":"*/5 * * * *"},"allowInsecure":true,"maxItems":10,
 	"envelope":{"items":".","type":{"pointer":"type"},"deliveryId":{"pointer":"id"},"payload":{"pointer":""}}}`
 
-// 验收 1：3 item → 3 事件 3 任务；再轮（同 id）→ duplicate 3、0 新任务、游标不变。
 func TestPollRoundIngestsThenDedupes(t *testing.T) {
 	var hits int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -133,7 +131,6 @@ func TestPollRoundIngestsThenDedupes(t *testing.T) {
 	}
 }
 
-// 验收 2：游标持久化 + 重启后带 If-None-Match，304 不从头抓。
 func TestPollCursorSurvivesRestartAndSends304(t *testing.T) {
 	var seen []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -151,7 +148,7 @@ func TestPollCursorSurvivesRestartAndSends304(t *testing.T) {
 	if got := f.source(t).PollCursor; got != `"v1"` {
 		t.Fatalf("成功后游标应前进到 ETag，得到 %q", got)
 	}
-	restarted := New(f.db, f.svc, nil, WithClock(func() time.Time { return f.now.Add(5 * time.Minute) }))
+	restarted := NewPoller(f.db, f.svc, nil, WithClock(func() time.Time { return f.now.Add(5 * time.Minute) }))
 	f.runs = restarted
 	restarted.round(context.Background(), f.source(t))
 	if len(seen) != 2 || seen[1] != `"v1"` {
@@ -166,7 +163,6 @@ func TestPollCursorSurvivesRestartAndSends304(t *testing.T) {
 	}
 }
 
-// 验收 3 + 4：失败不前进游标、连续失败数与退避、Retry-After 优先、成功清零。
 func TestPollFailureKeepsCursorAndBacksOff(t *testing.T) {
 	var fail bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -231,7 +227,6 @@ func TestPollFailureKeepsCursorAndBacksOff(t *testing.T) {
 	}
 }
 
-// 验收 5：上一轮未结束 → 本 tick 跳过并留痕，事件不翻倍。
 func TestPollOverlapSkippedNotQueued(t *testing.T) {
 	release := make(chan struct{})
 	var once sync.Once
@@ -265,12 +260,11 @@ func TestPollOverlapSkippedNotQueued(t *testing.T) {
 	}
 }
 
-// 验收 6（后半）：DNS 解析到环回/私网 → 运行期拒，lastError 写明「解析到私网地址」。
 func TestPollRuntimeBlocksResolvedPrivateIP(t *testing.T) {
 	strict := `{"url":%q,"schedule":{"expr":"*/5 * * * *"},
 		"envelope":{"items":".","type":{"pointer":"type"},"deliveryId":{"pointer":"id"}}}`
 	f := newFixture(t, fmt.Sprintf(strict, "https://rebind.example.test/feed"))
-	f.runs = New(f.db, f.svc, nil,
+	f.runs = NewPoller(f.db, f.svc, nil,
 		WithClock(func() time.Time { return f.now }),
 		WithResolver(func(context.Context, string) ([]net.IP, error) {
 			return []net.IP{net.ParseIP("127.0.0.1")}, nil
@@ -285,10 +279,9 @@ func TestPollRuntimeBlocksResolvedPrivateIP(t *testing.T) {
 	}
 }
 
-// 验收 6（上限）：4 MiB 体与 maxItems 都是「该轮失败并留痕」，不静默截断。
 func TestPollLimitsFailLoudly(t *testing.T) {
 	big := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		padding := strings.Repeat("x", MaxBodyBytes+16)
+		padding := strings.Repeat("x", PollMaxBodyBytes+16)
 		_, _ = w.Write([]byte(`[{"id":"a","type":"t","blob":"` + padding + `"}]`))
 	}))
 	defer big.Close()
@@ -324,7 +317,6 @@ func TestPollLimitsFailLoudly(t *testing.T) {
 	}
 }
 
-// 验收 7：config 回显只有引用、运行期按名字取到值；凭据缺失是写入期 400。
 func TestPollSecretRefResolvesCredential(t *testing.T) {
 	var gotAuth string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

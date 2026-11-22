@@ -14,7 +14,6 @@ import (
 	"github.com/zzjcool/anotify/internal/api"
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/lease"
-	"github.com/zzjcool/anotify/internal/poll"
 	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/push"
 	"github.com/zzjcool/anotify/internal/resultspool"
@@ -252,7 +251,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	hub := ws.NewHub(db, router, ws.WithLogger(slog.Default()))
 	sources := source.New(db, router)
 	sched := trigger.New(db, sources, slog.Default())
-	poller := poll.New(db, sources, slog.Default())
+	poller := source.NewPoller(db, sources, slog.Default())
 	sweeper := lease.NewSweeper(db, slog.Default())
 
 	// 产物托管池（#332 / A1）：中枢自有的 0700 目录 + 0600 对象文件。
@@ -350,7 +349,6 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	//   - 派发：扫可派发任务 → 记录候选 assignment → 推 task.dispatch（250ms，交互延迟
 	//     目标；每轮上限 100 条由 Hub 自己给）；
 	//   - cron：把到期的源交给 source.Service 触发（1min，cron 的最小粒度就是分钟）；
-	//   - poll：拉取型源的轮询（5s tick；上一轮没结束就记 skippedOverlaps，不排队）；
 	//   - 租约巡检：回收过期租约 + 保留期清理 + SQLite 统计维护（lease.DefaultInterval
 	//     = 30s；保留期秒数来自 system config，不再从 mux 注入）。
 	//
@@ -363,8 +361,8 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	app.runBackgroundLoop(ctx, "cron", func(loopCtx context.Context) error {
 		return sched.Run(loopCtx, time.Minute)
 	})
-	app.runBackgroundLoop(ctx, "poll", func(loopCtx context.Context) error {
-		return poller.Run(loopCtx, poll.DefaultTick)
+	app.runBackgroundLoop(ctx, "poll", func(loopCtx context.Context) error { // 拉取型源轮询（#532）
+		return poller.Run(loopCtx, source.PollDefaultTick)
 	})
 	app.runBackgroundLoop(ctx, "lease", func(loopCtx context.Context) error {
 		return sweeper.Run(loopCtx, lease.DefaultInterval)

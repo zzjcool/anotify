@@ -79,7 +79,7 @@ type Source struct {
 	// LastFiredAt / NextFireAt 只有 cron 与 poll 有意义（其它 kind 为 nil）。
 	LastFiredAt *int64 `json:"lastFiredAt"`
 	NextFireAt  *int64 `json:"nextFireAt"`
-	// 以下五个是 kind=poll 的轮询状态（#532），只有 poll Runner 写它们。
+	// 以下五个是 kind=poll 的轮询状态（#532），只有 Poller 写它们。
 	PollCursor          string `json:"-"`
 	LastPollAt          *int64 `json:"-"`
 	ConsecutiveFailures int    `json:"-"`
@@ -691,8 +691,7 @@ func (d *DB) ListDueSources(ctx context.Context, now int64, limit int) ([]*Sourc
 	return d.ListDueSourcesOfKind(ctx, SourceKindCron, now, limit)
 }
 
-// ListDueSourcesOfKind 是上一行的通用形态：cron 与 poll 各有各自的调度循环，
-// 但「谁到点了」这条判据只写一次。
+// ListDueSourcesOfKind 是上一行的通用形态：cron 与 poll 各有调度循环，「谁到点了」只写一次。
 func (d *DB) ListDueSourcesOfKind(ctx context.Context, kind string, now int64, limit int) ([]*Source, error) {
 	if limit <= 0 {
 		limit = 100
@@ -732,10 +731,7 @@ func (d *DB) MarkSourceFired(ctx context.Context, id string, firedAt, nextFire i
 	return nil
 }
 
-// PollOutcome 是一轮轮询的终局（poll Runner 是唯一写者）。
-//
-// Cursor / NextFireAt 只在 Success 时前进：失败沿用旧游标，靠 deliveryId 幂等去重
-// （#532 语义 2），下一轮因此会重抓同一批而不是丢掉它们。
+// PollOutcome 是一轮轮询的终局（Poll 是唯一写者）：Cursor / NextFireAt 只在 Success 时前进。
 type PollOutcome struct {
 	Success  bool
 	Cursor   string
@@ -745,7 +741,6 @@ type PollOutcome struct {
 	Error    string
 }
 
-// MarkSourcePolled 落一轮轮询的终局。
 func (d *DB) MarkSourcePolled(ctx context.Context, id string, out PollOutcome) error {
 	var (
 		cursor  any
@@ -768,7 +763,6 @@ func (d *DB) MarkSourcePolled(ctx context.Context, id string, out PollOutcome) e
 	return nil
 }
 
-// BumpSourceSkippedOverlaps 记一次「上一轮还没结束，本 tick 跳过」。
 func (d *DB) BumpSourceSkippedOverlaps(ctx context.Context, id string) error {
 	if _, err := d.ExecContext(ctx,
 		`UPDATE sources SET skipped_overlaps = skipped_overlaps + 1 WHERE id = ?`, id); err != nil {

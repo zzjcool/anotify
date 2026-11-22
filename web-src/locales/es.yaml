@@ -2623,6 +2623,8 @@ source_detail:
   resolved_no: 'targets sin resolver'
   created: 'Creado'
   updated: 'Actualizado'
+  last_poll: 'Último sondeo'
+  consecutive_failures: 'Fallos consecutivos'
   hook_url: 'Hook URL'
   secret_set_yes: 'La firma HMAC está configurada (solo escritura)'
   secret_set_no: 'Sin firma HMAC'

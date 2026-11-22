@@ -10,13 +10,10 @@ import (
 	"github.com/zzjcool/anotify/internal/sourcespec"
 )
 
-// 命名空间凭据（#532）：poll 源的 secretRef 指向这里的一行。
-//
-// 值只写不读 —— 它不出现在 sources.config、不进 GET 回显、不进日志。写入口只有 poll 源的
-// write-only config.secret（与 webhook 的 token/secret 同一纪律），因此不需要新的 HTTP 端点。
+// 命名空间凭据（#532）：poll 的 secretRef 指向这里的一行。值只写不读（不进 sources.config、
+// 不进回显、不进日志），写入口只有 poll 的 write-only config.secret。
 var ErrNamespaceSecretNotFound = errors.New("store: 命名空间凭据不存在")
 
-// UpsertNamespaceSecret 写入或更新一份命名空间凭据。
 func (d *DB) UpsertNamespaceSecret(ctx context.Context, namespaceID, name, value string) error {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return ErrNamespaceRequired
@@ -35,7 +32,6 @@ func (d *DB) UpsertNamespaceSecret(ctx context.Context, namespaceID, name, value
 	return nil
 }
 
-// GetNamespaceSecret 取凭据值（运行期唯一读点）。
 func (d *DB) GetNamespaceSecret(ctx context.Context, namespaceID, name string) (string, error) {
 	var value string
 	err := d.QueryRowContext(ctx,
@@ -49,9 +45,7 @@ func (d *DB) GetNamespaceSecret(ctx context.Context, namespaceID, name string) (
 	return value, nil
 }
 
-// pollSecretOf 取出 poll config 里 write-only 的 `secret`。
-//
-// 必须在归一化**之前**取：NormalizeConfig 的输出不含它（它不属于落库的 config 字节）。
+// pollSecretOf 必须在归一化之前取：NormalizeConfig 的输出不含 secret（它不属于落库的 config）。
 func pollSecretOf(kind string, raw json.RawMessage) string {
 	if kind != SourceKindPoll || len(raw) == 0 {
 		return ""
@@ -65,10 +59,8 @@ func pollSecretOf(kind string, raw json.RawMessage) string {
 	return fields.Secret
 }
 
-// resolveSourceSecret 把本轮写入的 secret 落到 namespace_secrets，并保证 secretRef 能解析。
-//
-// 两条判据：#532 验收 7 的「缺失凭据引用 → 写入期 400」。没给 secret 又查不到 → 400，
-// 带上 `config.secretRef` 路径（前端点得到那一行）。
+// resolveSourceSecret 落本轮 secret 并保证 secretRef 可解析：没给值又查不到 → 400
+// （cause 带 config.secretRef，前端点得到那一行）。
 func (d *DB) resolveSourceSecret(ctx context.Context, namespaceID, kind string, cfg json.RawMessage, secret string) error {
 	if kind != SourceKindPoll {
 		return nil

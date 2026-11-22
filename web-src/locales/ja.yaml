@@ -2623,6 +2623,8 @@ source_detail:
   resolved_no: 'targets 未解決'
   created: '作成日時'
   updated: '更新日時'
+  last_poll: '最終ポーリング'
+  consecutive_failures: '連続失敗'
   hook_url: 'Hook URL'
   secret_set_yes: 'HMAC 署名は設定済み（書き込み専用）'
   secret_set_no: 'HMAC 署名なし'

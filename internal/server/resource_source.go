@@ -620,9 +620,8 @@ type srcSpecView struct {
 
 // srcStatusView 是 Source 的只读派生面（api-conventions §7.2）。
 //
-// cursor / lastPollAt / consecutiveFailures / skippedOverlaps 只有 kind=poll 会写
-// （#532）：它们来自 sources 行的落库事实，投影不加工。lastError 在没有失败事实时
-// 仍是 null（非 poll 源所以恒 null，poll 源则是最近一次失败的脱敏人话）。
+// cursor / lastPollAt / consecutiveFailures / skippedOverlaps 只有 kind=poll 会写（#532）：
+// 直接投 sources 行的落库事实。lastError 没有失败事实时仍是 null。
 type srcStatusView struct {
 	HookURL             string  `json:"hookUrl"`
 	LastFiredAt         string  `json:"lastFiredAt,omitempty"`

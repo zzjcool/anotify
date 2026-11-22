@@ -1,4 +1,4 @@
-package poll
+package source
 
 import (
 	"bytes"
@@ -19,8 +19,8 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// MaxBodyBytes 与 webhook 入站同口径：超限 = 本轮失败，不截断（#532 语义 6）。
-const MaxBodyBytes = 4 << 20
+// PollMaxBodyBytes 与 webhook 入站同口径：超限 = 本轮失败，不截断（#532 语义 6）。
+const PollMaxBodyBytes = 4 << 20
 
 type resolverFunc func(ctx context.Context, host string) ([]net.IP, error)
 
@@ -35,8 +35,7 @@ func strictTransport() *http.Transport {
 	}
 }
 
-// blockPrivateDial 是 DNS rebinding 的第二道闸：判的是**解析后实际 dial 的 IP**，
-// 不是 URL 里的字符串（第一道在写入期 CheckPollURL，第三道是同 host 解析结果预检）。
+// blockPrivateDial 是 DNS rebinding 的第二道闸：判实际 dial 的 IP（第一道在写入期，第三道是解析预检）。
 func blockPrivateDial(_, address string, _ syscall.RawConn) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
@@ -62,7 +61,7 @@ func sameHostRedirect(req *http.Request, via []*http.Request) error {
 	return nil
 }
 
-func (r *Runner) checkResolvedHost(ctx context.Context, host string) error {
+func (r *Poller) checkResolvedHost(ctx context.Context, host string) error {
 	if host == "" {
 		return fmt.Errorf("poll: url 没有 host")
 	}
@@ -91,7 +90,7 @@ type fetchResult struct {
 	retryAfter  time.Duration
 }
 
-func (r *Runner) fetch(ctx context.Context, src *store.Source, cfg sourcespec.Config) (fetchResult, error) {
+func (r *Poller) fetch(ctx context.Context, src *store.Source, cfg sourcespec.Config) (fetchResult, error) {
 	target, err := url.Parse(cfg.URL)
 	if err != nil {
 		return fetchResult{}, fmt.Errorf("poll: url 无法解析: %w", err)
@@ -164,7 +163,6 @@ func statusError(resp *http.Response) error {
 	return fmt.Errorf("poll: HTTP %d", resp.StatusCode)
 }
 
-// retryAfter 取 429 的重试间隔（Retry-After 支持秒数与 HTTP 日期两种写法）。
 func retryAfter(header string, now time.Time) (time.Duration, bool) {
 	text := strings.TrimSpace(header)
 	if text == "" {
@@ -188,12 +186,12 @@ func retryAfter(header string, now time.Time) (time.Duration, bool) {
 }
 
 func readLimited(body io.Reader) ([]byte, error) {
-	raw, err := io.ReadAll(io.LimitReader(body, MaxBodyBytes+1))
+	raw, err := io.ReadAll(io.LimitReader(body, PollMaxBodyBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("poll: 读响应失败: %w", err)
 	}
-	if len(raw) > MaxBodyBytes {
-		return nil, fmt.Errorf("poll: 响应体超过上限 %d 字节（不截断，本轮失败）", MaxBodyBytes)
+	if len(raw) > PollMaxBodyBytes {
+		return nil, fmt.Errorf("poll: 响应体超过上限 %d 字节（不截断，本轮失败）", PollMaxBodyBytes)
 	}
 	return raw, nil
 }

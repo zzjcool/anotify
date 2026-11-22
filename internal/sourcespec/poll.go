@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// kind=poll（#532）的拉取参数。这里只有**形状**与安全判据：真正发请求的在 internal/poll，
-// 本包仍然纯函数、不碰 IO（DNS 也在运行期，写入期只判字面量）。
 const (
 	DefaultPollTimeoutMs = 10000
 	PollTimeoutMinMs     = 1000
@@ -22,21 +20,19 @@ const (
 	pollSecretNameMax    = 64
 )
 
-// SecretRef 指向命名空间凭据：值不进 config，只在运行期按 (namespace, name) 取。
+// SecretRef 指向命名空间凭据：值不进 config，运行期按 (namespace, name) 取。
 type SecretRef struct {
 	Name   string `json:"name"`
 	Header string `json:"header"`
 	Prefix string `json:"prefix,omitempty"`
 }
 
-// PollSchedule 是 poll 的排期（表达式与时区与 cron 同一套）。
 type PollSchedule struct {
 	Expr string `json:"expr"`
 	TZ   string `json:"tz,omitempty"`
 }
 
-// pollConfig 是归一化后的 kind=poll 形状（字段顺序即落库字节顺序）。`secret` 故意不在
-// 这里：它是 write-only 的写入指令，落库目标是 namespace_secrets（见 store）。
+// pollConfig 的 `secret` 故意不在输出里：它是 write-only 指令，落库目标是 namespace_secrets。
 type pollConfig struct {
 	URL           string            `json:"url"`
 	Headers       map[string]string `json:"headers,omitempty"`
@@ -51,11 +47,10 @@ type pollConfig struct {
 	Sample        map[string]any    `json:"sample,omitempty"`
 }
 
-// normalizePollConfig 校验并归一 kind=poll 的 config。字段级问题**一次性全报**（带
-// `config.<键>` 路径），因为写路径把 causes 直接翻成 details.causes[]。
 func normalizePollConfig(fields map[string]json.RawMessage) (json.RawMessage, error) {
 	out := pollConfig{}
 	causes := []Cause{}
+	relaxPollPayloadPointer(fields)
 	add := func(field, message string) {
 		causes = append(causes, Cause{Field: "config." + field, Reason: CauseReasonValueInvalid, Message: message})
 	}
@@ -147,6 +142,14 @@ func normalizePollConfig(fields map[string]json.RawMessage) (json.RawMessage, er
 		if env.Items == "" {
 			env.Items = "."
 		}
+		for _, field := range []struct {
+			name string
+			src  *FieldSource
+		}{{"type", env.Type}, {"deliveryId", env.DeliveryID}} {
+			if field.src != nil && field.src.Header != "" {
+				add("envelope", field.name+".header 只对 webhook 有意义（poll 没有请求头，请用 pointer）")
+			}
+		}
 		out.Envelope = env
 	}
 	var err error
@@ -165,6 +168,44 @@ func normalizePollConfig(fields map[string]json.RawMessage) (json.RawMessage, er
 	return marshal(out)
 }
 
+// relaxPollPayloadPointer 让 `payload: {pointer: ""}` 等价于 `{whole: true}`（空指针 = 整个 item）。
+func relaxPollPayloadPointer(fields map[string]json.RawMessage) {
+	raw, ok := fields["envelope"]
+	if !ok || isNull(raw) {
+		return
+	}
+	env, err := decodeFields(raw)
+	if err != nil {
+		return
+	}
+	payload, ok := env["payload"]
+	if !ok || isNull(payload) {
+		return
+	}
+	src, err := decodeFields(payload)
+	if err != nil {
+		return
+	}
+	pointer, ok := src["pointer"]
+	if !ok {
+		return
+	}
+	var text string
+	if err := json.Unmarshal(pointer, &text); err != nil || strings.TrimSpace(text) != "" {
+		return
+	}
+	src["whole"] = json.RawMessage("true")
+	delete(src, "pointer")
+	rebuilt, err := marshal(src)
+	if err != nil {
+		return
+	}
+	env["payload"] = rebuilt
+	if outer, err := marshal(env); err == nil {
+		fields["envelope"] = outer
+	}
+}
+
 func anyMap(m map[string]string) map[string]any {
 	out := make(map[string]any, len(m))
 	for k, v := range m {
@@ -173,7 +214,6 @@ func anyMap(m map[string]string) map[string]any {
 	return out
 }
 
-// checkHeaderText 拒 CR/LF（头注入）；头名额外要求无空白与冒号。
 func checkHeaderText(text string, isName bool) error {
 	if strings.ContainsAny(text, "\r\n") {
 		return errors.New("不能含 CR/LF")
@@ -275,8 +315,7 @@ func normalizePollSchedule(raw json.RawMessage) (PollSchedule, error) {
 	return out, nil
 }
 
-// NextPollTime 是 poll 的下次触发时刻：把 schedule 拼回 cron 形状后**委托** NextCronTime，
-// 排期只留一份实现。
+// NextPollTime 把 schedule 拼回 cron 形状后委托 NextCronTime —— 排期只有一份实现。
 func NextPollTime(config json.RawMessage, after time.Time) (time.Time, error) {
 	cfg := ParseConfig(KindPoll, config)
 	if strings.TrimSpace(cfg.Schedule.Expr) == "" {
@@ -289,8 +328,7 @@ func NextPollTime(config json.RawMessage, after time.Time) (time.Time, error) {
 	return NextCronTime(raw, after)
 }
 
-// ParsePointerOrRoot 是 items 指针的方言：根写法（空 / `.` / `$` / `$.`）归一成 `"."`，
-// 其余与 #515 的指针逐字同一套（共用 ParsePointer）。
+// ParsePointerOrRoot 把根写法（空 / `.` / `$` / `$.`）归一成 `"."`，其余走 ParsePointer。
 func ParsePointerOrRoot(raw string) (string, error) {
 	switch strings.TrimSpace(raw) {
 	case "", ".", "$", "$.":
@@ -299,14 +337,16 @@ func ParsePointerOrRoot(raw string) (string, error) {
 	return ParsePointer(raw)
 }
 
-// LookupItems 在响应文档里取事件数组：`"."` = 根即数组，否则走同一份 walkPath。
-// 取不到或不是数组 → false（调用方记该轮失败，不当成「0 条」）。
-func LookupItems(doc any, path string) ([]any, bool) {
+// LookupIn 是 walkPath 的 any 入口（item 可能不是对象）；LookupItems 在它之上要数组。
+func LookupIn(doc any, path string) (any, bool) {
 	if path == "." || path == "" {
-		items, ok := doc.([]any)
-		return items, ok
+		return doc, true
 	}
-	value, ok := walkPath(doc, strings.Split(path, "."))
+	return walkPath(doc, strings.Split(path, "."))
+}
+
+func LookupItems(doc any, path string) ([]any, bool) {
+	value, ok := LookupIn(doc, path)
 	if !ok {
 		return nil, false
 	}
@@ -314,9 +354,8 @@ func LookupItems(doc any, path string) ([]any, bool) {
 	return items, ok
 }
 
-// CheckPollURL 是 poll 的**写入期** SSRF 判据：只允许 https（http 要 allowInsecure 且 host 是
-// localhost/*.test），拒 userinfo、IP 字面量落在非公网段、localhost、.internal/.local。
-// allowInsecure = 显式逃生口（e2e/测试）：跳过私网判据，仅此一处放宽。
+// CheckPollURL 是写入期 SSRF 判据：只允许 https（http 要 allowInsecure + 测试 host），
+// 拒 userinfo、非公网 IP 字面量、localhost、.internal/.local。allowInsecure 跳过私网判据。
 func CheckPollURL(raw string, allowInsecure bool) (string, error) {
 	text := strings.TrimSpace(raw)
 	if text == "" {
@@ -354,7 +393,6 @@ func CheckPollURL(raw string, allowInsecure bool) (string, error) {
 	return text, nil
 }
 
-// isTestHost 是 allowInsecure 下允许走明文 http 的 host：本机名、*.test、环回字面量。
 func isTestHost(host string) bool {
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.IsLoopback()
@@ -362,7 +400,6 @@ func isTestHost(host string) bool {
 	return host == "localhost" || strings.HasSuffix(host, ".test")
 }
 
-// blockedHostReason 判定 host 名/字面量是否落在非公网（写入期，不解析 DNS）。
 func blockedHostReason(host string) string {
 	h := strings.TrimSuffix(strings.ToLower(host), ".")
 	switch {
@@ -381,8 +418,8 @@ func blockedHostReason(host string) string {
 	return ""
 }
 
-// BlockedIPKind 返回非公网 IP 的类别（"" = 可放行）。运行期（解析后、dial 时）复用它，
-// 免得两处各写一套网段判断。
+// BlockedIPKind 是非公网 IP 的唯一分类器：写入期（CheckPollURL）与运行期（解析后 / dial 时）
+// 共用同一份网段判断，免得两处各写一套。
 func BlockedIPKind(ip net.IP) string {
 	if ip == nil {
 		return ""

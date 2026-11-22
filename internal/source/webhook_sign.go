@@ -1,14 +1,9 @@
 package source
 
-// webhook_sign.go 是 webhook 投递的**签名口径**（source.md §3.3 / D7）。
-//
-//	X-Anotify-Signature: sha256=<hex>      # 缺省 / scheme: anotify-sha256
-//	X-Hub-Signature-256: sha256=<hex>      # scheme: github-sha256（GitHub 的原生口径）
-//
-// 值 = `HMAC-SHA256(secret, 原始 body 字节)` 的小写十六进制。校验对**原始字节**做（不是解析
-// 后的 JSON：那会因空白/键序差异假失败）；缺失/格式错/不匹配 → 401 且**不产生事件**，
-// 所以校验必须在落库与派发之前完成。算法只有一种：平台差异只到**头名**（不做摘要/拼串
-// 变体，那会把验签变成一张猜不完的表）；比较走 `hmac.Equal`（逐字节短路 = 可爆破的预言机）。
+// webhook_sign.go 是 webhook 投递的签名口径（D7）。值 = `HMAC-SHA256(secret, 原始 body 字节)`
+// 的小写十六进制；平台差异只到头名（`X-Anotify-Signature` / `X-Hub-Signature-256`）。校验对
+// 原始字节做（解析后的 JSON 会因空白/键序假失败），缺失/格式错/不匹配 → 401 且不产生事件，
+// 所以必须在落库与派发之前完成；比较走 `hmac.Equal`（逐字节短路 = 可爆破的预言机）。
 
 import (
 	"crypto/hmac"
