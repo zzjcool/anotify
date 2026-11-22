@@ -18,6 +18,11 @@ var knownFields = map[string]map[string]bool{
 	KindCron:    {"expr": true, "tz": true, "payload": true, "payloadSchema": true, "sample": true},
 	KindWebhook: {"token": true, "secret": true, "payload": true, "payloadSchema": true, "sample": true, "envelope": true, "signature": true},
 	KindManual:  {"payload": true, "payloadSchema": true, "sample": true},
+	KindPoll: {
+		"url": true, "headers": true, "secretRef": true, "secret": true, "schedule": true,
+		"timeoutMs": true, "maxItems": true, "allowInsecure": true, "envelope": true,
+		"payload": true, "payloadSchema": true, "sample": true,
+	},
 }
 
 // cronConfig 是归一化后的 kind=cron 配置形状（字段顺序即输出顺序）。
@@ -122,13 +127,16 @@ func NormalizeConfig(kind string, raw json.RawMessage) (json.RawMessage, error) 
 		if out.PayloadSchema, err = schemaField(fields); err != nil {
 			return nil, err
 		}
-		if out.Envelope, err = normalizeEnvelope(fields); err != nil {
+		if out.Envelope, err = normalizeEnvelope(fields, false); err != nil {
 			return nil, err
 		}
 		if out.Signature, err = normalizeSignature(fields); err != nil {
 			return nil, err
 		}
 		return marshal(out)
+
+	case KindPoll:
+		return normalizePollConfig(fields)
 
 	case KindManual:
 		out := manualConfig{}
@@ -149,7 +157,8 @@ func NormalizeConfig(kind string, raw json.RawMessage) (json.RawMessage, error) 
 
 // MergeConfig 把 PATCH 语义应用到已有 config 上：**凭证字段「省略 = 保留已有」**。GET 永不
 // 回显 token/secret 原文（§3.1），按「省略 = 清空」处理会让一次「只改 payloadSchema」的 PATCH
-// 顺手换掉 webhook 的 URL——那是数据丢失。其它字段省略即清空/缺省。
+// 顺手换掉 webhook 的 URL——那是数据丢失。其它字段省略即清空/缺省（poll 的凭据不在 config
+// 里，所以它的 PATCH 天然「省略 = 保留」，见 normalizePollConfig）。
 func MergeConfig(kind string, existing, patch json.RawMessage) (json.RawMessage, error) {
 	if !IsKind(kind) {
 		return nil, errKind(kind)
@@ -232,11 +241,8 @@ func ValidateTargets(targets []Target) error {
 	return nil
 }
 
-// MaskConfig 返回用于回显的 config：token / secret 脱敏。
-//
-// 保留后 4 位（`***ab12`）而不是全 `***`：运维要能分辨「正在轮换的是哪一把」，后 4 位
-// 不足以还原凭据；长度 ≤ 4 的串整体打码。这是 store 层的**兜底**（§3.1 的读投影由 handler
-// 实现）：万一把 config 原样回显了也不会漏凭据。
+// MaskConfig 是 config 回显的**兜底**脱敏（真读投影在 handler）：保留后 4 位便于分辨
+// 「正在轮换的是哪一把」，长度 ≤ 4 整体打码。
 func MaskConfig(kind string, raw json.RawMessage) json.RawMessage {
 	fields, err := decodeFields(raw)
 	if err != nil {

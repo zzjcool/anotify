@@ -638,7 +638,7 @@ CREATE INDEX IF NOT EXISTS idx_playbook_installs_lookup
     ON playbook_installs(namespace_id, playbook_id, values_digest, created_at);
 
 -- 源（触发器）：事件的入口实例，不是能力。kind 只允许注册表里的项
--- （本期 cron / webhook / manual，判定在应用层）。
+-- （本期 cron / webhook / manual / poll，判定在应用层）。
 -- config 是按 kind 解释的 JSON；targets 是 [{capability, params}]。
 -- installed_from 是首次安装来源（复用不覆盖）。
 CREATE TABLE IF NOT EXISTS sources (
@@ -748,3 +748,21 @@ ALTER TABLE tasks ADD COLUMN decision TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN decision_at INTEGER;
 ALTER TABLE tasks ADD COLUMN decision_token_hash TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN decision_expires_at INTEGER;
+-- 拉取型源（#532）：轮询状态是服务端派生的事实，所以不进 config。游标只在整轮成功后前进
+-- （失败重抓同一批、靠 delivery_id 幂等去重）。
+-- +migration 6 poll_source
+ALTER TABLE sources ADD COLUMN poll_cursor TEXT NOT NULL DEFAULT '';
+ALTER TABLE sources ADD COLUMN last_poll_at INTEGER;
+ALTER TABLE sources ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sources ADD COLUMN skipped_overlaps INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sources ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
+
+-- 命名空间凭据（#532 的 secretRef 指向它）：值只写不读，写入口只有 poll 的 config.secret。
+CREATE TABLE IF NOT EXISTS namespace_secrets (
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    value        TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (namespace_id, name)
+);

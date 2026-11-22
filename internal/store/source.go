@@ -23,6 +23,7 @@ const (
 	SourceKindCron    = sourcespec.KindCron
 	SourceKindWebhook = sourcespec.KindWebhook
 	SourceKindManual  = sourcespec.KindManual
+	SourceKindPoll    = sourcespec.KindPoll
 )
 
 // SourceKinds 返回全部合法种类（拷贝；供校验与前端下拉复用）。
@@ -75,9 +76,15 @@ type Source struct {
 	// Targets 是出口声明：能力引用 + 参数模板（source.md §4）。多行 = 扇出。
 	Targets []sourcespec.Target `json:"targets"`
 	Enabled bool                `json:"enabled"`
-	// LastFiredAt / NextFireAt 只有 cron 有意义（其它 kind 为 nil）。
+	// LastFiredAt / NextFireAt 只有 cron 与 poll 有意义（其它 kind 为 nil）。
 	LastFiredAt *int64 `json:"lastFiredAt"`
 	NextFireAt  *int64 `json:"nextFireAt"`
+	// 以下五个是 kind=poll 的轮询状态（#532），只有 Poller 写它们。
+	PollCursor          string `json:"-"`
+	LastPollAt          *int64 `json:"-"`
+	ConsecutiveFailures int    `json:"-"`
+	SkippedOverlaps     int    `json:"-"`
+	LastError           string `json:"-"`
 	// InstalledFrom 是首次安装来源（安装回执 id；空 = 手建，复用不覆盖）。
 	InstalledFrom string `json:"installedFrom"`
 	// ResourceVersion 是写并发令牌（CAS），与内容版本无关。
@@ -87,7 +94,8 @@ type Source struct {
 
 // sourceColumns 是统一的列顺序，scanSource 依赖它。
 const sourceColumns = `id, namespace_id, name, display_name, kind, config, targets, enabled,
-	last_fired_at, next_fire_at, installed_from, resource_version, created_at`
+	last_fired_at, next_fire_at, installed_from, resource_version, created_at,
+	poll_cursor, last_poll_at, consecutive_failures, skipped_overlaps, last_error`
 
 // scanSource 从一行结果解析 Source（targets 列在这里解成结构化声明）。
 func scanSource(rows scanner) (*Source, error) {
@@ -98,10 +106,16 @@ func scanSource(rows scanner) (*Source, error) {
 		enabled int
 		last    sql.NullInt64
 		next    sql.NullInt64
+		polled  sql.NullInt64
 	)
 	if err := rows.Scan(&s.ID, &s.NamespaceID, &s.Name, &s.DisplayName, &s.Kind, &cfg, &targets, &enabled,
-		&last, &next, &s.InstalledFrom, &s.ResourceVersion, &s.CreatedAt); err != nil {
+		&last, &next, &s.InstalledFrom, &s.ResourceVersion, &s.CreatedAt,
+		&s.PollCursor, &polled, &s.ConsecutiveFailures, &s.SkippedOverlaps, &s.LastError); err != nil {
 		return nil, fmt.Errorf("scan source: %w", err)
+	}
+	if polled.Valid {
+		v := polled.Int64
+		s.LastPollAt = &v
 	}
 	s.Config = json.RawMessage(cfg)
 	if len(s.Config) == 0 {
@@ -159,11 +173,15 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	if err := sourcespec.ValidateName(s.Name); err != nil {
 		return fmt.Errorf("create source: %w", err)
 	}
+	secret := pollSecretOf(s.Kind, s.Config)
 	cfg, err := d.prepareSourceConfig(s.Kind, s.Config)
 	if err != nil {
 		return fmt.Errorf("create source: %w", err)
 	}
 	s.Config = cfg
+	if err := resolveSourceSecretOn(ctx, d, s.NamespaceID, s.Kind, cfg, secret); err != nil {
+		return fmt.Errorf("create source: %w", err)
+	}
 	if err := d.checkSourceTargets(ctx, s); err != nil {
 		return fmt.Errorf("create source: %w", err)
 	}
@@ -203,16 +221,29 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 // targets 的投影（只对**新建**源写，复用已有源不调用它）。调用方负责校验、归一化
 // （含 webhook token 生成）与 next_fire_at；本函数只做两件写。
 func insertSourceOn(ctx context.Context, ex queryExec, s *Source) error {
+	// poll 的 write-only secret 不许落进 config（归一化会丢掉它）：装在插入点上，playbook 安装也走这条路。
+	if s.Kind == SourceKindPoll {
+		secret := pollSecretOf(s.Kind, s.Config)
+		cfg, err := sourcespec.NormalizeConfig(s.Kind, s.Config)
+		if err != nil {
+			return fmt.Errorf("insert source: %w", err)
+		}
+		if err := resolveSourceSecretOn(ctx, ex, s.NamespaceID, s.Kind, cfg, secret); err != nil {
+			return fmt.Errorf("insert source: %w", err)
+		}
+		s.Config = cfg
+	}
 	targetsJSON, err := json.Marshal(s.Targets)
 	if err != nil {
 		return fmt.Errorf("marshal targets: %w", err)
 	}
 	if _, err := ex.execContext(ctx,
 		`INSERT INTO sources (`+sourceColumns+`)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		s.ID, s.NamespaceID, s.Name, s.DisplayName, s.Kind, string(s.Config), string(targetsJSON),
 		boolToInt(s.Enabled), nil, nullableUnix(s.NextFireAt), s.InstalledFrom, s.ResourceVersion,
-		s.CreatedAt); err != nil {
+		s.CreatedAt, s.PollCursor, nullableUnix(s.LastPollAt), s.ConsecutiveFailures,
+		s.SkippedOverlaps, s.LastError); err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("%w: %q", ErrSourceNameTaken, s.Name)
 		}
@@ -327,12 +358,23 @@ func targetRefs(s *Source) []string {
 	return refs
 }
 
-// sourceNextFire 算 cron 源的下次触发时刻（建源时就算好，否则要等下次重启才被调度）。
+// sourceNextFire 算 cron / poll 源的下次触发时刻（建源时就算好，否则要等下次重启才被调度）。
 func sourceNextFire(s *Source, after int64) (*int64, error) {
-	if s.Kind != SourceKindCron || !s.Enabled {
+	if !s.Enabled {
 		return nil, nil
 	}
-	t, err := sourcespec.NextCronTime(s.Config, time.Unix(after, 0))
+	var (
+		t   time.Time
+		err error
+	)
+	switch s.Kind {
+	case SourceKindCron:
+		t, err = sourcespec.NextCronTime(s.Config, time.Unix(after, 0))
+	case SourceKindPoll:
+		t, err = sourcespec.NextPollTime(s.Config, time.Unix(after, 0))
+	default:
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -546,12 +588,16 @@ func (d *DB) updateSourceOn(ctx context.Context, ex queryExec, cur, s *Source, t
 	// Omission is a metadata-only update: preserve the exact stored configuration,
 	// including optional payload/sample fields and credentials.
 	cfg := cur.Config
+	secret := pollSecretOf(cur.Kind, s.Config)
 	var err error
 	if s.Config != nil {
 		cfg, err = sourcespec.MergeConfig(cur.Kind, cur.Config, s.Config)
 		if err != nil {
 			return fmt.Errorf("update source: %w", err)
 		}
+	}
+	if err := resolveSourceSecretOn(ctx, ex, cur.NamespaceID, cur.Kind, cfg, secret); err != nil {
+		return fmt.Errorf("update source: %w", err)
 	}
 	if cur.Kind == SourceKindWebhook && sourcespec.ParseConfig(cur.Kind, cfg).Token == "" {
 		cfg, err = d.prepareSourceConfig(cur.Kind, cfg)
@@ -599,6 +645,8 @@ func (d *DB) updateSourceOn(ctx context.Context, ex queryExec, cur, s *Source, t
 	s.ID, s.NamespaceID, s.Name = cur.ID, cur.NamespaceID, cur.Name
 	s.InstalledFrom, s.CreatedAt, s.LastFiredAt = cur.InstalledFrom, cur.CreatedAt, cur.LastFiredAt
 	s.ResourceVersion, s.NextFireAt = cur.ResourceVersion+1, nextFire
+	s.PollCursor, s.LastPollAt = cur.PollCursor, cur.LastPollAt
+	s.ConsecutiveFailures, s.SkippedOverlaps, s.LastError = cur.ConsecutiveFailures, cur.SkippedOverlaps, cur.LastError
 	return nil
 }
 
@@ -652,6 +700,11 @@ func deleteSourceOn(ctx context.Context, ex queryExec, cur *Source) error {
 //
 // now 由调用方传入（便于测试注入）；只取 enabled=1 且 next_fire_at <= now 的。
 func (d *DB) ListDueSources(ctx context.Context, now int64, limit int) ([]*Source, error) {
+	return d.ListDueSourcesOfKind(ctx, SourceKindCron, now, limit)
+}
+
+// ListDueSourcesOfKind 是上一行的通用形态：cron 与 poll 各有调度循环，「谁到点了」只写一次。
+func (d *DB) ListDueSourcesOfKind(ctx context.Context, kind string, now int64, limit int) ([]*Source, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -661,7 +714,7 @@ func (d *DB) ListDueSources(ctx context.Context, now int64, limit int) ([]*Sourc
 		  WHERE kind = ? AND enabled = 1
 		    AND next_fire_at IS NOT NULL AND next_fire_at <= ?
 		  ORDER BY next_fire_at, id
-		  LIMIT ?`, SourceKindCron, now, limit)
+		  LIMIT ?`, kind, now, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list due sources: %w", err)
 	}
@@ -686,6 +739,46 @@ func (d *DB) MarkSourceFired(ctx context.Context, id string, firedAt, nextFire i
 		`UPDATE sources SET last_fired_at = ?, next_fire_at = ? WHERE id = ?`,
 		firedAt, nextFire, id); err != nil {
 		return fmt.Errorf("mark source fired: %w", err)
+	}
+	return nil
+}
+
+// PollOutcome 是一轮轮询的终局（Poll 是唯一写者）：Cursor / NextFireAt 只在 Success 时前进。
+type PollOutcome struct {
+	Success  bool
+	Cursor   string
+	PolledAt int64
+	NextFire int64
+	Failures int
+	Error    string
+}
+
+func (d *DB) MarkSourcePolled(ctx context.Context, id string, out PollOutcome) error {
+	var (
+		cursor  any
+		firedAt any
+		lastErr string
+	)
+	if out.Success {
+		cursor, firedAt = out.Cursor, out.PolledAt
+	} else {
+		lastErr = out.Error
+	}
+	if _, err := d.ExecContext(ctx,
+		`UPDATE sources
+		    SET poll_cursor = COALESCE(?, poll_cursor), last_poll_at = ?, consecutive_failures = ?,
+		        last_error = ?, next_fire_at = ?, last_fired_at = COALESCE(?, last_fired_at)
+		  WHERE id = ?`,
+		cursor, out.PolledAt, out.Failures, lastErr, out.NextFire, firedAt, id); err != nil {
+		return fmt.Errorf("mark source polled: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) BumpSourceSkippedOverlaps(ctx context.Context, id string) error {
+	if _, err := d.ExecContext(ctx,
+		`UPDATE sources SET skipped_overlaps = skipped_overlaps + 1 WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("bump source skipped overlaps: %w", err)
 	}
 	return nil
 }

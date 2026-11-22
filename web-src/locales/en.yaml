@@ -2623,6 +2623,8 @@ source_detail:
   resolved_no: 'targets unresolved'
   created: 'Created'
   updated: 'Updated'
+  last_poll: 'Last poll'
+  consecutive_failures: 'Consecutive failures'
   hook_url: 'Hook URL'
   secret_set_yes: 'HMAC secret is set (write-only)'
   secret_set_no: 'No HMAC secret'

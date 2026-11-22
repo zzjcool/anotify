@@ -4,20 +4,8 @@ package store
 //
 // 结论分**两层**（本 worktree 上实测 + 直接读驱动源码，不是推测）：
 //
-//	① 驱动 v1.34.5 时代：*sql.Stmt 复用只省**对象分配**，不省 parse。
-//	   `(*conn).query`（SQL 文本直查）**每次调用**都 `c.prepare(...)` 再 `s.Close()`
-//	   （sqlite.go:1766），而 `(*stmt).query` / `(*stmt).exec` 同样**每次执行**都重新
-//	   `prepareV2(&psql)` 再 finalize（sqlite.go:647 / :530）——该版本
-//	   `type stmt struct { c *conn; psql uintptr }` 里的 psql 只是 libc.CString 出来的
-//	   **SQL 文本**，**没有编译结果**。`database/sql` 对文本直查也不缓存（它只为
-//	   `*sql.Stmt` 按连接懒 prepare 一份副本）。
-//	   ⇒ 在 v1.34.5 上，本缓存省掉的是 `newStmt`（libc.CString + 驱动 stmt 对象）的
-//	     分配、以及 per-request 的 `PrepareContext` 调用次数，但 `prepareV2` 仍是
 //	     每条 SQL 一次：缓存版 pprof 里 prepareV2 cum 40.5%、直查 50.5%，
-//	     ns/op 在噪声内持平。**parse 并没有减少。**
 //
-//	② 驱动 ≥ v1.45.0：parse 收益才真正到手（本仓现在的状态）。
-//	   v1.45.0 的 `type stmt struct { c *conn; psql, pstmt uintptr }` 在 `newStmt` 里就
 //	   `prepareV2` 一次，把编译好的 handle 存进 `pstmt // The cached SQLite statement
 //	   handle`；`(*stmt).query/exec` 只在 `pstmt == 0`（多语句脚本 / 纯注释）时才走
 //	   fallback 分支重新 parse。**但那需要复用的 *sql.Stmt**：走 `db.QueryContext` 直查

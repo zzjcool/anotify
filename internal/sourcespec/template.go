@@ -8,13 +8,9 @@ import (
 	"strings"
 )
 
-// 参数模板（source.md §4.1 / D1 / D11）：`$(payload)` / `$(payload.点号路径)`，outcome 动作另可写 `$(decision.点号路径)`（#522）。
-//
-//	env:    $(payload.environment)                       # 整值只有一个引用 → 保留原类型
-//	report: reports/$(payload.environment)/$(payload.x)  # 掺了常量 → 结果一定是字符串
-//
-// 设计边界（照抄 §4.1）：没有算术/函数/条件/默认值/管道；`$(vars.…)`/`$(params.…)` 直接拒；
-// 写不完整（`$(payload.a-b)`）创建期拒；路径取不到 → 剪枝 `param_missing`，不静默给空。求值两段：建任务求 payload、判决执行求 decision；手上没有的根名**原样保留**。
+// 参数模板：`$(payload)` / `$(payload.点号路径)`，outcome 动作另可写 `$(decision.点号路径)`（#522）。
+// 没有算术/函数/条件/默认值/管道；`$(vars.…)`/`$(params.…)` 拒；写不完整（`$(payload.a-b)`）创建期拒；
+// 路径取不到 → 剪枝 `param_missing`，不静默给空。求值两段：建任务求 payload、判决执行求 decision。
 
 // templateToken 是一段模板里的一个原子：要么是字面量，要么是一个 payload 引用。
 type templateToken struct {

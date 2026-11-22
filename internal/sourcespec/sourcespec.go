@@ -1,8 +1,6 @@
-// Package sourcespec 是 Anotify v4 **源（Source / 触发器）**文档与配置的唯一纯校验源。
-//
-// 同一套判据要在三处用（store 写路径 / playbook 安装比较 / 拒绝理由展示），抄两遍必然
-// 漂移（症状是「保存说没问题、安装说不一样」），所以本包只做**纯函数**：不 import 本项目
-// 任何包、不碰 IO/环境/随机数，config 进出都是 `json.RawMessage`（调用方拿到什么就存什么）。语义基线是 `api/` 与测试，冲突时以它们为准。
+// Package sourcespec 是源（Source / 触发器）文档与配置的唯一纯校验源：同一套判据要在 store
+// 写路径 / playbook 安装比较 / 拒绝理由展示三处用，抄两遍必然漂移。所以只做纯函数（不 import
+// 本项目任何包、不碰 IO/环境/随机数），config 进出都是 `json.RawMessage`。语义基线是 `api/` 与测试。
 package sourcespec
 
 import (
@@ -23,18 +21,17 @@ var (
 	ErrInvalidConfig = errors.New("invalid source config")
 )
 
-// 本期 kind 注册表的三个内置项（source.md §1 / §7 D0）。
-//
-// kind 是**开放集合**：合法值 = 注册表里有的项。判定一律走 IsKind（查表），
-// 不写「不是这三个就拒」——那样开注册表时要逐处翻。
+// 本期 kind 注册表的四个内置项。kind 是**开放集合**：合法值 = 注册表里有的项，判定一律走
+// IsKind（查表），不写「不是这四个就拒」——那样开注册表时要逐处翻。
 const (
 	KindCron    = "cron"
 	KindWebhook = "webhook"
 	KindManual  = "manual"
+	KindPoll    = "poll"
 )
 
 // kindRegistry 是本期注册表快照（只读）。
-var kindRegistry = []string{KindCron, KindWebhook, KindManual}
+var kindRegistry = []string{KindCron, KindWebhook, KindManual, KindPoll}
 
 // Kinds 返回合法 kind（拷贝；调用方可安全修改）。
 func Kinds() []string {
@@ -110,6 +107,15 @@ type Config struct {
 	// Envelope / Signature 是 webhook 的适配层（#513）：从哪取三元组、用哪种签名口径。
 	Envelope  *Envelope
 	Signature *Signature
+	// URL / Headers / SecretRef / Schedule / TimeoutMs / MaxItems / AllowInsecure 是
+	// kind=poll 的拉取参数（#532），缺省已在此处补齐。
+	URL           string
+	Headers       map[string]string
+	SecretRef     *SecretRef
+	Schedule      PollSchedule
+	TimeoutMs     int
+	MaxItems      int
+	AllowInsecure bool
 }
 
 // ParseConfig 把 config 字节按 kind 解释成结构化形态（坏字节 → 零值，不报错）。
@@ -152,11 +158,38 @@ func ParseConfig(kind string, raw json.RawMessage) Config {
 		}
 	}
 	if kind == KindWebhook {
-		if env, err := normalizeEnvelope(fields); err == nil {
+		if env, err := normalizeEnvelope(fields, false); err == nil {
 			cfg.Envelope = env
 		}
 		if sig, err := normalizeSignature(fields); err == nil {
 			cfg.Signature = sig
+		}
+	}
+	if kind == KindPoll {
+		_ = json.Unmarshal(fields["url"], &cfg.URL)
+		if v, ok := fields["headers"]; ok {
+			_ = json.Unmarshal(v, &cfg.Headers)
+		}
+		if v, ok := fields["secretRef"]; ok {
+			var ref SecretRef
+			if json.Unmarshal(v, &ref) == nil && ref.Name != "" {
+				cfg.SecretRef = &ref
+			}
+		}
+		if v, ok := fields["schedule"]; ok {
+			_ = json.Unmarshal(v, &cfg.Schedule)
+		}
+		_ = json.Unmarshal(fields["timeoutMs"], &cfg.TimeoutMs)
+		_ = json.Unmarshal(fields["maxItems"], &cfg.MaxItems)
+		_ = json.Unmarshal(fields["allowInsecure"], &cfg.AllowInsecure)
+		if cfg.TimeoutMs <= 0 {
+			cfg.TimeoutMs = DefaultPollTimeoutMs
+		}
+		if cfg.MaxItems <= 0 {
+			cfg.MaxItems = DefaultPollMaxItems
+		}
+		if env, err := normalizeEnvelope(fields, true); err == nil {
+			cfg.Envelope = env
 		}
 	}
 	return cfg

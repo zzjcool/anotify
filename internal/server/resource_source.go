@@ -620,16 +620,20 @@ type srcSpecView struct {
 
 // srcStatusView 是 Source 的只读派生面（api-conventions §7.2）。
 //
-// lastError 恒 null：v4 没有「源的最后一次错误」这个落库事实（失败留在事件 /
-// route 剪枝 / 任务里，用 trace 查），编一个字段值会让前端以为它可信。
+// cursor / lastPollAt / consecutiveFailures / skippedOverlaps 只有 kind=poll 会写（#532）：
+// 直接投 sources 行的落库事实。lastError 没有失败事实时仍是 null。
 type srcStatusView struct {
-	HookURL         string  `json:"hookUrl"`
-	LastFiredAt     string  `json:"lastFiredAt,omitempty"`
-	NextFireAt      string  `json:"nextFireAt,omitempty"`
-	Enabled         bool    `json:"enabled"`
-	Health          string  `json:"health"`
-	TargetsResolved bool    `json:"targetsResolved"`
-	LastError       *string `json:"lastError"`
+	HookURL             string  `json:"hookUrl"`
+	LastFiredAt         string  `json:"lastFiredAt,omitempty"`
+	NextFireAt          string  `json:"nextFireAt,omitempty"`
+	Cursor              string  `json:"cursor,omitempty"`
+	LastPollAt          string  `json:"lastPollAt,omitempty"`
+	ConsecutiveFailures int     `json:"consecutiveFailures"`
+	SkippedOverlaps     int     `json:"skippedOverlaps"`
+	Enabled             bool    `json:"enabled"`
+	Health              string  `json:"health"`
+	TargetsResolved     bool    `json:"targetsResolved"`
+	LastError           *string `json:"lastError"`
 }
 
 // srcEnvelopeOf 把一行源投影成 v4 信封（四键 + 脱敏 spec + 派生 status）。
@@ -658,6 +662,15 @@ func srcEnvelopeOf(s *store.Source, nsDisplay string) apiEnvelope {
 	}
 	if s.NextFireAt != nil {
 		status.NextFireAt = srcTimestamp(*s.NextFireAt)
+	}
+	status.Cursor = s.PollCursor
+	if s.LastPollAt != nil {
+		status.LastPollAt = srcTimestamp(*s.LastPollAt)
+	}
+	status.ConsecutiveFailures, status.SkippedOverlaps = s.ConsecutiveFailures, s.SkippedOverlaps
+	if s.LastError != "" {
+		message := s.LastError
+		status.LastError = &message
 	}
 	if nsDisplay == "" {
 		nsDisplay = s.NamespaceID

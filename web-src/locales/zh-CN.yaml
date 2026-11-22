@@ -2628,6 +2628,8 @@ source_detail:
   resolved_no: 'targets 未解析'
   created: '创建时间'
   updated: '更新时间'
+  last_poll: '最近轮询'
+  consecutive_failures: '连续失败'
   hook_url: 'Hook URL'
   secret_set_yes: 'HMAC 签名已设置（只写不读）'
   secret_set_no: '没有 HMAC 签名'

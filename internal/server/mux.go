@@ -251,6 +251,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	hub := ws.NewHub(db, router, ws.WithLogger(slog.Default()))
 	sources := source.New(db, router)
 	sched := trigger.New(db, sources, slog.Default())
+	poller := source.NewPoller(db, sources, slog.Default())
 	sweeper := lease.NewSweeper(db, slog.Default())
 
 	// 产物托管池（#332 / A1）：中枢自有的 0700 目录 + 0600 对象文件。
@@ -351,7 +352,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	//   - 租约巡检：回收过期租约 + 保留期清理 + SQLite 统计维护（lease.DefaultInterval
 	//     = 30s；保留期秒数来自 system config，不再从 mux 注入）。
 	//
-	// 三条循环都在 ctx 结束时正常退出（返回 ctx.Err()），所以这里只把**非取消**的
+	// 各条循环都在 ctx 结束时正常退出（返回 ctx.Err()），所以这里只把**非取消**的
 	// 退出记成 WARN：正常关库时的 context canceled 不该在日志里长得像故障。
 	app.runBackgroundLoop(ctx, "dispatch", func(loopCtx context.Context) error {
 		hub.RunDispatchLoop(loopCtx, 250*time.Millisecond)
@@ -359,6 +360,9 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	})
 	app.runBackgroundLoop(ctx, "cron", func(loopCtx context.Context) error {
 		return sched.Run(loopCtx, time.Minute)
+	})
+	app.runBackgroundLoop(ctx, "poll", func(loopCtx context.Context) error { // 拉取型源轮询（#532）
+		return poller.Run(loopCtx, source.PollDefaultTick)
 	})
 	app.runBackgroundLoop(ctx, "lease", func(loopCtx context.Context) error {
 		return sweeper.Run(loopCtx, lease.DefaultInterval)

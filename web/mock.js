@@ -749,6 +749,10 @@
 					installedFrom: null,
 					lastFiredAt: null,
 					lastError: null,
+					lastPollAt: null,
+					consecutiveFailures: 0,
+					skippedOverlaps: 0,
+					cursor: null,
 					unapplied: false,
 					createdAt: iso(now() - 86400 * 20),
 				},
@@ -1906,6 +1910,10 @@
 			hookUrl: sourceHookUrl(row),
 			lastFiredAt: row.lastFiredAt || null,
 			nextFireAt: row.nextFireAt || null,
+			lastPollAt: row.lastPollAt || null,
+			consecutiveFailures: row.consecutiveFailures || 0,
+			skippedOverlaps: row.skippedOverlaps || 0,
+			cursor: row.cursor || null,
 			enabled: !!row.enabled,
 			health: health,
 			targetsResolved: declared.length > 0,
@@ -3647,7 +3655,7 @@
 			} else {
 				const config = sourceWriteConfig(d.spec.config, d.spec.kind);
 				if (d.spec.kind === "webhook" && !config.token) config.token = "src_mock_" + row.ns + "_" + name;
-				additions.sources.push({ ns: row.ns, name, displayName: d.metadata.displayName || "", kind: d.spec.kind, enabled: d.spec.enabled !== false, config, receiptPolicy: policies.get(d), targets: clone(d.spec.targets || []), installedFrom: id, lastFiredAt: null, nextFireAt: null, lastError: null, unapplied: false });
+				additions.sources.push({ ns: row.ns, name, displayName: d.metadata.displayName || "", kind: d.spec.kind, enabled: d.spec.enabled !== false, config, receiptPolicy: policies.get(d), targets: clone(d.spec.targets || []), installedFrom: id, lastFiredAt: null, nextFireAt: null, lastError: null, lastPollAt: null, consecutiveFailures: 0, skippedOverlaps: 0, cursor: null, unapplied: false });
 				receipt.created.sources.push(name);
 			}
 			if (d.spec.enabled === false) note("source_disabled", name, "Source is disabled.");
@@ -4491,6 +4499,10 @@
 			lastFiredAt: null,
 			nextFireAt: null,
 			lastError: null,
+			lastPollAt: null,
+			consecutiveFailures: 0,
+			skippedOverlaps: 0,
+			cursor: null,
 			installedFrom: null,
 			unapplied: false,
 			uid: nextUID("src"),

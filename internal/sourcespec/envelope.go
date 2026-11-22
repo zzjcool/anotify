@@ -1,12 +1,8 @@
 package sourcespec
 
-// 信封与签名（#513 A1 / design #512）：把「从哪取 type / deliveryId / payload」与「用哪种
-// 签名口径」从 Go 搬到配置里。传输仍是 Go 的（信任边界不外包），适配是数据。
-//
-// 三条纪律：三个维度**各自独立缺省**（只写 `type` 时 `id`/`payload` 仍取今天的语义，于是
-// 「不写 envelope」=「写一份全默认」）；指针与 params 模板**同一套方言**（共用 `walkPath`，
-// 不新造第二种路径语言）；写入期拒未知键与非法组合（拼错的 `deliveryID` 静默变成「不去重」
-// 是线上最难查的一类故障——事件照收，只是重复派发）。
+// 信封与签名（#513 A1）：把「从哪取 type / deliveryId / payload」与「用哪种签名口径」从 Go 搬到
+// 配置。三条纪律：三个维度各自独立缺省（不写 = 一份全默认）；指针与 params 模板同一套方言
+// （共用 `walkPath`）；写入期拒未知键与非法组合（拼错的键静默变成「不去重」最难查）。
 
 import (
 	"encoding/json"
@@ -22,6 +18,8 @@ const (
 
 // Envelope 是 config.envelope（三个维度各自可缺省）。
 type Envelope struct {
+	// Items 只在 kind=poll 上有意义：响应里事件数组的位置（"." = 根即数组，#532）。
+	Items      string         `json:"items,omitempty"`
 	Type       *FieldSource   `json:"type,omitempty"`
 	DeliveryID *FieldSource   `json:"deliveryId,omitempty"`
 	Payload    *PayloadSource `json:"payload,omitempty"`
@@ -105,8 +103,9 @@ func envelopeSources(fields map[string]json.RawMessage) (map[string]json.RawMess
 	return obj, nil
 }
 
-// normalizeEnvelope 校验归一 config.envelope（缺省 / null → nil）。
-func normalizeEnvelope(fields map[string]json.RawMessage) (*Envelope, error) {
+// normalizeEnvelope 校验归一 config.envelope（缺省 / null → nil）。withItems 只有 poll 为真：
+// `items` 是拉取型的第四指针，webhook 不认（那里的载荷是单条投递，没有数组可定位）。
+func normalizeEnvelope(fields map[string]json.RawMessage, withItems bool) (*Envelope, error) {
 	obj, err := envelopeSources(fields)
 	if err != nil || obj == nil {
 		return nil, err
@@ -114,6 +113,15 @@ func normalizeEnvelope(fields map[string]json.RawMessage) (*Envelope, error) {
 	out := &Envelope{}
 	for _, key := range sortedFieldKeys(obj) {
 		switch key {
+		case "items":
+			if !withItems {
+				err = errf("config.envelope 不认字段 %q（允许：deliveryId / payload / type）", key)
+				break
+			}
+			var text string
+			if err = json.Unmarshal(nonNull(obj[key], `""`), &text); err == nil {
+				out.Items, err = ParsePointerOrRoot(text)
+			}
 		case "type":
 			out.Type, err = normalizeFieldSource(obj[key], "type", true)
 		case "deliveryId":
@@ -121,7 +129,11 @@ func normalizeEnvelope(fields map[string]json.RawMessage) (*Envelope, error) {
 		case "payload":
 			out.Payload, err = normalizePayloadSource(obj[key])
 		default:
-			err = errf("config.envelope 不认字段 %q（允许：deliveryId / payload / type）", key)
+			if withItems {
+				err = errf("config.envelope 不认字段 %q（允许：deliveryId / items / payload / type）", key)
+			} else {
+				err = errf("config.envelope 不认字段 %q（允许：deliveryId / payload / type）", key)
+			}
 		}
 		if err != nil {
 			return nil, err

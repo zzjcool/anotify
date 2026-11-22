@@ -1,16 +1,11 @@
-// Package source 是 v4 **源触发**的唯一运行期入口：手动 / webhook / cron 三个入口
-// 共用同一份归一化配置、同一份载荷装配、同一份接收回执（source.md §5.1）。
+// Package source 是源触发的唯一运行期入口：手动 / webhook / cron / poll 共用同一份归一化配置、
+// 同一份载荷装配、同一份接收回执。一次触发做四件事：
 //
-// 一次触发做四件事：
-//
-//  1. 装配载荷：三个 kind 同语义——`config.payload` 打底、入站载荷一层覆盖（webhook 的入站
-//     载荷来自投递体，可由 `config.envelope` 指定取哪一段）。
+//  1. 装配载荷：`config.payload` 打底、入站载荷一层覆盖（可由 `config.envelope` 指定取哪一段）。
 //  2. 投递幂等：`(namespace, 源稳定 id, deliveryId)` 在保留窗口内只算一条事件，重复投递返回
-//     **原** event/trace 且不重复派发；窗口外同 id 按新事件接收。
+//     原 event/trace 且不重复派发；窗口外同 id 按新事件接收。
 //  3. 载荷契约：不符合 `config.payloadSchema` → 入库 + `event_schema` 剪枝，不派发。
-//  4. 路由投影：`route.PlanFromSource` 逐行求值 targets（含 `match.types`），成功的建任务、
-//     其余每条留一条剪枝事件（`source='route'`）；没有 targets → `no_target`。dry-run 走同一
-//     条解析路径但完全不落库（§5.3）。
+//  4. 路由投影：逐行求值 targets（含 `match.types`），成功的建任务、其余留剪枝事件；dry-run 不落库。
 package source
 
 import (
