@@ -31,6 +31,9 @@
 .sd-v.is-muted{color:var(--muted)}
 .sd-pre{margin:0;padding:8px 10px;max-height:14rem;overflow:auto;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);color:var(--text);font-size:11.5px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
 .sd-target{display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:var(--r-md);min-width:0}
+.sd-sub-title{font-size:11.5px;font-weight:600;color:var(--muted);margin-top:2px} /* 拉取区块：配置/状态两段小标题、URL 行（长 url 折行 + 复制）与游标行（截断 + title 全文） */
+.sd-copyline{display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+.sd-cursor{display:inline-block;max-width:100%;overflow-wrap:anywhere}
 .sd-rows{display:flex;flex-direction:column;gap:6px;min-width:0}
 .sd-line{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;padding:6px 0;border-bottom:1px dashed var(--line);font-size:12px;color:var(--muted)}
 .sd-line:last-child{border-bottom:0}
@@ -97,7 +100,7 @@
 const A = window.Anotify;
 const t = (k, d) => A.t(k, d);
 const {
-  el, nsApi, api, apiList, nsPath, model, itemsOf, loadErrorNode, copyText, readScope, saveScope, ready,
+  el, nsApi, api, apiList, nsPath, model, itemsOf, loadErrorNode, copyText, sourceKindLabel, readScope, saveScope, ready,
 } = A;
 const $ = (id) => document.getElementById(id);
 
@@ -280,6 +283,74 @@ function healthTone(health) {
   if (health === "disabled" || !health) return "badge-neutral";
   return "badge-warn";
 }
+function pollSection(m) { // 拉取区块：只对 kind: poll 出现（其它 kind 没有这些事实，摆一排空行只会教人误读）
+  const cfg = m.config || {};
+  const sec = section(t("sources.kind.poll", "拉取"), "poll");
+  const urlValue = el("span", { class: "sd-copyline" });
+  const urlText = el("span", { class: "sd-wrap mono" });
+  urlText.append(rawText(cfg.url || "—"));
+  urlValue.append(urlText);
+  if (cfg.url) {
+    const copy = el("button", { type: "button", class: "copy-btn", text: t("uxaudit.dev.copy", "复制") });
+    copy.addEventListener("click", () => copyText(copy, () => cfg.url));
+    urlValue.append(copy);
+  }
+  const sched = cfg.schedule || {};
+  sec.append(txt("div", "sd-sub-title", t("source_detail.poll_config", "拉取配置")));
+  const ckv = el("dl", { class: "sd-kv" });
+  ckv.append(
+    pair(t("source_detail.poll_url", "URL"), urlValue, { muted: !cfg.url }),
+    pair(t("source_detail.poll_schedule", "排期"), [sched.expr, sched.tz].filter(Boolean).join(" · "), { muted: !sched.expr }),
+    pair(t("source_detail.poll_timeout", "单次超时"), cfg.timeoutMs == null ? null : cfg.timeoutMs + " ms", { muted: cfg.timeoutMs == null }),
+    pair(t("source_detail.poll_max_items", "单轮条目上限"), cfg.maxItems == null ? null : String(cfg.maxItems), { muted: cfg.maxItems == null }),
+  );
+  sec.append(ckv);
+  const env = cfg.envelope || {};
+  const envPair = (label, wire, key, fallbackText) =>
+    wire ? pair(label, wire) : pair(label, t(key, fallbackText), { plain: true, muted: true });
+  sec.append(txt("div", "sd-sub-title", t("source_detail.poll_envelope", "信封指针")));
+  sec.append(txt("p", "field-hint", t("source_detail.poll_env_hint", "四个指针都可缺省，缺省时按下方的默认值取值。")));
+  const envKv = el("dl", { class: "sd-kv" });
+  envKv.append(
+    envPair(t("source_detail.poll_env_items", "条目数组"), env.items, "source_detail.poll_env_default_items", "整份响应"),
+    envPair(t("source_detail.poll_env_type", "事件类型"), (env.type || {}).pointer, "source_detail.poll_env_default_type", "源名"),
+    envPair(t("source_detail.poll_env_delivery", "去重键"), (env.deliveryId || {}).pointer, "source_detail.poll_env_default_delivery", "不去重"),
+    envPair(
+      t("source_detail.poll_env_payload", "载荷"),
+      (env.payload || {}).whole === true ? null : (env.payload || {}).pointer,
+      "source_detail.poll_env_default_payload",
+      "整个条目",
+    ),
+  );
+  sec.append(envKv);
+  sec.append(txt("div", "sd-sub-title", t("source_detail.poll_status", "轮询状态")));
+  const stKv = el("dl", { class: "sd-kv" });
+  const never = t("source_detail.poll_never", "尚未轮询");
+  const cursorRaw = m.cursor == null ? "" : String(m.cursor);
+  const cursorValue = el("span", { class: "sd-cursor mono" });
+  if (cursorRaw) {
+    cursorValue.append(rawText(cursorRaw.length > 48 ? cursorRaw.slice(0, 48) + "…" : cursorRaw));
+    cursorValue.setAttribute("title", cursorRaw);
+  } else {
+    cursorValue.append(rawText(t("source_detail.poll_cursor_none", "还没有游标")));
+  }
+  stKv.append(
+    pair(t("source_detail.last_poll", "最近轮询"), m.lastPollAt ? fmtTime(m.lastPollAt) : never, { plain: !m.lastPollAt, muted: !m.lastPollAt }),
+    pair(t("sources.v4.next_fire", "下次触发时间"), fmtTime(m.nextFireAt), { muted: !m.nextFireAt }),
+    pair(t("source_detail.consecutive_failures", "连续失败"), String(m.consecutiveFailures), { muted: !(m.consecutiveFailures > 0) }),
+    pair(t("source_detail.poll_skipped", "跳过重叠"), String(m.skippedOverlaps), { muted: !(m.skippedOverlaps > 0) }),
+    pair(t("source_detail.poll_cursor", "游标"), cursorValue, { muted: !cursorRaw }),
+  );
+  sec.append(stKv);
+  const errFold = el("details", { class: "src-raw", id: "src-detail-poll-error" });
+  errFold.append(txt("summary", null, t("sources.v4.last_error", "最近错误")));
+  const errBody = el("div", { class: "src-raw-body" });
+  if (m.lastError) errBody.append(preBlock(m.lastError));
+  else errBody.append(txt("p", "field-hint", t("source_detail.poll_error_none", "没有失败记录")));
+  errFold.append(errBody);
+  sec.append(errFold);
+  return sec;
+}
 /* 载荷契约（payloadSchema）→ 字段表：名字 / 类型 / 必填 / 说明。
    没有 properties 时不编一张空表，只说「没有声明字段」。 */
 function schemaTable(schema) {
@@ -459,7 +530,7 @@ function render(res) {
   /* ---------- 基本信息：kind / enabled / health / targetsResolved / 触发与时间 ---------- */
   const basic = section(t("source_detail.basic", "基本信息"), "basic");
   const badges = el("div", { class: "sd-badges" });
-  badges.append(badge(m.kind || "—"));
+  badges.append(badge(sourceKindLabel(m.kind), "badge-neutral"));
   badges.append(m.enabled ? badge(t("sources.v4.enabled", "已启用"), "badge-success") : badge(t("sources.v4.disabled", "已停用"), "badge-neutral"));
   badges.append(badge(m.health || "—", healthTone(m.health)));
   basic.append(badges);
@@ -471,10 +542,6 @@ function render(res) {
     pair(t("sources.v4.namespace", "命名空间"), m.namespace, { muted: !m.namespace }),
     pair(t("source_detail.resolved", "目标解析"), resolved, { plain: true, muted: !m.targetsResolved }),
     pair(t("sources.v4.last_fire", "最近触发时间"), fmtTime(m.lastFiredAt), { muted: !m.lastFiredAt }),
-    pair(t("source_detail.last_poll", "最近轮询"), fmtTime(m.lastPollAt), { muted: !m.lastPollAt }),
-    pair(t("source_detail.consecutive_failures", "连续失败"), String(m.consecutiveFailures), {
-      muted: !(m.consecutiveFailures > 0),
-    }),
     pair(t("source_detail.created", "创建时间"), fmtTime(res && res.metadata ? res.metadata.creationTimestamp : null), {
       muted: !(res && res.metadata && res.metadata.creationTimestamp),
     }),
@@ -502,6 +569,8 @@ function render(res) {
   }
   if (cfg.payloadSchema) cfgSec.append(schemaTable(cfg.payloadSchema));
   body.append(cfgSec);
+
+  if (m.kind === "poll") body.append(pollSection(m));
 
   /* ---------- 目标能力：targets[] 的 capability 与 params ---------- */
   const tSec = section(t("sources.v4.targets", "目标能力"), "targets");

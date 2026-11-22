@@ -2829,6 +2829,12 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		cycle: () => cycleTheme(),
 	};
 
+	function sourceKindLabel(kind) { // 唯一真源：四份 locale 的 sources.kind.<kind>；表里没有的 kind 回落原值（宁可露出英文，也不要空白）
+		const raw = kind == null ? "" : String(kind).trim();
+		if (!raw) return "—";
+		return t("sources.kind." + raw, raw);
+	}
+
 	/**
 	 * capLabel 统一决定"能力在界面上怎么显示"。
 	 *
@@ -3852,6 +3858,31 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		};
 	}
 
+	function textOrNull(v) { // 空串与缺字段同义：都不渲染成一个空格，调用方按 null 走「没配」分支
+		if (v == null) return null;
+		const s = String(v);
+		return s === "" ? null : s;
+	}
+
+	function modelEnvelope(raw) { // 只投影四个维度（poll 与 webhook 同形状）；没配的维度给 null，由页面自己显示默认语义
+		if (!isObj(raw)) return null;
+		const src = (v) =>
+			isObj(v)
+				? {
+						header: textOrNull(v.header),
+						pointer: textOrNull(v.pointer),
+						joinFrom: textOrNull(v.joinFrom),
+						whole: v.whole === true,
+					}
+				: null;
+		return {
+			items: textOrNull(raw.items),
+			type: src(raw.type),
+			deliveryId: src(raw.deliveryId),
+			payload: src(raw.payload),
+		};
+	}
+
 	/**
 	 * Source 读投影。
 	 *
@@ -3878,12 +3909,20 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 				payload: cfg.payload == null ? null : deepCopy(cfg.payload),
 				expr: cfg.expr == null ? null : cfg.expr,
 				tz: cfg.tz == null ? null : cfg.tz,
+				url: textOrNull(cfg.url), // kind: poll 的拉取面：同样是白名单投影（headers/secretRef 不进来，前者可能夹带凭据）
+				schedule: isObj(cfg.schedule)
+					? { expr: textOrNull(cfg.schedule.expr), tz: textOrNull(cfg.schedule.tz) }
+					: null,
+				timeoutMs: typeof cfg.timeoutMs === "number" ? cfg.timeoutMs : null,
+				maxItems: typeof cfg.maxItems === "number" ? cfg.maxItems : null,
+				envelope: modelEnvelope(cfg.envelope),
 			},
 			targets: arr(spec.targets),
 			health: st.health == null ? null : st.health,
 			lastFiredAt: st.lastFiredAt == null ? null : st.lastFiredAt,
 			nextFireAt: st.nextFireAt == null ? null : st.nextFireAt,
 			lastPollAt: st.lastPollAt == null ? null : st.lastPollAt,
+			lastError: st.lastError == null ? null : String(st.lastError),
 			consecutiveFailures: st.consecutiveFailures == null ? 0 : st.consecutiveFailures,
 			skippedOverlaps: st.skippedOverlaps == null ? 0 : st.skippedOverlaps,
 			cursor: st.cursor == null ? null : st.cursor,
@@ -4626,6 +4665,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		filterCaps,
 		icon,
 		capLabel,
+		sourceKindLabel,
 		mountLayout,
 		mountPullRefresh,
 		closeSidebar,

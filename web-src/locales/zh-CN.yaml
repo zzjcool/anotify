@@ -1919,6 +1919,9 @@ sources:
       cancel: "取消"
       created: "已从 YAML 创建源"
       empty: "请先粘贴 YAML 文档"
+      poll_hint: '排期与定时器同语法；目标留空也合法（只收事件，不派发任务）。'
+      poll_example: "拉取源示例"
+      poll_example_fill: "填入示例"
     draft_dry: "草稿试运行（无需保存）"
     namespace: "命名空间"
     rv: '版本令牌'
@@ -1967,6 +1970,7 @@ sources:
     cron: 定时器
     webhook: Webhook
     manual: 手动
+    poll: 拉取
     github: 'GitHub'
   next_fire: 下次 {t}
   manual_hint: 点「立即运行」时触发
@@ -2636,6 +2640,27 @@ source_detail:
   updated: '更新时间'
   last_poll: '最近轮询'
   consecutive_failures: '连续失败'
+  poll_config: '拉取配置'
+  poll_url: 'URL'
+  poll_schedule: '排期'
+  poll_timeout: '单次超时'
+  poll_max_items: '单轮条目上限'
+  poll_envelope: '信封指针'
+  poll_env_hint: '四个指针都可缺省，缺省时按下方的默认值取值。'
+  poll_env_items: '条目数组'
+  poll_env_type: '事件类型'
+  poll_env_delivery: '去重键'
+  poll_env_payload: '载荷'
+  poll_env_default_items: '整份响应'
+  poll_env_default_type: '源名'
+  poll_env_default_delivery: '不去重'
+  poll_env_default_payload: '整个条目'
+  poll_status: '轮询状态'
+  poll_never: '尚未轮询'
+  poll_skipped: '跳过重叠'
+  poll_cursor: '游标'
+  poll_cursor_none: '还没有游标（首轮成功后写入）'
+  poll_error_none: '没有失败记录'
   hook_url: 'Hook URL'
   secret_set_yes: 'HMAC 签名已设置（只写不读）'
   secret_set_no: '没有 HMAC 签名'

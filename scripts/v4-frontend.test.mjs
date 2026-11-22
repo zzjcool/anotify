@@ -1058,6 +1058,85 @@ test("model.source 读投影：hookUrl/secretSet/payloadSchema，绝不含 token
 	assert.equal(empty.targetsResolved, false, "缺字段给 false（不是 []）");
 });
 
+const POLL_SOURCE_RES = {
+	apiVersion: "anotify/v1",
+	kind: "Source",
+	metadata: { name: "feed", namespace: "default", resourceVersion: "9" },
+	spec: {
+		kind: "poll",
+		enabled: true,
+		config: {
+			url: "https://api.example.com/feed",
+			headers: { Accept: "application/json" }, // 故意塞进读响应：headers 可能夹带凭据、secretRef 只是引用，两者都不进模型
+			secretRef: { name: "gh", header: "Authorization" },
+			schedule: { expr: "*/5 * * * *", tz: "UTC" },
+			timeoutMs: 5000,
+			maxItems: 20,
+			envelope: { items: ".", type: { pointer: "type" }, deliveryId: { pointer: "id" }, payload: { whole: true } },
+		},
+		targets: [],
+	},
+	status: {
+		health: "ok",
+		lastPollAt: "2024-05-01T00:00:00Z",
+		nextFireAt: "2024-05-01T00:05:00Z",
+		consecutiveFailures: 2,
+		skippedOverlaps: 1,
+		cursor: 'W/"abc"',
+		lastError: "boom",
+		targetsResolved: true,
+	},
+};
+
+test("model.source 的 poll 面：url/schedule/timeoutMs/maxItems/envelope 逐个投影，headers 与 secretRef 不进来", () => {
+	const { A } = loadAnotify();
+	const m = plain(A.model.source(POLL_SOURCE_RES));
+	assert.equal(m.kind, "poll");
+	assert.equal(m.config.url, "https://api.example.com/feed");
+	assert.deepEqual(m.config.schedule, { expr: "*/5 * * * *", tz: "UTC" });
+	assert.equal(m.config.timeoutMs, 5000);
+	assert.equal(m.config.maxItems, 20);
+	assert.equal(m.config.envelope.items, ".");
+	assert.equal(m.config.envelope.type.pointer, "type");
+	assert.equal(m.config.envelope.deliveryId.pointer, "id");
+	assert.equal(m.config.envelope.payload.whole, true);
+	assert.equal(m.lastPollAt, "2024-05-01T00:00:00Z");
+	assert.equal(m.nextFireAt, "2024-05-01T00:05:00Z");
+	assert.equal(m.consecutiveFailures, 2);
+	assert.equal(m.skippedOverlaps, 1);
+	assert.equal(m.cursor, 'W/"abc"');
+	assert.equal(m.lastError, "boom");
+	const keys = [...keysDeep(m)];
+	for (const absent of ["headers", "secretRef", "token", "secret"])
+		assert.ok(!keys.includes(absent), "模型里不得出现 " + absent);
+
+	const bare = plain(A.model.source({ spec: { kind: "poll" }, status: {} }));
+	assert.equal(bare.config.url, null);
+	assert.equal(bare.config.schedule, null);
+	assert.equal(bare.config.timeoutMs, null);
+	assert.equal(bare.config.maxItems, null);
+	assert.equal(bare.config.envelope, null);
+	assert.equal(bare.lastError, null);
+});
+
+test("sourceKindLabel：有词条用词条，未知 kind 回落原值，空值给 —（不出空白/undefined）", () => {
+	const { A, sandbox } = loadAnotify();
+	sandbox.AnotifyI18n = {
+		"sources.kind.cron": "定时器",
+		"sources.kind.webhook": "Webhook",
+		"sources.kind.manual": "手动",
+		"sources.kind.poll": "拉取",
+	};
+	assert.equal(A.sourceKindLabel("poll"), "拉取");
+	assert.equal(A.sourceKindLabel("cron"), "定时器");
+	assert.equal(A.sourceKindLabel("smtp"), "smtp", "表里没有的 kind 显示原值");
+	assert.equal(A.sourceKindLabel(""), "—");
+	assert.equal(A.sourceKindLabel(null), "—");
+	sandbox.AnotifyI18n = {};
+	assert.equal(A.sourceKindLabel("poll"), "poll", "词条缺失时回落原值，不出现 undefined");
+	assert.equal(A.sourceKindLabel(undefined), "—");
+});
+
 const PLAYBOOK_RES = {
 	apiVersion: "anotify/v1",
 	kind: "Playbook",

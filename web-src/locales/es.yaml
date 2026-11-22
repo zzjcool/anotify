@@ -1917,6 +1917,9 @@ sources:
       cancel: "Cancelar"
       created: "Fuente creada desde YAML"
       empty: "Primero pega un documento YAML"
+      poll_hint: 'La programación usa la misma sintaxis que un temporizador; una lista de targets vacía es válida (se reciben eventos pero no se despacha nada).'
+      poll_example: "Ejemplo de fuente de sondeo"
+      poll_example_fill: "Insertar ejemplo"
     draft_dry: "Vista previa de borrador (sin guardar)"
     namespace: "Espacio de nombres"
     rv: 'Token de versión'
@@ -1965,6 +1968,7 @@ sources:
     cron: Temporizador
     webhook: Webhook
     manual: Manual
+    poll: Sondeo
     github: 'GitHub'
   next_fire: próximo {t}
   manual_hint: Se dispara al hacer clic en Ejecutar
@@ -2631,6 +2635,27 @@ source_detail:
   updated: 'Actualizado'
   last_poll: 'Último sondeo'
   consecutive_failures: 'Fallos consecutivos'
+  poll_config: 'Configuración del sondeo'
+  poll_url: 'URL'
+  poll_schedule: 'Programación'
+  poll_timeout: 'Tiempo de espera por petición'
+  poll_max_items: 'Máximo de elementos por ronda'
+  poll_envelope: 'Punteros del sobre'
+  poll_env_hint: 'Los cuatro punteros son opcionales; si se omiten, se aplican los valores por defecto de abajo.'
+  poll_env_items: 'Array de elementos'
+  poll_env_type: 'Tipo de evento'
+  poll_env_delivery: 'Clave de deduplicación'
+  poll_env_payload: 'Carga útil'
+  poll_env_default_items: 'toda la respuesta'
+  poll_env_default_type: 'nombre de la fuente'
+  poll_env_default_delivery: 'sin deduplicación'
+  poll_env_default_payload: 'elemento completo'
+  poll_status: 'Estado del sondeo'
+  poll_never: 'Aún no se ha sondeado'
+  poll_skipped: 'Solapamientos omitidos'
+  poll_cursor: 'Cursor'
+  poll_cursor_none: 'Aún no hay cursor (se guarda tras la primera ronda correcta)'
+  poll_error_none: 'Sin fallos registrados'
   hook_url: 'Hook URL'
   secret_set_yes: 'La firma HMAC está configurada (solo escritura)'
   secret_set_no: 'Sin firma HMAC'
