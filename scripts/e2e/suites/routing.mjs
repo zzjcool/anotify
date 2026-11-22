@@ -13,7 +13,7 @@
  *   ───────────────────────────────────────  ────────────────────────────────────────────
  *   ① 上游没回报（不是剪枝）                  任务留 pending 且回执 pruned=[]（容量/无人两处都钉）
  *   ② no_edge                                源没有 targets → prune `no_target`；
- *                                            引用解析不到的出口 → 建源被拒（见 FINDING）
+ *                                            引用解析不到的出口 → 建源被拒（精确 400）
  *   ③ param_schema          v4 拆成 `param_missing`（缺必填）与 `param_type`（类型不符）两条
  *   ④ no_node               能力+源都在但没有节点持有该 digest → 任务照建、pending、不剪枝
  *   ⑤ foreign_user          v4 没有「按用户路由」：同一条意图 = 「源不属于本 ns → fire 404」
@@ -374,7 +374,6 @@ async function main() {
 	H.eq("no_target 不建任务", (nt.json?.tasks || []).length, 0);
 	expectPrune("no_target 留痕", nt, "no_target");
 
-	// 4.4 出口能力解析不到：v4 在**建源**时就拒（引用必须在本 ns 内可解析）。FINDING：当前回500（见文件头）。这里只钉「被拒 + 消息点名」，不把 5xx 固化成契约。
 	const brokenSrc = await V.createSource(
 		server.base,
 		session,

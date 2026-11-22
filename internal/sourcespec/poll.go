@@ -418,8 +418,7 @@ func blockedHostReason(host string) string {
 	return ""
 }
 
-// BlockedIPKind 是非公网 IP 的唯一分类器：写入期（CheckPollURL）与运行期（解析后 / dial 时）
-// 共用同一份网段判断，免得两处各写一套。
+// BlockedIPKind 是非公网 IP 的唯一分类器：写入期与运行期（解析后 / dial 时）共用同一份判断。
 func BlockedIPKind(ip net.IP) string {
 	if ip == nil {
 		return ""

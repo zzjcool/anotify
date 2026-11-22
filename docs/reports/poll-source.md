@@ -78,7 +78,7 @@ config:
 | `internal/sourcespec/poll.go` | 新增：`pollConfig` 归一化、`CheckPollURL`（写入期 SSRF）、`BlockedIPKind`（唯一 IP 分类器）、`NextPollTime`、`ParsePointerOrRoot` / `LookupIn` / `LookupItems`、`SecretRef` / `PollSchedule` |
 | `internal/sourcespec/envelope.go` | `Envelope` 加 `Items`（第四指针）；`normalizeEnvelope` 加 `withItems` 开关（webhook 仍不认它） |
 | `internal/sourcespec/config.go` · `sourcespec.go` | `KindPoll` 注册 + `knownFields[KindPoll]`（12 键）+ `Config` 的 poll 字段与读侧默认值 |
-| `internal/store/schema.sql` | `-- +migration 5 poll_source`：`sources` 加 5 列 + `namespace_secrets` 表 |
+| `internal/store/schema.sql` | `-- +migration 6 poll_source`：`sources` 加 5 列 + `namespace_secrets` 表（块 5 是 #522 的 router 结局表，本分支 rebase 到 main 后顺延） |
 | `internal/store/source.go` | `Source` 的 5 个轮询状态字段、`ListDueSourcesOfKind`、`MarkSourcePolled`、`BumpSourceSkippedOverlaps`、`sourceNextFire` 支持 poll |
 | `internal/store/namespace_credential.go` | 新增：凭据 upsert/get、`pollSecretOf`、`resolveSourceSecret`（缺失即 400 的 cause） |
 | `internal/source/poll.go` · `poll_fetch.go` · `poll_items.go` | 新增：`Poller`（tick/不重叠/退避/游标）、HTTP 客户端（三道 SSRF 闸 + 重定向策略 + 4 MiB）、item→`Input` 映射 |
@@ -86,7 +86,7 @@ config:
 | `internal/server/mux.go` | 登记 `poll` 后台循环（5s tick，走 `runBackgroundLoop` 的关停屏障） |
 | `api/resource.yaml` | `SourceStatus` 五个字段 + `SourceSpec.kind`/`config` 文档（poll 的 12 个键与 items 语义） |
 | `web/partials.js` · `web-src/pages/source-detail.html` · `web/mock.js` | `modelSource` 建模四个 status 字段；详情页基本信息追加「最近轮询」「连续失败」两行（不改布局） |
-| `scripts/e2e/suites/routing.mjs` | 新增 §13（48 条断言） |
+| `scripts/e2e/suites/routing.mjs` | 新增 §14（48 条断言；§13 是 #522 的决策通道） |
 
 > 为什么 poll 的代码在 `internal/source` 而不是新包：注释密度棘轮是**逐目录等值**的双向棘轮
 > （新目录注释预算 10 行、总注释行不许增长），新包要么抬基线（本次明确不允许），要么把
@@ -207,7 +207,7 @@ $ go test ./internal/store/ -run TestNamespaceCredentialResolvesPollSecretRef -v
 | `api/resource.yaml` | `SourceSpec.kind`（`webhook`/`cron`/`manual`/`poll`）、`config` 的 poll 12 键与 items 语义、`SourceStatus` 的 `cursor`/`lastPollAt`/`consecutiveFailures`/`skippedOverlaps`（后两者进 `required`）+ `lastError` 描述改写 |
 | parity | `TestOpenAPIParityDTOFields`（`srcStatusView ↔ SourceStatus` 双向字段核对，无新增 schema 所以棘轮不动）；`make contract` 的 `check_openapi` / `check_envelope` 通过 |
 | DTO | `internal/server/resource_source.go` 的 `srcStatusView` + `srcEnvelopeOf` 填充 |
-| e2e | `scripts/e2e/suites/routing.mjs` §13（48 条断言，见 §5 数字） |
+| e2e | `scripts/e2e/suites/routing.mjs` §14（48 条断言，见 §5 数字） |
 | 单测 | `sourcespec/poll_test.go`、`source/poll_test.go`、`store/source_test.go` 两个用例 |
 | UI | `web-src/pages/source-detail.html` 基本信息追加「最近轮询」（`lastPollAt`）与「连续失败」（`consecutiveFailures`），`web/partials.js` 的 `modelSource` 建模；`check-wire-fields` 绿 |
 
@@ -260,7 +260,7 @@ $ make e2e-affected
   orphans deploy live_agent node_v4 playbook_release i18n i18n_coverage frontend vars_ui lang_hint
   cli_auth passkey_enroll admin_flow deeplink auth_flow ux_regression_19_23 recovery_next
   events_paging ui_shift p2_guards admin_login
-  ✅ routing            343通过/0失败   7.1s  mode=real     ← 含新增 §13 的 48 条
+  ✅ routing            343通过/0失败   7.1s  mode=real     ← 含新增 §14 的 48 条
   ✅ persistence        130通过/0失败  30.2s  mode=real
   ✅ frontend            43通过/0失败 209.1s  mode=real
   ✅ ui_shift            87通过/0失败 187.4s  mode=explicit-mock

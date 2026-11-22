@@ -21,10 +21,8 @@ var (
 	ErrInvalidConfig = errors.New("invalid source config")
 )
 
-// 本期 kind 注册表的三个内置项（source.md §1 / §7 D0）。
-//
-// kind 是**开放集合**：合法值 = 注册表里有的项。判定一律走 IsKind（查表），
-// 不写「不是这三个就拒」——那样开注册表时要逐处翻。
+// 本期 kind 注册表的四个内置项。kind 是**开放集合**：合法值 = 注册表里有的项，判定一律走
+// IsKind（查表），不写「不是这四个就拒」——那样开注册表时要逐处翻。
 const (
 	KindCron    = "cron"
 	KindWebhook = "webhook"
