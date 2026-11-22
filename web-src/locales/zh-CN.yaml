@@ -1797,6 +1797,8 @@ nodes:
     vars_save: "保存这张表"
     vars_reset: "放弃改动"
     vars_reset_confirm: "放弃表格里未保存的改动，按服务器当前值重画？"
+    vars_refresh_paused: "有未保存改动，暂停刷新"
+    vars_refresh_confirm: "刷新会按服务器当前值重画表格，未保存的改动会丢掉。继续刷新？"
     vars_saved: "已保存：表格改动已写进同一份 YAML 文档。"
     vars_no_changes: "没有改动。"
     vars_finish_edit: "先确定或取消正在编辑的那一行。"

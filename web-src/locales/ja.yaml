@@ -1795,6 +1795,8 @@ nodes:
     vars_save: "この表を保存"
     vars_reset: "変更を破棄"
     vars_reset_confirm: "表の未保存の変更を破棄し、サーバーの現在値で描き直しますか？"
+    vars_refresh_paused: "未保存の変更があるため、更新を一時停止しています"
+    vars_refresh_confirm: "更新するとサーバーの現在値で表を描き直すため、未保存の変更は失われます。更新しますか？"
     vars_saved: "保存しました: 表の変更は同じ YAML 文書に書き込まれました。"
     vars_no_changes: "変更はありません。"
     vars_finish_edit: "編集中の行を先に確定するかキャンセルしてください。"

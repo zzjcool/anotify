@@ -1795,6 +1795,8 @@ nodes:
     vars_save: "Guardar esta tabla"
     vars_reset: "Descartar cambios"
     vars_reset_confirm: "¿Descartar los cambios sin guardar de la tabla y redibujar con los valores del servidor?"
+    vars_refresh_paused: "Cambios sin guardar: actualización en pausa"
+    vars_refresh_confirm: "Actualizar redibuja la tabla con los valores del servidor y descarta los cambios sin guardar. ¿Actualizar igualmente?"
     vars_saved: "Guardado: los cambios de la tabla se escribieron en el mismo documento YAML."
     vars_no_changes: "Sin cambios."
     vars_finish_edit: "Aplica o cancela primero la fila que estás editando."
