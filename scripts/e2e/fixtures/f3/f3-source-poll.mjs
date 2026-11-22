@@ -113,7 +113,7 @@ export async function sourcePoll(d) {
   check('POLL-05 the envelope shows all four pointers (items / type / deliveryId / payload)');
 
   const status = await pairs(page, sec);
-  assert.equal(valueOf(status, '最近轮询'), '尚未轮询', '从未轮询过必须说「尚未轮询」，不是 —');
+  assert.equal(valueOf(status, '最近轮询'), '尚未轮询', '从未轮询过必须说「尚未轮询」，不是 —（实际 ' + JSON.stringify(status) + '）');
   assert.equal(valueOf(status, '连续失败'), '0');
   assert.equal(valueOf(status, '跳过重叠'), '0');
   assert.equal(valueOf(status, '游标').startsWith('还没有游标'), true, '还没有游标时不能显示成 —，实际 ' + valueOf(status, '游标'));
@@ -149,6 +149,52 @@ export async function sourcePoll(d) {
   await shot('source-detail-poll-360');
   check('POLL-07 the 拉取 block never scrolls sideways at 360px (long url and error text wrap)');
 
+  const LONG_CURSOR = 'W/"' + 'c'.repeat(80) + '"';
+  const LONG_ERROR = 'pull failed: upstream returned 503 on the first line' + '\n' + 'retry-after detail '.repeat(20);
+  await page.addInitScript(([name, cursor, error]) => {
+    const inner = window.fetch;
+    window.fetch = async (input, init) => {
+      const res = await inner(input, init);
+      const url = typeof input === 'string' ? input : (input && input.url) || '';
+      if (!url.includes('/sources/' + name)) return res;
+      const body = await res.clone().json();
+      if (!body || !body.status) return res;
+      body.status.cursor = cursor;
+      body.status.lastError = error;
+      body.status.lastPollAt = body.status.lastPollAt || '2024-05-01T00:00:00Z';
+      body.status.consecutiveFailures = 2;
+      body.status.skippedOverlaps = 3;
+      return new Response(JSON.stringify(body), { status: res.status, headers: { 'Content-Type': 'application/json' } });
+    };
+  }, [SOURCE, LONG_CURSOR, LONG_ERROR]);
+  await goto('source-detail', 'namespace=default&name=' + SOURCE, 'zh-CN');
+  await visible(sec);
+  const polled = await pairs(page, sec);
+  const cursorCell = polled.find((cell) => cell.k.trim() === '游标');
+  assert.ok(cursorCell, '有游标时游标那一行必须在，实际 ' + JSON.stringify(polled));
+  assert.equal(cursorCell.v.endsWith('…'), true, '长游标必须截断显示，实际 ' + cursorCell.v);
+  assert.equal(cursorCell.v.length <= 49, true, '截断后的游标不许撑宽字段，实际长度 ' + cursorCell.v.length);
+  assert.equal(cursorCell.title, LONG_CURSOR, '截断值的 title 必须是全文（不是截断文本）');
+  assert.equal(valueOf(polled, '最近轮询') === '尚未轮询', false, '真的轮询过就不许再显示「尚未轮询」');
+  assert.equal(valueOf(polled, '连续失败'), '2', '连续失败必须显示 2');
+  assert.equal(valueOf(polled, '跳过重叠'), '3', '跳过重叠必须显示 3');
+  await page.setViewportSize({ width: 360, height: 800 });
+  await goto('source-detail', 'namespace=default&name=' + SOURCE, 'zh-CN');
+  await visible(sec);
+  await page.locator(sec + ' #src-detail-poll-error > summary').click();
+  const errBox = await page.locator(sec + ' #src-detail-poll-error .sd-pre').evaluate((n) => ({
+    text: n.textContent,
+    wraps: n.scrollWidth <= n.clientWidth + 1,
+    right: Math.round(n.getBoundingClientRect().right),
+  }));
+  assert.equal(errBox.text.includes('first line'), true, '多行错误必须原样印出来，实际 ' + errBox.text.slice(0, 80));
+  assert.equal(errBox.text.includes('\n'), true, '多行错误必须保留换行（不是压成一行）');
+  assert.equal(errBox.wraps, true, '长错误文本必须折行（不许内部横滚）');
+  assert.equal(errBox.right <= 362, true, '长错误文本不许撑出 360px 视口，实际 right=' + errBox.right);
+  await clean('poll detail 360 with long error');
+  await shot('source-detail-poll-error-360');
+  check('POLL-08 a polled source shows cursor (truncated + full title) and the multi-line error, both wrapped at 360px');
+
   await goto('sources');
   await visible('#src-list > div[data-name="' + SOURCE + '"]');
   await page.addInitScript((name) => {
@@ -178,5 +224,5 @@ export async function sourcePoll(d) {
   assert.equal(rawBadge.trim(), 'smtp-relay', '表里没有的 kind 必须回落显示原值，实际 ' + JSON.stringify(rawBadge));
   const bodyText = await page.locator('#src-list').innerText();
   assert.equal(/undefined|null/.test(bodyText), false, '未知 kind 不许在页面上露出 undefined/null，实际 ' + bodyText.slice(0, 200));
-  check('POLL-08 an unknown kind falls back to its raw value on the badge (never blank, never undefined)');
+  check('POLL-09 an unknown kind falls back to its raw value on the badge (never blank, never undefined)');
 }
