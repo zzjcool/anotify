@@ -51,6 +51,7 @@ func (a *playbookAPI) register(mux *http.ServeMux) {
 		{"POST " + base + "/{slug}/install", a.install},
 		{"GET " + base + "/{slug}/versions", a.listVersions},
 		{"DELETE " + base + "/{slug}/releases/{release}", a.uninstallRelease},
+		{"GET " + base + "/{slug}/releases/{release}/yaml", a.releaseYAML},
 		{"GET " + base + "/{slug}/installs", a.listInstalls},
 		{"GET " + base + "/{slug}/installs/{installId}", a.getInstall},
 	}
@@ -516,14 +517,12 @@ func decodePlaybookAction(r *http.Request) (playbookActionBody, error) {
 
 // ---------- 响应形状 ----------
 
-// playbookStatus 是 Playbook 的 status 读模型（playbook.md §6.1）。
-//
-// 每一项都必须是**真实派生**，派不出来就给空（宁少不编）：
-// - items / sources / lastInstallId / unapplied 来自回执历史：`ListPlaybookInstalls` 的
-// installed_from 反查给出「这个包历史上装出来的行」，最近一组的 lastInstallId 给出 该组最新回执（`unapplied[]` 就从这份回执读，它才是「差异没生效」的原始记录）。
-// - conditions 是**成员能力的四条 condition** 聚合（playbook.md §6.1）：成员行按 installed_from 反查出来（`ListPlaybookInstalls` 的 groups[].capabilities），再逐行
-// 取该能力自己的 status 派生（与 get capability 同一份实现）。任一成员 False ⇒ 该 type 聚合后 False，reason/message 取第一个失败成员，members 列出失败者。
-// **不编造**：反查不到行（能力被删）就不参与，四种 type 都聚不出来时 conditions 仍是 []。
+// playbookStatus 是 Playbook 的 status 读模型（playbook.md §6.1）：每一项都必须真实派生，
+// 派不出来就给空（宁少不编）。
+// - items / sources / lastInstallId / unapplied 来自回执历史（`ListPlaybookInstalls` 的
+// installed_from 反查 + 最近一组回执的 unapplied[]）。
+// - conditions 是成员能力四条 condition 的聚合（逐行取该能力的 status 派生）；反查不到行
+// 就不参与，四种 type 都聚不出来时仍是 []。
 // - ready 由 conditions + unapplied 派生（四条全 True 且 unapplied 为空）。
 //
 // 刻意**没有** `blocker`：它要求「最该先做的一件事」，来源正是成员能力的四条 condition；条件拿不到时给一个 blocker 就是纯编造，故省略该键（派生出事实时再加）。

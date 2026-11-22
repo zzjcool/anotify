@@ -2392,6 +2392,10 @@ pb:
     release_group: "{release} · {n} グループ"
     single_receipt: "完全な単一記録を読む"
     no_installs: "通常インストール記録なし（試行は記録しません）。"
+    view_yaml: "YAML を表示"
+    yaml_title: "インスタンス YAML"
+    yaml_empty: "このインスタンスに表示できるオブジェクトはありません"
+    yaml_load_failed: "YAML の読み込みに失敗しました"
     raw_missing: '元の <code>spec.files</code> / <code>playbook.yaml</code> がありません。要約をテンプレートとして保存できません。'
     missing_id: "パッケージ slug がありません。"
     invalid_path: "無効または重複したパス。パッケージ内の相対パスを使用してください。"

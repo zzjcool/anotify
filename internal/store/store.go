@@ -122,54 +122,16 @@ func openWithOptions(path string, modify func(*migrationSet), maxConns int) (*DB
 		_ = db.Close()
 		return nil, err
 	}
-	// 统计信息维护（reviewer 3A · MAJOR-1）：SQLite 官方推荐的「启动时/关闭前」姿势——
-	// 统计新鲜时它是一次纯检查，成本趋近 0。
+	// 统计信息维护（reviewer 3A · MAJOR-1）：SQLite 官方推荐的「启动时/关闭前」姿势，统计新鲜时
+	// 成本趋近 0。本句只覆盖「缺失」（表上有索引、sqlite_stat1 里没有该表条目），**不覆盖过期**：
+	// 行数漂移后估计仍停在旧值（mask 0x2 没有 0x10000 位，实测两遍 optimize=0x2 刷不动）——
+	// 过期由 `DB.MaintainStats` + `lease/stats.go` 的 6h 任务判定（比 count(*) 差 ≥10 倍就 ANALYZE）。
 	//
-	// 注意它承诺的范围（别读成「统计永不过期」）：这一句**只覆盖「缺失」**——表上有索引、
-	// sqlite_stat1 里却一条该表的条目都没有。「过期」（行数漂移后估计仍停在上次的值）
-	// 由**运行期维护**负责：本文件的 `DB.MaintainStats` + `lease/stats.go` 的 6h 任务，
-	// 判定逻辑见下面的 ② 与 `refreshDriftedStats`。
+	// 为什么是 `=0x2` 而不是裸 `PRAGMA optimize`：裸写等价 mask 0x0fffe，其中 0x10 位会把
+	// ANALYZE 降级成 `analysis_limit=2000` 的**采样**分析，2 万行单一命名空间被低估 10 倍
+	// （实测仍 13~15ms，全量 ANALYZE 后 0.17ms）。只传 0x2 时分析本身是全量的。
 	//
-	// 本批它**只承诺一件事**：把「库很干净、规划器却是盲的」里那条**够得到**的补上——
-	//   ① 新库空表建好之后再灌到几万行：建库时没有任何 ANALYZE（空表上一行 stat1
-	//      都不写），等于没写统计；重开一次 Open，
-	//      mask 0x2 的判定规则是「表上有索引、但 sqlite_stat1 里没有该表的条目」——
-	//      与会话无关、也不需要行数变化（实测：新库灌完 2400 行，重开一次 Open 就补出全量统计），
-	//      正是这一刻，于是补出全量统计。
-	//
-	// ② 「统计随行数漂移、optimize 会顺手刷新」**不成立**（第二轮复审 + #265 实测）：
-	//   mask 0x2 够不到运行期漂移。「行数涨 10 倍后复查」那条规则要 `0x10000` 位，而
-	//   `0x2` 根本没有那一位。实测两遍，结论一致：
-	//     · 100 行 ANALYZE 后重开一次 Open（100 → 2100 行，21×）：stat1 里仍是 100；
-	//     · 100 行 ANALYZE 后灌到 2500 行（25×）、**同一连接跑过 tasks 查询**，直接调
-	//       `PRAGMA optimize=0x2`：返回空建议集，stat1 里仍是 100。
-	//   也就是说「运行期调一遍 optimize 就能刷新统计」是假象——这正是 #265 一开始只被
-	//   **字面上**修掉的原因（6h 维护任务当时跑的也是这条 `=0x2`）。
-	//
-	//   现在的分工：`PRAGMA optimize=0x2` 只管「缺失」（不会误判、代价趋近 0），
-	//   **「过期」由 `refreshDriftedStats` 自己做确定性判定**——拿 `sqlite_stat1` 里的行数
-	//   估计与 `SELECT count(*) FROM tasks` 比，差 ≥10 倍就 `ANALYZE "tasks"`。
-	//   为什么不干脆改用 `PRAGMA optimize=0x10002`：0x10000 的判定挂在**连接级**的
-	//   表使用记录上，而维护任务从连接池里拿到哪条连接不确定（实测那条路径能刷、但判定
-	//   依据是「本连接用过该表」，冷启动/新连接上不保证成立）；而且它会对**任意**漂移表
-	//   下手，与「后台只碰 tasks」的约定不符。自己比一次行数是确定性的，成本是一条
-	//   `count(*)`（走最小索引，百万行量级 ~几十毫秒，6h 一次）。
-	//
-	// 为什么是 `=0x2` 而不是裸 `PRAGMA optimize`（**本行与冻结计划的一处刻意偏差，实测驱动**）：
-	//   裸写等价于 mask 0x0fffe，其中 0x10 位会把每次 ANALYZE 降级成
-	//   `analysis_limit = min(analysis_limit, SQLITE_DEFAULT_OPTIMIZE_LIMIT=2000)` 的**采样**分析
-	//   （见 sqlite 源码 pragma.c 的 "0x00010 Run all ANALYZE operations using an analysis_limit"
-	//   那段注释）。采样只按样本算「每个前缀值平均多少行」，不会按全表重新放大，于是 2 万行、
-	//   单一命名空间的数据被记成 idx_tasks_ns_created="20000 2001 3 1"（真值 20000）——
-	//   「按命名空间扫」被低估 10 倍，规划器又把 status= 稀有值 的列表查询抢回新索引，
-	//   实测 20k 行仍 13~15ms（全量 ANALYZE 后是 0.17ms）。去掉 0x10（= 只传 0x2）就只剩
-	//   「表上有索引但没有 stat1 条目 → 补一次」这一条判定规则（其余规则见 ②），
-	//   但分析本身是全量的：实测 stat1 与手工 ANALYZE 完全一致。
-	//   若要回退成裸 `PRAGMA optimize`，把下面这行的 `=0x2` 删掉即可（代价见上）。
-	//
-	// 与形状门禁的关系：本语句写的 sqlite_stat1 / sqlite_stat4 是 `sqlite_` 前缀内部表，
-	// masterDDL（schema_baseline_test.go）用 `name NOT LIKE 'sqlite_%'` 把它们过滤掉了——
-	// 所以它**不会**破坏「结构 / 重开幂等」那道门禁（统计是运行期数据，不是 schema 形状）。
+	// sqlite_stat1/stat4 是 `sqlite_` 内部表，被 masterDDL 的形状门禁过滤，不影响「结构/重开幂等」。
 	// 走裸 `*sql.DB` 而不是 `d.stmts`：此刻 DB 还没构造出来（语句缓存是紧随其后才建的）；
 	// 而 `PRAGMA optimize` 本身在 `maintainStatsOn` 里是 `QueryContext`（要读回建议行）+ 对
 	// 每条建议 `ExecContext`，不是一条 `db.Exec`。

@@ -15,6 +15,8 @@ const PB = {
 	versions: (slug) => `${V.P.playbook(NS, slug)}/versions`,
 	installById: (slug, id) => `${V.P.playbook(NS, slug)}/installs/${encodeURIComponent(id)}`,
 	release: (slug, rel) => `${V.P.playbook(NS, slug)}/releases/${encodeURIComponent(rel)}`,
+	releaseYAML: (slug, rel) =>
+		`${V.P.playbook(NS, slug)}/releases/${encodeURIComponent(rel)}/yaml`,
 };
 
 const VALUES_BLOCK = `    type: object
@@ -88,6 +90,10 @@ ${targets
 	)
 	.join("\n")}
 `;
+}
+
+function sourceDocSecret(name, targets) {
+	return sourceDoc(name, targets).replace("config: {}", "config: { secret: 'e2e-hook-secret' }");
 }
 
 async function createPackage(ctx, slug, files) {
@@ -881,6 +887,90 @@ async function partRequires(ctx) {
 	);
 }
 
+async function partReleaseYAML(ctx) {
+	console.log("--- 10. 按 release 导出对象 YAML（#536）---");
+	const slug = "pb-release-yaml";
+	await createPackage(ctx, slug, {
+		"playbook.yaml": entryDoc(slug, ["capabilities/z.yaml", "capabilities/a.yaml"], ["sources/on-push.yaml"]),
+		"capabilities/z.yaml": capabilityDoc("{{values.project}}-z-review", []),
+		"capabilities/a.yaml": capabilityDoc("{{values.project}}-a-fixer", []),
+		"sources/on-push.yaml": sourceDocSecret("{{values.project}}-export-push", ["{{values.project}}-z-review"]),
+	});
+	const foreign = "pb-release-yaml-other";
+	await createPackage(ctx, foreign, {
+		"playbook.yaml": entryDoc(foreign, ["capabilities/manual.yaml"], ["sources/manual.yaml"]),
+		"capabilities/manual.yaml": capabilityDoc("demo-manual-review", []),
+		"sources/manual.yaml": sourceDoc("demo-manual-push", ["demo-manual-review"]),
+	});
+	V.expectStatus("别人的包安装 → 200", await install(ctx, foreign), 200);
+
+	const inst = await install(ctx, slug, "default");
+	V.expectStatus("导出用例安装 → 200", inst, 200);
+	H.eq("回执只记两个能力", (inst.json?.created?.capabilities || []).slice().sort(), ["demo-a-fixer@1", "demo-z-review@1"]);
+
+	const path = PB.releaseYAML(slug, "default");
+	const before = dbFingerprint(ctx.dbPath);
+	const first = await H.req(ctx.base, path, { session: ctx.session });
+	V.expectStatus("导出实例 YAML → 200", first, 200);
+	H.eq("Content-Type 是 application/yaml", first.headers["content-type"], "application/yaml; charset=utf-8");
+	const parts = first.text.split("---\n");
+	const header = parts[0];
+	const docs = parts.slice(1);
+	H.eq("头注释三行 + 2 能力 + 1 源", docs.length, 3);
+	H.check("头注释写清实例与对象数", header.includes("release: default") && header.includes("objects: 3"), header);
+	H.check("头注释写实「当前生效版本」", header.includes("当前生效版本"), header);
+	H.eq(
+		"能力文档与单对象端点逐字节相同（a-fixer）",
+		docs[0],
+		(await H.req(ctx.base, V.P.capability(NS, "demo-a-fixer") + "/yaml", { session: ctx.session })).json?.yaml,
+	);
+	H.eq(
+		"能力文档与单对象端点逐字节相同（z-review）",
+		docs[1],
+		(await H.req(ctx.base, V.P.capability(NS, "demo-z-review") + "/yaml", { session: ctx.session })).json?.yaml,
+	);
+	H.eq(
+		"源文档与单对象端点逐字节相同",
+		docs[2],
+		(await H.req(ctx.base, V.P.source(NS, "demo-export-push") + "/yaml", { session: ctx.session })).json?.yaml,
+	);
+	H.check(
+		"顺序固定：能力升序（a-fixer → z-review）再源",
+		first.text.indexOf("name: demo-a-fixer") < first.text.indexOf("name: demo-z-review") &&
+			first.text.indexOf("name: demo-z-review") < first.text.indexOf("name: demo-export-push"),
+		first.text.slice(0, 200),
+	);
+	H.check(
+		"不越界：别人的同前缀对象不在导出里",
+		!first.text.includes("demo-manual-review") && !first.text.includes("demo-manual-push"),
+		first.text.slice(0, 200),
+	);
+	const src = (await H.req(ctx.base, V.P.source(NS, "demo-export-push"), { session: ctx.session })).json || {};
+	const hook = src.status?.hookUrl || src.spec?.config?.hookUrl || "";
+	H.check("webhook 源的 hookUrl 只读投影在", hook.startsWith("/v1/hooks/"), hook);
+	H.check("secret 原文不出现、只给 secretSet", !first.text.includes("e2e-hook-secret") && first.text.includes("secretSet: true"), first.text.slice(0, 400));
+	H.check(
+		"token 只出现在 hookUrl 里",
+		!first.text.replaceAll(hook, "").includes(hook.replace("/v1/hooks/", "")),
+		"token 泄漏",
+	);
+
+	const second = await H.req(ctx.base, path, { session: ctx.session });
+	H.eq("同一 release 两次导出逐字节相同", second.text, first.text);
+	H.eq("导出是只读的（库指纹不变）", dbFingerprint(ctx.dbPath), before);
+
+	V.expectReason("不存在的 release → 404 release_not_found", await H.req(ctx.base, PB.releaseYAML(slug, "nope"), { session: ctx.session }), 404, "release_not_found");
+	V.expectStatus("卸载 default → 200", await uninstall(ctx, slug, "default"), 200);
+	V.expectReason("已卸载的 release → 404 release_not_found", await H.req(ctx.base, path, { session: ctx.session }), 404, "release_not_found");
+
+	const empty = "pb-release-yaml-empty";
+	await createPackage(ctx, empty, { "playbook.yaml": entryDoc(empty, [], []) });
+	V.expectStatus("0 对象的包安装 → 200", await install(ctx, empty), 200);
+	const zero = await H.req(ctx.base, PB.releaseYAML(empty, empty), { session: ctx.session });
+	V.expectStatus("0 对象的实例导出 → 200", zero, 200);
+	H.check("0 对象只有头注释且 objects: 0", zero.text.includes("objects: 0") && !zero.text.includes("---"), zero.text);
+}
+
 async function main() {
 	H.startTimer();
 	console.log("=== SUITE: playbook_release（#505 安装 release 身份 / #510 按 release 卸载 / #511 包版本历史 / #534 依赖锁）===");
@@ -897,6 +987,7 @@ async function main() {
 		await partUninstallKeepsManualRow(ctx);
 		await partUninstallIdempotent(ctx);
 		await partUninstallErrors(ctx);
+		await partReleaseYAML(ctx);
 		await partVersions(ctx);
 		await partRequires(ctx);
 	} finally {

@@ -68,16 +68,12 @@ func MaskValues(sch map[string]any, values map[string]any) map[string]any {
 	return masked
 }
 
-// maskValue 递归打码一个值（只按 schema 判密文，不按值猜）。
-//
-// 四条分支（顺序即优先级）： - 节点自身 `writeOnly: true` → 整值换成 `MaskedValue`；
-// - 节点带「无法证明」的关键字（`cannotProveNoWriteOnly`：`$ref` / `if` / `patternProperties` …）→ 同样整值换成 `MaskedValue`。`$ref` 指向的节点里可能写着
-//
-// writeOnly，而中枢不做求值器（`internal/schema` 不变量 I6），所以“证明不了”就按密文处置： 多打码是可用性问题，漏明文是安全问题（GAP-1）；
-// - 对象：键命中 `properties` 走该子 schema；**未命中的键**若节点上的 `additionalProperties` 是「自身/子树含 writeOnly 的对象 schema」→ 按它递归打码
-//
-// （任意键都可能是密文）；否则原样透传——非 writeOnly 的 `additionalProperties` 行为完全不变（一次多余深拷贝都不做）；
-//   - 数组：按位置取 schema（见 `arrayElementSchema`）。
+// maskValue 递归打码一个值（只按 schema 判密文，不按值猜）。四条分支，顺序即优先级：
+//   - 节点自身 `writeOnly: true` → 整值换成 `MaskedValue`；
+//   - 带「无法证明」关键字（`cannotProveNoWriteOnly`：`$ref` / `if` / `patternProperties` …）→
+//     同样整值打码：中枢不做求值器（`internal/schema` 不变量 I6），多打码是可用性问题，漏明文是安全问题；
+//   - 对象：命中 `properties` 走子 schema；未命中的键按含 writeOnly 的 `additionalProperties` 递归；
+//   - 数组：按位置取 schema（`arrayElementSchema`）。
 func maskValue(sch map[string]any, v any) any {
 	if isWriteOnly(sch) || cannotProveNoWriteOnly(sch) {
 		return MaskedValue

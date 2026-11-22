@@ -2394,6 +2394,10 @@ pb:
     release_group: "{release} · {n} 组"
     single_receipt: "读取完整单次回执"
     no_installs: "没有普通安装记录（试装不计入）。"
+    view_yaml: "查看 YAML"
+    yaml_title: "实例 YAML"
+    yaml_empty: "该实例没有可展示的对象"
+    yaml_load_failed: "YAML 载入失败"
     raw_missing: '缺少原始 <code>spec.files</code> / <code>playbook.yaml</code>；不能用摘要保存模板。'
     missing_id: "缺少安装包 slug。"
     invalid_path: "文件路径无效或已存在；请使用包内相对路径。"
