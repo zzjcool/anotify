@@ -32,9 +32,6 @@
  *
  * 环境变量：
  *   E2E_CONCURRENCY  Chrome 类套件并发上限（默认 4）
- *   E2E_PARALLEL     全局套件并发上限（跨 HTTP/Chrome 两类）。默认 0 = 不限；
- *                    只影响套件并发度，不影响机器级互斥（#529）与分片语义（#542）
- *   E2E_SERIAL_TAIL  逗号分隔的套件名：这些套件排在最后**串行**单跑（#542 实验用）
  *   E2E_RESULTS_DIR  JSON 结果输出目录（默认 .e2e-bin/results）
  *   ANOTIFY_BIN / DEVSEED_BIN / ANODE_BIN  二进制路径（由 run_all.sh 设置）
  *   ANOTIFY_VAPID_*  VAPID 密钥（由 run_all.sh 设置）
@@ -232,36 +229,6 @@ const SUITE_REGISTRY_SIZE = 30;
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");
 const CONCURRENCY = parseInt(process.env.E2E_CONCURRENCY || "4", 10);
-// #542：全局（跨 HTTP/Chrome 两类）套件并发上限。
-//   0 / 不设 = 不限 ⇒ 与历史行为逐字一致（HTTP 类全并行 + Chrome 类并发 CONCURRENCY）。
-//   为什么需要它：矩阵**内部**的并发是独立于 #529 机器级互斥的第二层压力 ——
-//   同机 8 核上 14 个 HTTP 套件同时起，capacity/routing 会撞 sqlite 锁与 CPU 抖动。
-//   上限必须只改「同时跑几个套件」，不许改锁、分片、预算、重试与判分。
-const PARALLEL_LIMIT = (() => {
-	const raw = process.env.E2E_PARALLEL;
-	if (raw === undefined || raw === "") return 0;
-	const v = Number(raw);
-	if (!Number.isInteger(v) || v < 0) {
-		console.error(`E2E_PARALLEL 必须是非负整数（0 = 不限），现在是 '${raw}'`);
-		process.exit(2);
-	}
-	return v;
-})();
-// #542 实验用：这些套件排到最后串行单跑（默认空 = 不启用）。
-// 名字必须真实存在：静默丢弃一个拼错的套件，会让「重套件已串行」变成一句空话。
-const SERIAL_TAIL = (() => {
-	const list = (process.env.E2E_SERIAL_TAIL || "")
-		.split(",")
-		.map((s) => s.trim())
-		.filter(Boolean);
-	const unknown = list.filter((s) => !ALL_SUITES.includes(s));
-	if (unknown.length > 0) {
-		console.error(`E2E_SERIAL_TAIL 里有未注册套件: ${unknown.join(", ")}`);
-		console.error(`已知套件: ${ALL_SUITES.join(", ")}`);
-		process.exit(2);
-	}
-	return list;
-})();
 // #488：套件级重试的墙钟上限。再重试一次就会撞上 job 超时（= 赌整份 artifact 丢掉）。
 const RETRY_WALL_LIMIT_MS = (() => {
 	const v = Number(process.env.E2E_RETRY_WALL_LIMIT_MS);
@@ -476,67 +443,37 @@ function attemptDetailLines(s) {
 // ---------- 并行执行 ----------
 async function runParallel(suites, runStartedAt) {
 	// 分组
-	const tail = SERIAL_TAIL.filter((s) => suites.includes(s));
-	const tailSet = new Set(tail);
-	const head = suites.filter((s) => !tailSet.has(s));
-
-	const results = await runParallelGroup(head, runStartedAt);
-
-	// #542 实验配置 D：重套件排在最后串行单跑（与在并行组里跑是同一份判分口径）。
-	if (tail.length > 0) {
-		console.log(`▶ 串行收尾（E2E_SERIAL_TAIL）：${tail.join(", ")}`);
-		for (const name of tail) {
-			const t0 = Date.now();
-			const r = await runSuite(name, runStartedAt);
-			results.push(r);
-			console.log(
-				`  ${r.status === "pass" ? "✅" : "❌"} 串行收尾 ${name} ${((Date.now() - t0) / 1000).toFixed(1)}s`,
-			);
-		}
-	}
-	return results;
-}
-
-async function runParallelGroup(suites, runStartedAt) {
 	const httpSuites = suites.filter((s) => HTTP_SUITES.includes(s));
 	const chromeSuites = suites.filter((s) => CHROME_SUITES.includes(s));
 
-	// 全局上限（0 = 不限）与 Chrome 类上限**叠加**：两者都只是「同时跑几个套件」。
-	const globalSem = PARALLEL_LIMIT > 0 ? new Semaphore(PARALLEL_LIMIT) : null;
 	const sem = new Semaphore(CONCURRENCY);
 	const results = [];
 
-	const run = async (name, chrome) => {
-		if (globalSem) await globalSem.acquire();
-		try {
-			if (!chrome) return await runSuite(name, runStartedAt);
-			await sem.acquire();
-			try {
-				return await runSuite(name, runStartedAt);
-			} finally {
-				sem.release();
-			}
-		} finally {
-			if (globalSem) globalSem.release();
-		}
-	};
-
 	// HTTP 类全并行 + Chrome 类信号量控制
 	const tasks = [];
+
 	for (const name of httpSuites) {
 		tasks.push(
-			run(name, false).then((r) => {
+			(async () => {
+				const r = await runSuite(name, runStartedAt);
 				results.push(r);
 				return r;
-			}),
+			})(),
 		);
 	}
+
 	for (const name of chromeSuites) {
 		tasks.push(
-			run(name, true).then((r) => {
-				results.push(r);
-				return r;
-			}),
+			(async () => {
+				await sem.acquire();
+				try {
+					const r = await runSuite(name, runStartedAt);
+					results.push(r);
+					return r;
+				} finally {
+					sem.release();
+				}
+			})(),
 		);
 	}
 
@@ -884,12 +821,8 @@ async function main() {
 	console.log(
 		serial
 			? `模式: 串行（${suitesToRun.length} 个套件）`
-			: `模式: 并行（HTTP 类全并行, Chrome 类并发 ${CONCURRENCY}, ` +
-					`全局并发上限 ${PARALLEL_LIMIT > 0 ? PARALLEL_LIMIT : "不限"}）`,
+			: `模式: 并行（HTTP 类全并行, Chrome 类并发 ${CONCURRENCY}）`,
 	);
-	if (SERIAL_TAIL.length > 0) {
-		console.log(`  串行收尾（E2E_SERIAL_TAIL）: ${SERIAL_TAIL.join(", ")}`);
-	}
 	// 验收 authority 预告：先声明本轮的 real / explicit-mock 分工（#338 裁决）。
 	const mockList = suitesToRun.filter((s) => EXPLICIT_MOCK_SUITES.has(s));
 	const realCount = suitesToRun.length - mockList.length;
