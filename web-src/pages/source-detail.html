@@ -308,6 +308,7 @@ function pollSection(m) { // 拉取区块：只对 kind: poll 出现（其它 ki
   const env = cfg.envelope || {};
   const envPair = (label, wire, key, fallbackText) =>
     wire ? pair(label, wire) : pair(label, t(key, fallbackText), { plain: true, muted: true });
+  sec.append(txt("div", "sd-sub-title", t("source_detail.poll_envelope", "信封指针")));
   sec.append(txt("p", "field-hint", t("source_detail.poll_env_hint", "四个指针都可缺省，缺省时按下方的默认值取值。")));
   const envKv = el("dl", { class: "sd-kv" });
   envKv.append(

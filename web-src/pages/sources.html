@@ -612,7 +612,7 @@ function visibleSources(){
   if(!q)return SOURCES;
   return SOURCES.filter(src=>{
     const m=A.model.source(src);
-    return [m.name,m.displayName,m.kind,...m.targets.map(x=>x.capability)].filter(Boolean).join(" ").toLowerCase().includes(q);
+    return [m.name,m.displayName,m.kind,A.sourceKindLabel(m.kind),...m.targets.map(x=>x.capability)].filter(Boolean).join(" ").toLowerCase().includes(q);
   });
 }
 function render(){

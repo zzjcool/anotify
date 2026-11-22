@@ -1,35 +1,10 @@
 import assert from 'node:assert/strict';
 
 const SOURCE = 'poll-feed';
-const FEED_URL = 'https://example.com/poll/feed';
 const QUIET_EXPR = '0 0 1 1 *';
 
-const POLL_YAML = [
-  'apiVersion: anotify/v1',
-  'kind: Source',
-  'metadata:',
-  '  name: ' + SOURCE,
-  'spec:',
-  '  kind: poll',
-  '  enabled: true',
-  '  config:',
-  '    url: ' + FEED_URL,
-  '    schedule:',
-  '      expr: "' + QUIET_EXPR + '"',
-  '      tz: UTC',
-  '    timeoutMs: 5000',
-  '    maxItems: 20',
-  '    envelope:',
-  '      items: "."',
-  '      type:',
-  '        pointer: type',
-  '      deliveryId:',
-  '        pointer: id',
-  '      payload:',
-  '        whole: true',
-  '  targets: []',
-  '',
-].join('\n');
+const POLL_YAML = (sample) =>
+  sample.replace('name: gh-advisories', 'name: ' + SOURCE).replace('expr: "*/5 * * * *"', 'expr: "' + QUIET_EXPR + '"');
 
 const pairs = async (page, sec) =>
   page.$$eval(sec + ' .sd-pair', (cells) =>
@@ -66,7 +41,9 @@ export async function sourcePoll(d) {
   assert.equal(filled.trim(), sample, '抄进去的就是示例正文本身（不另抄一份，也不裁行）');
   check('POLL-01 the YAML modal ships a copyable poll example and the fill button moves it into the textarea verbatim');
 
-  await page.locator('#src-yaml-input').fill(POLL_YAML);
+  const doc = POLL_YAML(sample);
+  assert.equal(doc.includes('name: ' + SOURCE), true, '示例改出来的文档必须带自己的源名，实际 ' + doc);
+  await page.locator('#src-yaml-input').fill(doc);
   await page.locator('#src-yaml-submit').click();
   await page.waitForFunction(
     ([path, code]) => (window.__f3Calls || []).some((c) => c.url === path && c.method === 'POST' && c.httpStatus === code && c.settled === true),
@@ -75,12 +52,14 @@ export async function sourcePoll(d) {
   const posts = (await calls()).filter((c) => c.method === 'POST' && c.url === '/v1/namespaces/default/sources/yaml');
   assert.equal(posts.length, 1, '从 YAML 建 poll 源必须只发一次 POST …/sources/yaml，实际 ' + posts.length);
   assert.deepEqual(posts[0].keys, ['yaml'], '写请求体只能有 yaml 一个键，实际 ' + JSON.stringify(posts[0].keys));
+  assert.equal(posts[0].body.yaml, doc, '提交的就是页面示例改出来的那份文档（示例本身必须能通过服务端校验）');
   await page.locator('#src-yaml-modal').waitFor({ state: 'hidden', timeout: 15000 });
   await visible('#src-list > div[data-name="' + SOURCE + '"]');
   const stored = await api('/v1/namespaces/default/sources/' + SOURCE);
   assert.equal(stored.status, 200, '刚建好的 poll 源必须可读，实际 ' + stored.status);
   assert.equal(stored.body?.spec?.kind, 'poll');
-  assert.equal(stored.body?.spec?.config?.url, FEED_URL, 'URL 必须原样落库');
+  const docUrl = /^\s+url: (\S+)$/m.exec(doc)[1];
+  assert.equal(stored.body?.spec?.config?.url, docUrl, 'URL 必须原样落库（示例里的那个公网地址）');
   check('POLL-02 a poll source created from pasted YAML: POST body only {yaml}, 201, list row appears, store reads back');
 
   const rowBadge = () => page.locator('#src-list > div[data-name="' + SOURCE + '"] .src-badges .badge').first();
@@ -100,10 +79,12 @@ export async function sourcePoll(d) {
   const headBadge = page.locator('#src-detail-body [data-sec="basic"] .sd-badges .badge').first();
   assert.equal((await headBadge.innerText()).trim(), '拉取', '详情页头部的种类徽章同样本地化');
   const config = await pairs(page, sec);
-  assert.equal(valueOf(config, 'URL').includes(FEED_URL), true, '配置摘要必须给出真实 url，实际 ' + valueOf(config, 'URL'));
+  assert.equal(valueOf(config, 'URL').includes(docUrl), true, '配置摘要必须给出真实 url，实际 ' + valueOf(config, 'URL'));
   assert.equal(valueOf(config, '排期'), QUIET_EXPR + ' · UTC', '排期必须是表达式 + 时区');
-  assert.equal(valueOf(config, '单次超时'), '5000 ms', 'timeoutMs 原样显示');
-  assert.equal(valueOf(config, '单轮条目上限'), '20', 'maxItems 原样显示');
+  const docTimeout = /timeoutMs: (\d+)/.exec(doc)[1];
+  const docMaxItems = /maxItems: (\d+)/.exec(doc)[1];
+  assert.equal(valueOf(config, '单次超时'), docTimeout + ' ms', 'timeoutMs 原样显示');
+  assert.equal(valueOf(config, '单轮条目上限'), docMaxItems, 'maxItems 原样显示');
   check('POLL-04 the detail page grows a 拉取 block for kind=poll with the config summary (url / schedule / timeout / maxItems)');
 
   assert.equal(valueOf(config, '条目数组'), '.', 'envelope.items 原样显示');
@@ -137,11 +118,10 @@ export async function sourcePoll(d) {
   await visible(sec);
   await clean('poll detail 360');
   const wide = await page.evaluate(() => {
-    const narrow = [360, 320];
     const out = [];
     for (const e of document.querySelectorAll('#src-detail-body [data-sec="poll"] *')) {
       const r = e.getBoundingClientRect();
-      if (r.width && r.right > narrow[0] + 2) out.push({ tag: e.tagName, cls: e.className, right: Math.round(r.right) });
+      if (r.width && r.right > 362) out.push({ tag: e.tagName, cls: e.className, right: Math.round(r.right) });
     }
     return out;
   });
@@ -157,6 +137,7 @@ export async function sourcePoll(d) {
       const res = await inner(input, init);
       const url = typeof input === 'string' ? input : (input && input.url) || '';
       if (!url.includes('/sources/' + name)) return res;
+      if (!String(res.headers.get('content-type') || '').includes('json')) return res;
       const body = await res.clone().json();
       if (!body || !body.status) return res;
       body.status.cursor = cursor;
@@ -175,7 +156,9 @@ export async function sourcePoll(d) {
   assert.equal(cursorCell.v.endsWith('…'), true, '长游标必须截断显示，实际 ' + cursorCell.v);
   assert.equal(cursorCell.v.length <= 49, true, '截断后的游标不许撑宽字段，实际长度 ' + cursorCell.v.length);
   assert.equal(cursorCell.title, LONG_CURSOR, '截断值的 title 必须是全文（不是截断文本）');
-  assert.equal(valueOf(polled, '最近轮询') === '尚未轮询', false, '真的轮询过就不许再显示「尚未轮询」');
+  const polledAt = valueOf(polled, '最近轮询');
+  assert.equal(polledAt === '尚未轮询', false, '真的轮询过就不许再显示「尚未轮询」');
+  assert.equal(Number.isNaN(Date.parse(polledAt)), false, '轮询过之后这一行必须是可读时间（不是缺失/占位），实际 ' + polledAt);
   assert.equal(valueOf(polled, '连续失败'), '2', '连续失败必须显示 2');
   assert.equal(valueOf(polled, '跳过重叠'), '3', '跳过重叠必须显示 3');
   await page.setViewportSize({ width: 360, height: 800 });
@@ -202,7 +185,8 @@ export async function sourcePoll(d) {
     window.fetch = async (input, init) => {
       const res = await inner(input, init);
       const url = typeof input === 'string' ? input : (input && input.url) || '';
-      if (!/\/v1\/namespaces\/[^/]+\/sources(\/|\?|$)/.test(url)) return res;
+      if (!/\/v1\/namespaces\/[^/]+\/sources(\?|$)/.test(url)) return res;
+      if (!String(res.headers.get('content-type') || '').includes('json')) return res;
       const body = await res.clone().json();
       if (!body) return res;
       const rows = Array.isArray(body.items) ? body.items : [body];
