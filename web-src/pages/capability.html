@@ -2420,6 +2420,13 @@
           });
         } catch (e) {
           const msg = $("del-msg");
+          if (e.reason === "dependency_locked") {
+            const causes = (e.details || {}).causes || [];
+            const owners = causes.map(cause => String(cause.message || "")).filter(Boolean).join("；");
+            msg.textContent = t("caps.delete.locked", "被这些预案依赖，先卸载对应 release 再删") + (owners ? " " + owners : "");
+            msg.classList.remove("hidden");
+            return;
+          }
           if (isConflict(e)) {
             // 不静默 last-write-wins：重新载入最新 resourceVersion，并要求再点一次确认
             try {

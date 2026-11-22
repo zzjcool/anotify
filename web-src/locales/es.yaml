@@ -1356,6 +1356,7 @@ caps:
     body: '¿Eliminar «{name}»? Solo se elimina esta capacidad y no se propaga nada: otras capacidades u orígenes que la referencien dejarán de resolverse (se informa en status).'
     conflict: 'Esta capacidad acaba de cambiar en otro sitio (409). Se recargó el token de versión {rv}; confirma y pulsa eliminar otra vez. Sin reintento automático.'
     deleting: 'Eliminando…'
+    locked: 'Estos playbooks dependen de ella; desinstala el release correspondiente antes de eliminarla.'
     rv: 'Token de versión actual: {rv}'
     submit: 'Eliminar'
     title: 'Eliminar capacidad'
@@ -2385,6 +2386,7 @@ pb:
     atomic_conflict: "Conflicto atómico: cero escrituras de recursos o recibos."
     release_conflict: "Conflicto de nombre de instancia: los nombres a reutilizar pertenecen a otra instancia. Sin ninguna escritura."
     release_conflict_owner: "Pertenece a {release} (recibo de instalación {id})"
+    dependency_missing: "Dependencias no satisfechas: instala primero estas capacidades en este espacio de nombres."
     invalid_installs: "El servidor no devolvió una vista agrupada válida."
     group_count: "{n} grupos de instalación"
     release_group: "{release} · {n} grupos"

@@ -502,6 +502,13 @@
           box.append(code({ name: details.name, kind: details.kind, ownerRelease: details.ownerRelease, ownerInstallId: details.ownerInstallId }));
           $("pb-preview").replaceChildren(box);
         }
+        if (error.reason === "dependency_missing") {
+          const causes = (error.details || {}).causes || [];
+          const box = el("div", "pb-warning");
+          box.append(el("h4", "card-title", t("pb.v4.dependency_missing")));
+          for (const cause of causes) box.append(el("p", "field-hint", (cause.field ? String(cause.field) + " · " : "") + String(cause.message || "")));
+          $("pb-preview").replaceChildren(box);
+        }
       } finally { buttons.forEach(b => b.disabled = false); }
     }
     /* 版本历史：只显示「有哪几版、每一版的内容指纹」——装哪一版是抽屉里的选择。 */
