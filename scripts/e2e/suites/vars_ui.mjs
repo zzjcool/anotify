@@ -5,12 +5,10 @@
  *   ① 值 / 来源与服务端 `status.effectiveVars` **逐键一致**（页面不自己猜来源层）；
  *   ② 「被哪些能力用到」= 当前 ns 能力读面的 `spec.requires.values` 聚合；
  *   ③ 被能力要求但没有生效值 → 红标（`data-missing="true"` + ⚠ 必填）；
- *   ④ 阶段 2 的增删改**序列化进同一份 YAML 文档**，走 `PUT …/yaml`：改一个 var → YAML 只有该键
- *      （+resourceVersion）变化，其它行逐字不变；删一个 var → YAML 只消失那个键；前端拒非法名字
- *      （1FOO / FOO-BAR），后端对非法名字 400；UI 对 `/config` 的写调用 = 0（写请求只出现 `/yaml`）。
+ *   ④ 阶段 2 的增删改**序列化进同一份 YAML 文档**，走 `PUT …/yaml`：改一个 var → YAML 只有该键 +resourceVersion
+ *      变化，其它行逐字不变；删一个 var → YAML 只消失那个键；前端拒非法名字，后端对非法名字 400；`/config` 写调用 = 0。
  *
- * 造数全走真实产品路径：能力（信封）→ 节点（登记 + spec.vars）→ 命名空间默认 vars。
- * 明确不做的：不直插库、不 mock 端点、不读 `.config` 写入口来"造"页面状态。
+ * 造数全走真实产品路径（能力 → 节点 → 命名空间默认 vars）；不直插库、不 mock 端点、不拿 `.config` 写入口"造"状态。
  */
 import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
@@ -75,7 +73,7 @@ function lineDiff(before, after) {
 	return { removed, added };
 }
 
-/* 取 `spec.vars` 里某个键的整行（服务端 YAML 的引号/缩进由 yaml.v3 决定，逐字比较）。 */
+/* 取 `spec.vars` 里某个键的整行：缩进由 yaml.v3 决定（2/4 空格都可能），按 trim 后的键名匹配、值逐字比较。 */
 function yamlLine(text, name) {
 	for (const line of String(text || "").split("\n")) {
 		const trimmed = line.trim();
@@ -85,7 +83,6 @@ function yamlLine(text, name) {
 }
 
 function onlyVarLine(lines, name) {
-	// spec.vars 在文档里的缩进由 yaml.v3 决定（2/4 空格都可能），按 trim 后的键名匹配。
 	return lines.filter((line) => {
 		const trimmed = line.trim();
 		return trimmed.startsWith(name + ":") || trimmed.startsWith('"' + name + '":');
@@ -285,7 +282,6 @@ async function main() {
 	server = await H.startServer({ suiteName: "vars_ui", rpId: "localhost" });
 	const s = H.seed(server.dbPath, "varsui");
 
-	/* ---------- 造数：两个能力都要 SOURCE_ROOT，其中 build 还要 JAVA_HOME ---------- */
 	const buildCap = await V.mkCapability(server.base, s.session, "build", {
 		body: V.capabilityBody({ name: "build", requires: { values: ["vars.SOURCE_ROOT", "vars.JAVA_HOME"] } }),
 	});
@@ -645,6 +641,33 @@ async function main() {
 		const background = () => page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
 		const frame = () => page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
 		const expects = await page.evaluate(() => ({ paused: window.Anotify.t("nodes.v4.vars_refresh_paused"), confirm: window.Anotify.t("nodes.v4.vars_refresh_confirm") }));
+		/* 弹层关闭是 140ms 退场（partials.js closeModal：先加 .is-closing、计时到点才写 .hidden）：点了取消/确认 ≠ 已收掉。
+		 * 判据取 .hidden 类 —— 淡出中（opacity:0）的元素对 Playwright 仍算 visible，用可见性当判据会继续踩这条时序（#547）。 */
+		const dialogNow = () => page.evaluate(() => {
+			const dlg = document.getElementById("anotify-dialog");
+			const txt = (id) => (document.getElementById(id)?.textContent || "").trim();
+			return {
+				hidden: !dlg || dlg.classList.contains("hidden"),
+				closing: !!dlg && dlg.classList.contains("is-closing"),
+				title: txt("anotify-dialog-title"),
+				body: txt("anotify-dialog-body"),
+				editing: document.querySelectorAll('#node-vars-table tr[data-editing="true"]').length,
+				dirty: document.getElementById("node-vars-save").disabled !== true,
+				paused: !document.getElementById("node-vars-paused").hidden,
+				visibleBackdrops: Array.from(document.querySelectorAll(".modal-backdrop:not(.hidden)")).map((e) => e.id || e.className),
+			};
+		});
+		const waitDialogClosed = async (why) => { // 收尾只等条件（closeModal 计时真的写下 .hidden），不 sleep 猜时长
+			try {
+				await page.waitForFunction(() => {
+					const dlg = document.getElementById("anotify-dialog");
+					return !dlg || dlg.classList.contains("hidden");
+				}, null, { timeout: 5000 });
+			} catch {
+				const now = await dialogNow();
+				throw new Error(`${why}：确认框没收掉（${JSON.stringify(now)}）—— 下一个用例的断言会把这件事误报成「守卫有问题」`);
+			}
+		};
 
 		console.log("--- ① 改一行不保存 → 后台刷新整轮跳过（输入 / 脏标记 / 提示都在，且一个读请求都不发）---");
 		await openVarsEditor(page, "#node-vars-table", '#node-vars-table tr[data-key="NODE_ONLY"] [data-act="vars-edit"]');
@@ -674,7 +697,7 @@ async function main() {
 		await page.locator("#anotify-dialog [data-dialog-ok]").waitFor({ state: "visible", timeout: 5000 });
 		H.eq("③ 手动刷新遇未保存改动 → 先出确认框，文案与「放弃改动」同一套口径", (await page.locator("#anotify-dialog-body").innerText()).trim(), expects.confirm);
 		await page.locator("#anotify-dialog [data-dialog-cancel]").click();
-		await page.locator("#anotify-dialog").waitFor({ state: "hidden", timeout: 5000 });
+		await waitDialogClosed("③ 取消刷新后的收尾");
 		const afterCancel = await state();
 		H.eq("③ 取消刷新 → 草稿原样保留", afterCancel.value, "draft-546");
 		H.eq("③ 取消刷新 → 保存按钮仍 enabled", afterCancel.saveDisabled, false);
@@ -687,11 +710,20 @@ async function main() {
 			const cell = document.querySelector('#node-vars-table tr[data-key="NODE_ONLY"] td.vars-value');
 			return cell && cell.textContent.trim() === "node-value-v2" && document.getElementById("node-vars-save").disabled === true;
 		}, null, { timeout: STATE_WAIT });
+		await waitDialogClosed("④ 确认刷新后的收尾");
 		const afterConfirm = await state();
 		H.eq("④ 确认刷新 → 表格回到服务器当前值", afterConfirm.value, "node-value-v2");
 		H.eq("④ 刷新真的发生后暂停提示自己收掉", afterConfirm.paused, false);
 
 		console.log("--- ⑤ 对照组：没改动时后台刷新照常生效（表格跟着服务器更新，不弹确认框）---");
+		/* 前置先自证干净：红在这里是「上一个用例没清干净」（测试时序），与 ⑤ 那条产品行为断言分开记，才知道该修哪边。 */
+		await waitDialogClosed("⑤ 前置：④ 的确认框收尾");
+		const pre = await dialogNow();
+		H.eq("⑤ 前置：④ 的确认框已收掉（.hidden；没清干净 = 前置问题，不是守卫问题）", pre.hidden, true);
+		H.eq("⑤ 前置：无未保存改动（保存按钮 disabled）", pre.dirty, false);
+		H.eq("⑤ 前置：没有编辑中的行", pre.editing, 0);
+		H.eq("⑤ 前置：没有「暂停刷新」提示", pre.paused, false);
+		H.eq("⑤ 前置：页面上没有可见弹层", pre.visibleBackdrops, []);
 		const nodeDoc = (await H.req(server.base, V.P.node(NODE) + "/yaml", { session: s.session })).json;
 		const bumped = String(nodeDoc.yaml).replace(/^(\s*)NODE_ONLY: .*$/m, "$1NODE_ONLY: server-bumped-546");
 		H.check("⑤ 对照组造数：节点的 NODE_ONLY 行被改到 server-bumped-546", bumped !== nodeDoc.yaml, bumped.slice(0, 160));
@@ -703,7 +735,10 @@ async function main() {
 			return cell && cell.textContent.trim() === "server-bumped-546";
 		}, null, { timeout: STATE_WAIT });
 		H.check("⑤ 未改动时刷新照常生效：真的重读了节点读面并重建了表格", nodeReads.length > readsBeforeClean, `${readsBeforeClean} → ${nodeReads.length}`);
-		H.eq("⑤ 不脏时后台刷新不弹确认框", await page.locator("#anotify-dialog:not(.hidden)").count(), 0);
+		/* 按正文文案认「刷新确认」那一个，不数页面上 dialog 的个数：全局计数会被无关弹层污染，也说不清红的是哪一个。 */
+		const seen = await dialogNow();
+		H.check("⑤ 不脏时后台刷新不弹刷新确认框（按正文文案认那一个）", seen.hidden || seen.body !== expects.confirm,
+			`可见弹层：标题=${JSON.stringify(seen.title)} 正文=${JSON.stringify(seen.body)} closing=${seen.closing}`);
 		H.eq("⑤ 不脏时没有暂停提示", (await state()).paused, false);
 		H.check("节点页无 JS pageerror（#546 阶段）", errs.length === 0, errs[0]?.slice(0, 160));
 		await page.close();
