@@ -68,8 +68,12 @@ poll 专属区块 —— 同一页不摆两份同一事实，也不给别的 kin
 - `make ci`（`timeout 1200`）：**exit 0**。含 `check-i18n-keys` / `check-ui-copy` / `check-classes` /
   `check-test-discipline`（`swallow-catch 38/38`、`waitForTimeout 21/21` 均未上调）/ `check-comment-density`
   （注释行 43330 / 基线 43330，75 个目录全部与基线一致 —— **基线一个字没改**）/ `go test ./...`。
-- `make e2e-affected`（`E2E_CONCURRENCY=2`，`timeout 2400`）：改动面选了 16 套（`frontend` / `i18n` /
-  `i18n_coverage` / `ui_shift` 四套矩阵 + 12 套 Chrome 类）。结果见下方「实测回执」。
+- `make e2e-affected`（`E2E_CONCURRENCY=2`，`timeout 2400`）：改动面选了 **16 套 / 30 套**
+  （`frontend` / `i18n` / `i18n_coverage` / `ui_shift` 四套矩阵 + 12 套 Chrome 类），
+  **16/16 全绿 · 断言 1071 通过 / 0 失败**；新增的 `source-poll` 用例贡献 11 个断言
+  （`frontend` 套件 44 → 其中 11 条是这个用例）。踩到过一次 `vars_ui` 的
+  `waitForResponse` 15s 超时（并发 2 下加载抖动）；单跑该套件 74/74 全过、整轮重跑也全绿，
+  因此没有往 `known-env` 里加任何条目。
 - known-env：`scripts/e2e/known-env-failures.json` 未改动，保持空。
 - 新增 e2e 用例：`source-poll`（注册在 `scripts/e2e/fixtures/f3/f3-cases.mjs`，实现
   `scripts/e2e/fixtures/f3/f3-source-poll.mjs`），11 个断言。
@@ -78,10 +82,48 @@ poll 专属区块 —— 同一页不摆两份同一事实，也不给别的 kin
 
 <!-- e2e-receipt: 下面这行起是真实终端输出，勿改 -->
 ```
-<<E2E-RECEIPT>>
+$ E2E_CONCURRENCY=2 make e2e-affected
+  e2e 套件: 跑 16 套 / 跳过 14 套（共 30 套）
+  ✅ frontend           44通过/0失败  169.6s  mode=real
+  ✅ i18n               33通过/0失败   53.7s  mode=explicit-mock
+  ✅ i18n_coverage      44通过/0失败   70.4s  mode=explicit-mock
+  ✅ ui_shift           87通过/0失败  151.5s  mode=explicit-mock
+  ✅ vars_ui            74通过/0失败    4.1s  mode=real
+  ✅ p2_guards          53通过/0失败    9.9s  mode=real
+  ✅ events_paging     179通过/0失败   15.5s  mode=real
+  ✅ cli_auth          133通过/0失败   25.7s  mode=real
+  ✅ passkey_enroll     85通过/0失败   15.0s  mode=real
+  ✅ lang_hint          86通过/0失败   20.3s  mode=real
+  ✅ admin_flow         52通过/0失败    3.7s  mode=real
+  ✅ deeplink           50通过/0失败    3.0s  mode=real
+  ✅ auth_flow          49通过/0失败    3.7s  mode=real
+  ✅ recovery_next      16通过/0失败    5.3s  mode=real
+  ✅ ux_regression_19_23 8通过/0失败    9.9s  mode=explicit-mock
+  ✅ 另一套登录流套件   78通过/0失败    7.0s  mode=real
+
+✅ E2E 全绿：16/16 个请求套件均达标（断言 1071 通过 / 0 失败，authority 清单覆盖 16 个）
+  ✅ 临时目录零残留（隔离 TMPDIR 内本次新增 = 0）
+
+$ make ci
+CI EXIT=0
+
 ```
 
-## 6. 遗留风险
+## 6. 发现的产品 bug（本轮不修，需另开）
+
+- **编辑源对 poll 源必然 400**。共享编辑器 `web/source-editor.js` 的 kind `<select>` 只有
+  `cron` / `webhook` / `manual`（`web/source-editor.js:73-77`）；打开 poll 源时
+  `$("f-kind").disabled = true` 但 `value` 落成空串，而 `writeSource()` 无条件把 `spec.kind`
+  写进 PATCH（`web/source-editor.js:409,443`）→ 服务端 `source_kind_immutable`；
+  即使 kind 对了，`writeSource()` 也只重建 cron/webhook 那套 config，poll 的
+  `url` / `schedule` / `timeoutMs` / `maxItems` / `envelope` 会被整份丢掉 → `invalid_source_config`。
+  这是 #533（后端上线）之后 poll 源一出现就存在的缺陷，**不是本轮引入**；修它需要一张
+  「poll 传输配置表单」，与 issue 里「不做：重做源页信息架构」同属另一件事，因此本轮只报不改。
+- **URL 可能带凭据**：`CheckPollURL` 只拒 userinfo，不禁止 query 里的凭据；
+  详情页把 `url` 全文显示并给了一键复制。不是新增的泄漏面（原始 YAML 块本来就有），
+  但「复制」让它少了一次点击 —— 若要收紧，应在写入期拒绝可疑 query，而不是藏起界面。
+
+## 7. 遗留风险
 
 - **未覆盖的界面分支**：`cursor` 与 `lastError` 的「有值」形态由 e2e 用页内 fetch 改写响应验证
   （`POLL-08`），真实拉到脏数据的路径没有端到端造（那要起一个真 feed 服务，属 #532 的
