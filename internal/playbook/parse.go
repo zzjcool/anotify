@@ -164,7 +164,7 @@ func applyEntry(pkg *Package, tree map[string]any) error {
 	if spec == nil {
 		return errf(CodeInvalidPlaybook, "%s 缺 spec（values 与引用清单的家）", EntryFile)
 	}
-	if err := checkKeys(spec, []string{"values", "capabilities", "sources"}, EntryFile, "spec"); err != nil {
+	if err := checkKeys(spec, []string{"values", "capabilities", "sources", "requires"}, EntryFile, "spec"); err != nil {
 		return err
 	}
 
@@ -194,6 +194,12 @@ func applyEntry(pkg *Package, tree map[string]any) error {
 	}
 	pkg.CapabilityPaths = caps
 	pkg.SourcePaths = srcs
+	// spec.requires 的形状在这里判（值无关）；解析/自引用/版本比对是安装期（plan.go）。
+	reqs, err := parseRequires(spec, EntryFile)
+	if err != nil {
+		return err
+	}
+	pkg.Requires = reqs
 	return nil
 }
 

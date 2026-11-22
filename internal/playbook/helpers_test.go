@@ -100,6 +100,8 @@ type bundle struct {
 	caps   map[string]string
 	srcs   map[string]string
 	extras map[string]string
+	// requires 非空时原样写进 spec.requires（这些用例要能写出非法形状）。
+	requires string
 	// entryOverride 非空时整份替换 playbook.yaml（测入口形状错误用）。
 	entryOverride string
 }
@@ -126,6 +128,9 @@ func (b *bundle) cap(path, body string) *bundle    { b.caps[path] = body; return
 func (b *bundle) source(path, body string) *bundle { b.srcs[path] = body; return b }
 func (b *bundle) extra(path, body string) *bundle  { b.extras[path] = body; return b }
 func (b *bundle) setValues(values string) *bundle  { b.values = values; return b }
+
+// setRequires 写一段 spec.requires 的 YAML 片段（缩进由 entry 统一加）。
+func (b *bundle) setRequires(requires string) *bundle { b.requires = requires; return b }
 
 // files 拼出 `{相对路径: 正文}`（含 playbook.yaml）。
 func (b *bundle) files() map[string]string {
@@ -171,6 +176,10 @@ func (b *bundle) entry() string {
 		for _, p := range list {
 			fmt.Fprintf(&sb, "    - %s\n", p)
 		}
+	}
+	if b.requires != "" {
+		sb.WriteString("  requires:\n")
+		sb.WriteString(indent(b.requires, "    "))
 	}
 	return sb.String()
 }

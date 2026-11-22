@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -592,5 +593,97 @@ func TestPlanReservedSourceNameEmptyExistingCreateReuse(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestPlanRequires 验 requires 进 Plan 的接线：不足 → 409 + causes；满足 → 进 Dependencies。
+func TestPlanRequires(t *testing.T) {
+	t.Run("version_too_low_rejects_install", func(t *testing.T) {
+		pkg := newBundle().withStandard().setRequires("- capability: inventory\n  minVersion: 3\n").pkg(t)
+		ex := newFakeExisting().
+			withCap("inventory", 1, "sha256:f1", "sha256:d1").
+			withCap("inventory", 2, "sha256:f2", "sha256:d2")
+		plan, err := Plan(pkg, baseValues(), ex)
+		assertCode(t, err, CodeDependencyMissing)
+		if plan != nil {
+			t.Fatalf("依赖未满足时不该产出计划（一行不写）: %+v", plan)
+		}
+		causes := requireCausesOf(t, err)
+		if len(causes) != 1 || causes[0].Field != "spec.requires[0].capability" {
+			t.Fatalf("causes = %+v", causes)
+		}
+		for _, want := range []string{"need: 3", "have: 2"} {
+			if !strings.Contains(causes[0].Message, want) {
+				t.Fatalf("message 必须含 %q: %q", want, causes[0].Message)
+			}
+		}
+	})
+
+	t.Run("satisfied_fills_dependencies", func(t *testing.T) {
+		pkg := newBundle().withStandard().setRequires("- capability: inventory\n  minVersion: 2\n").pkg(t)
+		ex := newFakeExisting().
+			withCap("inventory", 1, "sha256:f1", "sha256:d1").
+			withCap("inventory", 2, "sha256:f2", "sha256:d2")
+		plan, err := Plan(pkg, baseValues(), ex)
+		if err != nil {
+			t.Fatalf("依赖满足的包不该被拒: %v", err)
+		}
+		want := []Dependency{{Capability: "inventory", Version: 2}}
+		if !reflect.DeepEqual(plan.Dependencies, want) {
+			t.Fatalf("plan.Dependencies = %+v，期望 %+v", plan.Dependencies, want)
+		}
+		// 矩阵照旧（依赖不改变 12 格的判定）。
+		if got := plan.Created.Capabilities; !sameStrings(got, []string{"a-fixer@1", "a-review@1"}) {
+			t.Fatalf("created.capabilities = %v", got)
+		}
+	})
+
+	t.Run("self_reference_is_invalid_playbook", func(t *testing.T) {
+		pkg := newBundle().withStandard().setRequires("- capability: a-review\n").pkg(t)
+		plan, err := Plan(pkg, baseValues(), newFakeExisting())
+		assertCode(t, err, CodeInvalidPlaybook)
+		if plan != nil {
+			t.Fatalf("自引用不该产出计划: %+v", plan)
+		}
+		causes := requireCausesOf(t, err)
+		if len(causes) != 1 || causes[0].Field != "spec.requires[0].capability" {
+			t.Fatalf("自引用的 causes = %+v", causes)
+		}
+	})
+}
+
+// TestPlanWithoutRequiresIsUnchanged 是对照组：requires 省略时计划与改动前逐字一致
+// （同一个标准包，Created / Skipped / Notes 与 TestPlanMatrix 行 1 的期望相同）。
+func TestPlanWithoutRequiresIsUnchanged(t *testing.T) {
+	pkg := newBundle().withStandard().pkg(t)
+	if pkg.Requires != nil {
+		t.Fatalf("没有 spec.requires 的包不该有 Requires: %+v", pkg.Requires)
+	}
+	plan, err := Plan(pkg, baseValues(), newFakeExisting())
+	if err != nil {
+		t.Fatalf("无 requires 的包不该被拒: %v", err)
+	}
+	if len(plan.Dependencies) != 0 {
+		t.Fatalf("plan.Dependencies 必须为空: %+v", plan.Dependencies)
+	}
+	if got := plan.Created.Capabilities; !sameStrings(got, []string{"a-fixer@1", "a-review@1"}) {
+		t.Fatalf("created.capabilities = %v", got)
+	}
+	if got := plan.Created.Sources; !sameStrings(got, []string{"a-on-push"}) {
+		t.Fatalf("created.sources = %v", got)
+	}
+	if len(plan.Skipped.Capabilities) != 0 || len(plan.Skipped.Sources) != 0 {
+		t.Fatalf("空库不该 skipped: %+v", plan.Skipped)
+	}
+	if len(plan.Upgraded)+len(plan.Unapplied)+len(plan.External)+len(plan.Pending)+len(plan.Notes) != 0 {
+		t.Fatalf("空库的 upgraded/unapplied/external/pending/notes 必须全空: %+v", plan)
+	}
+	raw, err := json.Marshal(BuildReceipt(plan, plan.Values, plan.ValuesDigest,
+		InstallMeta{ID: "ins_cmp", At: ts, Namespace: "ns"}))
+	if err != nil {
+		t.Fatalf("回执序列化: %v", err)
+	}
+	if !strings.Contains(string(raw), `"dependencies":[]`) {
+		t.Fatalf("无依赖的回执必须写 dependencies: []: %s", raw)
 	}
 }

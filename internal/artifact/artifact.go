@@ -143,6 +143,9 @@ var (
 	workDirRefPattern = regexp.MustCompile(`\$\((vars|params)\.([A-Za-z_][A-Za-z0-9_]*)\)`)
 )
 
+// IsName 报告 name 是否是合法的能力名（与 Validate 用同一份 namePattern）。
+func IsName(name string) bool { return namePattern.MatchString(name) }
+
 // builtinFieldPaths 是 fieldPath 封闭集合里的内置事实（README.md「fieldPath 封闭
 // 集合」）。值是"能不能当 workDir 的最终值"：目录类才允许被 workDir 引用。
 //

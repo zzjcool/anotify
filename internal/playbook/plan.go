@@ -152,6 +152,9 @@ type PlanResult struct {
 	Capabilities []PlannedCapability
 	Sources      []PlannedSource
 
+	// Dependencies 是解析到的外部依赖（顺序 = spec.requires 的声明顺序）。
+	Dependencies []Dependency
+
 	// schema 是 spec.values 的解析形态：BuildReceipt 打码要用（不导出，避免两份真相）。
 	schema map[string]any
 }
@@ -214,6 +217,11 @@ func PlanForRelease(pkg *Package, values map[string]any, release string, existin
 	if err != nil {
 		return nil, err
 	}
+	// 外部依赖：自引用（400）→ 版本不够/不存在（409）；先于 12 格矩阵，依赖类错误优先。
+	deps, err := resolveRequires(pkg.Requires, rendered.Capabilities, existing)
+	if err != nil {
+		return nil, err
+	}
 	plan := &PlanResult{
 		Playbook:     PlaybookRef{Name: pkg.Name, Version: pkg.Version, FilesDigest: FilesDigest(pkg.Files)},
 		Release:      rel,
@@ -228,6 +236,7 @@ func PlanForRelease(pkg *Package, values map[string]any, release string, existin
 		Notes:        []Note{},
 		Capabilities: make([]PlannedCapability, 0, len(rendered.Capabilities)),
 		Sources:      make([]PlannedSource, 0, len(rendered.Sources)),
+		Dependencies: deps,
 		schema:       sch,
 	}
 
@@ -630,19 +639,20 @@ type InstallMeta struct {
 func BuildReceipt(plan *PlanResult, values map[string]any, valuesDigest string, meta InstallMeta) Receipt {
 	if plan == nil {
 		return Receipt{
-			APIVersion: APIVersion,
-			Kind:       KindInstallReceipt,
-			Install:    InstallRef{ID: meta.ID, At: meta.At, DryRun: meta.DryRun, Release: meta.Release},
-			Namespace:  meta.Namespace,
-			Source:     meta.Source,
-			Values:     map[string]any{},
-			Created:    emptyCreated(),
-			Skipped:    emptyCreated(),
-			Upgraded:   []UpgradedEntry{},
-			Unapplied:  []UnappliedEntry{},
-			External:   []string{},
-			Pending:    []string{},
-			Notes:      []Note{},
+			APIVersion:   APIVersion,
+			Kind:         KindInstallReceipt,
+			Install:      InstallRef{ID: meta.ID, At: meta.At, DryRun: meta.DryRun, Release: meta.Release},
+			Namespace:    meta.Namespace,
+			Source:       meta.Source,
+			Values:       map[string]any{},
+			Created:      emptyCreated(),
+			Skipped:      emptyCreated(),
+			Upgraded:     []UpgradedEntry{},
+			Unapplied:    []UnappliedEntry{},
+			External:     []string{},
+			Pending:      []string{},
+			Notes:        []Note{},
+			Dependencies: []Dependency{},
 		}
 	}
 	if values == nil {
@@ -667,6 +677,7 @@ func BuildReceipt(plan *PlanResult, values map[string]any, valuesDigest string, 
 		External:     filled(plan.External, []string{}),
 		Pending:      filled(plan.Pending, []string{}),
 		Notes:        filled(plan.Notes, []Note{}),
+		Dependencies: filled(plan.Dependencies, []Dependency{}),
 	}
 }
 
