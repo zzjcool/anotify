@@ -22,23 +22,23 @@ func TestMigrationSchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("schema version: %v", err)
 	}
-	// 6 = baseline（1）+ release（2）+ 卸载标记（3）+ 包版本历史（4）+ router 结局表（5）+ 轮询状态（6）。追加块必须同步 +1，否则新块永不应用。
-	if v != 6 {
-		t.Fatalf("v4 库版本 = %d, want 6", v)
+	// 7 = baseline（1）+ release（2）+ 卸载标记（3）+ 包版本历史（4）+ router 结局表（5）+ 轮询状态（6）+ 依赖索引（7）。追加块必须同步 +1，否则新块永不应用。
+	if v != 7 {
+		t.Fatalf("v4 库版本 = %d, want 7", v)
 	}
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&n); err != nil {
 		t.Fatalf("count schema_version: %v", err)
 	}
-	if n != 6 {
-		t.Fatalf("schema_version 行数 = %d, want 6（每块只记账一次）", n)
+	if n != 7 {
+		t.Fatalf("schema_version 行数 = %d, want 7（每块只记账一次）", n)
 	}
 	var version int
 	if err := db.QueryRow(`SELECT max(version) FROM schema_version`).Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 6 {
-		t.Fatalf("记账最高版本 = %d, want 6", version)
+	if version != 7 {
+		t.Fatalf("记账最高版本 = %d, want 7", version)
 	}
 }
 
@@ -72,8 +72,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db2.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&n); err != nil {
 		t.Fatalf("count after reopen: %v", err)
 	}
-	if n != 6 {
-		t.Fatalf("重开后 schema_version 行数 = %d, want 6（每块一行，不重复记账）", n)
+	if n != 7 {
+		t.Fatalf("重开后 schema_version 行数 = %d, want 7（每块一行，不重复记账）", n)
 	}
 	if after := snapshotDatabase(t, path); after != snapshot {
 		t.Fatalf("重开改变了行值/DDL/marker:\n before %s\n after %s", snapshot, after)

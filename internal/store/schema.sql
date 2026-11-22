@@ -766,3 +766,17 @@ CREATE TABLE IF NOT EXISTS namespace_secrets (
     updated_at   INTEGER NOT NULL,
     PRIMARY KEY (namespace_id, name)
 );
+
+-- 依赖索引（#534）：回执 JSON 里的 dependencies 不可查，而「这个能力还有谁在用」必须在 SQL 侧
+-- 看得见（否则判锁定只能读全部回执）。行由安装按回执逐条写入，随回执 / 命名空间级联删。
+-- +migration 7 playbook_requires
+CREATE TABLE IF NOT EXISTS playbook_install_requires (
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    install_id   TEXT NOT NULL REFERENCES playbook_installs(id) ON DELETE CASCADE,
+    capability   TEXT NOT NULL,
+    version      INTEGER NOT NULL,
+    PRIMARY KEY (install_id, capability)
+);
+
+CREATE INDEX IF NOT EXISTS idx_playbook_requires_capability
+    ON playbook_install_requires(namespace_id, capability);
