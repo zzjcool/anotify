@@ -1526,6 +1526,110 @@ async function main() {
 		hasRouteType(doc8, "router_failed"),
 		JSON.stringify(routeTypes(doc8)),
 	);
+	// ---------- 14. kind: poll（#532）：SSRF 默认拒 / 凭据只给引用 / 轮询状态面 ----------
+	console.log("--- 14. kind: poll（#532）：SSRF 默认拒 / 凭据只给引用 / 轮询状态面 ---");
+	const POLL_SCHEDULE = { expr: "*/5 * * * *" };
+	const POLL_QUIET_SCHEDULE = { expr: "0 0 1 1 *" };
+	const POLL_SECRET = "poll-fixture-cred";
+	let pollBad = 0;
+	const pollBody = (name, config) => V.sourceBody({ name, kind: "poll", config });
+	const expectPollRejected = async (label, config, field) => {
+		const res = await V.createSource(server.base, session, NS, pollBody(`poll.bad-${++pollBad}`, config));
+		V.expectReason(`14.${label}`, res, 400, "invalid_source_config");
+		H.eq(`14.${label}：causes[0].field`, res.json?.details?.causes?.[0]?.field, field);
+		return res;
+	};
+
+	for (const [label, config] of [
+		["1 http 环回 http://127.0.0.1:9/feed（没写 allowInsecure）", { url: "http://127.0.0.1:9/feed", schedule: POLL_SCHEDULE }],
+		["1 云元数据 https://169.254.169.254/latest/meta-data", { url: "https://169.254.169.254/latest/meta-data", schedule: POLL_SCHEDULE }],
+		["1 私网 https://10.0.0.5/feed", { url: "https://10.0.0.5/feed", schedule: POLL_SCHEDULE }],
+		["1 localhost 名字 https://localhost/feed", { url: "https://localhost/feed", schedule: POLL_SCHEDULE }],
+		["1 内部域名 https://api.internal/feed", { url: "https://api.internal/feed", schedule: POLL_SCHEDULE }],
+		[
+			"1 公网 http 配 allowInsecure 也不放开 http://example.com/feed",
+			{ url: "http://example.com/feed", allowInsecure: true, schedule: POLL_SCHEDULE },
+		],
+	]) {
+		await expectPollRejected(label, config, "spec.config.url");
+	}
+
+	await expectPollRejected(
+		"2 maxItems 写 501（上限 500）",
+		{ url: "https://example.com/feed", schedule: POLL_SCHEDULE, maxItems: 501 },
+		"spec.config.maxItems",
+	);
+	await expectPollRejected(
+		"2 schedule.expr 分钟越界 61 * * * *",
+		{ url: "https://example.com/feed", schedule: { expr: "61 * * * *" } },
+		"spec.config.schedule",
+	);
+
+	const pollRef = { name: "e2e-poll-cred", header: "Authorization", prefix: "Bearer " };
+	const pollConfig = { url: "https://example.com/feed", schedule: POLL_QUIET_SCHEDULE, secretRef: pollRef };
+	const refOnly = await V.createSource(server.base, session, NS, pollBody("poll.ref-only", pollConfig));
+	V.expectReason("14.3 只给 secretRef 而命名空间里还没有这条凭据", refOnly, 400, "invalid_source_config");
+	H.eq(
+		"14.3 只给引用：causes[0].field 精确到 spec.config.secretRef",
+		refOnly.json?.details?.causes?.[0]?.field,
+		"spec.config.secretRef",
+	);
+	const withSecret = await V.createSource(
+		server.base,
+		session,
+		NS,
+		pollBody("poll.with-secret", { ...pollConfig, secret: POLL_SECRET }),
+	);
+	V.expectStatus("14.3 同一份配置补上 write-only secret → 201", withSecret, 201);
+	H.check(
+		"14.3 创建响应里没有 config.secret 键（凭据只写不读）",
+		!(withSecret.json?.spec?.config && "secret" in withSecret.json.spec.config),
+		JSON.stringify(withSecret.json?.spec?.config),
+	);
+	H.check(
+		"14.3 创建响应里没有凭据原文",
+		!String(withSecret.text).includes(POLL_SECRET),
+		String(withSecret.text).slice(0, 200),
+	);
+	const reused = await V.createSource(server.base, session, NS, pollBody("poll.reuse", pollConfig));
+	V.expectStatus("14.3 第二个源只给同名 secretRef、不带 secret → 201（复用命名空间凭据）", reused, 201);
+
+	const pollProj = await H.req(server.base, V.P.source(NS, "poll.with-secret"), { session });
+	V.expectStatus("14.4 GET poll.with-secret → 200", pollProj, 200);
+	V.assertEnvelope("14.4 poll 源", pollProj.json, "Source");
+	H.eq("14.4 spec.kind 是 poll", pollProj.json?.spec?.kind, "poll");
+	H.eq("14.4 spec.config.url 原样回显", pollProj.json?.spec?.config?.url, pollConfig.url);
+	H.eq("14.4 spec.config.secretRef.name 原样回显", pollProj.json?.spec?.config?.secretRef?.name, "e2e-poll-cred");
+	H.check(
+		"14.4 读投影里没有 config.secret 键",
+		!(pollProj.json?.spec?.config && "secret" in pollProj.json.spec.config),
+		JSON.stringify(pollProj.json?.spec?.config),
+	);
+	H.check(
+		"14.4 整个读响应里不出现凭据原文",
+		!String(pollProj.text).includes(POLL_SECRET),
+		String(pollProj.text).slice(0, 200),
+	);
+	H.eq("14.4 status.consecutiveFailures 恒存在且为 0", pollProj.json?.status?.consecutiveFailures, 0);
+	H.eq("14.4 status.skippedOverlaps 恒存在且为 0", pollProj.json?.status?.skippedOverlaps, 0);
+	H.eq("14.4 status.lastError 恒存在、未失败时是 null", pollProj.json?.status?.lastError, null);
+	H.check(
+		"14.4 status.nextFireAt 按 schedule 算出来了（RFC3339）",
+		typeof pollProj.json?.status?.nextFireAt === "string" && !Number.isNaN(Date.parse(pollProj.json.status.nextFireAt)),
+		JSON.stringify(pollProj.json?.status),
+	);
+
+	const kindChange = await H.req(server.base, V.P.source(NS, "poll.with-secret"), {
+		session,
+		method: "PATCH",
+		body: {
+			apiVersion: V.API_VERSION,
+			kind: "Source",
+			metadata: { resourceVersion: pollProj.json?.metadata?.resourceVersion },
+			spec: { kind: "manual" },
+		},
+	});
+	V.expectReason("14.5 PATCH 把 poll 改成 manual（kind 不可变）", kindChange, 400, "source_kind_immutable");
 
 	for (const n of nodes) n.conn.close();
 	server.stop();

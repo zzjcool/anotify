@@ -243,18 +243,12 @@ func TestPollOverlapSkippedNotQueued(t *testing.T) {
 	defer cancel()
 	go func() { _ = f.runs.Run(ctx, 20*time.Millisecond) }()
 
-	time.Sleep(300 * time.Millisecond)
-	src := f.source(t)
-	if src.SkippedOverlaps < 1 {
-		t.Fatalf("上一轮挂着时必须记 skippedOverlaps，实际 %d", src.SkippedOverlaps)
+	if !waitFor(3*time.Second, func() bool { return f.source(t).SkippedOverlaps >= 1 }) {
+		t.Fatalf("上一轮挂着时必须记 skippedOverlaps，实际 %d", f.source(t).SkippedOverlaps)
 	}
 	once.Do(func() { close(release) })
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, tasks := f.counts(t); tasks == 1 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !waitFor(3*time.Second, func() bool { _, tasks := f.counts(t); return tasks == 1 }) {
+		t.Fatal("放行后应建出 1 个任务")
 	}
 	cancel()
 	if _, tasks := f.counts(t); tasks != 1 {
@@ -379,4 +373,15 @@ func TestSameHostRedirectPolicy(t *testing.T) {
 	if err := sameHostRedirect(req("a"), four); err == nil {
 		t.Fatal("超过 3 跳必须拒绝")
 	}
+}
+
+func waitFor(budget time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(budget)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		<-time.After(10 * time.Millisecond)
+	}
+	return cond()
 }
