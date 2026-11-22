@@ -1,10 +1,7 @@
 package server
 
-// Playbook 的 **release 身份**传输面验收（#505）。
-//
-// 只断言 handler 层的三件事：release 从请求进、从回执/实例清单出；
-// 形状错是 400；认领冲突是 409 且 details 指认 owner。
-// 领域语义（模板展开、12 格矩阵里的认领判定）由 internal/playbook 的用例覆盖。
+// Playbook 的 **release 身份**传输面验收（#505）：release 进得来、出得去，形状错 400、
+// 认领冲突 409 且 details 指认 owner；领域语义由 internal/playbook 的用例覆盖。
 
 import (
 	"encoding/json"

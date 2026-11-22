@@ -1042,8 +1042,7 @@ func TestPlaybookResourceNamespaceIsolation(t *testing.T) {
 
 // TestPlaybookStatusAggregatesMemberConditions 钉住「体检」的两条判据都在**真实派生**：
 //
-//   - status.conditions 是成员能力四条 condition 的聚合（playbook.md §6.1）。曾经这里是
-//     恒空数组 + `ready` 结构上永远 false —— 不管装没装，体检都不可能过。
+//   - status.conditions 是成员能力四条 condition 的聚合（playbook.md §6.1）。
 //   - items[].state 用 §6.1 的词表：没有节点能跑它时是该能力的 `no_node`，不是一律 `ok`。
 func TestPlaybookStatusAggregatesMemberConditions(t *testing.T) {
 	env := newPlaybookTestEnv(t)

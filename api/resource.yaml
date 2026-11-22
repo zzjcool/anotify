@@ -1014,6 +1014,48 @@ paths:
         '409': {$ref: '#/components/responses/Status409'}
         '500': {$ref: '#/components/responses/Status500'}
 
+  /v1/namespaces/{namespace}/playbooks/{slug}/releases/{release}/yaml:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: slug
+        in: path
+        required: true
+        schema: {type: string}
+      - name: release
+        in: path
+        required: true
+        description: "实例身份（`^(a-z0-9)[a-z0-9._-]{0,62}$`）"
+        schema: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,62}$'}
+    get:
+      operationId: exportPlaybookReleaseYAML
+      tags: [playbooks]
+      security: [{session: []}]
+      summary: "导出一个实例装出的对象（多文档 YAML）"
+      description: |
+        响应体**是 YAML 正文本身，不是 JSON**（`Content-Type: application/yaml; charset=utf-8`）：
+        三行头注释（包@版本 / release / valuesDigest，安装 id / 时间 / 对象数，
+        以及「以下对象为当前生效版本，不是安装时快照」的说明）之后，是一串 `---` 分隔的文档。
+
+        对象集合**只由安装回执的 `created` 决定**（能力 `name@version` 按名字去重、源按名字），
+        **不做名字前缀匹配**，也不从 `installedFrom` 反查 —— 否则会把别人的对象算进「这个实例装出了什么」。
+
+        每个文档与对应单对象端点（`GET …/capabilities/{name}/yaml`、`GET …/sources/{name}/yaml`）
+        的输出逐字节相同（同一份读投影与脱敏），顺序固定：能力按名字升序，再源按名字升序。
+        回执记过、但对象已被删除的引用不会出现在导出里（导出给的是当前生效版本）。
+
+        release 从未存在、或该 release 已卸载（对象已删）→ `404` `release_not_found`；
+        已存在但 `created` 为空 → `200` 且 `objects: 0`（只有头注释）。只读：不写库、不产生回执。
+      responses:
+        '200':
+          description: "多文档 YAML 正文（头注释 + `---` 分隔的对象文档）"
+          content:
+            application/yaml:
+              schema: {type: string}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
   # ----------------------------------------------------------------- namespaces
   /v1/namespaces:
     get:

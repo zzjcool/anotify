@@ -198,16 +198,12 @@ func (a *capabilityAPI) get(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusOK, env)
 }
 
-// yaml 处理 GET …/capabilities/{name}/yaml：把该 name **最高版本**的存储定义
-// 序列化成一份可整份贴回 playbook 包的 YAML 文本（`{"yaml": "<全文>"}`）。
+// yaml 处理 GET …/capabilities/{name}/yaml：把该 name **最高版本**的存储定义序列化成
+// 一份可整份贴回 playbook 包的 YAML 文本（`{"yaml": "<全文>"}`）。
 //
-// 三条边界（CONTRACT-capability-yaml §1.1）：
-// - 取最高版本与 `get` 同一套判据（ListCapabilities + newestVersionOf），不存在同样回 404；
-// - 序列化的是**完整** spec（`artifact.MarshalYAML` 会先 Normalize：`run.files` 全文、
-// `params`、`next`、`requires`、`lifecycle`、`concurrency` 都在），所以默认读面剥正文的
-// 那条纪律**不**适用于这里 —— 这个端点的用途就是把正文拿走；
-// - 这是「存储定义的规范化重建」，不是用户当初贴的原始字节（用户原文只存在于 playbook
-// 包的 files 里）；键序与默认值由 Normalize 固定，re-Parse 的 digest 与存量一致。
+// 三条边界（CONTRACT-capability-yaml §1.1）：取最高版本与 `get` 同一判据（不存在回 404）；
+// 序列化**完整** spec（`artifact.MarshalYAML` 先 Normalize），默认读面「剥正文」不适用于这里；
+// 这是存储定义的规范化重建，不是用户原文（键序/默认值由 Normalize 固定）。
 func (a *capabilityAPI) yaml(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
