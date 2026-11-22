@@ -10,11 +10,14 @@ import (
 	"github.com/zzjcool/anotify/internal/sourcespec"
 )
 
-// 命名空间凭据（#532）：poll 的 secretRef 指向这里的一行。值只写不读（不进 sources.config、
-// 不进回显、不进日志），写入口只有 poll 的 write-only config.secret。
+// 命名空间凭据（#532）：值只写不读（不进 config、不进回显、不进日志），写入口只有 poll 的 config.secret。
 var ErrNamespaceSecretNotFound = errors.New("store: 命名空间凭据不存在")
 
 func (d *DB) UpsertNamespaceSecret(ctx context.Context, namespaceID, name, value string) error {
+	return upsertNamespaceSecretOn(ctx, d, namespaceID, name, value)
+}
+
+func upsertNamespaceSecretOn(ctx context.Context, ex queryExec, namespaceID, name, value string) error {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return ErrNamespaceRequired
 	}
@@ -22,7 +25,7 @@ func (d *DB) UpsertNamespaceSecret(ctx context.Context, namespaceID, name, value
 		return fmt.Errorf("upsert namespace secret: name/value 不能为空")
 	}
 	now := Now()
-	if _, err := d.ExecContext(ctx,
+	if _, err := ex.execContext(ctx,
 		`INSERT INTO namespace_secrets (namespace_id, name, value, created_at, updated_at)
 		 VALUES (?,?,?,?,?)
 		 ON CONFLICT(namespace_id, name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
@@ -33,8 +36,12 @@ func (d *DB) UpsertNamespaceSecret(ctx context.Context, namespaceID, name, value
 }
 
 func (d *DB) GetNamespaceSecret(ctx context.Context, namespaceID, name string) (string, error) {
+	return getNamespaceSecretOn(ctx, d, namespaceID, name)
+}
+
+func getNamespaceSecretOn(ctx context.Context, ex queryExec, namespaceID, name string) (string, error) {
 	var value string
-	err := d.QueryRowContext(ctx,
+	err := ex.queryRowContext(ctx,
 		`SELECT value FROM namespace_secrets WHERE namespace_id = ? AND name = ?`, namespaceID, name).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("%w: %q", ErrNamespaceSecretNotFound, name)
@@ -59,9 +66,9 @@ func pollSecretOf(kind string, raw json.RawMessage) string {
 	return fields.Secret
 }
 
-// resolveSourceSecret 落本轮 secret 并保证 secretRef 可解析：没给值又查不到 → 400
+// resolveSourceSecretOn 落本轮 secret 并保证 secretRef 可解析：没给值又查不到 → 400
 // （cause 带 config.secretRef，前端点得到那一行）。
-func (d *DB) resolveSourceSecret(ctx context.Context, namespaceID, kind string, cfg json.RawMessage, secret string) error {
+func resolveSourceSecretOn(ctx context.Context, ex queryExec, namespaceID, kind string, cfg json.RawMessage, secret string) error {
 	if kind != SourceKindPoll {
 		return nil
 	}
@@ -77,9 +84,9 @@ func (d *DB) resolveSourceSecret(ctx context.Context, namespaceID, kind string, 
 		return nil
 	}
 	if secret != "" {
-		return d.UpsertNamespaceSecret(ctx, namespaceID, ref.Name, secret)
+		return upsertNamespaceSecretOn(ctx, ex, namespaceID, ref.Name, secret)
 	}
-	if _, err := d.GetNamespaceSecret(ctx, namespaceID, ref.Name); err != nil {
+	if _, err := getNamespaceSecretOn(ctx, ex, namespaceID, ref.Name); err != nil {
 		if errors.Is(err, ErrNamespaceSecretNotFound) {
 			return &sourcespec.CausesError{Causes: []sourcespec.Cause{{
 				Field:   "config.secretRef",

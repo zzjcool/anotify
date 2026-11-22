@@ -179,7 +179,7 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 		return fmt.Errorf("create source: %w", err)
 	}
 	s.Config = cfg
-	if err := d.resolveSourceSecret(ctx, s.NamespaceID, s.Kind, cfg, secret); err != nil {
+	if err := resolveSourceSecretOn(ctx, d, s.NamespaceID, s.Kind, cfg, secret); err != nil {
 		return fmt.Errorf("create source: %w", err)
 	}
 	if err := d.checkSourceTargets(ctx, s); err != nil {
@@ -221,6 +221,18 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 // targets 的投影（只对**新建**源写，复用已有源不调用它）。调用方负责校验、归一化
 // （含 webhook token 生成）与 next_fire_at；本函数只做两件写。
 func insertSourceOn(ctx context.Context, ex queryExec, s *Source) error {
+	// poll 的 write-only secret 不许落进 config（归一化会丢掉它）：装在插入点上，playbook 安装也走这条路。
+	if s.Kind == SourceKindPoll {
+		secret := pollSecretOf(s.Kind, s.Config)
+		cfg, err := sourcespec.NormalizeConfig(s.Kind, s.Config)
+		if err != nil {
+			return fmt.Errorf("insert source: %w", err)
+		}
+		if err := resolveSourceSecretOn(ctx, ex, s.NamespaceID, s.Kind, cfg, secret); err != nil {
+			return fmt.Errorf("insert source: %w", err)
+		}
+		s.Config = cfg
+	}
 	targetsJSON, err := json.Marshal(s.Targets)
 	if err != nil {
 		return fmt.Errorf("marshal targets: %w", err)
@@ -584,7 +596,7 @@ func (d *DB) updateSourceOn(ctx context.Context, ex queryExec, cur, s *Source, t
 			return fmt.Errorf("update source: %w", err)
 		}
 	}
-	if err := d.resolveSourceSecret(ctx, cur.NamespaceID, cur.Kind, cfg, secret); err != nil {
+	if err := resolveSourceSecretOn(ctx, ex, cur.NamespaceID, cur.Kind, cfg, secret); err != nil {
 		return fmt.Errorf("update source: %w", err)
 	}
 	if cur.Kind == SourceKindWebhook && sourcespec.ParseConfig(cur.Kind, cfg).Token == "" {
