@@ -22,7 +22,19 @@ const VALUES_BLOCK = `    type: object
     properties:
       project: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,20}$' }`;
 
-function entryDoc(slug, caps, srcs, version = 0) {
+// requiresBlock 渲染 spec.requires；null = 整个字段都不写（对照组要区分「省略」与「显式 []」）。
+function requiresBlock(reqs) {
+	if (reqs === null) return "";
+	if (reqs.length === 0) return "  requires: []\n";
+	const rows = reqs.map((r) =>
+		Object.entries(r)
+			.map(([k, v], i) => `${i === 0 ? "    - " : "      "}${k}: ${v}`)
+			.join("\n"),
+	);
+	return `  requires:\n${rows.join("\n")}\n`;
+}
+
+function entryDoc(slug, caps, srcs, version = 0, requires = []) {
 	const list = (key, paths) =>
 		paths.length === 0
 			? `  ${key}: []`
@@ -38,7 +50,7 @@ ${declared}spec:
 ${VALUES_BLOCK}
 ${list("capabilities", caps)}
 ${list("sources", srcs)}
-`;
+${requiresBlock(requires)}`;
 }
 
 function capabilityDoc(name, runLines, next = []) {
@@ -145,6 +157,10 @@ function dbFingerprint(dbPath) {
 			sources: db.prepare("SELECT * FROM sources ORDER BY id").all(),
 			edges: db.prepare("SELECT * FROM edges ORDER BY namespace_id, from_is_source, from_ref, to_ref").all(),
 			playbook_installs: db.prepare("SELECT * FROM playbook_installs ORDER BY id").all(),
+			playbook_versions: db.prepare("SELECT * FROM playbook_versions ORDER BY playbook_id, version").all(),
+			playbook_install_requires: db
+				.prepare("SELECT * FROM playbook_install_requires ORDER BY namespace_id, install_id, capability")
+				.all(),
 		}),
 	);
 }
@@ -688,9 +704,192 @@ async function partUninstallErrors(ctx) {
 	H.eq("包不存在之后库指纹不变（0 写）", dbFingerprint(ctx.dbPath), before);
 }
 
+function createPackageRaw(ctx, slug, requires) {
+	return H.req(ctx.base, PB.list(), {
+		session: ctx.session,
+		method: "POST",
+		body: {
+			apiVersion: V.API_VERSION,
+			kind: "Playbook",
+			metadata: { name: slug },
+			spec: {
+				files: {
+					"playbook.yaml": entryDoc(slug, ["capabilities/review.yaml"], [], 0, requires),
+					"capabilities/review.yaml": capabilityDoc("req-bad-review", []),
+				},
+			},
+		},
+	});
+}
+
+async function partRequires(ctx) {
+	console.log("--- 11. requires 依赖锁：缺依赖零写 / 版本不够 / 满足即装 / 删除被锁（#534）---");
+
+	// ① 缺依赖：建包只看形状（201），安装那一刻才解析（409 + 一行不写）。
+	const missingSlug = "pb-req-missing";
+	await createPackage(ctx, missingSlug, {
+		"playbook.yaml": entryDoc(missingSlug, ["capabilities/review.yaml"], [], 0, [{ capability: "nope" }]),
+		"capabilities/review.yaml": capabilityDoc("req-missing-review", []),
+	});
+	const beforeMissing = dbFingerprint(ctx.dbPath);
+	const missing = await install(ctx, missingSlug, "m");
+	V.expectReason("requires 指向不存在的能力 → 409 dependency_missing", missing, 409, "dependency_missing");
+	const mCause = missing.json?.details?.causes?.[0] || {};
+	H.eq("缺依赖的 causes[0].field", mCause.field, "spec.requires[0].capability");
+	H.check(
+		"缺依赖的 causes[0].message 写 have: none（未解析到，不是版本不够）",
+		typeof mCause.message === "string" && mCause.message.includes("have: none"),
+		JSON.stringify(mCause),
+	);
+	H.check("缺依赖的 causes[0].message 不写 have: 数字", !/have: \d/.test(String(mCause.message)), JSON.stringify(mCause.message));
+	const afterMissing = dbFingerprint(ctx.dbPath);
+	H.check(
+		"缺依赖的安装一行不写（6 张表指纹逐字节相同）",
+		afterMissing === beforeMissing,
+		`before ${beforeMissing.length} 字节 vs after ${afterMissing.length} 字节`,
+	);
+
+	// ② 版本不够：inventory 建两版（v2 可见），minVersion: 3 必须被拒。
+	const capabilityOf = (script) =>
+		V.capabilityBody({
+			name: "inventory",
+			run: { entrypoint: "run.sh", files: { "run.sh": `#!/bin/sh\necho ${script}\n` } },
+		});
+	const inv1 = await V.createCapability(ctx.base, ctx.session, NS, capabilityOf("inventory-v1"));
+	V.expectStatus("建能力 inventory（v1）→ 201", inv1, 201);
+	H.eq("inventory 的第一版落在 v1", inv1.json?.metadata?.version, 1);
+	const inv2 = await V.createCapability(ctx.base, ctx.session, NS, capabilityOf("inventory-v2"));
+	V.expectStatus("同名改内容再建（新内容分配 max+1）→ 201", inv2, 201);
+	const invRead = await H.req(ctx.base, V.P.capability(NS, "inventory"), { session: ctx.session });
+	V.expectStatus("GET inventory → 200", invRead, 200);
+	H.eq("读回来的 status.version = 2（依赖解析看的是可见最高版）", invRead.json?.status?.version, 2);
+
+	const need3Slug = "pb-req-need3";
+	await createPackage(ctx, need3Slug, {
+		"playbook.yaml": entryDoc(need3Slug, ["capabilities/review.yaml"], [], 0, [
+			{ capability: "inventory", minVersion: 3 },
+		]),
+		"capabilities/review.yaml": capabilityDoc("req-need3-review", []),
+	});
+	const beforeNeed3 = dbFingerprint(ctx.dbPath);
+	const short = await install(ctx, need3Slug, "n3");
+	V.expectReason("minVersion: 3 但只有 v2 → 409 dependency_missing", short, 409, "dependency_missing");
+	const sCause = short.json?.details?.causes?.[0] || {};
+	const sMsg = String(sCause.message || "");
+	H.check("版本不够的 causes[0].message 同时给 need: 3 与 have: 2", sMsg.includes("need: 3") && sMsg.includes("have: 2"), JSON.stringify(sCause));
+	H.eq("版本不够的 causes[0].field", sCause.field, "spec.requires[0].capability");
+	const afterNeed3 = dbFingerprint(ctx.dbPath);
+	H.check(
+		"版本不够的安装一行不写（6 张表指纹逐字节相同）",
+		afterNeed3 === beforeNeed3,
+		`before ${beforeNeed3.length} 字节 vs after ${afterNeed3.length} 字节`,
+	);
+
+	const okSlug = "pb-req-ok";
+	await createPackage(ctx, okSlug, {
+		"playbook.yaml": entryDoc(okSlug, ["capabilities/review.yaml"], [], 0, [
+			{ capability: "inventory", minVersion: 2 },
+		]),
+		"capabilities/review.yaml": capabilityDoc("req-ok-review", []),
+	});
+	const ok = await install(ctx, okSlug, "q");
+	V.expectStatus("minVersion: 2 被满足 → 200", ok, 200);
+	H.eq(
+		"回执 dependencies 恒等 [{capability:inventory, version:2}]（比 JSON 串，不赌数组身份）",
+		JSON.stringify(ok.json?.dependencies),
+		JSON.stringify([{ capability: "inventory", version: 2 }]),
+	);
+	H.eq("依赖锁的包照旧装出自己的能力", ok.json?.created?.capabilities, ["req-ok-review@1"]);
+
+	// ④ 锁：有已生效的安装依赖它就不能删，卸载那个 release 之后同一个令牌能删。
+	const invPath = V.P.capability(NS, "inventory");
+	const invBefore = await H.req(ctx.base, invPath, { session: ctx.session });
+	V.expectStatus("锁判定前 GET inventory → 200", invBefore, 200);
+	const invRv = invBefore.json?.metadata?.resourceVersion;
+	H.check("拿到的是 rv1 令牌", V.isResourceVersion(invRv), String(invRv));
+	const locked = await H.req(ctx.base, `${invPath}?resourceVersion=${encodeURIComponent(invRv)}`, {
+		session: ctx.session,
+		method: "DELETE",
+	});
+	V.expectReason("被已生效安装依赖的能力 → 409 dependency_locked", locked, 409, "dependency_locked");
+	const lCauses = Array.isArray(locked.json?.details?.causes) ? locked.json.details.causes : [];
+	const hit = lCauses.find(
+		(c) => typeof c?.message === "string" && c.message.includes(okSlug) && c.message.includes('"q"'),
+	);
+	H.check(`details.causes 点名「${okSlug} 的 release q 依赖它」`, !!hit, JSON.stringify(lCauses));
+	const invStill = await H.req(ctx.base, invPath, { session: ctx.session });
+	V.expectStatus("409 之后能力仍可见（整事务回滚 = 0 写）", invStill, 200);
+	H.eq("409 之后令牌也没动", invStill.json?.metadata?.resourceVersion, invRv);
+	const unLock = await uninstall(ctx, okSlug, "q");
+	V.expectStatus("卸载 release q（撤掉依赖事实）→ 200", unLock, 200);
+	const afterUnlock = await H.req(ctx.base, `${invPath}?resourceVersion=${encodeURIComponent(invRv)}`, {
+		session: ctx.session,
+		method: "DELETE",
+	});
+	V.expectStatus("没有消费者之后用同一个令牌删 → 204", afterUnlock, 204);
+	const capNamesAfter = await listNames(ctx, V.P.capabilities(NS), "删依赖后的能力");
+	H.check("inventory 已不在能力列表里", !capNamesAfter.includes("inventory"), capNamesAfter.join(","));
+
+	// ⑤ 写入期形状：建包端点就是 400，causes 指到 spec.requires[i].…
+	const badShapes = [
+		["未知键", [{ capability: "inventory", bogus: 1 }], /^spec\.requires\[0\]\.bogus$/],
+		["minVersion: 0", [{ capability: "inventory", minVersion: 0 }], /^spec\.requires\[0\]\.minVersion$/],
+		["非法能力名", [{ capability: "Bad_Name" }], /^spec\.requires\[0\]\.capability$/],
+		["同能力重复声明", [{ capability: "inventory" }, { capability: "inventory" }], /^spec\.requires\[\d\]\.capability$/],
+	];
+	let n = 0;
+	for (const [why, reqs, want] of badShapes) {
+		const slug = `pb-req-bad-${n++}`;
+		const r = await createPackageRaw(ctx, slug, reqs);
+		V.expectReason(`建包（requires ${why}）→ 400 invalid_playbook`, r, 400, "invalid_playbook");
+		const field = String(r.json?.details?.causes?.[0]?.field || "");
+		H.check(`建包（requires ${why}）的 causes[0].field = ${field}`, want.test(field), JSON.stringify(r.json?.details?.causes));
+	}
+
+	const selfSlug = "pb-req-self";
+	await createPackage(ctx, selfSlug, {
+		"playbook.yaml": entryDoc(selfSlug, ["capabilities/self.yaml"], [], 0, [{ capability: "self-review" }]),
+		"capabilities/self.yaml": capabilityDoc("self-review", []),
+	});
+	const self = await install(ctx, selfSlug, "s");
+	V.expectReason("自引用只能在安装期判 → 400 invalid_playbook", self, 400, "invalid_playbook");
+	H.eq("自引用的 causes[0].field", self.json?.details?.causes?.[0]?.field, "spec.requires[0].capability");
+
+	// ⑥ 对照组：省略 requires 与显式 requires: [] 都不能被 requires 逻辑误伤。
+	const noneSlug = "pb-req-none";
+	await createPackage(ctx, noneSlug, {
+		"playbook.yaml": entryDoc(noneSlug, ["capabilities/review.yaml"], [], 0, null),
+		"capabilities/review.yaml": capabilityDoc("req-none-review", []),
+	});
+	const none = await install(ctx, noneSlug, "n");
+	V.expectStatus("完全不写 requires 字段的包 → 200", none, 200);
+	H.check(
+		"对照组回执 dependencies 是 []（空列表不是 null/省略）",
+		Array.isArray(none.json?.dependencies) && none.json.dependencies.length === 0,
+		JSON.stringify(none.json?.dependencies),
+	);
+	const noneList = await readInstalls(ctx, noneSlug, "对照组包");
+	H.eq("对照组装的 release 照旧出现在实例清单里", noneList.total, 1);
+	const noneUn = await uninstall(ctx, noneSlug, "n");
+	V.expectStatus("对照组卸载 → 200", noneUn, 200);
+
+	const emptySlug = "pb-req-empty";
+	await createPackage(ctx, emptySlug, {
+		"playbook.yaml": entryDoc(emptySlug, ["capabilities/review.yaml"], [], 0, []),
+		"capabilities/review.yaml": capabilityDoc("req-empty-review", []),
+	});
+	const empty = await install(ctx, emptySlug, "n");
+	V.expectStatus("显式 requires: [] 的包 → 200（与省略等价）", empty, 200);
+	H.check(
+		"显式空 requires 的回执 dependencies 也是 []",
+		Array.isArray(empty.json?.dependencies) && empty.json.dependencies.length === 0,
+		JSON.stringify(empty.json?.dependencies),
+	);
+}
+
 async function main() {
 	H.startTimer();
-	console.log("=== SUITE: playbook_release（#505 安装 release 身份 / #510 按 release 卸载 / #511 包版本历史）===");
+	console.log("=== SUITE: playbook_release（#505 安装 release 身份 / #510 按 release 卸载 / #511 包版本历史 / #534 依赖锁）===");
 	const server = await H.startServer({ suiteName: SUITE, rpId: "localhost" });
 	try {
 		const seeded = H.seed(server.dbPath, "e2e");
@@ -705,6 +904,7 @@ async function main() {
 		await partUninstallIdempotent(ctx);
 		await partUninstallErrors(ctx);
 		await partVersions(ctx);
+		await partRequires(ctx);
 	} finally {
 		server.stop();
 	}
