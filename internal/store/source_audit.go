@@ -9,14 +9,14 @@ import (
 
 // SourceAuditPolledManually 是「立即拉取一次」（#555）的审计动作。
 //
-// 轮询本身的终局已经落在 sources 行的派生列上（游标/失败计数/错误），但**谁**按下了按钮
-// 只有会话知道——那一个事实没有别的归宿，所以单独记一行 append-only 审计。
+// 为什么单开一张表：轮询的终局已经落在 sources 行的派生列上（游标 / 失败计数 / 错误），
+// 但「谁按下了按钮」只有会话知道，那一个事实没有别的归宿；capability_audit 是按能力名
+// 组织的，塞进去会让「某个源的操历史」变成一次跨表拼装。
 const SourceAuditPolledManually = "source.polled_manually"
 
 // SourceAuditInput 是一次源审计追加。
 //
-// Detail 只存摘要（本动作记 result 的计数），不存响应正文——正文里可能有业务数据，
-// 也可能有凭据头部的回显。
+// Detail 只存摘要（本动作记本轮计数），不存响应正文：正文里可能有业务数据。
 type SourceAuditInput struct {
 	NamespaceID string
 	SourceID    string
@@ -26,7 +26,8 @@ type SourceAuditInput struct {
 	Now         int64
 }
 
-// SourceAuditEntry 是 source_audit 的一行（只增不删：没有 update / delete 写入口）。
+// SourceAuditEntry 是 source_audit 的一行（只增不删：没有 update / delete 写入口，
+// 也不接保留期——写量 = 人工动作次数）。
 type SourceAuditEntry struct {
 	ID          string
 	NamespaceID string

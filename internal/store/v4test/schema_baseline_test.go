@@ -209,7 +209,6 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 			"id", "namespace_id", "namespace_slug", "playbook_id", "playbook_slug",
 			"values", "values_digest", "receipt", "source", "release", "uninstalled_at", "created_at",
 		},
-		// 手动拉取审计（#555）：只增不删，detail 只存计数摘要。
 		"source_audit": {
 			"id", "namespace_id", "source_id", "action", "actor_id", "detail", "created_at",
 		},

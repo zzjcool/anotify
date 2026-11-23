@@ -1,23 +1,18 @@
 package server
 
-// resource_source_poll_test.go 是「立即拉取一次」（#555）的 handler 级验收。
-//
-// 三件事必须在这里钉死，因为它们是 issue 的语义而不是投影细节：
-//   - 与定时轮询共用同一把 in-flight 锁（在飞 → 409 poll_in_progress，不排队）；
-//   - 本轮失败 → 502 poll_failed，且 status.cursor 不动；
-//   - 非 poll 源 → 409 not_poll_source。
-//
-// feed 用 httptest（源 config 的 allowInsecure 让它走运行期的那条 transport）。
+// resource_source_poll_test.go 是「立即拉取一次」（#555）的 handler 级验收：同一把锁（在飞 → 409）、
+// 失败 → 502 且 status.cursor 不动、非 poll 源 → 409。feed 用 httptest + allowInsecure。
 
 import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
 
-// pollNowSourceSpec 造一份 kind=poll 的 spec（envelope 指向响应对象的 items 键）。
+// pollNowSourceSpec 造一份 kind=poll 的 spec（envelope.items 指向响应对象的 items 键）。
 func pollNowSourceSpec(url string, enabled bool) map[string]any {
 	return map[string]any{
 		"kind":    "poll",
@@ -41,6 +36,7 @@ func pollNowSourceSpec(url string, enabled bool) map[string]any {
 // pollFeed 起一个可控的 feed：mode=0 返回两条 item（带 ETag），mode=1 返回「items 不是数组」。
 func pollFeed(t *testing.T, mode *atomic.Int32, gate <-chan struct{}, hit chan<- struct{}) *httptest.Server {
 	t.Helper()
+	var blocked atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if hit != nil {
 			select {
@@ -48,7 +44,8 @@ func pollFeed(t *testing.T, mode *atomic.Int32, gate <-chan struct{}, hit chan<-
 			default:
 			}
 		}
-		if gate != nil {
+		// 只挂第一轮：后续请求立刻返回，绕过锁的变异才会得到错误结论而不是把测试挂死。
+		if gate != nil && blocked.CompareAndSwap(false, true) {
 			<-gate
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -64,7 +61,6 @@ func pollFeed(t *testing.T, mode *atomic.Int32, gate <-chan struct{}, hit chan<-
 	return server
 }
 
-// TestSourcePollNowCountsAndAudit 200 的五个字段、真的入库、以及一行审计（actor + 计数）。
 func TestSourcePollNowCountsAndAudit(t *testing.T) {
 	e := newSourceResEnv(t)
 	var mode atomic.Int32
@@ -124,7 +120,6 @@ func TestSourcePollNowCountsAndAudit(t *testing.T) {
 	}
 }
 
-// TestSourcePollNowRejectsNonPollAndDisabled 两道前置拒绝：非 poll 与停用都是 409（不是 404）。
 func TestSourcePollNowRejectsNonPollAndDisabled(t *testing.T) {
 	e := newSourceResEnv(t)
 	e.createSource(map[string]any{
@@ -149,12 +144,15 @@ func TestSourcePollNowRejectsNonPollAndDisabled(t *testing.T) {
 	}
 }
 
-// TestSourcePollNowInFlightConflict 第一轮还在飞时第二次触发 → 409 poll_in_progress，放行后成功。
 func TestSourcePollNowInFlightConflict(t *testing.T) {
 	e := newSourceResEnv(t)
 	var mode atomic.Int32
 	gate := make(chan struct{})
 	hit := make(chan struct{}, 4)
+	// 任何退出路径都要放行（否则断言失败时 httptest.Close 会等挂住的那条连接）。
+	var gateOnce sync.Once
+	releaseGate := func() { gateOnce.Do(func() { close(gate) }) }
+	defer releaseGate()
 	feed := pollFeed(t, &mode, gate, hit)
 	e.createSource(pollNowSourceSpec(feed.URL, true), map[string]any{"name": "poll.slow"})
 
@@ -172,7 +170,7 @@ func TestSourcePollNowInFlightConflict(t *testing.T) {
 		t.Fatalf("reason = %v，want poll_in_progress", reason)
 	}
 
-	close(gate)
+	releaseGate()
 	if code := <-first; code != http.StatusOK {
 		t.Fatalf("放行后的第一轮 = %d，want 200", code)
 	}
@@ -184,7 +182,6 @@ func TestSourcePollNowInFlightConflict(t *testing.T) {
 	}
 }
 
-// TestSourcePollNowFailureKeepsCursor 失败 → 502 poll_failed + 错误原文，且 status.cursor 不动。
 func TestSourcePollNowFailureKeepsCursor(t *testing.T) {
 	e := newSourceResEnv(t)
 	var mode atomic.Int32

@@ -13,8 +13,7 @@
 # 三条纪律（与 check_openapi.py 的机械断言一一对应）：
 #
 #   1. `GET /v1/namespaces/{namespace}/events`（事件流）**不在这里**，它在 `events.yaml`
-#      的 `components.pathItems.NamespaceEvents` 里。同 path 不同 method 不互相覆盖：
-#      本文件只写 POST，绝不可把 GET 抄过来（归属键是 method+path）。
+#      的 `components.pathItems.NamespaceEvents` 里：本文件只写 POST（归属键是 method+path）。
 #   2. 共享组件只在 `resource.yaml` 定义，这里用相对 `$ref` 引用
 #      （`SourceReceipt` / `SourcePreview` / `PruneFact` / `SourceTarget` / `Status` 族）。
 #      securitySchemes 不可跨文件：本文件用到 `consoleKey` 与 `session`，都自己定义且逐字一致。
@@ -22,7 +21,7 @@
 #      都 `$ref` 具名错误组件，名字与状态码对齐。本文件用到两套**非 Status** 错误族：
 #        - `AuthError429`：`POST /v1/hooks/{token}` 的双维度限流（IP 维 + token 维）；
 #        - `Backpressure503`：派发积压时的 503（snake_case 的 `BackpressureError`，
-#          带 `Retry-After` 头）。三个写入口（events / hooks / fire）都在背压中间件内侧。
+#          带 `Retry-After` 头）。写入口（events / hooks / fire / poll）都在背压中间件内侧。
 #        其余错误（handler 内产生）是 `Status<code>`。
 #
 # 代码是权威（基线 issue/333-five-openapi @ 289896f）：

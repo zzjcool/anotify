@@ -60,9 +60,8 @@ const (
 	srcHookBodyLimit  = 4 << 20
 )
 
-// status.health 的三个可取词（playbook.md §6.2 的封闭词表的行内可派生项）。
-// `unapplied` 故意不在这里：它是「声明与库里不一致」的**比对结论**，需要 playbook 的声明
-// 做输入，单看一行 sources 无从判定——等体检聚合接进来时由那边给，不由这里猜。
+// status.health 的三个可取词。`unapplied` 故意不在这里：它是「声明与库里不一致」的
+// **比对结论**，需要 playbook 的声明做输入，单看一行 sources 无从判定。
 const (
 	srcHealthOK       = "ok"
 	srcHealthBlocked  = "blocked"
@@ -77,13 +76,10 @@ type sourceAPI struct {
 // newSourceAPI 构造 Source 资源域。
 func newSourceAPI(d *serverDeps) *sourceAPI { return &sourceAPI{d: d} }
 
-// register 把 Source 资源域挂到 mux 上。
-//
-// 两条与中间件有关的纪律：
-//   - `fire` 是写入口 → 背压在 **session 内侧**：未登录先 401，不让外部从
+// register 把 Source 资源域挂到 mux 上。两条与中间件有关的纪律：
+//   - 写入口（`fire` / `poll`）的背压在 **session 内侧**：未登录先 401，不让外部从
 //     503/200 的差别里读出「中枢现在积压了吗」。
-//   - `/v1/hooks/{token}` **没有 session**：外部系统（告警/GitHub）不可能带我们的
-//     Cookie，鉴权就是 URL 里的 token，所以只有 noStore + 背压。
+//   - `/v1/hooks/{token}` **没有 session**：鉴权就是 URL 里的 token，所以只有 noStore + 背压。
 func (a *sourceAPI) register(mux *http.ServeMux) {
 	const base = "/v1/namespaces/{ns}/sources"
 	mux.Handle("GET "+base, noStore(a.d.session(http.HandlerFunc(a.list))))
@@ -99,7 +95,6 @@ func (a *sourceAPI) register(mux *http.ServeMux) {
 	mux.Handle("PATCH "+base+"/{name}", noStore(a.d.session(http.HandlerFunc(a.patch))))
 	mux.Handle("DELETE "+base+"/{name}", noStore(a.d.session(http.HandlerFunc(a.remove))))
 	mux.Handle("POST "+base+"/{name}/fire", noStore(a.d.session(a.d.backpressure(http.HandlerFunc(a.fire)))))
-	// `poll` 是拉取型源的写入口（#555）：与 `/fire` 同一种中间件形态（写入口 → 背压）。
 	mux.Handle("POST "+base+"/{name}/poll", noStore(a.d.session(a.d.backpressure(http.HandlerFunc(a.poll)))))
 	mux.Handle("POST "+base+"/{name}/dry-run", noStore(a.d.session(http.HandlerFunc(a.previewSaved))))
 	mux.Handle("POST /v1/hooks/{token}", noStore(a.d.backpressure(http.HandlerFunc(a.hook))))
@@ -157,11 +152,8 @@ func (a *sourceAPI) get(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusOK, srcEnvelopeOf(src, a.d.namespaceDisplay(r.Context(), src.NamespaceID)))
 }
 
-// yaml 处理 GET …/sources/{name}/yaml：把一行的存储定义重建成可整份贴回 playbook 包的
-// Source 文档文本（`{"yaml": "<全文>"}`）。
-//
-// 判据与 `get` 完全一致（同一个 authorizePathNamespace + GetSourceByName），所以 401/404
-// 的语义不会在这里分叉；转换与脱敏都在 srcYAMLDocument 里（唯一一份）。
+// yaml 处理 GET …/sources/{name}/yaml：存储定义重建成可贴回 playbook 包的 Source 文档文本；
+// 判据与 `get` 完全一致，转换与脱敏都在 srcYAMLDocument 里（唯一一份）。
 func (a *sourceAPI) yaml(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -181,11 +173,8 @@ func (a *sourceAPI) yaml(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, yamlDoc{YAML: string(text)})
 }
 
-// create 处理 POST …/sources。
-//
-// enabled 的默认值在这里给（true），不在 store 里：`CreateSource` 不设默认值，
-// 「省略 = 启用、显式 false 才停用」是 HTTP 契约的一层语义，写进 store 会让
-// playbook 安装等内部调用也意外继承这个默认。
+// create 处理 POST …/sources。enabled 的默认值（true）在这里给而不在 store 里：
+// 「省略 = 启用」是 HTTP 契约的一层语义，写进 store 会让 playbook 安装也继承它。
 func (a *sourceAPI) create(w http.ResponseWriter, r *http.Request) {
 	if _, err := a.d.authorizePathNamespace(r); err != nil {
 		writeAPIError(w, err)
@@ -200,13 +189,8 @@ func (a *sourceAPI) create(w http.ResponseWriter, r *http.Request) {
 	a.createCore(w, r, meta, spec)
 }
 
-// createYAML 处理 POST …/sources/yaml：请求体是一份 Source YAML 文档
-// （`{"yaml": "…"}`），而不是信封 JSON。
-//
-// 与能力域同构（见 capabilityAPI.createYAML）：YAML 只负责变成 canonical JSON，
-// 后面走的就是 JSON 创建的同一条路。所以 kind/config/targets 的校验仍然只有
-// store/sourcespec 一份实现，同名 409 source_name_used 也仍然是唯一索引的事实投影。
-// 凭据面不变：`spec.config.token` / `secret` 可写，响应只走 srcEnvelopeOf 的脱敏投影。
+// createYAML 处理 POST …/sources/yaml：请求体是一份 Source YAML 文档（`{"yaml": "…"}`）。
+// YAML 只负责变成 canonical JSON，后面走 JSON 创建的同一条路（校验仍只有 sourcespec 一份）。
 func (a *sourceAPI) createYAML(w http.ResponseWriter, r *http.Request) {
 	if _, err := a.d.authorizePathNamespace(r); err != nil {
 		writeAPIError(w, err)
@@ -233,10 +217,8 @@ func (a *sourceAPI) createYAML(w http.ResponseWriter, r *http.Request) {
 	a.createCore(w, r, meta, spec)
 }
 
-// createCore 是 create 与 createYAML 共用的后半段（从 checkMetaNamespace 到写 201）。
-//
-// 再次 authorizePathNamespace 的理由与代价同 capabilityAPI.createCore（签名只需要
-// meta+spec，而 store 的 sources.namespace_id 是内部 id，不能从路径段直接拿来用）。
+// createCore 是 create 与 createYAML 共用的后半段（从 checkMetaNamespace 到写 201）；
+// 再次 authorizePathNamespace 的理由同 capabilityAPI.createCore（路径段拿到的是内部 id）。
 func (a *sourceAPI) createCore(w http.ResponseWriter, r *http.Request, meta objectMeta, spec srcSpecDoc) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -413,11 +395,9 @@ func (a *sourceAPI) fire(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, srcReceiptDocOf(receipt))
 }
 
-// poll 处理 POST …/sources/{name}/poll：立即拉取一次（#555）。
-//
-// 三条语义共用同一份実现（不在 handler 里重写）：在飞 → 409（同一把锁）、本轮失败 → 502
-// 且游标不动（与定时轮询同一条不变量）、SSRF 三道闸照常生效（走的是同一个 fetch）。
-// 只改一件事：不写 nextFireAt（排期不被手动触发重置），另记一行审计（actor + 计数）。
+// poll 处理 POST …/sources/{name}/poll：立即拉取一次（#555）。语义全部复用同一个 Poller：
+// 在飞 → 409（同一把锁，不排队）、本轮失败 → 502 且游标不动（与定时轮询同一条不变量）、
+// SSRF 三道闸照常生效；与排期唯一的差别是不写 nextFireAt。
 func (a *sourceAPI) poll(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -449,8 +429,7 @@ func (a *sourceAPI) poll(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, srcPollResultDocOf(res))
 }
 
-// writePollError 把「立即拉取」的两种失败分开：在飞是 409（重试有意义），本轮失败是 502
-// （上游/配置问题，错误原文要回给调用方——与 status.lastError 同源同文案）。
+// writePollError 把两种失败分开：在飞是 409（重试有意义），本轮失败是 502（原文回给调用方）。
 func (a *sourceAPI) writePollError(w http.ResponseWriter, err error) {
 	if errors.Is(err, source.ErrPollInFlight) {
 		writeStatus(w, http.StatusConflict, reasonPollInProgress,
@@ -460,10 +439,7 @@ func (a *sourceAPI) writePollError(w http.ResponseWriter, err error) {
 	writeStatus(w, http.StatusBadGateway, reasonPollFailed, err.Error(), nil)
 }
 
-// auditSourcePolled 记一行 `source.polled_manually`（append-only）。
-//
-// 审计是记账、不是执行的一部分：写不进去只记日志——那一轮已经真的跑完了，
-// 因为一条记账失败就回 500 会让调用方误以为没拉。
+// auditSourcePolled 记一行 `source.polled_manually`：写不进去只记日志（那一轮已经真的跑完了）。
 func (a *sourceAPI) auditSourcePolled(r *http.Request, ns string, src *store.Source, res source.PollResult, pollErr error) {
 	if a.d == nil || a.d.DB == nil {
 		return
@@ -982,7 +958,6 @@ type srcPollResultDoc struct {
 	CursorAdvanced bool  `json:"cursorAdvanced"`
 }
 
-// srcPollResultDocOf 把一轮的可观测事实投影成 wire 文档。
 func srcPollResultDocOf(res source.PollResult) srcPollResultDoc {
 	return srcPollResultDoc{
 		Items: res.Items, Created: res.Created, Duplicates: res.Duplicates,

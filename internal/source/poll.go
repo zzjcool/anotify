@@ -143,9 +143,6 @@ func (r *Poller) done(id string) {
 var ErrPollInFlight = errors.New("source: 该源已有一轮在飞")
 
 // PollResult 是一轮拉取的可观测事实（「立即拉取一次」的 200 回执就投影它）。
-//
-// 它只描述**这一轮发生了什么**，不承担资源投影：游标是否前进由 Cursor / CursorAdvanced 说，
-// 计数来自 envelope.items 与入库回执的去重位。
 type PollResult struct {
 	NotModified    bool
 	Items          int
@@ -156,10 +153,8 @@ type PollResult struct {
 	CursorAdvanced bool
 }
 
-// PollOnce 同步跑一轮「立即拉取一次」：**同一把** in-flight 锁 + **同一份** roundOnce。
-//
-// 已在飞 → ErrPollInFlight（不排队、不并发），这个判断与 Sweep 里那个是一把锁；
-// 本轮失败 → 返回 error，游标不动（与定时轮询同一条不变量）。
+// PollOnce 同步跑一轮「立即拉取一次」：**同一把** in-flight 锁（在飞 → ErrPollInFlight，
+// 不排队）+ **同一份** roundOnce（本轮失败 → error，游标不动）。
 func (r *Poller) PollOnce(ctx context.Context, src *store.Source) (PollResult, error) {
 	if src == nil {
 		return PollResult{}, fmt.Errorf("source: 缺少源行")
@@ -175,11 +170,8 @@ func (r *Poller) round(ctx context.Context, src *store.Source) {
 	_, _ = r.roundOnce(ctx, src, false)
 }
 
-// roundOnce 是一轮拉取的**唯一实现**：定时轮询与「立即拉取一次」（#555）都走这里。
-//
-// manual 只改一件事：下一步排期不写（next_fire_at 原样保留，成功与失败都是）。
-// 抓取、解包、入库、游标前进、失败退避全在同一份代码里——另写一条「手动拉取」
-// 路径迟早与定时那一条对同一个配置给出两种结论。
+// roundOnce 是一轮拉取的**唯一实现**（定时轮询与「立即拉取一次」都走这里）；manual 只改
+// 一件事：不写 next_fire_at（排期不被手动触发重置，成功与失败都是）。
 func (r *Poller) roundOnce(ctx context.Context, src *store.Source, manual bool) (PollResult, error) {
 	started := r.now()
 	cfg := sourcespec.ParseConfig(sourcespec.KindPoll, src.Config)
@@ -267,8 +259,7 @@ func (r *Poller) ingest(ctx context.Context, src *store.Source, cfg sourcespec.C
 		if err != nil {
 			return created, duplicates, fmt.Errorf("poll: 第 %d 条 item 入站失败: %w", i, err)
 		}
-		// 去重口径以入库回执为准（窗口内同 deliveryId 命中会回第一次那份回执）。
-		if receipt != nil && receipt.Duplicate {
+		if receipt != nil && receipt.Duplicate { // 去重口径以入库回执为准
 			duplicates++
 		} else {
 			created++

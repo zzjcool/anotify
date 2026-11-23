@@ -32,10 +32,8 @@ func SourceKinds() []string { return sourcespec.Kinds() }
 // IsValidSourceKind 判断种类是否合法。
 func IsValidSourceKind(k string) bool { return sourcespec.IsKind(k) }
 
-// 源相关的哨兵错误。
-//
-// 前两个别名到 sourcespec 的同名错误：校验只有一份实现，`errors.Is` 在 store 与
-// sourcespec 两侧都能命中（避免 handler 为了判错误而 import 两个包）。
+// 源相关的哨兵错误。前两个别名到 sourcespec 的同名错误：校验只有一份实现，
+// `errors.Is` 在两侧都能命中（handler 不必为了判错误而 import 两个包）。
 var (
 	ErrInvalidSourceKind   = sourcespec.ErrInvalidKind
 	ErrInvalidSourceConfig = sourcespec.ErrInvalidConfig
@@ -51,11 +49,8 @@ var (
 	// ErrSourceNameImmutable 表示试图改名（换名等于断掉入口边，只能删了重建）。
 	ErrSourceNameImmutable = errors.New("source_name_immutable")
 	// ErrSourceTargetInvalid 表示 targets 里的能力引用**不成立**：形状没写错，但指向的
-	// 名字/版本在本命名空间内解析不到。
-	//
-	// 是调用方输入错误（server 翻 400），不是服务端故障。与 ErrInvalidSourceConfig 的分工：
-	// 后者是 targets 的**形状**错（空引用、参数模板语法不对，不查库就能判）；本哨兵要查库
-	// 才知道，所以文案必须点名那个引用（给写的人一条可改的线索）。
+	// 名字/版本在本命名空间内解析不到。是调用方输入错误（server 翻 400），文案必须点名
+	// 那个引用；形状错（不查库就能判）归 ErrInvalidSourceConfig。
 	ErrSourceTargetInvalid = errors.New("invalid source target")
 )
 
@@ -154,15 +149,9 @@ func NewSourceToken() (string, error) {
 	return "src_" + base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 
-// CreateSource 建一个源：写 sources 行 + 同事务重建入口边。
-//
-// 校验顺序（全部在开事务之前，坏输入不该留下一行半成品）：
-//  1. 命名空间/名字/kind；
-//  2. config 归一化（kind 专属字段、cron 表达式当场解析、webhook token 空则生成）；
-//  3. targets 模板语法 + 能力引用在**同命名空间**内可解析。
-//
-// **空 targets 合法**（source.md §5）：先把入口建起来、再接能力是正常顺序，
-// 触发时留一条 no_target 剪枝痕。
+// CreateSource 建一个源：写 sources 行 + 同事务重建入口边。校验全部在开事务之前
+// （命名空间/名字/kind → config 归一化 → targets 语法与同命名空间解析），坏输入不留半成品；
+// **空 targets 合法**（先建入口再接能力，触发时留一条 no_target 剪枝痕）。
 func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	if s == nil {
 		return fmt.Errorf("create source: nil")
@@ -215,11 +204,8 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	return nil
 }
 
-// insertSourceOn 落一行源 + 同事务重建入口边（CreateSource 与 Playbook 安装共用）。
-//
-// 直写语义不变：唯一冲突 → ErrSourceNameTaken；config / targets 原样落库；入口边是
-// targets 的投影（只对**新建**源写，复用已有源不调用它）。调用方负责校验、归一化
-// （含 webhook token 生成）与 next_fire_at；本函数只做两件写。
+// insertSourceOn 落一行源 + 同事务重建入口边（CreateSource 与 Playbook 安装共用）；
+// 唯一冲突 → ErrSourceNameTaken，调用方负责校验、归一化与 next_fire_at。
 func insertSourceOn(ctx context.Context, ex queryExec, s *Source) error {
 	// poll 的 write-only secret 不许落进 config（归一化会丢掉它）：装在插入点上，playbook 安装也走这条路。
 	if s.Kind == SourceKindPoll {
@@ -255,11 +241,8 @@ func insertSourceOn(ctx context.Context, ex queryExec, s *Source) error {
 	return nil
 }
 
-// prepareSourceConfig 归一化 config，并在需要时生成 webhook token。
-//
-// token 生成是**一次性的创建期副作用**：空 token 进来 → 服务端补一个随机串。
-// 之后的任何 PATCH 都不会再生成（MergeConfig 保住旧值），所以 URL 不会因为
-// 「改了一下 payloadSchema」而换掉。
+// prepareSourceConfig 归一化 config，并在需要时生成 webhook token（一次性的创建期副作用：
+// 之后的 PATCH 不会再生成，MergeConfig 保住旧值，所以 URL 不会因为改配置而换掉）。
 func (d *DB) prepareSourceConfig(kind string, raw json.RawMessage) (json.RawMessage, error) {
 	cfg, err := sourcespec.NormalizeConfig(kind, raw)
 	if err != nil {
@@ -289,11 +272,8 @@ func (d *DB) prepareSourceConfig(kind string, raw json.RawMessage) (json.RawMess
 	return sourcespec.NormalizeConfig(kind, withToken)
 }
 
-// checkSourceTargets 校验 targets 并保证每个引用在**同命名空间**内可解析。
-//
-// 跨命名空间引用一律报错（不静默忽略）：静默会让人以为配置生效了，而事件永远派不出去。
-// 引用本身原样保留（`name` 跟随 latest、`name@version` 钉死），不做版本替换——
-// targets 是用户写的声明，投影必须与它一字不差。
+// checkSourceTargets 校验 targets 并保证每个引用在**同命名空间**内可解析（跨 ns 一律报错：
+// 静默会让人以为配置生效了，而事件永远派不出去）；引用原样保留，不做版本替换。
 func (d *DB) checkSourceTargets(ctx context.Context, s *Source) error {
 	return checkSourceTargetsOn(ctx, d, s)
 }

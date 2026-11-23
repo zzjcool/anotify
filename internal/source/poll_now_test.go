@@ -4,22 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
-// pollNowCfg 的 envelope 指针指向响应对象的 `items` 键（与 pollBody 的裸数组区分开：
-// 本文件要能同时造「对」和「写错指针」的响应）。
+// pollNowCfg 的 envelope.items 指向响应对象的 `items` 键（本文件要能同时造「对」与「写错指针」的响应）。
 const pollNowCfg = `{"url":%q,"schedule":{"expr":"*/5 * * * *"},"allowInsecure":true,"maxItems":10,
 	"envelope":{"items":".items","type":{"pointer":"type"},"deliveryId":{"pointer":"id"},"payload":{"pointer":""}}}`
 
 func pollWrapped(ids ...string) string { return `{"items":` + pollBody(ids...) + `}` }
 
-// TestPollOnceReportsCountsAndDedupes 手动拉取的计数来自同一份 roundOnce：首轮全新建，
-// 同 deliveryId 的第二轮全命中去重窗口。
+// TestPollOnceReportsCountsAndDedupes 首轮全新建，同 deliveryId 的第二轮全命中去重窗口。
 func TestPollOnceReportsCountsAndDedupes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -60,8 +61,7 @@ func TestPollOnceReportsCountsAndDedupes(t *testing.T) {
 	}
 }
 
-// TestPollOnceFailureKeepsCursorAndSchedule 失败不前进游标（与定时轮询同一条不变量），
-// 且手动触发不改排期：nextFireAt 与触发前逐字相同。
+// TestPollOnceFailureKeepsCursorAndSchedule 失败不前进游标，且 nextFireAt 与触发前逐字相同。
 func TestPollOnceFailureKeepsCursorAndSchedule(t *testing.T) {
 	var round2 atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -104,19 +104,25 @@ func TestPollOnceFailureKeepsCursorAndSchedule(t *testing.T) {
 	}
 }
 
-// TestPollOnceAndSweepShareOneLock 手动与定时共用同一把 in-flight 锁：一轮在飞时
-// 第二次手动拉取拿到 ErrPollInFlight，到点的 tick 也拿不到锁（只记 skippedOverlaps）。
+// TestPollOnceAndSweepShareOneLock 手动与定时共用同一把锁：在飞时第二次触发拿 ErrPollInFlight。
 func TestPollOnceAndSweepShareOneLock(t *testing.T) {
+	var calls atomic.Int32
 	started := make(chan struct{})
 	release := make(chan struct{})
-	var opened sync.Once
+	var releaseOnce sync.Once
+	releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		opened.Do(func() { close(started) })
-		<-release
+		// 只挂第一轮：后续请求立刻返回，绕过锁的变异才会当场得到错误结论而不是把测试挂死。
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(pollWrapped("a")))
 	}))
 	defer server.Close()
+	// 放行的 defer 必须比 server.Close 更晚注册（LIFO 先跑它）：否则断言失败时 Close 会等那条挂住的连接。
+	defer releaseNow()
 
 	f := newFixture(t, fmt.Sprintf(pollNowCfg, server.URL))
 	ctx := context.Background()
@@ -137,13 +143,13 @@ func TestPollOnceAndSweepShareOneLock(t *testing.T) {
 		t.Fatalf("重叠 tick 的 skippedOverlaps = %d，want 1", got)
 	}
 
-	close(release)
+	releaseNow()
 	if err := <-first; err != nil {
 		t.Fatalf("放行后的第一轮应该成功: %v", err)
 	}
 }
 
-// TestPollOnceNotModifiedKeepsCursor 304 = 没有新事实：计数全 0、游标不动，但整轮仍算成功。
+// TestPollOnceNotModifiedKeepsCursor 304：计数全 0、游标不动，但整轮仍算成功。
 func TestPollOnceNotModifiedKeepsCursor(t *testing.T) {
 	var tagged atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -172,5 +178,32 @@ func TestPollOnceNotModifiedKeepsCursor(t *testing.T) {
 	}
 	if got := f.source(t).PollCursor; got != `"e1"` {
 		t.Fatalf("304 后游标 = %q，want \"e1\"", got)
+	}
+}
+
+// TestPollOnceRefusesPrivateHostAtRuntime 手动路径不是绕过口：私网同样是一轮失败（游标不动）。
+func TestPollOnceRefusesPrivateHostAtRuntime(t *testing.T) {
+	strict := `{"url":%q,"schedule":{"expr":"*/5 * * * *"},
+		"envelope":{"items":".","type":{"pointer":"type"},"deliveryId":{"pointer":"id"}}}`
+	f := newFixture(t, fmt.Sprintf(strict, "https://rebind.example.test/feed"))
+	f.runs = NewPoller(f.db, f.svc, nil,
+		WithClock(func() time.Time { return f.now }),
+		WithResolver(func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("127.0.0.1")}, nil
+		}))
+	ctx := context.Background()
+	_, err := f.runs.PollOnce(ctx, f.source(t))
+	if err == nil {
+		t.Fatal("手动拉取解析到私网地址必须在运行期被拒")
+	}
+	src := f.source(t)
+	if src.ConsecutiveFailures != 1 || !strings.Contains(src.LastError, "解析到私网地址") {
+		t.Fatalf("私网拒绝没落成失败事实: %+v", src)
+	}
+	if src.PollCursor != "" {
+		t.Fatalf("被拒的一轮不该有游标: %q", src.PollCursor)
+	}
+	if events, _ := f.counts(t); events != 0 {
+		t.Fatalf("被拒的一轮不该产生事件: %d", events)
 	}
 }

@@ -96,9 +96,8 @@ func newSourceResEnv(t *testing.T) *sourceResEnv {
 		DB:      db,
 		Router:  router,
 		Sources: sources,
-		// 轮询执行器与后台排期是同一个实例（#555）：手动拉取走同一把 in-flight 锁。
-		Poller: source.NewPoller(db, sources, nil, source.WithClock(func() time.Time { return time.Unix(sourceResClock, 0) })),
-		Now:    func() int64 { return sourceResClock * 1000 }, // 契约单位是毫秒（D1）
+		Poller:  source.NewPoller(db, sources, nil, source.WithClock(func() time.Time { return time.Unix(sourceResClock, 0) })),
+		Now:     func() int64 { return sourceResClock * 1000 }, // 契约单位是毫秒（D1）
 		Session: func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				next.ServeHTTP(w, r.WithContext(auth.WithUserID(r.Context(), userID)))

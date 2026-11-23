@@ -7,8 +7,7 @@ import (
 	"testing"
 )
 
-// TestMarkSourcePolledKeepNextFire 「立即拉取一次」只跳过排期那一列：游标/失败事实照写，
-// next_fire_at 逐字保留（成功与失败都一样）。
+// TestMarkSourcePolledKeepNextFire 只跳过排期那一列：游标/失败事实照写，next_fire_at 逐字保留。
 func TestMarkSourcePolledKeepNextFire(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -51,7 +50,7 @@ func TestMarkSourcePolledKeepNextFire(t *testing.T) {
 	}
 }
 
-// TestAppendSourceAudit 审计行只增：动作在封闭集合内、detail 必须是 JSON，actor 原样留存。
+// TestAppendSourceAudit 动作在封闭集合内、detail 必须是 JSON，actor 原样留存。
 func TestAppendSourceAudit(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
