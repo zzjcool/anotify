@@ -1021,12 +1021,25 @@ paths:
       tags: [playbooks]
       security: [{session: []}]
       summary: "实例清单（按 valuesDigest 折叠的读模型）"
+      description: |
+        按 `(release, valuesDigest)` 折叠的实例清单：默认只列**生效中**的实例（已卸载的回执不进清单）。
+
+        传 `include=uninstalled` 时连带已卸载的实例（#553）：已卸载的组多一个 `uninstalledAt`
+        （组内回执全部已卸载才给），`lastInstallId` 仍指向最后一次安装的回执（可用来取安装时快照）。
+        折叠键不变，已卸载的组不参与生效中计数。
+      parameters:
+        - name: include
+          in: query
+          required: false
+          description: "传 `uninstalled` 时连带已卸载的实例；缺省只列生效中的。其它值 → 400 value_invalid"
+          schema: {type: string, enum: [uninstalled]}
       responses:
         '200':
           description: "折叠组清单（total 可能大于返回条数）"
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PlaybookInstallList'}
+        '400': {$ref: '#/components/responses/Status400'}
         '401': {$ref: '#/components/responses/AuthError401'}
         '404': {$ref: '#/components/responses/Status404'}
         '500': {$ref: '#/components/responses/Status500'}
@@ -1125,6 +1138,18 @@ paths:
 
         release 从未存在、或该 release 已卸载（对象已删）→ `404` `release_not_found`
         （与导出 / 卸载同一口径）。只读：不写库、不产生回执。
+
+        传 `include=uninstalled` 时已卸载的实例仍可读（#553）：`200`，`objects` 如实为空
+        （对象已删；同名对象被别的实例重装也不进这份视图），并多三个键 —— `uninstalledAt`（卸载时刻）、
+        `objectsGone: true`（告诉调用方「不是没装过」）、`pinned`（安装时的对象快照，与
+        `…/yaml?as=installed` 同口径；老回执没有快照时该键不出现）。生效中的实例带不带这个参数
+        响应完全相同。
+      parameters:
+        - name: include
+          in: query
+          required: false
+          description: "传 `uninstalled` 时已卸载的实例也返回 200（多 uninstalledAt / objectsGone / pinned）；缺省已卸载仍 404。其它值 → 400 value_invalid"
+          schema: {type: string, enum: [uninstalled]}
       responses:
         '200':
           description: "实例详情"
@@ -3586,6 +3611,10 @@ components:
         lastAt: {type: string, format: date-time}
         attempts: {type: integer}
         lastInstallId: {type: string}
+        uninstalledAt:
+          type: string
+          format: date-time
+          description: "这组已卸载的时刻（#553）：只有组内回执全部已卸载才出现；生效中的组没有这个键"
         capabilities:
           type: array
           items: {type: string}
@@ -3624,6 +3653,20 @@ components:
           type: array
           description: "参数组明细（按最近安装降序）"
           items: {$ref: '#/components/schemas/PlaybookReleaseParamGroup'}
+        uninstalledAt:
+          type: string
+          format: date-time
+          description: "已卸载视图（#553）：这个实例全部回执都已卸载时的最新卸载时刻；生效中的响应里没有这个键"
+        objectsGone:
+          type: boolean
+          description: "已卸载视图（#553）：`true` 表示对象已被卸载删除（`objects` 因此为空）。用来区分「对象没了」与「当初就没装出东西」"
+        pinned:
+          type: array
+          description: |
+            已卸载视图（#553）：安装时的对象快照，与 `…/yaml?as=installed` 同口径
+            （同一 `(kind,name)` 取最后一条回执；能力按 name 升序在前、源按 name 升序在后）。
+            老回执没有记录快照时该键不出现。
+          items: {$ref: '#/components/schemas/PlaybookPinnedRef'}
     PlaybookReleaseRef:
       type: object
       required: [name, version]
