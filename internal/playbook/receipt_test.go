@@ -7,8 +7,7 @@ import (
 	"testing"
 )
 
-// TestBuildReceiptShape 验 §4.5 的回执形状：created/skipped 是**对象**、空列表是 `[]`、
-// 没有 `conflicts` 字段、valuesDigest 对打码前的值算。
+// TestBuildReceiptShape 验 §4.5 的回执形状：created/skipped 是**对象**、空列表是 `[]`、 没有 `conflicts` 字段、valuesDigest 对打码前的值算。
 func TestBuildReceiptShape(t *testing.T) {
 	pkg := newBundle().withStandard().pkg(t)
 	plan, err := Plan(pkg, baseValues(), newFakeExisting())
@@ -239,5 +238,38 @@ func TestReceiptDependenciesFilled(t *testing.T) {
 	}
 	if decoded.Dependencies[0]["capability"] != "inventory" || decoded.Dependencies[0]["version"] != float64(2) {
 		t.Fatalf("dependencies[0] = %+v", decoded.Dependencies[0])
+	}
+}
+
+// TestBuildReceiptKeepsCreatedPinned：created.pinned 由 store 在 BuildReceipt **之前**装满，
+// BuildReceipt 是逐字段重建结构体——漏一个字段就会把刚组装的快照抹成 null。
+// 另一半是形状纪律：skipped.pinned 恒 `[]`（只有 created 有快照）。
+func TestBuildReceiptKeepsCreatedPinned(t *testing.T) {
+	pkg := newBundle().withStandard().pkg(t)
+	plan, err := Plan(pkg, baseValues(), newFakeExisting())
+	if err != nil {
+		t.Fatalf("安装计划失败: %v", err)
+	}
+	pins := []PinnedRef{
+		{Kind: "capability", Name: "a-fixer", Version: 1, Digest: "sha256:aa"},
+		{Kind: "source", Name: "a-on-push", KindOf: "webhook"},
+	}
+	plan.Created.Pinned = pins
+	r := BuildReceipt(plan, plan.Values, plan.ValuesDigest, InstallMeta{ID: "ins_pin", At: ts, Namespace: "prod"})
+	if !reflect.DeepEqual(r.Created.Pinned, pins) {
+		t.Fatalf("created.pinned 被 BuildReceipt 改了: %+v, want %+v", r.Created.Pinned, pins)
+	}
+	if r.Skipped.Pinned == nil || len(r.Skipped.Pinned) != 0 {
+		t.Fatalf("skipped.pinned = %#v, want 非 nil 的空切片", r.Skipped.Pinned)
+	}
+	raw, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("回执序列化: %v", err)
+	}
+	if !strings.Contains(string(raw), `"pinned":[{"kind":"capability","name":"a-fixer","version":1,"digest":"sha256:aa"},{"kind":"source","name":"a-on-push","kindOf":"webhook"}]`) {
+		t.Fatalf("created.pinned 的 JSON 形状不对（kindOf 只在源上、version/digest 只在能力上）: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"pinned":[]`) {
+		t.Fatalf("skipped.pinned 必须是 []: %s", raw)
 	}
 }

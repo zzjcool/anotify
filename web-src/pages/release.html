@@ -22,6 +22,9 @@
     line-height: 1.6;
   }
   .rd-drawer { align-items: stretch; justify-content: flex-end; padding: 0; }
+  .rd-as-bar { display: grid; gap: 8px; justify-items: start; padding: 14px 20px 0; flex: 0 0 auto; }
+  .rd-as-tabs { justify-self: start; }
+  .rd-as-tabs .tab:disabled { cursor: not-allowed; opacity: .55; }
   .rd-drawer-panel {
     max-width: min(520px, 100%);
     height: 100dvh;
@@ -85,6 +88,13 @@
     <div class="modal-head">
       <h3 id="rd-yaml-title"></h3>
       <button id="rd-yaml-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.close"}}">×</button>
+    </div>
+    <div class="rd-as-bar">
+      <div id="rd-as-tabs" class="tabs rd-as-tabs" role="tablist">
+        <button id="rd-as-current" type="button" class="tab active" role="tab" aria-selected="true" data-as="current">{{t "release.as_current"}}</button>
+        <button id="rd-as-installed" type="button" class="tab" role="tab" aria-selected="false" data-as="installed">{{t "release.as_installed"}}</button>
+      </div>
+      <p id="rd-as-note" class="field-hint" hidden></p>
     </div>
     <div id="rd-yaml-body" class="modal-body"></div>
   </div>
@@ -293,6 +303,24 @@
         $("rd-load-state").replaceChildren(loadErrorNode(error));
       }
     }
+    let yamlAs = "current";
+    function activateAs(as) {
+      yamlAs = as === "installed" ? "installed" : "current";
+      for (const id of ["rd-as-current", "rd-as-installed"]) {
+        const tab = $(id);
+        const on = tab.dataset.as === yamlAs;
+        tab.classList.toggle("active", on);
+        tab.setAttribute("aria-selected", on ? "true" : "false");
+      }
+    }
+    function resetAs() {
+      const tab = $("rd-as-installed");
+      tab.disabled = false;
+      tab.removeAttribute("aria-disabled");
+      $("rd-as-note").hidden = true;
+      $("rd-as-note").textContent = "";
+      activateAs("current");
+    }
     async function yamlBody(node) { $("rd-yaml-body").replaceChildren(node); }
     function yamlEmpty() { yamlBody(dom("p", { class: "field-hint", id: "rd-yaml-empty" }, t("release.yaml_empty"))); }
     function yamlFailed(text) { yamlBody(dom("p", { class: "field-hint" }, t("release.yaml_failed") + " · " + text)); }
@@ -310,30 +338,51 @@
       yamlBody(wrap);
     }
     async function statusDetail(res) {
-      let text = "HTTP " + res.status;
-      try {
-        const body = await res.json();
-        text += " · " + [body.reason, body.message].filter(Boolean).join(" · ");
-      } catch (e) { /* 不是 JSON（网关错误页）：只留状态码 */ }
-      return text;
+      let body = null;
+      try { body = await res.json(); } catch (e) { /* 不是 JSON（网关错误页）：只留状态码 */ }
+      return statusText(res.status, body);
     }
-    async function openYaml() {
+    function statusText(status, body) {
+      return "HTTP " + status + (body ? " · " + [body.reason, body.message].filter(Boolean).join(" · ") : "");
+    }
+    function snapshotMissing() {
+      const tab = $("rd-as-installed");
+      tab.disabled = true;
+      tab.setAttribute("aria-disabled", "true");
+      $("rd-as-note").textContent = t("release.as_no_snapshot");
+      $("rd-as-note").hidden = false;
+      activateAs("current");
+      loadYaml();
+    }
+    async function loadYaml() {
       const group = current();
-      openModal($("rd-yaml-drawer"));
       if (!group) { yamlEmpty(); return; }
+      const as = yamlAs;
       const objectCount = (group.objects.capabilities || []).length + (group.objects.sources || []).length;
-      if (!objectCount) { yamlEmpty(); return; }
+      const currentViewEmpty = as !== "installed" && !objectCount;
+      if (currentViewEmpty) { yamlEmpty(); return; }
       yamlBody(dom("p", { class: "field-hint" }, t("release.loading")));
-      const query = "?valuesDigest=" + encodeURIComponent(group.valuesDigest);
+      const query = "?valuesDigest=" + encodeURIComponent(group.valuesDigest) +
+        (as === "installed" ? "&as=installed" : "");
       try {
         const res = await fetch(path("/releases/" + encodeURIComponent(release) + "/yaml" + query),
           { credentials: "same-origin", headers: { Accept: "application/yaml" } });
         if (res.status === 401) { location.href = loginHref(); return; }
+        if (res.status === 409 && as === "installed") {
+          const body = await res.json().catch(() => null);
+          if (body && body.reason === "no_snapshot") { snapshotMissing(); return; }
+          return yamlFailed(statusText(res.status, body));
+        }
         if (!res.ok) return yamlFailed(await statusDetail(res));
         const text = await res.text();
         if (!text.split("\n").some(line => line.trim() === "---")) return yamlEmpty();
         yamlCode(text);
       } catch (error) { yamlFailed(String((error && error.message) || error)); }
+    }
+    function openYaml() {
+      openModal($("rd-yaml-drawer"));
+      resetAs();
+      loadYaml();
     }
     async function load() {
       $("rd-summary").hidden = false;
@@ -371,6 +420,14 @@
       } finally { $("rd-summary").removeAttribute("aria-busy"); }
     }
     $("rd-yaml").addEventListener("click", openYaml);
+    for (const id of ["rd-as-current", "rd-as-installed"]) {
+      $(id).addEventListener("click", event => {
+        const tab = event.currentTarget;
+        if (tab.disabled || tab.dataset.as === yamlAs) return;
+        activateAs(tab.dataset.as);
+        loadYaml();
+      });
+    }
     $("rd-yaml-close").addEventListener("click", () => closeModal($("rd-yaml-drawer")));
     $("rd-yaml-drawer").addEventListener("click", event => { if (event.target === $("rd-yaml-drawer")) closeModal($("rd-yaml-drawer")); });
     $("rd-uninstall").addEventListener("click", uninstall);

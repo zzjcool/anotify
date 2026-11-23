@@ -478,6 +478,16 @@ func (d *DB) GetCapability(ctx context.Context, namespaceID, name string, versio
 	return getCapabilityOn(ctx, d, namespaceID, name, version)
 }
 
+// GetCapabilityForSnapshot 按 name + version 取能力定义，**不过滤 deleted_at**（#551）：卸载/删除只是 SET deleted_at、正文还在，所以「已卸成的实例仍能导出它的安装时快照」；与 GetCapability 的差别只有这一个谓词。
+func (d *DB) GetCapabilityForSnapshot(ctx context.Context, namespaceID, name string, version int) (*CapabilityVersion, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	return scanCapabilityOn(ctx, d,
+		`SELECT `+capabilityColumns+` FROM capability_versions
+		 WHERE namespace_id = ? AND name = ? AND version = ?`, namespaceID, name, version)
+}
+
 // getCapabilityOn 是 GetCapability 的 ex 版（事务内读必须走它）。
 func getCapabilityOn(ctx context.Context, ex queryExec, namespaceID, name string, version int) (*CapabilityVersion, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {

@@ -40,8 +40,7 @@ type CapabilitySnapshot struct {
 	DisplayName string
 	// Next 是这一行**当前的路由**（行 7 的比较对象）。
 	Next []string
-	// OwnerRelease / OwnerInstallID 是「这一行是谁装出来的」（installed_from 的 release 与
-	// 回执 id）；手建行两者皆空 = 无主。它们是 release 隔离边界的唯一依据。
+	// OwnerRelease / OwnerInstallID 是「这一行是谁装出来的」（installed_from 的 release 与 回执 id）；手建行两者皆空 = 无主。它们是 release 隔离边界的唯一依据。
 	OwnerRelease   string
 	OwnerInstallID string
 }
@@ -76,8 +75,7 @@ type Existing interface {
 	SourceByName(name string) (*SourceSnapshot, bool)
 	// BareNameRefs 返回库里**引用裸名**（不带 @version）的边数与源数：`upgraded[].affects`。
 	BareNameRefs(name string) (edges, sources int)
-	// HasUpstream 报告库里是否已有指向 name 的引用（裸名，或 `name@任意版本`）：
-	// 装完自检的 `unreachable` note 用它排除"包外已有上游"。
+	// HasUpstream 报告库里是否已有指向 name 的引用（裸名，或 `name@任意版本`）： 装完自检的 `unreachable` note 用它排除"包外已有上游"。
 	HasUpstream(name string) bool
 }
 
@@ -687,11 +685,12 @@ func filled[T any](in, empty []T) []T {
 	return in
 }
 
-// filledCreated 保证 created / skipped 的两个列表都是 `[]`。
+// filledCreated 保证 created / skipped 的三个列表都是 `[]`（pinned 原样透传：store 在 BuildReceipt 之前组装它）。
 func filledCreated(c Created) Created {
 	return Created{
 		Capabilities: filled(c.Capabilities, []string{}),
 		Sources:      filled(c.Sources, []string{}),
+		Pinned:       filled(c.Pinned, []PinnedRef{}),
 	}
 }
 

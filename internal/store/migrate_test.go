@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"os"
@@ -362,5 +363,88 @@ func TestMigrationPlaybookReleaseBackfill(t *testing.T) {
 	}
 	if release != "project-chain" {
 		t.Fatalf("重开改了回填值: %q", release)
+	}
+}
+
+// TestMigrationInstallPinnedTable 是块 8（安装时快照）的**老库就地迁移**验收：记账只到 7 的 v4 库 Open 上块 8、老回执的 pinned 读出来是 `[]`、重开幂等。
+func TestMigrationInstallPinnedTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v7-installs.db")
+	set, err := parseMigrations(schemaSQL)
+	if err != nil {
+		t.Fatalf("parse schema.sql: %v", err)
+	}
+	raw, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	raw.SetMaxOpenConns(1)
+	if err := applyBaselineMigration(raw, set[0], nil); err != nil {
+		t.Fatalf("apply baseline only: %v", err)
+	}
+	for _, m := range set {
+		if m.version == baselineVersion || m.version >= headVersion {
+			continue
+		}
+		if err := applyMigration(raw, m, nil); err != nil {
+			t.Fatalf("apply migration %d: %v", m.version, err)
+		}
+	}
+	mustExec(t, raw, `INSERT INTO playbook_installs
+		   (id, namespace_id, namespace_slug, playbook_id, playbook_slug,
+		    "values", values_digest, receipt, source, release, created_at)
+		 VALUES ('ins_v7','ns_v7','demo','pb_v7','project-chain','{}','sha256:v7',
+		         '{"apiVersion":"anotify/v1","kind":"InstallReceipt","playbook":{"name":"project-chain"},"install":{"id":"ins_v7","at":"2026-11-01T00:00:00Z","dryRun":false},"namespace":"demo","values":{},"valuesDigest":"sha256:v7","created":{"capabilities":[],"sources":[]},"skipped":{"capabilities":[],"sources":[]},"upgraded":[],"unapplied":[],"external":[],"pending":[],"notes":[]}',
+		         '','project-chain',1700000000)`)
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open v7 db (块 8 应被应用): %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if v, err := db.SchemaVersion(); err != nil || v != headVersion {
+		t.Fatalf("SchemaVersion = %d, %v; want %d", v, err, headVersion)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='playbook_install_pinned'`).Scan(&n); err != nil {
+		t.Fatalf("probe pinned table: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("块 8 没建出 playbook_install_pinned（找到 %d 张）", n)
+	}
+	got, err := db.GetPlaybookInstall(context.Background(), "ns_v7", "project-chain", "ins_v7")
+	if err != nil {
+		t.Fatalf("读老回执: %v", err)
+	}
+	if got.Created.Pinned == nil || len(got.Created.Pinned) != 0 {
+		t.Fatalf("老回执 created.pinned = %#v, want 非 nil 的空切片", got.Created.Pinned)
+	}
+	pins, err := db.PlaybookInstallPinned(context.Background(), "ns_v7", []string{"ins_v7"})
+	if err != nil {
+		t.Fatalf("读老回执的 pinned 行: %v", err)
+	}
+	if len(pins) != 0 {
+		t.Fatalf("老回执不该有 pinned 行, got %#v", pins)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	db2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = db2.Close() })
+	if v, err := db2.SchemaVersion(); err != nil || v != headVersion {
+		t.Fatalf("重开后 SchemaVersion = %d, %v; want %d", v, err, headVersion)
+	}
+	var rows int
+	if err := db2.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&rows); err != nil {
+		t.Fatalf("count schema_version: %v", err)
+	}
+	if rows != headVersion {
+		t.Fatalf("重开后 schema_version 行数 = %d, want %d", rows, headVersion)
 	}
 }

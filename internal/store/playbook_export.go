@@ -74,6 +74,7 @@ func (d *DB) playbookReleaseExport(ctx context.Context, namespaceID, slug, relea
 		if receipt.Dependencies == nil {
 			receipt.Dependencies = []playbook.Dependency{}
 		}
+		normalizePinned(&receipt)
 		if receipt.Install.Release == "" {
 			// 迁移前的回执原文没有 release；列上已回填（见 GetPlaybookInstall 的同一处理）。
 			receipt.Install.Release = rowRelease
@@ -90,4 +91,37 @@ func (d *DB) playbookReleaseExport(ctx context.Context, namespaceID, slug, relea
 		return nil, fmt.Errorf("%w: release %q", ErrPlaybookReleaseNotFound, rel)
 	}
 	return exp, nil
+}
+
+// PlaybookInstallPinned 按 (install_id, seq) 读出安装时快照（#551），返回每个 install 的有序切片（顺序就是回执 created.pinned 的顺序，不重排）；老回执没有行 → 该 install 不在 map 里（调用方按 ErrPlaybookSnapshotMissing 处理）。
+func (d *DB) PlaybookInstallPinned(ctx context.Context, namespaceID string, installIDs []string) (map[string][]playbook.PinnedRef, error) {
+	out := map[string][]playbook.PinnedRef{}
+	if len(installIDs) == 0 {
+		return out, nil // 不拼 `IN ()`
+	}
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	rows, err := d.cachedQueryContext(ctx,
+		`SELECT install_id, ref_kind, name, obj_kind, version, digest
+		   FROM playbook_install_pinned
+		  WHERE namespace_id = ? AND install_id IN (`+placeholdersFor(len(installIDs))+`)
+		  ORDER BY install_id, seq, ref_kind, name`,
+		append([]any{namespaceID}, anyArgs(installIDs)...)...)
+	if err != nil {
+		return nil, fmt.Errorf("playbook install pinned: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var installID string
+		var pin playbook.PinnedRef
+		if err := rows.Scan(&installID, &pin.Kind, &pin.Name, &pin.KindOf, &pin.Version, &pin.Digest); err != nil {
+			return nil, fmt.Errorf("playbook install pinned: scan: %w", err)
+		}
+		out[installID] = append(out[installID], pin)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("playbook install pinned: %w", err)
+	}
+	return out, nil
 }

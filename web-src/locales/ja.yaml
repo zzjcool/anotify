@@ -2767,6 +2767,9 @@ release:
   yaml_title: インスタンスの YAML
   yaml_empty: このインスタンスにはエクスポートできるオブジェクトがありません。
   yaml_failed: エクスポートに失敗しました
+  as_current: 現在有効
+  as_installed: インストール時
+  as_no_snapshot: このインストールにはスナップショットが残っていないため、現在有効なバージョンのみ表示します。
   uninstall: このインスタンスを削除
   uninstall_confirm: 'インスタンス「{release}」を削除します：作成したケイパビリティとソースを削除し、結果は保持します。'
   uninstalled: 削除済み

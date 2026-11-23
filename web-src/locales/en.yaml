@@ -2767,6 +2767,9 @@ release:
   yaml_title: Instance YAML
   yaml_empty: This instance has no objects to export.
   yaml_failed: Export failed
+  as_current: Current
+  as_installed: At install
+  as_no_snapshot: This install kept no snapshot, so only the version in effect now can be shown.
   uninstall: Uninstall this instance
   uninstall_confirm: 'Uninstall “{release}”: delete the capabilities and sources it installed; receipts are kept.'
   uninstalled: Uninstalled

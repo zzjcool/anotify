@@ -967,6 +967,182 @@ async function partReleaseYAML(ctx) {
 	H.check("0 对象只有头注释且 objects: 0", zero.text.includes("objects: 0") && !zero.text.includes("---"), zero.text);
 }
 
+async function partInstalledSnapshot(ctx) {
+	console.log("--- 13. 安装时快照导出（#551）---");
+	const slug = "pb-snapshot";
+	const cap = "snap-review";
+	const src = "snap-push";
+	await createPackage(ctx, slug, {
+		"playbook.yaml": entryDoc(slug, ["capabilities/review.yaml"], ["sources/on-push.yaml"]),
+		"capabilities/review.yaml": capabilityDoc(cap, ["#!/bin/sh", "echo snap-v3"]),
+		"sources/on-push.yaml": sourceDoc(src, [cap]),
+	});
+	const defineCap = (script) => H.req(ctx.base, V.P.capabilities(NS), { // 预置到 v2 → 安装建出 v3（#551 的「装 review@3」形状）
+		session: ctx.session,
+		method: "POST",
+		body: {
+			apiVersion: V.API_VERSION,
+			kind: "Capability",
+			metadata: { name: cap },
+			spec: { run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\necho " + script + "\n" } } },
+		},
+	});
+	V.expectStatus("预置同名能力 v1 → 201", await defineCap("snap-v1"), 201);
+	V.expectStatus("预置同名能力 v2 → 201", await defineCap("snap-v2"), 201);
+
+	const inst = await install(ctx, slug, "snap");
+	V.expectStatus("安装 release snap → 200", inst, 200);
+	const rcpt = inst.json || {};
+	const installId = rcpt.install?.id;
+	const pinned = Array.isArray(rcpt.created?.pinned) ? rcpt.created.pinned : null;
+	H.check("回执 created.pinned 是数组（旧字段之外的新字段）", pinned !== null, JSON.stringify(rcpt.created));
+	const pinOf = (kind) => (pinned || []).find((p) => p?.kind === kind) || {};
+	const capPin = pinOf("capability");
+	const srcPin = pinOf("source");
+	H.eq("pinned 能力在前、源在后各一条", (pinned || []).map((p) => p.kind), ["capability", "source"]);
+	H.eq("pinned 的能力项 name", capPin.name, cap);
+	H.eq("pinned 的能力项 version 是安装时那一版（v3）", capPin.version, 3);
+	H.check(
+		"pinned 的能力项 digest 以 sha256: 开头",
+		typeof capPin.digest === "string" && capPin.digest.startsWith("sha256:"),
+		String(capPin.digest),
+	);
+	H.eq("pinned 的源项 name", srcPin.name, src);
+	H.eq("pinned 的源项 kindOf 是源的 kind", srcPin.kindOf, "webhook");
+	H.check(
+		"源的 pinned 项没有 version/digest（源没有版本概念）",
+		srcPin.version === undefined && srcPin.digest === undefined,
+		JSON.stringify(srcPin),
+	);
+	H.eq("旧字段 created.capabilities 原样保留（name@version）", rcpt.created?.capabilities, [`${cap}@3`]);
+	H.eq("旧字段 created.sources 原样保留（仍是裸名）", rcpt.created?.sources, [src]);
+	const versionRow = dbRows(ctx, "SELECT digest FROM capability_versions WHERE name = ? AND version = 3", [cap])[0] || {};
+	H.eq("pinned 的 digest 与能力版本行逐字相同", capPin.digest, versionRow.digest);
+
+	const up = await H.req(ctx.base, V.P.capabilities(NS), {
+		session: ctx.session,
+		method: "POST",
+		body: {
+			apiVersion: V.API_VERSION,
+			kind: "Capability",
+			metadata: { name: cap },
+			spec: { run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\necho snap-v4\n" } } },
+		},
+	});
+	V.expectStatus("同名能力换正文提交 → 201（分配新版本）", up, 201);
+	H.eq("升级后的能力版本 = 4", up.json?.metadata?.version, 4);
+
+	const path = PB.releaseYAML(slug, "snap");
+	const beforeReads = dbFingerprint(ctx.dbPath);
+	const docOf = (text, kind) => text.split("---\n").slice(1).find((d) => d.includes(`kind: ${kind}`)) || "";
+	const installed = await H.req(ctx.base, path + "?as=installed", { session: ctx.session });
+	V.expectStatus("as=installed 导出 → 200", installed, 200);
+	H.check("安装时视图头注释写实「安装时快照」", installed.text.includes("安装时快照"), installed.text.slice(0, 400));
+	H.check("安装时视图头注释带这次安装的回执 id", installed.text.includes(`install: ${installId}`), installed.text.slice(0, 400));
+	H.check("安装时视图头注释 objects: 2（一个能力 + 一个源）", installed.text.includes("objects: 2"), installed.text.slice(0, 400));
+	const snapCap = docOf(installed.text, "Capability");
+	H.check("安装时视图的能力文档还是 v3", snapCap.includes("version: 3"), snapCap.slice(0, 300));
+	H.check("安装时视图的能力正文是 v3 的脚本", snapCap.includes("snap-v3"), snapCap);
+	H.check("安装时视图里没有升级后的 snap-v4", !installed.text.includes("snap-v4"), installed.text.slice(0, 400));
+	H.check("安装时视图的源文档按名字取到当前正文", docOf(installed.text, "Source").includes(src), installed.text.slice(0, 400));
+
+	const current = await H.req(ctx.base, path, { session: ctx.session });
+	V.expectStatus("默认视图导出 → 200", current, 200);
+	const currCap = docOf(current.text, "Capability");
+	H.check("默认视图的能力文档是当前 v4", currCap.includes("version: 4"), currCap.slice(0, 300));
+	H.check("默认视图的能力正文是升级后的 snap-v4", currCap.includes("snap-v4"), currCap);
+	H.check("默认视图头注释仍说「当前生效版本」", current.text.includes("当前生效版本"), current.text.slice(0, 400));
+	H.check("两种视图正文不同（安装时快照 ≠ 当前生效）", installed.text !== current.text, "两份正文逐字节相同");
+	const asCurrent = await H.req(ctx.base, path + "?as=current", { session: ctx.session });
+	V.expectStatus("as=current 导出 → 200", asCurrent, 200);
+	H.eq("as=current 与不带参数逐字节相同", asCurrent.text, current.text);
+	V.expectReason(
+		"as=nope → 400 value_invalid",
+		await H.req(ctx.base, path + "?as=nope", { session: ctx.session }),
+		400,
+		"value_invalid",
+	);
+	H.eq("这几次导出都没落库（库指纹逐字节相同）", dbFingerprint(ctx.dbPath), beforeReads);
+
+	V.expectStatus("卸载 release snap → 200", await uninstall(ctx, slug, "snap"), 200);
+	const afterUninstall = dbFingerprint(ctx.dbPath);
+	const gone = await H.req(ctx.base, path + "?as=installed", { session: ctx.session });
+	V.expectStatus("卸载后 as=installed 仍能导出 → 200", gone, 200);
+	H.check("卸载后的快照头注释仍带那次安装的 id", gone.text.includes(`install: ${installId}`), gone.text.slice(0, 400));
+	H.check(
+		"卸载后的快照仍是安装时那版正文（软删行仍可读）",
+		gone.text.includes("snap-v3") && !gone.text.includes("snap-v4"),
+		gone.text.slice(0, 400),
+	);
+	H.eq("卸载后的快照只剩能力一个文档（源被物理删）", gone.text.split("---\n").length - 1, 1);
+	H.check("卸载后的快照不含源文档", !gone.text.includes("kind: Source"), gone.text.slice(0, 400));
+	H.check("删掉的源计入「快照缺失: 1」", gone.text.includes("# 快照缺失: 1"), gone.text.slice(0, 400));
+	V.expectReason(
+		"卸载后默认视图 → 404 release_not_found（口径不变）",
+		await H.req(ctx.base, path, { session: ctx.session }),
+		404,
+		"release_not_found",
+	);
+	V.expectReason(
+		"卸载后 as=current 也 → 404（与不带参数等价）",
+		await H.req(ctx.base, path + "?as=current", { session: ctx.session }),
+		404,
+		"release_not_found",
+	);
+	H.eq("卸载之后快照的这几次读都不改库（库指纹逐字节相同）", dbFingerprint(ctx.dbPath), afterUninstall);
+
+	const legacyId = "ins_e2e_551_legacy"; // 老回执（#551 之前装的）：手写一条没有 pinned 的回执，读面必须 409 而不是编造一份快照。
+	const legacyDigest = "sha256:" + "0".repeat(64);
+	const nsRow = dbRows(ctx, "SELECT id FROM namespaces WHERE slug = ?", [NS])[0] || {};
+	const pbRow = dbRows(ctx, "SELECT id FROM playbooks WHERE slug = ?", [slug])[0] || {};
+	H.check("查得到命名空间 id（直插老回执用）", typeof nsRow.id === "string" && nsRow.id.length > 0, JSON.stringify(nsRow));
+	H.check("查得到包 id（直插老回执用）", typeof pbRow.id === "string" && pbRow.id.length > 0, JSON.stringify(pbRow));
+	const legacyReceipt = {
+		apiVersion: "anotify/v1",
+		kind: "InstallReceipt",
+		playbook: { name: slug, version: 1 },
+		install: { id: legacyId, at: "2026-01-01T00:00:00Z", namespace: NS, release: "legacy", dryRun: false },
+		namespace: NS,
+		values: VALUES,
+		valuesDigest: legacyDigest,
+		created: { capabilities: [`${cap}@1`], sources: [] },
+		skipped: { capabilities: [], sources: [] },
+	};
+	V.withDB(ctx.dbPath, (db) =>
+		db
+			.prepare(
+				`INSERT INTO playbook_installs
+				   (id, namespace_id, namespace_slug, playbook_id, playbook_slug, "values", values_digest, receipt, source, release, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 'legacy', ?)`,
+			)
+			.run(
+				legacyId,
+				nsRow.id,
+				NS,
+				pbRow.id,
+				slug,
+				JSON.stringify(VALUES),
+				legacyDigest,
+				JSON.stringify(legacyReceipt),
+				Date.now(),
+			),
+	);
+	const legacyPath = PB.releaseYAML(slug, "legacy");
+	const noSnap = await H.req(ctx.base, legacyPath + "?as=installed", { session: ctx.session });
+	V.expectReason("老回执没有 pinned → 409 no_snapshot", noSnap, 409, "no_snapshot");
+	H.eq("409 的 details.causes[0].field 指到 release", noSnap.json?.details?.causes?.[0]?.field, "release");
+	H.check(
+		"409 的 message 说明「安装于未记录快照的版本」",
+		typeof noSnap.json?.message === "string" && noSnap.json.message.includes("未记录快照"),
+		String(noSnap.json?.message).slice(0, 200),
+	);
+	const legacyCurrent = await H.req(ctx.base, legacyPath, { session: ctx.session });
+	V.expectStatus("老回执的当前视图不回归 → 200", legacyCurrent, 200);
+	H.check("老回执的当前视图照旧说「当前生效版本」", legacyCurrent.text.includes("当前生效版本"), legacyCurrent.text.slice(0, 400));
+	H.check("老回执的当前视图头注释带它自己的 install id", legacyCurrent.text.includes(`install: ${legacyId}`), legacyCurrent.text.slice(0, 400));
+	H.check("老回执的当前视图取的是当前生效的 v4", legacyCurrent.text.includes("snap-v4"), legacyCurrent.text.slice(0, 400));
+}
+
 // readReleaseDetail 读一份实例的详情（#548），返回 JSON 文档。
 async function readReleaseDetail(ctx, slug, rel, what) {
 	const r = await H.req(ctx.base, PB.release(slug, rel), { session: ctx.session });
@@ -1133,6 +1309,7 @@ async function main() {
 		await partUninstallIdempotent(ctx);
 		await partUninstallErrors(ctx);
 		await partReleaseYAML(ctx);
+		await partInstalledSnapshot(ctx);
 		await partReleaseDetail(ctx);
 		await partVersions(ctx);
 		await partRequires(ctx);

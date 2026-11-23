@@ -140,6 +140,7 @@ func (d *DB) playbookReleaseReceipts(ctx context.Context, namespaceID, playbookI
 		if receipt.Dependencies == nil {
 			receipt.Dependencies = []playbook.Dependency{}
 		}
+		normalizePinned(&receipt)
 		if receipt.Install.Release == "" {
 			receipt.Install.Release = release
 		}
