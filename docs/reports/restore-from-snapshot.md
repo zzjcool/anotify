@@ -109,6 +109,50 @@ as_of: 2026-11-23 · area: `api` / `store` / `server` / `web` / `e2e` · 迁移�
 | ① | `capabilitySnapshotByVersionOn` 改成先取该名字的 `MAX(version)`（复原用最新版） | 验收 1 红 | store `TestRestoreUsesPinnedVersionNotLatest` 红：`created.capabilities = [demo-review@2]`；e2e `①` 红（见 §4.1） |
 | ② | 冲突时先把 `createCaps` 写进库再报错（`_ = tx.Commit()`，不整包回滚） | 验收 5 零写入红 | store `TestRestoreConflictAndReuse` 红：`restore_conflict 必须整包 0 写（demo-b 也不许先写进去）`；e2e `① 对照` 段指纹/能力列表红（见 §4.1） |
 
+### 4.1 变异实测（原样贴回执）
+
+**变异 ①（复原取 `MAX(version)`）—— store 单测**
+
+```text
+$ go test ./internal/store/ -run TestRestoreUsesPinnedVersionNotLatest
+--- FAIL: TestRestoreUsesPinnedVersionNotLatest
+    created.capabilities = [demo-review@2], want [demo-review@1]（按 pinned 版本，不是最新的 v2）
+```
+
+**变异 ① —— e2e §15**（`go build -tags embeddist` 后单跑套件）
+
+```text
+[playbook_release] 591 通过 / 23 失败
+  - ① 按快照复原 → 200 — 期望 200 实际 500 {"code":500,"reason":"InternalError",
+      "message":"restore playbook \"pb-restore-pin\": capability restore-pin-review@2 已存在（Plan 与库快照不一致）…"}
+  - ① 重建的是 pinned 版本 v1（不是最新的 v2） — 期望 ["restore-pin-review@1"] 实际 undefined
+  …（余下 21 条是 ① 段的连带断言）
+```
+
+注：这条变异在 e2e 上表现为 500 而不是「装错了版本」——因为 `v2` 那行虽已软删，唯一索引仍占着槽位，
+所以「照最新版装」在真实库里直接撞唯一键。这正是「版本不漂移」要挡的行为，故断言红。
+
+**变异 ②（冲突时先写一半、`tx.Commit()` 不整包回滚）—— store 单测**
+
+```text
+$ go test ./internal/store/ -run TestRestoreConflictAndReuse
+--- FAIL: TestRestoreConflictAndReuse
+    restore_conflict 必须整包 0 写（demo-b 也不许先写进去）
+```
+
+**变异 ② —— e2e §15**（恰好 5 条红，全落在 0 写断言上）
+
+```text
+[playbook_release] 609 通过 / 5 失败
+  - ④ pinned 版本被硬删：6 张表指纹逐字节相同（0 写） — before 99078 字节 vs after 99808 字节
+  - ④ 复原失败没有把能力装回来（两个都不该在） — …restore-gone-a,restore-gone-b…
+  - ① 同名同版本异正文复原：6 张表指纹逐字节相同（0 写） — before 110024 字节 vs after 110767 字节
+  - ① 对照：409 之后缺席那个能力没有被写一半（不在列表里） — …restore-conflict-absent,restore-conflict-review…
+  - ⑥ 缺源复原：6 张表指纹逐字节相同（0 写） — before 114016 字节 vs after 114745 字节
+```
+
+第 4 条是这套断言存在的理由：冲突用例用**两能力包**（`restore-conflict-absent` 排序在冲突那个之前），
+所以「边判边写」的实现会先把缺席那个写进库再报错；只有「整包 0 写」才让它消失。
+
 ## 5. 门禁数字
 
-待补（`make ci` / `make e2e-affected` / 变异实测输出见下节）。

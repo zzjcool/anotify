@@ -428,8 +428,8 @@ func TestRestoreMissingSource(t *testing.T) {
 
 	// 用户先把源建起来（正文由人负责），复原就只剩能力要建。
 	if err := db.CreateSource(ctx, &Source{NamespaceID: nsID, Name: "demo-on-push", Kind: "webhook",
-		Config: json.RawMessage(`{"secretToken":"tok"}`)}); err != nil {
-		t.Skipf("手工建源失败（不在本票范围）: %v", err)
+		Config: json.RawMessage(`{"token":"tok"}`)}); err != nil {
+		t.Fatalf("手工建源: %v", err)
 	}
 	if _, err := db.RestorePlaybookRelease(ctx, nsID, slug, "alpha", rcpt.ValuesDigest, ""); err != nil {
 		t.Fatalf("源补上后复原应 200: %v", err)
