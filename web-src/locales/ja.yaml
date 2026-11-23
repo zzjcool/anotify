@@ -2372,8 +2372,8 @@ pb:
     status_version: "バージョン v{n}"
     status_instances: "{n} 件のインスタンス"
     versions_brief: "{n} バージョン"
-    instances: "インスタンスと値ごとのインストール記録"
-    instances_hint: "読み取り専用ビュー：同じインスタンス名と同じ値の組み合わせが 1 グループ。attempts はその組をインストールした回数です。由来は初回作成の記録であり、所有権ではありません。"
+    instances: "インスタンス"
+    instances_hint: "1 行が 1 インスタンス（release）です。開くとオブジェクト・パラメータ・直近のレシートを確認できます。"
     attempts_n: "{n} 回試行"
     template: "元パッケージの編集／エクスポート"
     file_path: "パッケージ内の相対パス"
@@ -2455,6 +2455,37 @@ pb:
     version_empty: "バージョン履歴はまだありません（最初の保存で作成されます）。"
     version_load_failed: "バージョン履歴を読み込めませんでした"
     version_unknown: "そのバージョンは存在しないか、現在のバージョンではありません。再読み込みしてください。"
+    release_status_live: "有効"
+    release_row_objects: "{c} ケイパビリティ / {s} ソース"
+    release_groups_n: "{n} 組"
+    releases_count: "{n} 個のインスタンス"
+    releases_empty: "まだインスタンスがありません。一度インストールすると最初の 1 件ができます。"
+
+rel:
+  title: インスタンス詳細
+  subtitle: '1 つのインスタンス：どのケイパビリティとソースをどのパラメータで入れたか、直近のレシート。'
+  params: パラメータのダイジェスト
+  copy_digest: ダイジェストをコピー
+  installed_at: インストール日時
+  install_id: インストール記録
+  objects: オブジェクト
+  capabilities: ケイパビリティ
+  sources: ソース
+  receipt: レシート
+  created: 新規作成
+  skipped: 再利用
+  upgraded: アップグレード
+  dependencies: 依存関係
+  groups: '{n} 組のパラメータ'
+  group_title: '{ref} · {at} にインストール'
+  view_yaml: YAML を表示
+  uninstall: このインスタンスを削除
+  uninstalled: '「{release}」を削除しました。'
+  gone: このインスタンスは削除済みか、一度もインストールされていません。
+  gone_hint: 1 つのパッケージに複数のインスタンスを持てます。パッケージページで一覧を確認でき、そこから追加でインストールできます。
+  back: パッケージに戻る
+  none: なし
+  load_failed: インスタンス詳細を読み込めませんでした
 
 node:
   artifacts:

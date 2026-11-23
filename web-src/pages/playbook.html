@@ -80,6 +80,10 @@
   .pb-template { display: grid; gap: 14px; margin-top: 14px; }
   .pb-template textarea { min-height: 280px; }
   .pb-group { border-top: 1px solid var(--line); padding: 14px 0; }
+  .pb-rel { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); text-decoration: none; }
+  .pb-rel + .pb-rel { margin-top: 8px; }
+  .pb-rel:hover { border-color: var(--accent); background: var(--surface-2); }
+  .pb-rel-name { font-size: 13.5px; font-weight: 600; color: var(--text); }
   .pb-section { margin-top: 16px; }
   /* #521：顶部状态行 —— 一行事实（版本 · 实例数 · 体检摘要），不占卡片。 */
   .pb-status { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px; min-height: 24px; margin-top: 14px; }
@@ -135,9 +139,12 @@
                刷新一起重拉。卡片的说明改成标题上的 tooltip，不再白占一行。 */}}
           <h3 class="card-title" title="{{t "pb.v4.instances_hint"}}">{{t "pb.v4.instances"}}</h3>
         </div>
+        {{/* 实例区一行一个 release（链接到实例详情页）：数据仍来自 /installs，按 release 聚合 ——
+             lastAt 取各组最大、对象数取各组 capabilities/sources 的并集、N 组 = 不同 valuesDigest 的去重数。
+             对象串 / 单次回执 / YAML / 卸载都搬到详情页，这里只留身份与规模。 */}}
         <div id="pb-installs" aria-live="polite"></div>
         <div id="pb-uninstall-result" class="pb-section" aria-live="polite"></div>
-        {{/* 动作结果（试装/安装/单次回执）是状态展示，不是第二个主操作：动作发生后
+        {{/* 动作结果（试装 / 安装）是状态展示，不是第二个主操作：动作发生后
              才出现，首屏与「只看清单」的路径上一直 hidden。 */}}
         <div id="pb-result" class="pb-section" hidden>
           <div id="pb-action-state" aria-live="polite"></div>
@@ -272,23 +279,13 @@
     </div>
   </div>
 </div>
-
-<div id="pb-yaml-drawer" class="modal-backdrop hidden pb-drawer" role="dialog" aria-modal="true" aria-labelledby="pb-yaml-title">
-  <div class="modal-panel pb-drawer-panel">
-    <div class="modal-head">
-      <h3 id="pb-yaml-title"></h3>
-      <button id="pb-yaml-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.close"}}">×</button>
-    </div>
-    <div id="pb-yaml-body" class="modal-body"></div>
-  </div>
-</div>
 {{end}}
 
 {{define "script"}}
 <script>
   (() => {
     const { api, ready, nsPath, readScope: getScope, model, el: dom, loadErrorNode, copyText,
-      confirmDanger, undoBar, errorBar, openModal, closeModal, loginHref, t: sharedT } = Anotify;
+      confirmDanger, undoBar, errorBar, openModal, closeModal, t: sharedT } = Anotify;
     const t = (key, vars = {}) => {
       let value = window.AnotifyI18n[key] || key;
       for (const [name, text] of Object.entries(vars)) value = value.replaceAll("{" + name + "}", text);
@@ -338,7 +335,7 @@
     }
     /* 状态行：三件事分别由 checkup()/versions()/installs() 写入；整行每次重建（#380 靠这个清空）。 */
     const status = { version: "", instances: "", checkup: "" };
-    let lastReceiptId = "", sourceHint = "";
+    let sourceHint = "";
     function renderStatus() {
       const host = $("pb-summary");
       host.replaceChildren();
@@ -347,12 +344,6 @@
         const fact = el("span", "pb-status-fact", status[key]);
         fact.dataset.status = key;
         host.append(fact);
-      }
-      if (lastReceiptId) {
-        const button = el("button", "btn btn-ghost btn-sm", t("pb.v4.last_install") + ": " + lastReceiptId);
-        button.type = "button";
-        button.addEventListener("click", () => singleReceipt(lastReceiptId));
-        host.append(button);
       }
       if (sourceHint) host.append(el("span", "mono field-hint", sourceHint));
     }
@@ -367,7 +358,6 @@
       $("pb-badge").textContent = t(state.ready ? "pb.status.ready" : "pb.v4.not_ready");
       $("pb-badge").className = "badge " + (state.ready ? "badge-success" : "badge-warn");
       /* v4 的 PlaybookStatus 没有 blocker（api/resource.yaml），「优先处理 + 手动操作」永不渲染，已下线。 */
-      lastReceiptId = state.lastInstallId || "";
       sourceHint = resource.status.source || "";
       $("pb-conditions").replaceChildren();
       for (const condition of state.conditions) {
@@ -564,84 +554,54 @@
       const text = String(digest || "");
       return (text.startsWith("sha256:") ? text.slice("sha256:".length) : text).slice(0, 12);
     }
+    function fmtTime(iso) {
+      const date = new Date(iso || "");
+      return iso && !Number.isNaN(date.getTime()) ? date.toLocaleString() : String(iso || "");
+    }
+    function releaseRows(installs) {
+      const byRelease = new Map();
+      for (const group of installs) {
+        const key = group.release || "";
+        if (!byRelease.has(key)) byRelease.set(key, { release: key, digests: new Set(), capabilities: new Set(), sources: new Set(), lastAt: "", lastDigest: "" });
+        const entry = byRelease.get(key);
+        entry.digests.add(group.valuesDigest || "");
+        for (const ref of group.capabilities || []) entry.capabilities.add(ref);
+        for (const ref of group.sources || []) entry.sources.add(ref);
+        if ((group.lastAt || "") > entry.lastAt) { entry.lastAt = group.lastAt || ""; entry.lastDigest = group.valuesDigest || ""; }
+      }
+      return [...byRelease.values()].sort((a, b) => (a.release < b.release ? -1 : a.release > b.release ? 1 : 0));
+    }
+    function releaseRow(row) {
+      const link = el("a", "pb-rel");
+      link.dataset.release = row.release;
+      link.href = scoped("release", "id", name) + "&release=" + encodeURIComponent(row.release);
+      link.append(el("span", "pb-rel-name mono", row.release || "—"), el("span", "badge badge-success", t("pb.v4.release_status_live")));
+      if (row.lastDigest) { const digest = el("span", "mono field-hint", shortDigest(row.lastDigest)); digest.title = row.lastDigest; link.append(digest); }
+      link.append(el("span", "field-hint", t("pb.v4.release_row_objects", { c: String(row.capabilities.size), s: String(row.sources.size) })));
+      if (row.digests.size > 1) link.append(el("span", "badge badge-neutral", t("pb.v4.release_groups_n", { n: String(row.digests.size) })));
+      if (row.lastAt) link.append(el("span", "field-hint", fmtTime(row.lastAt)));
+      return link;
+    }
     async function installs() {
       $("pb-installs").textContent = t("pb.v4.loading");
-      $("pb-uninstall-result").replaceChildren();
       try {
         const data = await api(path("/installs"));
         if (!Array.isArray(data.installs) || typeof data.total !== "number") throw new Error(t("pb.v4.invalid_installs"));
-        status.instances = t("pb.v4.status_instances", { n: String(data.total) });
+        const rows = releaseRows(data.installs);
+        status.instances = t("pb.v4.status_instances", { n: String(rows.length) });
         renderStatus();
         const host = $("pb-installs");
-        host.replaceChildren(el("p", "field-hint", t("pb.v4.group_count", { n: data.total })));
-        const byRelease = new Map();
-        for (const group of data.installs) {
-          const release = group.release || "";
-          if (!byRelease.has(release)) byRelease.set(release, []);
-          byRelease.get(release).push(group);
-        }
-        for (const release of [...byRelease.keys()].sort()) {
-          const rows = byRelease.get(release);
-          const section = el("div", "pb-section"); section.dataset.release = release;
-          section.append(el("p", "field-label", t("pb.v4.release_group", { release, n: rows.length })));
-          for (const group of rows) {
-            const item = el("div", "pb-group");
-            item.dataset.digest = group.valuesDigest; item.dataset.release = group.release || "";
-            const refs = ["capabilities", "sources"]
-              .map(kind => kind + ": " + (group[kind] && group[kind].length ? group[kind].join(", ") : t("pb.v4.none")))
-              .join(" · ");
-            item.append(el("p", "field-label mono", shortDigest(group.valuesDigest)), el("p", "field-hint", t("pb.v4.attempts_n", { n: group.attempts }) + " · " + refs));
-            const open = el("button", "btn btn-ghost btn-sm", t("pb.v4.single_receipt") + " · " + group.lastInstallId);
-            open.type = "button";
-            open.addEventListener("click", () => singleReceipt(group.lastInstallId));
-            item.append(open);
-            const yaml = el("button", "btn btn-ghost btn-sm", t("pb.v4.view_yaml"));
-            yaml.type = "button"; yaml.dataset.action = "release-yaml"; yaml.dataset.release = item.dataset.release; // empty 由折叠组自己的 created 名单决定（两条都空 = 空态）。
-            yaml.addEventListener("click", () => openYamlDrawer(item.dataset.release, !group.capabilities?.length && !group.sources?.length));
-            item.append(yaml); section.append(item);
-          }
-          if (release) {
-            const uninstallButton = el("button", "btn btn-ghost btn-sm", t("pb.v4.uninstall"));
-            uninstallButton.type = "button"; uninstallButton.dataset.action = "uninstall"; uninstallButton.dataset.release = release;
-            uninstallButton.addEventListener("click", () => uninstall(release, uninstallButton));
-            section.append(uninstallButton);
-          }
-          host.append(section);
-        }
-        if (!data.installs.length) host.append(el("p", "field-hint", t("pb.v4.no_installs")));
+        host.replaceChildren();
+        if (!rows.length) { host.append(el("p", "field-hint", t("pb.v4.releases_empty"))); return; }
+        host.append(el("p", "field-hint", t("pb.v4.releases_count", { n: String(rows.length) })));
+        for (const row of rows) host.append(releaseRow(row));
       } catch (error) { $("pb-installs").replaceChildren(loadErrorNode(error, installs)); }
     }
-    function uninstallResult(result) {
-      const host = $("pb-uninstall-result");
-      const doc = result || {};
-      const removed = doc.removed || {};
-      const capabilities = Array.isArray(removed.capabilities) ? removed.capabilities : [];
-      const sources = Array.isArray(removed.sources) ? removed.sources : [];
-      const kept = Array.isArray(doc.kept) ? doc.kept : [];
-      const line = doc.alreadyUninstalled
-        ? t("pb.v4.uninstall_already")
-        : t("pb.v4.uninstalled_n", { release: doc.release || "", c: capabilities.length, s: sources.length });
-      host.append(el("p", "field-hint", line));
-      if (!kept.length) return;
-      host.append(el("p", "field-hint", t("pb.v4.uninstall_kept_n", { n: kept.length })));
-      host.append(el("p", "field-hint", t("pb.v4.uninstall_reason")));
-      host.append(code(kept));
-    }
-    async function uninstall(release, button) {
-      if (!(await confirmDanger({ body: t("pb.v4.uninstall_confirm", { release }) }))) return;
-      button.disabled = true;
-      $("pb-uninstall-result").replaceChildren();
-      try {
-        const result = await api(path("/releases/" + encodeURIComponent(release)), { method: "DELETE" });
-        await refreshSummary(); await installs();
-        uninstallResult(result);
-      } catch (error) { $("pb-uninstall-result").replaceChildren(loadErrorNode(error)); button.disabled = false; }
-    }
-    async function singleReceipt(id) {
-      try {
-        const receipt = await api(path("/installs/" + encodeURIComponent(id)));
-        receiptView(receipt); $("pb-receipt").scrollIntoView({ behavior: "smooth" });
-      } catch (error) { revealResult(); $("pb-receipt").replaceChildren(loadErrorNode(error)); }
+    function uninstalledNotice() {
+      const removed = new URLSearchParams(location.search).get("uninstalled") || "";
+      if (!removed) return;
+      $("pb-uninstall-result").append(el("p", "field-hint", t("rel.uninstalled", { release: removed })));
+      const url = new URL(location.href); url.searchParams.delete("uninstalled"); history.replaceState(null, "", url.toString());
     }
     async function refreshSummary() {
       resource = await api(path()); checkup();
@@ -668,39 +628,6 @@
       if (first) first.focus({ preventScroll: true });
     }
     function closeDrawer() { closeModal($("pb-install-drawer")); }
-    function yamlBody(node) { $("pb-yaml-body").replaceChildren(node); }
-    function yamlEmpty() { yamlBody(dom("p", { class: "field-hint", id: "pb-yaml-empty" }, t("pb.v4.yaml_empty"))); }
-    function yamlFailed(detail) { yamlBody(dom("p", { class: "field-hint" }, t("pb.v4.yaml_load_failed") + " · " + detail)); }
-    function yamlCode(text) {
-      const wrap = el("div", "code-block"), head = el("div", "code-head");
-      const copy = el("button", "copy-btn", t("uxaudit.work.copy"));
-      copy.type = "button"; copy.id = "pb-yaml-copy";
-      copy.addEventListener("click", () => copyText(copy, () => text));
-      head.append(el("span", null, t("pb.v4.yaml_title")), copy);
-      const pre = el("pre", "code-body mono pb-code", null), code = el("code", null, null);
-      code.id = "pb-yaml-text"; code.textContent = text;
-      pre.append(code); wrap.append(head, pre); yamlBody(wrap);
-    }
-    async function yamlStatusDetail(res) {
-      let detail = "HTTP " + res.status;
-      try { const status = await res.json(); detail += " · " + [status.reason, status.message].filter(Boolean).join(" · "); }
-      catch { /* 不是 JSON（网关错误页）：只留状态码 */ }
-      return detail;
-    }
-    async function openYamlDrawer(release, empty) {
-      $("pb-yaml-title").textContent = [t("pb.v4.yaml_title"), release, name].join(" · ");
-      openModal($("pb-yaml-drawer"));
-      if (empty) { yamlEmpty(); return; } // 组里一个对象都没有：不发请求，也不留空的 <pre>。
-      yamlBody(dom("p", { class: "field-hint" }, t("pb.v4.loading")));
-      try {
-        const res = await fetch(path("/releases/" + encodeURIComponent(release) + "/yaml"), { credentials: "same-origin", headers: { Accept: "application/yaml" } }); // 裸多文档 YAML 不是 JSON：api() 会判成解析失败，所以这一处直读正文。
-        if (res.status === 401) { location.href = loginHref(); return; } // 与 api() 的 401 同一个落点（loginHref 是唯一白名单）。
-        if (!res.ok) return yamlFailed(await yamlStatusDetail(res));
-        const text = await res.text();
-        if (!text.split("\n").some(line => line.trim() === "---")) return yamlEmpty(); // 头注释之外一个文档都没有 = 同一个空态（服务端也可能给 objects: 0）。
-        yamlCode(text);
-      } catch (error) { yamlFailed(String((error && error.message) || error)); }
-    }
     /* #380：徽章必须两条路径都收敛。「正在读取…」只在 checkup() 里被改写，404/409/网络错误
        会永久停在 loading 并留下一个空的 #pb-summary 圆角容器。失败分支改成 badge-error +
        「载入失败」并移除空容器（hidden）；重试会把它复位成 loading 再走一遍。 */
@@ -724,6 +651,7 @@
         // Re-check never destroys a user's unsaved whole-map draft.
         if (!draft) await rawTemplate(true);
         $("pb-content").hidden = false; $("pb-load-state").replaceChildren(); await Promise.all([installs(), versions()]);
+        uninstalledNotice();
       } catch (error) { failedBadge(); $("pb-load-state").replaceChildren(loadErrorNode(error, load)); }
       finally { loading = false; $("btn-rescan").disabled = false; $("pb-summary").removeAttribute("aria-busy"); }
     }
@@ -827,8 +755,6 @@
     $("pb-install-open").addEventListener("click", openDrawer);
     $("pb-drawer-close").addEventListener("click", closeDrawer);
     $("pb-install-drawer").addEventListener("click", event => { if (event.target === $("pb-install-drawer")) closeDrawer(); });
-    $("pb-yaml-close").addEventListener("click", () => closeModal($("pb-yaml-drawer")));
-    $("pb-yaml-drawer").addEventListener("click", event => { if (event.target === $("pb-yaml-drawer")) closeModal($("pb-yaml-drawer")); });
     document.addEventListener("DOMContentLoaded", load);
   })();
 </script>

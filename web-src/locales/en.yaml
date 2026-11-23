@@ -2372,8 +2372,8 @@ pb:
     status_version: "Version v{n}"
     status_instances: "{n} instance(s)"
     versions_brief: "{n} version(s)"
-    instances: "Installs grouped by instance and values"
-    instances_hint: "Read-only derived view: one instance name plus one set of values is one group; attempts counts how many times that group was installed. Provenance records the first creation receipt, not ownership."
+    instances: "Instances"
+    instances_hint: "One row per instance (release): open it for its objects, install parameters and latest receipt."
     attempts_n: "{n} attempts"
     template: "Edit / export the original package"
     file_path: "Relative package path"
@@ -2455,6 +2455,37 @@ pb:
     version_empty: "No versions yet (the first save creates one)."
     version_load_failed: "Version history failed to load"
     version_unknown: "That version does not exist or is no longer current. Refresh and try again."
+    release_status_live: "In effect"
+    release_row_objects: "{c} capabilities / {s} sources"
+    release_groups_n: "{n} groups"
+    releases_count: "{n} instance(s)"
+    releases_empty: "No instances yet. Installing once creates the first one."
+
+rel:
+  title: Instance detail
+  subtitle: 'One instance: which capabilities and sources it installed, with which parameters, and its latest receipt.'
+  params: Parameter fingerprint
+  copy_digest: Copy fingerprint
+  installed_at: Installed at
+  install_id: Install record
+  objects: Objects
+  capabilities: Capabilities
+  sources: Sources
+  receipt: Receipt
+  created: Created
+  skipped: Reused
+  upgraded: Upgraded
+  dependencies: Dependencies
+  groups: '{n} parameter groups'
+  group_title: '{ref} · installed {at}'
+  view_yaml: View YAML
+  uninstall: Uninstall this instance
+  uninstalled: 'Uninstalled "{release}".'
+  gone: This instance is uninstalled, or was never installed.
+  gone_hint: A package can hold several instances; the package page lists them and lets you install another one.
+  back: Back to package
+  none: None
+  load_failed: Instance detail failed to load
 
 node:
   artifacts:

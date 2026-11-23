@@ -2372,8 +2372,8 @@ pb:
     status_version: "Versión v{n}"
     status_instances: "{n} instancia(s)"
     versions_brief: "{n} versión(es)"
-    instances: "Instalaciones agrupadas por instancia y valores"
-    instances_hint: "Vista de lectura: un nombre de instancia con un conjunto de valores forma un grupo; attempts cuenta cuántas veces se instaló ese grupo. La procedencia es el primer recibo de creación, no propiedad."
+    instances: "Instancias"
+    instances_hint: "Una fila por instancia (release): ábrela para ver sus objetos, sus parámetros y su último recibo."
     attempts_n: "{n} intentos"
     template: "Editar / exportar paquete original"
     file_path: "Ruta relativa del paquete"
@@ -2455,6 +2455,37 @@ pb:
     version_empty: "Aún no hay versiones (la primera se crea al guardar)."
     version_load_failed: "No se pudo cargar el historial de versiones"
     version_unknown: "Esa versión no existe o ya no es la actual. Actualiza e inténtalo de nuevo."
+    release_status_live: "En vigor"
+    release_row_objects: "{c} capacidades / {s} fuentes"
+    release_groups_n: "{n} grupos"
+    releases_count: "{n} instancia(s)"
+    releases_empty: "Aún no hay instancias. Una instalación crea la primera."
+
+rel:
+  title: Detalle de la instancia
+  subtitle: 'Una instancia: qué capacidades y fuentes instaló, con qué parámetros, y su último recibo.'
+  params: Huella de parámetros
+  copy_digest: Copiar huella
+  installed_at: Instalada el
+  install_id: Registro de instalación
+  objects: Objetos
+  capabilities: Capacidades
+  sources: Fuentes
+  receipt: Recibo
+  created: Creados
+  skipped: Reutilizados
+  upgraded: Actualizados
+  dependencies: Dependencias
+  groups: '{n} grupos de parámetros'
+  group_title: '{ref} · instalada el {at}'
+  view_yaml: Ver YAML
+  uninstall: Desinstalar esta instancia
+  uninstalled: 'Se desinstaló «{release}».'
+  gone: Esta instancia está desinstalada o nunca se instaló.
+  gone_hint: Un paquete puede tener varias instancias; la página del paquete las lista y permite instalar otra.
+  back: Volver al paquete
+  none: Ninguno
+  load_failed: No se pudo cargar el detalle de la instancia
 
 node:
   artifacts:

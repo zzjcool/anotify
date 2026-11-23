@@ -2321,6 +2321,8 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			"capabilities.html",
 			// 能力详情页：同样是页面私有的深层链接（?namespace=&name=）。
 			"capability.html",
+			"playbook.html",
+			"release.html",
 			"nodes.html",
 			"security.html",
 			"admin.html",
@@ -3032,6 +3034,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		// 能力详情 → 能力列表（404/410 的「返回列表」落点，见 loadErrorNode）。
 		"capability.html": "capabilities.html",
 		"playbook.html": "playbooks.html",
+		"release.html": "playbook.html",
 		"node.html": "nodes.html",
 		"trace.html": "events.html",
 		"message.html": "events.html",

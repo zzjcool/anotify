@@ -1,0 +1,341 @@
+{{define "title"}}{{t "rel.title"}}{{end}}
+
+{{define "style"}}
+<style>
+  .rel-wrap { min-width: 0; overflow-wrap: anywhere; }
+  .rel-state { padding: 20px 0; }
+  .rel-body { display: grid; gap: 14px; }
+  .rel-sec { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .rel-sec:first-child { border-top: 0; padding-top: 0; }
+  .rel-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 10px 18px; margin: 0; }
+  .rel-pair { display: grid; gap: 4px; min-width: 0; }
+  .rel-k { font-size: 11px; line-height: 1.4; color: var(--faint); }
+  .rel-v { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
+  .rel-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; min-width: 0; }
+  .rel-group { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); }
+  .rel-group-yaml { justify-self: start; }
+  .rel-copyline { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+  .rel-drawer { align-items: stretch; justify-content: flex-end; padding: 0; }
+  .rel-drawer-panel {
+    max-width: min(520px, 100%);
+    height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
+    border-block: 0;
+    border-right: 0;
+    overflow-wrap: anywhere;
+  }
+  .rel-code { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 22rem; overflow: auto; font-size: 11.5px; line-height: 1.6; }
+  [hidden] { display: none !important; }
+</style>
+{{end}}
+
+{{define "content"}}
+{{/* 实例详情（release.html?namespace=<ns>&id=<slug>&release=<name>）：一个 release 一页。
+     一次 GET …/playbooks/{slug}/releases/{release} 拿全（对象 / 参数分组 / 回执 / 最近一次安装），
+     不再分别拉 capabilities / sources / installs。
+     404 = 已卸载或从未安装 → 明确的 .empty 状态（#rel-gone），不是白屏也不是 500；其它失败交给 loadErrorNode。
+     动作：「查看 YAML」读 GET …/releases/{release}/yaml（按 release 返回当前生效版本，不按组过滤）；
+     卸载走 DELETE …/releases/{release}，成功后带 ?uninstalled= 回包页并让包页显示「已卸载」。
+     固定定位的抽屉必须挂在 #page-main 之外：.reveal 的 transform 会给 position:fixed 造包含块。 */}}
+<div id="page-main">
+  <div id="release-detail" class="page rel-wrap">
+    <div class="page-head">
+      <div class="min-w-0">
+        <a id="rel-back" class="btn btn-ghost" href="playbooks.html">{{t "rel.back"}}</a>
+        <h2 id="rel-name" class="page-title rel-wrap">{{t "rel.title"}}</h2>
+        <p id="rel-sub" class="mono field-hint"></p>
+      </div>
+      <div class="page-actions">
+        <button id="rel-yaml-open" type="button" class="btn btn-ghost" data-action="release-yaml" disabled>{{t "rel.view_yaml"}}</button>
+        <button id="rel-uninstall" type="button" class="btn btn-danger" data-action="uninstall" disabled>{{t "rel.uninstall"}}</button>
+      </div>
+    </div>
+    <div id="rel-state" class="rel-state" aria-live="polite">{{t "pb.v4.loading"}}</div>
+    <div id="rel-body" class="rel-body" hidden></div>
+  </div>
+</div>
+
+<div id="pb-yaml-drawer" class="modal-backdrop hidden rel-drawer" role="dialog" aria-modal="true" aria-labelledby="pb-yaml-title">
+  <div class="modal-panel rel-drawer-panel">
+    <div class="modal-head">
+      <h3 id="pb-yaml-title"></h3>
+      <button id="pb-yaml-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.close"}}">×</button>
+    </div>
+    <div id="pb-yaml-body" class="modal-body"></div>
+  </div>
+</div>
+{{end}}
+
+{{define "script"}}
+<script>
+  (() => {
+    const { api, ready, nsPath, readScope, mountLayout, el: dom, loadErrorNode, copyText,
+      confirmDanger, openModal, closeModal, loginHref } = Anotify;
+    const t = (key, vars = {}) => {
+      let value = window.AnotifyI18n[key] || key;
+      for (const [name, text] of Object.entries(vars)) value = value.replaceAll("{" + name + "}", text);
+      return value;
+    };
+    const $ = id => document.getElementById(id);
+    const el = (tag, cls, text) => dom(tag, { class: cls }, text);
+    const query = new URLSearchParams(location.search);
+    const name = (query.get("id") || "").trim();
+    const release = (query.get("release") || "").trim();
+    mountLayout({ active: "playbooks", title: t("rel.title"), subtitle: t("rel.subtitle") });
+    let loading = false;
+    const state = { objects: { capabilities: [], sources: [] } };
+    const ns = () => (query.get("namespace") || "").trim() || readScope().namespace || "";
+    const path = suffix => nsPath("playbooks", name) + (suffix || "");
+    function link(page, params) {
+      const qs = new URLSearchParams();
+      if (ns()) qs.set("namespace", ns());
+      for (const [key, value] of Object.entries(params || {})) qs.set(key, String(value));
+      return page + "?" + qs.toString();
+    }
+    const packageHref = () => link("playbook.html", { id: name });
+    function shortDigest(digest) {
+      const text = String(digest || "");
+      return (text.startsWith("sha256:") ? text.slice("sha256:".length) : text).slice(0, 12);
+    }
+    const fmtTime = iso => {
+      const date = new Date(iso || "");
+      return iso && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "";
+    };
+    const plain = text => el("span", null, text == null || text === "" ? t("rel.none") : String(text));
+    function raw(value) { // 服务端原文（名字 / id / 回执串）：纯文本叶子，不算界面文案。
+      const span = el("span");
+      span.setAttribute("data-raw-content", "");
+      span.textContent = value == null ? "" : String(value);
+      return span;
+    }
+    function pair(labelKey, node) {
+      const cell = el("div", "rel-pair");
+      const dd = el("dd", "rel-v mono");
+      dd.append(node);
+      cell.append(el("dt", "rel-k", t(labelKey)), dd);
+      return cell;
+    }
+    function section(titleKey) {
+      const sec = el("section", "rel-sec");
+      sec.append(el("h3", "card-title", t(titleKey)));
+      return sec;
+    }
+    function capabilityRow(cap) {
+      const row = el("div", "rel-row");
+      const anchor = el("a", "btn btn-ghost btn-sm");
+      anchor.href = link("capability.html", { name: cap.name || "" });
+      anchor.append(raw(cap.name || "—"));
+      row.append(anchor, el("span", "badge badge-neutral", "@" + (cap.version == null ? "?" : cap.version)));
+      if (cap.digest) row.title = String(cap.digest);
+      return row;
+    }
+    function sourceRow(item) {
+      const row = el("div", "rel-row");
+      const anchor = el("a", "btn btn-ghost btn-sm");
+      anchor.href = link("source-detail.html", { name: item.name || "" });
+      anchor.append(raw(item.name || "—"));
+      row.append(anchor, el("span", "badge badge-neutral", item.kind || "—"));
+      return row;
+    }
+    function objectList(objects, host) {
+      const capabilities = (objects || {}).capabilities || [];
+      const sources = (objects || {}).sources || [];
+      host.append(el("p", "field-label", t("rel.capabilities")));
+      if (!capabilities.length) host.append(el("p", "field-hint", t("rel.none")));
+      for (const cap of capabilities) host.append(capabilityRow(cap));
+      host.append(el("p", "field-label", t("rel.sources")));
+      if (!sources.length) host.append(el("p", "field-hint", t("rel.none")));
+      for (const item of sources) host.append(sourceRow(item));
+    }
+    function bucketBlock(titleKey, bucket) {
+      const block = el("div", "rel-pair");
+      block.append(el("p", "field-label", t(titleKey)));
+      const list = el("div", "rel-row");
+      const doc = bucket || {};
+      const capabilities = Array.isArray(doc.capabilities) ? doc.capabilities : [];
+      const sources = Array.isArray(doc.sources) ? doc.sources : [];
+      for (const ref of capabilities) list.append(el("span", "badge badge-neutral mono", String(ref)));
+      for (const ref of sources) list.append(el("span", "badge badge-neutral mono", String(ref)));
+      if (!list.childNodes.length) list.append(el("span", "field-hint", t("rel.none")));
+      block.append(list);
+      return block;
+    }
+    function upgradedBlock(entries) {
+      const block = el("div", "rel-pair");
+      block.append(el("p", "field-label", t("rel.upgraded")));
+      const list = el("div", "rel-row");
+      const rows = Array.isArray(entries) ? entries : [];
+      for (const entry of rows) {
+        const before = entry.from == null ? "?" : entry.from;
+        const after = entry.to == null ? "?" : entry.to;
+        list.append(el("span", "badge badge-warn mono", String(entry.capability || "") + " " + before + " → " + after));
+      }
+      if (!rows.length) list.append(el("span", "field-hint", t("rel.none")));
+      block.append(list);
+      return block;
+    }
+    function dependencyBlock(entries) {
+      const block = el("div", "rel-pair");
+      block.append(el("p", "field-label", t("rel.dependencies")));
+      const list = el("div", "rel-row");
+      const rows = Array.isArray(entries) ? entries : [];
+      for (const entry of rows) {
+        const anchor = el("a", "btn btn-ghost btn-sm");
+        anchor.href = link("capability.html", { name: entry.capability || "" });
+        anchor.append(raw(String(entry.capability || "") + "@" + (entry.version == null ? "?" : entry.version)));
+        list.append(anchor);
+      }
+      if (!rows.length) list.append(el("span", "field-hint", t("rel.none")));
+      block.append(list);
+      return block;
+    }
+    function groupBlock(group) {
+      const box = el("div", "rel-group");
+      box.dataset.digest = group.valuesDigest || "";
+      box.append(el("p", "field-label mono", t("rel.group_title", { ref: shortDigest(group.valuesDigest), at: fmtTime(group.installedAt) })));
+      if (typeof group.attempts === "number" && group.attempts > 1) box.append(el("p", "field-hint", t("pb.v4.attempts_n", { n: String(group.attempts) })));
+      objectList(group.objects, box);
+      const yaml = el("button", "btn btn-ghost btn-sm rel-group-yaml", t("rel.view_yaml"));
+      yaml.type = "button"; yaml.dataset.action = "release-yaml"; yaml.dataset.digest = group.valuesDigest || "";
+      yaml.addEventListener("click", () => openYamlDrawer());
+      box.append(yaml);
+      return box;
+    }
+    function yamlBody(node) { $("pb-yaml-body").replaceChildren(node); }
+    function yamlEmpty() { yamlBody(dom("p", { class: "field-hint", id: "pb-yaml-empty" }, t("pb.v4.yaml_empty"))); }
+    function yamlFailed(detail) { yamlBody(dom("p", { class: "field-hint" }, t("pb.v4.yaml_load_failed") + " · " + detail)); }
+    function yamlCode(text) {
+      const wrap = el("div", "code-block"), head = el("div", "code-head");
+      const copy = el("button", "copy-btn", t("uxaudit.work.copy"));
+      copy.type = "button"; copy.id = "pb-yaml-copy";
+      copy.addEventListener("click", () => copyText(copy, () => text));
+      head.append(el("span", null, t("pb.v4.yaml_title")), copy);
+      const pre = el("pre", "code-body mono rel-code", null), node = el("code", null, null);
+      node.id = "pb-yaml-text"; node.textContent = text;
+      pre.append(node); wrap.append(head, pre); yamlBody(wrap);
+    }
+    async function yamlStatusDetail(res) {
+      let detail = "HTTP " + res.status;
+      try { const body = await res.json(); detail += " · " + [body.reason, body.message].filter(Boolean).join(" · "); }
+      catch { /* 不是 JSON（网关错误页）：只留状态码 */ }
+      return detail;
+    }
+    async function openYamlDrawer() {
+      $("pb-yaml-title").textContent = [t("pb.v4.yaml_title"), release, name].join(" · ");
+      openModal($("pb-yaml-drawer"));
+      const objects = state.objects || {};
+      if (!(objects.capabilities || []).length && !(objects.sources || []).length) { yamlEmpty(); return; } // 一个对象都没有：不发请求，也不留空的 <pre>。
+      yamlBody(dom("p", { class: "field-hint" }, t("pb.v4.loading")));
+      try {
+        const res = await fetch(path("/releases/" + encodeURIComponent(release) + "/yaml"), { credentials: "same-origin", headers: { Accept: "application/yaml" } }); // 裸多文档 YAML 不是 JSON：api() 会判成解析失败，所以这一处直读正文。
+        if (res.status === 401) { location.href = loginHref(); return; } // 与 api() 的 401 同一个落点（loginHref 是唯一白名单）。
+        if (!res.ok) return yamlFailed(await yamlStatusDetail(res));
+        const text = await res.text();
+        if (!text.split("\n").some(line => line.trim() === "---")) return yamlEmpty(); // 一个文档都没有 = 与 0 对象同一个空态。
+        yamlCode(text);
+      } catch (error) { yamlFailed(String((error && error.message) || error)); }
+    }
+    async function uninstall() {
+      if (!(await confirmDanger({ body: t("pb.v4.uninstall_confirm", { release }) }))) return;
+      const button = $("rel-uninstall");
+      button.disabled = true;
+      try {
+        await api(path("/releases/" + encodeURIComponent(release)), { method: "DELETE" });
+        location.href = packageHref() + "&uninstalled=" + encodeURIComponent(release);
+      } catch (error) {
+        button.disabled = false;
+        const host = $("rel-state");
+        host.hidden = false;
+        host.replaceChildren(loadErrorNode(error, () => uninstall()));
+      }
+    }
+    function render(doc) {
+      const receipt = doc.receipt || {};
+      const playbook = receipt.playbook || {};
+      const groups = Array.isArray(doc.groups) ? doc.groups : [];
+      const objects = doc.objects || {};
+      state.objects = objects;
+      $("release-detail").dataset.release = doc.release || release;
+      $("rel-name").replaceChildren(raw((playbook.name || name) + (playbook.version == null ? "" : "@" + playbook.version)));
+      $("rel-sub").textContent = [ns(), name].filter(Boolean).join(" / ") + " · " + (doc.release || release);
+      $("rel-back").href = packageHref();
+      $("rel-yaml-open").disabled = false;
+      $("rel-uninstall").disabled = false;
+      const body = $("rel-body");
+      body.replaceChildren();
+      const digestLine = el("span", "rel-copyline");
+      const digestText = el("span", "mono rel-wrap");
+      digestText.append(raw(doc.valuesDigest || "—"));
+      digestText.title = doc.valuesDigest || "";
+      digestLine.append(digestText);
+      if (doc.valuesDigest) {
+        const copy = el("button", "copy-btn", t("rel.copy_digest"));
+        copy.type = "button";
+        copy.addEventListener("click", () => copyText(copy, () => String(doc.valuesDigest)));
+        digestLine.append(copy);
+      }
+      const facts = el("dl", "rel-kv");
+      facts.append(pair("rel.params", digestLine), pair("rel.installed_at", plain(fmtTime(doc.installedAt))), pair("rel.install_id", raw(doc.lastInstallId || "—")));
+      body.append(facts);
+      const objectSection = section("rel.objects");
+      const count = doc.params && typeof doc.params.count === "number" ? doc.params.count : groups.length;
+      if (count > 1 && groups.length) { // 同一个 release 装过多套参数：按组展开，每组自己的对象 + 自己的 YAML 入口。
+        objectSection.append(el("p", "field-hint", t("rel.groups", { n: String(count) })));
+        for (const group of groups) objectSection.append(groupBlock(group));
+      } else {
+        objectList(objects, objectSection);
+      }
+      body.append(objectSection);
+      const receiptSection = section("rel.receipt");
+      receiptSection.append(bucketBlock("rel.created", receipt.created), bucketBlock("rel.skipped", receipt.skipped), upgradedBlock(receipt.upgraded), dependencyBlock(receipt.dependencies));
+      body.append(receiptSection);
+      body.hidden = false;
+      $("rel-state").hidden = true;
+      $("rel-state").replaceChildren();
+    }
+    function paintGone() {
+      $("release-detail").removeAttribute("data-release");
+      $("rel-body").replaceChildren();
+      $("rel-body").hidden = true;
+      $("rel-yaml-open").disabled = true;
+      $("rel-uninstall").disabled = true;
+      const actions = el("div", "empty-actions");
+      const back = el("a", "btn", t("rel.back"));
+      back.href = packageHref();
+      actions.append(back);
+      const box = el("div", "empty");
+      box.id = "rel-gone";
+      box.append(el("p", "empty-title", t("rel.gone")), el("p", "empty-desc", t("rel.gone_hint")), actions);
+      const host = $("rel-state");
+      host.hidden = false;
+      host.replaceChildren(box);
+    }
+    function paintError(error) {
+      const host = $("rel-state");
+      host.hidden = false;
+      host.replaceChildren(loadErrorNode(error, () => load(), { back: packageHref() }));
+    }
+    async function load() {
+      if (loading) return;
+      loading = true;
+      $("rel-name").textContent = t("rel.title");
+      $("rel-state").hidden = false;
+      $("rel-state").textContent = t("pb.v4.loading");
+      try {
+        await ready();
+        $("rel-back").href = packageHref();
+        if (!name || !release) throw Object.assign(new Error(t("rel.load_failed")), { status: 400 }); // 链接缺参：不请求、不编 id。
+        render(await api(path("/releases/" + encodeURIComponent(release))));
+      } catch (error) {
+        if (error && error.status === 404) paintGone(); else paintError(error); // 已卸载或从未安装：明确状态，不是白屏。
+      } finally { loading = false; }
+    }
+    $("rel-yaml-open").addEventListener("click", () => openYamlDrawer());
+    $("rel-uninstall").addEventListener("click", () => uninstall());
+    $("pb-yaml-close").addEventListener("click", () => closeModal($("pb-yaml-drawer")));
+    $("pb-yaml-drawer").addEventListener("click", event => { if (event.target === $("pb-yaml-drawer")) closeModal($("pb-yaml-drawer")); });
+    document.addEventListener("DOMContentLoaded", load);
+  })();
+</script>
+{{end}}

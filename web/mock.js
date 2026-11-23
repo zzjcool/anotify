@@ -3802,6 +3802,42 @@
 		}
 		return json({ total: groups.size, installs: [...groups.values()].sort((a, b) => b.lastAt.localeCompare(a.lastAt)).slice(0, 200) });
 	});
+	function pbReleaseDeps(records) {
+		const best = new Map();
+		for (const r of records) for (const d of r.receipt?.dependencies || []) if (!(best.get(d.capability) >= d.version)) best.set(d.capability, d.version);
+		return [...best].map(([capability, version]) => ({ capability, version })).sort((a, b) => (a.capability < b.capability ? -1 : a.capability > b.capability ? 1 : 0));
+	}
+	function pbReleaseObjects(ns, records) {
+		const owners = new Set(records.map(r => r.id));
+		const names = new Set();
+		for (const c of state.capabilities.filter(c => c.ns === ns)) if (pbVersions(c).some(v => owners.has(v.installedFrom))) names.add(c.name);
+		const capabilities = [...names].map(n => findCap(ns, n)).filter(Boolean).map(c => ({ name: c.name, version: c.version, digest: c.digest }))
+			.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.version - b.version));
+		const sources = [];
+		for (const s of state.sources) if (s.ns === ns && owners.has(s.installedFrom) && !sources.some(x => x.name === s.name)) sources.push({ name: s.name, kind: s.kind });
+		sources.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+		return { capabilities, sources };
+	}
+	function pbReleaseGroups(records) {
+		const groups = []; const at = new Map();
+		for (let i = records.length - 1; i >= 0; i--) {
+			const digest = records[i].valuesDigest;
+			if (!at.has(digest)) { at.set(digest, groups.length); groups.push([records[i]]); } else groups[at.get(digest)].unshift(records[i]);
+		}
+		return groups;
+	}
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/playbooks\/([^/]+)\/releases\/([^/]+)$/, ctx => {
+		const ns = decodeURIComponent(ctx.m[1]); const miss = nsMissing(ns); if (miss) return miss;
+		const name = decodeURIComponent(ctx.m[2]); const release = decodeURIComponent(ctx.m[3]); const row = pbFind(ns, name);
+		if (!row) return notFound("Playbook ");
+		const records = state.playbookInstalls.filter(i => i.ns === ns && i.playbookName === name && i.playbookUid === row.uid && (i.release || "") === release);
+		if (!records.length) return statusErr(404, "release_not_found", "release " + JSON.stringify(release) + " 不存在");
+		const last = records[records.length - 1]; const groups = pbReleaseGroups(records);
+		return json({ release: last.release || release, valuesDigest: last.valuesDigest, installedAt: last.receipt.install.at, lastInstallId: last.receipt.install.id,
+			objects: pbReleaseObjects(ns, records), dependencies: pbReleaseDeps(records), params: { digest: last.valuesDigest, count: groups.length },
+			groups: groups.map(members => { const newest = members[members.length - 1]; return { valuesDigest: newest.valuesDigest, installedAt: newest.receipt.install.at, lastInstallId: newest.receipt.install.id, attempts: members.length, objects: pbReleaseObjects(ns, members), dependencies: pbReleaseDeps(members) }; }),
+			receipt: clone(last.receipt) });
+	});
 	on("DELETE", PB_ONE, ctx => {
 		const ns = decodeURIComponent(ctx.m[1]); const miss = nsMissing(ns); if (miss) return miss;
 		const row = pbFind(ns, decodeURIComponent(ctx.m[2])); if (!row) return notFound("Playbook ");

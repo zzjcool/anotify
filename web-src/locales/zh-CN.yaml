@@ -2374,8 +2374,8 @@ pb:
     status_version: "版本 v{n}"
     status_instances: "{n} 个实例"
     versions_brief: "{n} 个版本"
-    instances: "按实例与安装参数折叠的安装记录"
-    instances_hint: "只读派生视图：同一个实例名 + 同一套安装参数算一组，attempts 是这组装了几次；来源只记录最初创建的回执，不是所有权。"
+    instances: "实例"
+    instances_hint: "一行一个实例（release）：点进去看它的对象、安装参数与最近一次回执。"
     attempts_n: "尝试 {n} 次"
     template: "编辑 / 导出原始整包"
     file_path: "包内相对路径"
@@ -2457,6 +2457,37 @@ pb:
     version_empty: "还没有版本记录（包体第一次保存后出现）。"
     version_load_failed: "版本历史载入失败"
     version_unknown: "指定版本不存在或已不是当前版本，请刷新后再试。"
+    release_status_live: "生效中"
+    release_row_objects: "{c} 能力 / {s} 源"
+    release_groups_n: "{n} 组"
+    releases_count: "共 {n} 个实例"
+    releases_empty: "还没有实例。装一次会产生第一份。"
+
+rel:
+  title: 实例详情
+  subtitle: '一个实例：装了哪些能力与源、用哪套安装参数、最近一次回执。'
+  params: 参数摘要
+  copy_digest: 复制摘要
+  installed_at: 安装时间
+  install_id: 安装记录
+  objects: 对象
+  capabilities: 能力
+  sources: 源
+  receipt: 回执
+  created: 新建
+  skipped: 复用
+  upgraded: 升级
+  dependencies: 依赖
+  groups: '{n} 组安装参数'
+  group_title: '{ref} · 安装于 {at}'
+  view_yaml: 查看 YAML
+  uninstall: 卸载这个实例
+  uninstalled: '已卸载「{release}」。'
+  gone: 这个实例已卸载，或从未安装。
+  gone_hint: 同一个包里可以有多份实例；回包页能看见它们，也能再装一份。
+  back: 返回包页
+  none: 无
+  load_failed: 实例详情载入失败
 
 node:
   artifacts:
