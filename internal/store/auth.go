@@ -11,7 +11,6 @@ import (
 // ErrNotFound 表示记录不存在。
 var ErrNotFound = errors.New("store: record not found")
 
-// User 是 users 表的一行。
 // Role: admin | member；Disabled: 超管禁用某用户（禁止登录）。
 const (
 	RoleAdmin  = "admin"

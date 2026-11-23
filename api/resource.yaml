@@ -514,6 +514,98 @@ paths:
               schema: {$ref: '#/components/schemas/CapabilityTemplateList'}
         '401': {$ref: '#/components/responses/AuthError401'}
 
+  /v1/namespaces/{namespace}/secrets:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+    get:
+      operationId: listNamespaceSecrets
+      tags: [sources]
+      security: [{session: []}]
+      summary: "列出命名空间凭据（值永不回显）"
+      description: |
+        非信封文档 `{items: [...]}`，按 `name` 升序；空列表是 `[]` 不是 `null`。
+
+        `usedBy` 是引用该凭据的源名（本命名空间内，按名字排序）：它回答「删之前要先改谁」，
+        与 `DELETE` 的 409 causes 同源。
+      responses:
+        '200':
+          description: "NamespaceSecretList"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NamespaceSecretList'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/secrets/{name}:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: name
+        in: path
+        required: true
+        description: "凭据名（与 `config.secretRef.name` 同一规则：字母数字与 `. _ -`，首字符字母数字，≤64 字节）"
+        schema: {type: string}
+    get:
+      operationId: getNamespaceSecret
+      tags: [sources]
+      security: [{session: []}]
+      summary: "读取单条凭据（同样不含值）"
+      responses:
+        '200':
+          description: "NamespaceSecret（只有 name/updatedAt/usedBy）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NamespaceSecret'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+    put:
+      operationId: putNamespaceSecret
+      tags: [sources]
+      security: [{session: []}]
+      summary: "新建或轮换凭据（只写；轮换下一轮 poll 即生效）"
+      description: |
+        `value` 是**唯一**可写字段，且永不回显（响应只给读投影）。同名再 PUT = 轮换，
+        只保留最新值（不做版本历史）；每一轮 poll 都在取用时重读，所以轮换对
+        「下一次 poll」立即生效，不需要改源。
+
+        动作留一条审计（`created` / `rotated`）：只记名字与 actor，**不记值**。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NamespaceSecretWrite'}
+      responses:
+        '200':
+          description: "写入后的读投影（不含值）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NamespaceSecret'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+    delete:
+      operationId: deleteNamespaceSecret
+      tags: [sources]
+      security: [{session: []}]
+      summary: "删除凭据（被源引用 → 409 secret_in_use）"
+      description: |
+        被任一源引用时不删：409 `secret_in_use`，`details.causes[]` 逐条列引用它的源名
+        （`field: source`）。先改那些源的 `secretRef`，再删。
+
+        成功是 `204`（无响应体）；留一条 `deleted` 审计（只记名字与 actor）。
+      responses:
+        '204':
+          description: "已删除（无响应体）"
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
   # -------------------------------------------------------------------- sources
   /v1/namespaces/{namespace}/sources:
     parameters:
@@ -3788,6 +3880,43 @@ components:
         status:
           type: object
           description: "非空 → 400 `status_not_writable`"
+      additionalProperties: false
+    NamespaceSecret:
+      type: object
+      description: |
+        命名空间凭据的**读投影**（#554）：没有 `value` —— 值只写不读，
+        任何响应/日志/审计里都不出现。`updatedAt` 是最后一次写入（创建或轮换）的时间。
+      required: [name, updatedAt, usedBy]
+      properties:
+        name: {type: string}
+        updatedAt:
+          type: string
+          description: "RFC3339（UTC）"
+        usedBy:
+          type: array
+          description: "引用它的源名（本命名空间内，按名字排序）；空为 `[]` 不是 `null`"
+          items: {type: string}
+      additionalProperties: false
+    NamespaceSecretList:
+      type: object
+      description: "凭据列表（非信封，与 `EdgeList` 同类）：`items` 按 name 升序，空为 `[]`"
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/NamespaceSecret'}
+      additionalProperties: false
+    NamespaceSecretWrite:
+      type: object
+      description: "PUT 请求体：`value` 是唯一可写字段"
+      required: [value]
+      properties:
+        value:
+          type: string
+          writeOnly: true
+          description: |
+            凭据值（只写不读）。非空、不含 CR/LF（它会被塞进 `secretRef.header` 指定的
+            请求头），最长 8192 字节。轮换 = 用同一个名字再 PUT 一次。
       additionalProperties: false
     Retention:
       type: object

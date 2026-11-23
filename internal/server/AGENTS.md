@@ -26,7 +26,7 @@ as_of: 2026-11-16 · area: server · 门禁: `go test ./internal/server/... -cou
 3. **鉴权只有一份**：`serverDeps.Session`。各域不许自己再包一层 —— 两份实现迟早对「未登录」给不同状态码。
 4. 中枢侧不得 import `os/exec`（`make contract` 的 A5 机检）。执行只发生在节点。
 5. 信封纪律：四顶层键 + 可选 `warnings`；`status` 恒存在（无事实 `{}`）；空列表 `[]`；
-   错误体统一走 `writeErr`（`handlers.go:21`）/ `writeStatus`（`api_status.go:83`），不要手拼 JSON。
+   错误体统一走 `writeErr`（`handlers.go:19`）/ `writeStatus`（`api_status.go:82`），不要手拼 JSON。
 6. 静态资源三分级（`static.go` 的 `cacheClass`）：指纹资源 `immutable` 1 年 / 入口 HTML 短缓存 + ETag /
    API `no-store`。改前端产物后必须 `make fe`，否则 embed 里还是旧指纹。
 7. 产物字节只走 `resultspool`：spool 为 nil 时回 503，**绝不 fallback** 到节点/用户目录（A1 禁止）。

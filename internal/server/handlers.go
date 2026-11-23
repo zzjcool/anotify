@@ -10,14 +10,12 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// writeJSON 写 JSON 响应。
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// writeErr 写错误响应。
 func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }

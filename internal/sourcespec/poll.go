@@ -232,6 +232,22 @@ func checkHeaderText(text string, isName bool) error {
 	return nil
 }
 
+func ValidateSecretName(name string) error {
+	if name == "" {
+		return errors.New("name 必填（命名空间凭据的名字）")
+	}
+	if len(name) > pollSecretNameMax {
+		return fmt.Errorf("name 最长 %d 字节", pollSecretNameMax)
+	}
+	for i, r := range name {
+		ok := r == '.' || r == '_' || r == '-' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		if !ok || (i == 0 && (r == '.' || r == '_' || r == '-')) {
+			return fmt.Errorf("name %q 只允许字母数字与 . _ -，且首字符为字母数字", name)
+		}
+	}
+	return nil
+}
+
 func normalizeSecretRef(raw json.RawMessage) (*SecretRef, error) {
 	obj, err := decodeFields(raw)
 	if err != nil {
@@ -254,17 +270,8 @@ func normalizeSecretRef(raw json.RawMessage) (*SecretRef, error) {
 			return nil, fmt.Errorf("不认字段 %q（允许：header / name / prefix）", key)
 		}
 	}
-	if out.Name == "" {
-		return nil, errors.New("name 必填（命名空间凭据的名字）")
-	}
-	if len(out.Name) > pollSecretNameMax {
-		return nil, fmt.Errorf("name 最长 %d 字节", pollSecretNameMax)
-	}
-	for i, r := range out.Name {
-		ok := r == '.' || r == '_' || r == '-' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
-		if !ok || (i == 0 && (r == '.' || r == '_' || r == '-')) {
-			return nil, fmt.Errorf("name %q 只允许字母数字与 . _ -，且首字符为字母数字", out.Name)
-		}
+	if err := ValidateSecretName(out.Name); err != nil {
+		return nil, err
 	}
 	if out.Header == "" {
 		return nil, errors.New("header 必填（如 Authorization）")

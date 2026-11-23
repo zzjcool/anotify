@@ -139,6 +139,15 @@ export const SUITE_SURFACES = {
 		paths: ["internal/playbook/**", "internal/store/playbook*.go", "internal/server/resource_playbook.go", "web-src/pages/playbook.html", "web-src/pages/release.html"],
 	},
 
+	namespace_credentials: {
+		why: "#554 命名空间凭据 CRUD 的 HTTP 面（值只写不读 / usedBy 引用 / 409 secret_in_use / 名字规则 / 老路径 config.secret）；「轮换对下一轮 poll 生效」由 internal/server/resource_credential_test.go 用真 Poller 覆盖，本套件刻意不等排期",
+		paths: [
+			"internal/server/resource_credential.go",
+			"internal/store/namespace_credential.go",
+			"internal/sourcespec/**",
+		],
+	},
+
 	// ---- Chrome 类（15）----
 	// pages 的来源：f3-cases.mjs 里每个注册 case 各自 goto 的页面。
 	// pages: ALL 的来源：矩阵/批次遍历 PAGES（f3-i18n-cases / f3-ui-helper）。
