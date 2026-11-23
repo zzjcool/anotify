@@ -618,6 +618,9 @@ export const SUITE_PORTS = {
 	// 接在 live_agent 段之后：固定段避免与其他 worktree 的同名套件抢端口。
 	vars_ui: 7450,
 	playbook_release: 7500,
+	// #554 命名空间凭据 CRUD（HTTP 类，真 server）：接在 playbook_release 段之后
+	// （7500 段到 7549 止）。固定段避免与其他 worktree 的同名套件抢端口。
+	namespace_secrets: 7550,
 };
 
 // findFreePort(base): 用 net.listen 探测端口是否可用，冲突 +1 重试（最多 50 次）。
