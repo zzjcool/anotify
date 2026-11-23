@@ -1,8 +1,6 @@
 package server
 
-// 按快照重装（#561）：`POST …/playbooks/{slug}/releases/{release}/restore`。
-// 语义全部落在 store.RestorePlaybookRelease（单事务、整包 0 写），这里只做三件事：
-// 收 `valuesDigest`、把审计主体（actor）传下去、把 store 的分类错误翻成 409 + causes。
+// 按快照重装（#561）：语义在 store.RestorePlaybookRelease（单事务、整包 0 写），这里收参数 + 翻错误码。
 
 import (
 	"bytes"
@@ -17,9 +15,6 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// restore 处理 POST …/releases/{release}/restore：照安装时快照把已卸载实例装回去。
-// 响应是**完整回执**（与首次安装同形，多 `restoredFrom`）：`created` 是本次重建的、
-// `skipped` 是复用到的（对象已存在且内容相同）。
 func (a *playbookAPI) restore(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -53,12 +48,10 @@ func (a *playbookAPI) restore(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, receipt)
 }
 
-// playbookRestoreBody 是 restore 的请求体：只认 valuesDigest（严格解码，多一个键就是 400）。
 type playbookRestoreBody struct {
 	ValuesDigest string `json:"valuesDigest"`
 }
 
-// decodePlaybookRestore 与 decodePlaybookAction 同一套严格解码（未知字段 → 400 unknown_field）。
 func decodePlaybookRestore(r *http.Request) (playbookRestoreBody, error) {
 	var body playbookRestoreBody
 	if r == nil || r.Body == nil {
@@ -80,16 +73,14 @@ func decodePlaybookRestore(r *http.Request) (playbookRestoreBody, error) {
 	return body, nil
 }
 
-// writePlaybookRestoreError 是本端点的 409 出口：四类失败各有 reason，causes 逐对象点名。
-// 其它错误（404 release_not_found / 400 / 500）走 Playbook 域的统一映射。
+// writePlaybookRestoreError 是本端点的 409 出口；其它错误（404 / 400 / 500）走 Playbook 域的统一映射。
 func writePlaybookRestoreError(w http.ResponseWriter, err error) {
 	var restoreErr *store.PlaybookRestoreError
 	switch {
 	case errors.As(err, &restoreErr):
 		writeStatus(w, http.StatusConflict, restoreReasonOf(restoreErr.Err), restoreErr.Error(),
 			&statusDetails{Causes: restoreCausesOf(restoreErr.Causes)})
-	case errors.Is(err, store.ErrPlaybookAlreadyInstalled):
-		// 这一组参数还在生效：复原等于「再装一遍」，该由 install 端点承接（不需要 conflicts / causes）。
+	case errors.Is(err, store.ErrPlaybookAlreadyInstalled): // 还在生效：该由 install 端点承接
 		writeStatus(w, http.StatusConflict, "already_installed", err.Error(), nil)
 	case errors.Is(err, store.ErrPlaybookSnapshotMissing):
 		writeStatus(w, http.StatusConflict, "no_snapshot",
@@ -118,9 +109,7 @@ func restoreReasonOf(err error) string {
 	}
 }
 
-// restoreCausesOf 把 store 的逐对象原因搬进 Status 的 causes[]：field 用
-// `pinned.capabilities[i]` / `pinned.sources[i]` 形状（与 requires 的 field 同一套定位口径），
-// 对象身份（kind / name / version）写在 message 的字面里，机器可读部分不靠解析人话。
+// restoreCausesOf 把逐对象原因搬进 Status.causes[]（field 用 `pinned.capabilities[i]` / `pinned.sources[i]`）。
 func restoreCausesOf(causes []store.PlaybookRestoreCause) []statusCause {
 	out := make([]statusCause, 0, len(causes))
 	caps, srcs := 0, 0

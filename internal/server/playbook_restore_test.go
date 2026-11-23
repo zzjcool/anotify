@@ -1,7 +1,6 @@
 package server
 
-// 按快照重装（#561）的传输面：200 的完整回执 + restoredFrom、四种 409 的 reason/causes、
-// 400/404 面，以及详情端点的 restores[] 审计读面。领域语义（版本不漂移、0 写）由 store 覆盖。
+// 按快照重装（#561）的传输面：回执 + restoredFrom、四种 409 的 reason/causes、400/404、restores[] 读面。
 
 import (
 	"encoding/json"
@@ -9,7 +8,6 @@ import (
 	"testing"
 )
 
-// pbTestRestoreReceipt 只取本票关心的字段（完整回执形状由 parity 的 PlaybookReceipt 对照守着）。
 type pbTestRestoreReceipt struct {
 	Kind     string `json:"kind"`
 	Playbook struct {
@@ -68,7 +66,6 @@ type pbTestRestoreDetail struct {
 	} `json:"restores"`
 }
 
-// pbTestCapsOnlyBundle 是「只有能力」的包：卸载只软删能力行，于是成功路径不必先补建源。
 func pbTestCapsOnlyBundle(slug string) map[string]string {
 	return map[string]string{
 		"playbook.yaml":            pbTestEntryDoc(slug, 1, []string{"capabilities/review.yaml"}, nil),
@@ -133,7 +130,6 @@ func TestPlaybookRestoreWire(t *testing.T) {
 		t.Fatalf("valuesDigest = %q, want 沿用 %q", restored.ValuesDigest, installed.ValuesDigest)
 	}
 
-	// 详情端点的 restores[]：谁、哪次回执、重建/复用了多少。
 	rec := env.do(t, "GET", env.path("/"+slug+"/releases/alpha"), nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("详情应 200, got %d: %s", rec.Code, rec.Body.String())
@@ -157,7 +153,6 @@ func TestPlaybookRestoreWire(t *testing.T) {
 	}
 }
 
-// TestPlaybookRestoreErrors 四个 409 + 400 + 404 的 reason / causes 形状。
 func TestPlaybookRestoreErrors(t *testing.T) {
 	t.Run("already_installed", func(t *testing.T) {
 		env := newPlaybookTestEnv(t)

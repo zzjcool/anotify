@@ -1,7 +1,6 @@
 package store
 
-// 按快照重装（#561）的领域验收：版本不漂移、冲突整包 0 写、源缺就报错、审计一行。
-// 0 写用 #535 的 6 表指纹（`restoreFingerprint`）证明，不是「看到 409 就算过」。
+// 按快照重装（#561）的领域验收：版本不漂移、冲突整包 0 写（#535 的 6 表指纹）、源缺就报错、审计一行。
 
 import (
 	"context"
@@ -14,8 +13,8 @@ import (
 	"github.com/zzjcool/anotify/internal/playbook"
 )
 
-// restoreBundle 是「1 能力 + 1 源」的包；script 让不同版本的正文可区分（断言复原的是哪一版）。
-// 能力名**静态**（两个 release 才能长出同名的新版本），源名按 values 区分（同一个源不能属于两个 release）。
+// restoreBundle 是「1 能力 + 1 源」的包；script 区分版本正文。能力名**静态**（两个 release 才能长出同名新版本），
+// 源名按 values 区分（同一个源不能属于两个 release）。
 func restoreBundle(slug, script string) map[string]string {
 	return map[string]string{
 		"playbook.yaml":            pbEntry(slug, 1, []string{"capabilities/review.yaml"}, []string{"sources/on-push.yaml"}),
@@ -115,8 +114,7 @@ func installForRestore(t *testing.T, db *DB, nsID, slug, release string, values 
 	return rcpt
 }
 
-// TestRestoreUsesPinnedVersionNotLatest 是验收 1：装 v1 → 把包升到 v2（同名能力长出 v2）→ 装 v2 →
-// 两个实例都卸载 → 复原 v1 那一组：重建的是 **pinned 的 v1**（版本与正文），不是最新的 v2。
+// 验收 1：装 v1 → 包升 v2 → 装 v2 → 两个实例都卸载 → 复原 v1 那组：重建的是 **pinned 的 v1**（版本与正文）。
 func TestRestoreUsesPinnedVersionNotLatest(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -214,7 +212,7 @@ func TestRestoreNoSnapshot(t *testing.T) {
 	nsID, _ := newTestNS(t, db)
 	slug := "restore-legacy"
 	pbCreate(t, db, nsID, slug, restoreBundle(slug, "#!/bin/sh\necho v1\n"))
-	// 直接落一条迁移 8 之前的回执形状：没有 pinned 行、receipt 里也没有 created.pinned。
+	// 直接落一条迁移 8 之前的回执形状（没有 pinned 行）。
 	raw := `{"apiVersion":"anotify/v1","kind":"InstallReceipt","playbook":{"name":"restore-legacy","version":1},` +
 		`"install":{"id":"ins_legacy","at":"2026-11-01T00:00:00Z","dryRun":false,"release":"alpha"},` +
 		`"namespace":"demo","values":{"project":"demo"},"valuesDigest":"sha256:legacy",` +
@@ -243,7 +241,7 @@ func TestRestoreNoSnapshot(t *testing.T) {
 	}
 }
 
-// TestRestorePinnedGone 是验收 4：pinned 的能力版本被硬删 → 409 pinned_gone，causes 点名 {kind,name,version}，0 写。
+// 验收 4：pinned 的能力版本被硬删 → 409 pinned_gone（causes 点名 {kind,name,version}）+ 0 写。
 func TestRestorePinnedGone(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -254,7 +252,7 @@ func TestRestorePinnedGone(t *testing.T) {
 	if _, err := db.UninstallPlaybookRelease(ctx, nsID, slug, "alpha", ""); err != nil {
 		t.Fatalf("卸载: %v", err)
 	}
-	// 保留期 GC 的物理回收：行直接没了（正文一起没）。
+	// 保留期 GC 的物理回收：行直接没了（正文一起没）
 	if _, err := db.ExecContext(ctx,
 		`DELETE FROM capability_versions WHERE namespace_id = ? AND name = 'demo-review' AND version = 1`,
 		nsID); err != nil {
@@ -282,8 +280,7 @@ func TestRestorePinnedGone(t *testing.T) {
 	}
 }
 
-// TestRestoreConflictAndReuse 是验收 5：同名同版本但内容不同 → 409 restore_conflict + 0 写；
-// 内容相同 → 200 且记进 reused（既有行一个字节都不动）。
+// 验收 5：同名同版本内容不同 → 409 restore_conflict + 0 写；内容相同 → 200 且记进 reused（既有行一字节不动）。
 func TestRestoreConflictAndReuse(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -356,7 +353,7 @@ func TestRestoreConflictAndReuse(t *testing.T) {
 	}
 }
 
-// TestRestoreMissingSource 是验收 6：pinned 的源不存在 → 409 pin_missing_source（不假装能重建源），0 写。
+// 验收 6：pinned 的源不存在 → 409 pin_missing_source（不假装能重建源）+ 0 写。
 func TestRestoreMissingSource(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -391,8 +388,7 @@ func TestRestoreMissingSource(t *testing.T) {
 	}
 }
 
-// TestRestoreAuditAndReceipt 是验收 5 / 7：审计一行 install.restored（actor、installId、计数），
-// 新回执与首次安装同形（values / valuesDigest / pinned 都在）。
+// 验收 5 / 7：审计一行 install.restored（actor、installId、计数）+ 新回执与首次安装同形。
 func TestRestoreAuditAndReceipt(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()

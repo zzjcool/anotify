@@ -198,12 +198,9 @@ func (a *capabilityAPI) get(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusOK, env)
 }
 
-// yaml 处理 GET …/capabilities/{name}/yaml：把该 name **最高版本**的存储定义序列化成
-// 一份可整份贴回 playbook 包的 YAML 文本（`{"yaml": "<全文>"}`）。
-//
-// 三条边界（CONTRACT-capability-yaml §1.1）：取最高版本与 `get` 同一判据（不存在回 404）；
-// 序列化**完整** spec（`artifact.MarshalYAML` 先 Normalize），默认读面「剥正文」不适用于这里；
-// 这是存储定义的规范化重建，不是用户原文（键序/默认值由 Normalize 固定）。
+// yaml 处理 GET …/capabilities/{name}/yaml：把该 name **最高版本**的存储定义序列化成可整份贴回
+// playbook 包的 YAML 文本。三条边界（§1.1）：最高版本与 `get` 同一判据；序列化**完整** spec
+// （MarshalYAML 先 Normalize）；这是规范化重建、不是用户原文（键序/默认值由 Normalize 固定）。
 func (a *capabilityAPI) yaml(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -296,12 +293,9 @@ func (a *capabilityAPI) getVersion(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusOK, env)
 }
 
-// edges 处理 GET …/edges：只读派生投影，**没有** Edge 资源、没有写端点（A5）。
-//
-// 两个来源：能力边来自能力行（live latest）的 `spec.next`，入口边来自源的
-// `spec.targets`。这里按投影的**事实源**现算，而不是读 edges 表：表是同一份事实的
-// 副本，读副本意味着「表重建失败时 API 会说谎」。顺序固定（kind, from, to），
-// 前端图渲染才稳定。
+// edges 处理 GET …/edges：只读派生投影，**没有** Edge 资源、没有写端点（A5）。按**事实源**现算
+// （能力行 live latest 的 `spec.next` + 源的 `spec.targets`），不读 edges 表——读副本等于「表重建
+// 失败时 API 会说谎」。顺序固定（kind, from, to），前端图渲染才稳定。
 func (a *capabilityAPI) edges(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -367,12 +361,9 @@ func (a *capabilityAPI) templates(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 写端点 ----------
 
-// create 处理 POST …/capabilities。
-//
-// 版本分配交给 store（capability.md §3）：省略 `metadata.version` = **内容寻址**
-// ——先按 foldKey 在 (ns, name) 内找同内容行（有则复用），没有才分配 max+1。
-// 这里刻意不预先填 `NextCapabilityVersion`：那会绕过 foldKey 复用，让「同一份内容
-// POST 两次」长出两个版本，与 §3 的内容寻址语义直接冲突。
+// create 处理 POST …/capabilities。版本分配交给 store（capability.md §3）：省略 `metadata.version` =
+// **内容寻址**（先按 foldKey 复用，没有才分配 max+1）。这里刻意不预填 NextCapabilityVersion——那会绕过
+// foldKey 复用，让「同一份内容 POST 两次」长出两个版本。
 func (a *capabilityAPI) create(w http.ResponseWriter, r *http.Request) {
 	if _, err := a.d.authorizePathNamespace(r); err != nil {
 		writeAPIError(w, err)

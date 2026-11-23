@@ -122,29 +122,14 @@ func openWithOptions(path string, modify func(*migrationSet), maxConns int) (*DB
 		_ = db.Close()
 		return nil, err
 	}
-	// 统计信息维护（reviewer 3A · MAJOR-1）：SQLite 官方推荐的「启动时/关闭前」姿势，统计新鲜时
-	// 成本趋近 0。本句只覆盖「缺失」（表上有索引、sqlite_stat1 里没有该表条目），**不覆盖过期**：
-	// 行数漂移后估计仍停在旧值（mask 0x2 没有 0x10000 位，实测两遍 optimize=0x2 刷不动）——
-	// 过期由 `DB.MaintainStats` + `lease/stats.go` 的 6h 任务判定（比 count(*) 差 ≥10 倍就 ANALYZE）。
-	//
-	// 为什么是 `=0x2` 而不是裸 `PRAGMA optimize`：裸写等价 mask 0x0fffe，其中 0x10 位会把
-	// ANALYZE 降级成 `analysis_limit=2000` 的**采样**分析，2 万行单一命名空间被低估 10 倍
-	// （实测仍 13~15ms，全量 ANALYZE 后 0.17ms）。只传 0x2 时分析本身是全量的。
-	//
-	// sqlite_stat1/stat4 是 `sqlite_` 内部表，被 masterDDL 的形状门禁过滤，不影响「结构/重开幂等」。
-	// 走裸 `*sql.DB` 而不是 `d.stmts`：此刻 DB 还没构造出来（语句缓存是紧随其后才建的）；
-	// 而 `PRAGMA optimize` 本身在 `maintainStatsOn` 里是 `QueryContext`（要读回建议行）+ 对
-	// 每条建议 `ExecContext`，不是一条 `db.Exec`。
-	// 失败**不致命**（第二轮复审 minor-1：实测这里曾因 `database is locked (5)` 让 Open 4.7s 后
-	// 整体失败）：本语句是**可选优化**，它挂掉只影响「规划器可能暂时选不到最优索引」——
-	// 查询结果一律正确，功能不变。ANALYZE 是纯优化，把「统计没刷新」升级成「服务起不来」
-	// 不划算。所以只记一条 warning。
-	//
-	// 对比：将来若某个迁移块里要写统计（`ANALYZE <表>`），那是**确定性**保证（写在迁移事务内，
-	// 失败就该让迁移失败、整体回滚）——两者定位不同，别混。
-	// 也不要给它加重试循环：只会把启动变慢，而且下一次 Open 会再试一遍。
-	// 观测优先（#265）：把 optimize 的**建议**打出来，运维才知道统计到底多久该刷一次。
-	// 它通常是空行（= 不需要），非空时形如 `ANALYZE "tasks"`。
+	// 统计信息维护（reviewer 3A · MAJOR-1）：本句只覆盖「缺失」（表上有索引、sqlite_stat1 里没有该表
+	// 条目），**不覆盖过期**（mask 0x2 没有 0x10000 位，实测刷不动漂移）——过期由 `DB.MaintainStats` +
+	// `lease/stats.go` 的 6h 任务判定。为什么是 `=0x2` 而不是裸 `PRAGMA optimize`：裸写等价 mask 0x0fffe，
+	// 其中 0x10 位会把 ANALYZE 降级成采样分析（2 万行被低估 10 倍：13~15ms vs 全量 0.17ms）。
+	// 走裸 `*sql.DB` 而不是 `d.stmts`：此刻语句缓存还没建；且 optimize 是「读回建议 + 逐条 Exec」。
+	// 失败**不致命**（曾因 `database is locked (5)` 让 Open 整体失败）：它是可选优化，只记 warning。
+	// 与迁移块里的 `ANALYZE <表>` 定位不同（那是确定性保证，失败该回滚），也**不要**加重试循环。
+	// 观测优先（#265）：把 optimize 的建议打出来，运维才知道统计多久该刷一次。
 	if suggestions, err := dbMaintainStatsOnce(db); err != nil {
 		slog.Warn("store: sqlite 统计维护失败（不影响正确性，只是规划器可能暂时选不到最优索引）",
 			"event", "store.open.optimize_failed",
@@ -174,26 +159,13 @@ func maxConnsFromEnv() int {
 // Now 返回当前 unixepoch 秒（供各写入点统一使用）。
 func Now() int64 { return time.Now().Unix() }
 
-// MaintainStats 是一次「运行期」的统计维护：先问 SQLite 需不需要刷新（按它的建议执行），
-// 再对会持续增长的大表做一次**确定性**漂移检查（#265）。
-//
-// 为什么不能只跑 `PRAGMA optimize=0x2`（这是 #265 的第一版，已证伪）：它够不到
-// **运行期漂移**。某个命名空间的 tasks 从 100 行涨到 1 万行时，sqlite_stat1 里可能仍记着
-// 100，规划器据此选错计划——表现是「索引明明建好了但查询很慢」，而且没有任何报错。
-// 实测（`TestMaintainStatsRefreshesDriftedStat1`）：100 → 2500 行（25×）后调 `=0x2`，
-// 返回**空建议集**，stat1 停在 100；所以「按需」那一半是安慰剂，必须自己判。
-//
-// 两个层次（代价与收益对齐，既不无条件 ANALYZE 全库，也不把自己骗过去）：
-//   - `PRAGMA optimize=0x2`：只处理「表上有索引但没有 stat1 条目」（统计**缺失**），
-//     统计新鲜时是一次纯检查，成本趋近 0；
-//   - `refreshDriftedStats`：只针对 `tasks`，把 stat1 里的行数估计与真实行数比，
-//     差 ≥10 倍才 `ANALYZE "tasks"`（统计**过期**）。一条 `count(*)` 的成本，
-//     换来的是规划器不会拿着 100 行的估计去扫 100 万行。
-//
-// 返回被执行的语句（用于日志/测试断言）。空切片 = 这次不需要做什么。
-//
-// 安全：执行的语句必须来自 SQLite 自己的建议且形如 `ANALYZE ...`（见 isAnalyzeSuggestion），
-// 或来自本包自己写死的 `ANALYZE "tasks"`。
+// MaintainStats 是一次「运行期」的统计维护：先按 SQLite 的建议补**缺失**统计，再对 `tasks` 做一次
+// **确定性**漂移检查（#265）。为什么不能只跑 `PRAGMA optimize=0x2`（第一版，已证伪）：它够不到运行期
+// 漂移——100 行涨到 1 万行时 stat1 仍记 100，规划器选错计划却不报错；实测 100 → 2500 行后 `=0x2`
+// 返回空建议集、stat1 停在 100。于是两层：`optimize=0x2` 管缺失（新鲜时成本趋近 0），
+// `refreshDriftedStats` 只针对 `tasks`，估计与真实行数差 ≥10 倍才 `ANALYZE "tasks"`（一条 count(*) 的
+// 成本换来不拿 100 行的估计去扫 100 万行）。返回被执行的语句（日志/测试断言用），空切片 = 无事可做。
+// 安全：语句只来自 SQLite 建议且形如 `ANALYZE ...`（isAnalyzeSuggestion），或本包写死的 `ANALYZE "tasks"`。
 func (d *DB) MaintainStats(ctx context.Context) ([]string, error) {
 	return maintainStatsOn(ctx, d.DB, statsTriggerMaintenance)
 }

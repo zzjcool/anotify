@@ -198,7 +198,6 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 			"playbook_id", "version", "files", "digest", "created_at", "created_by",
 		},
 		"playbook_install_audit": {
-			// 复原审计（#561）：action 是闭集，detail 只存计数与对象名单（不含 values）。
 			"id", "namespace_id", "playbook_id", "playbook_slug", "release", "install_id",
 			"action", "actor_id", "detail", "created_at",
 		},

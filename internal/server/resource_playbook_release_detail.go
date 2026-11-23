@@ -55,8 +55,7 @@ func (a *playbookAPI) getRelease(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, doc)
 }
 
-// releaseRestores 是 `install.restored` 审计行的读面（#561）：复原次数是十位量级，不分页。
-// 一行失败就整份 500 —— 审计读不到时谎报「没复原过」比报错更糟。
+// releaseRestores 是 `install.restored` 的读面（#561）：复原次数是十位量级，不分页；读失败整份 500。
 func (a *playbookAPI) releaseRestores(ctx context.Context, ns, slug, release string) ([]playbookRestoreEntry, error) {
 	rows, err := a.d.DB.ListPlaybookInstallAudit(ctx, ns, slug, release)
 	if err != nil {
@@ -217,7 +216,7 @@ func releaseObjectsOf(receipts []playbook.Receipt, caps map[string]*store.Capabi
 	return out, deps
 }
 
-// playbookRestoreEntry 是一条 `install.restored`（#561 的审计读面）。
+// playbookRestoreEntry 是一条 `install.restored`。
 type playbookRestoreEntry struct {
 	Action       string                `json:"action"`
 	InstallID    string                `json:"installId"`
@@ -247,7 +246,7 @@ type playbookReleaseDetail struct {
 	UninstalledAt string               `json:"uninstalledAt,omitempty"`
 	Pinned        []playbook.PinnedRef `json:"pinned,omitempty"`
 	ObjectsGone   bool                 `json:"objectsGone,omitempty"`
-	// Restores 是按快照重装的审计行（#561）：没有复原过时**不出现**（生效中实例的响应逐字节不变）。
+	// 没有复原过时**不出现**（生效中实例的响应逐字节不变）。
 	Restores []playbookRestoreEntry `json:"restores,omitempty"`
 }
 

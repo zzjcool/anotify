@@ -12,12 +12,9 @@ import (
 	"github.com/zzjcool/anotify/internal/playbook"
 )
 
-// 按快照重装（#561）：把一份**已卸载**实例照安装时快照（#551 的 pinned）装回去。
-//
-// 与首次安装的差别只有两点，其余（单事务、整包原子、回执形状）逐字相同：
-//   - 正文来源是 pinned 版本（能力取 `capability_versions` 里 `(name, pinned.version)` 那行，
-//     卸载只 SET deleted_at、正文还在），不是拿包体重新渲染一遍；
-//   - 源只能**复用**：源正文不在回执里，缺了就报错（不假装能重建）。
+// 按快照重装（#561）：把一份**已卸载**实例照安装时快照（#551 的 pinned）装回去。与首次安装的差别只有两点：
+// 正文来源是 pinned 版本（能力取 `(name, pinned.version)` 那行——卸载只 SET deleted_at、正文还在）；
+// 源只能复用（源正文不在回执里，缺了就报错，不假装能重建）。单事务与回执形状逐字同首次安装。
 var (
 	// ErrPlaybookAlreadyInstalled 表示这一组参数当前仍在生效（回执未卸载）→ 409 already_installed。
 	ErrPlaybookAlreadyInstalled = errors.New("store: playbook release values still installed")
@@ -38,8 +35,8 @@ const (
 	pinnedRefKindSource     = "source"
 )
 
-// PlaybookRestoreCause 是一条「哪个对象、为什么复原不了」：`kind` ∈ capability / source，
-// `version` 只有能力有（源没有版本概念），`reason` 与 409 的 reason 同字面。
+// PlaybookRestoreCause 是一条「哪个对象、为什么复原不了」：`reason` 与 409 的 reason 同字面，
+// `version` 只有能力有（源没有版本概念）。
 type PlaybookRestoreCause struct {
 	Kind    string `json:"kind"`
 	Name    string `json:"name"`
@@ -48,8 +45,7 @@ type PlaybookRestoreCause struct {
 	Message string `json:"message"`
 }
 
-// PlaybookRestoreError 把「哪一类复原失败」与「逐对象的 causes」放在一起：
-// 只回 409 字面而不说清是哪些对象，用户没有可改的线索。
+// PlaybookRestoreError 把「哪一类复原失败」与「逐对象的 causes」放在一起（只说 409 字面等于没有线索）。
 type PlaybookRestoreError struct {
 	Err    error
 	Causes []PlaybookRestoreCause
@@ -61,8 +57,7 @@ func (e *PlaybookRestoreError) Unwrap() error { return e.Err }
 
 // PlaybookRestoreCounts 是一次复原里「重建了什么 / 复用了什么」（审计行与 `restores[]` 的读面）。
 type PlaybookRestoreCounts struct {
-	// Capabilities 写 `name@version`，Sources 写名字（与回执 created / skipped 同形）。
-	Capabilities []string `json:"capabilities"`
+	Capabilities []string `json:"capabilities"` // `name@version`（与回执 created / skipped 同形）
 	Sources      []string `json:"sources"`
 }
 
@@ -98,10 +93,8 @@ type restoreCandidates struct {
 }
 
 // RestorePlaybookRelease 照 pinned 快照把一份已卸载实例装回去（单事务；冲突 / 缺失整包 0 写）。
-//
-// 顺序固定（判据先于写）：读包 → 取该参数组的回执 → already? → 取快照 → 逐对象判定
-// （正文还在？同名内容相同？源还在？）→ 有任何问题就在第一条 INSERT 之前返回 →
-// 建能力 → 写回执 + 快照 → 写审计 → COMMIT。
+// 顺序固定（判据先于写）：读包 → 取该参数组的回执 → already? → 取快照 → 逐对象判定 → 有问题就在
+// 第一条 INSERT 之前返回 → 建能力 → 写回执 + 快照 → 写审计 → COMMIT。
 func (d *DB) RestorePlaybookRelease(ctx context.Context, namespaceID, slug, release, valuesDigest, actorID string) (*playbook.Receipt, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -164,7 +157,7 @@ func (d *DB) RestorePlaybookRelease(ctx context.Context, namespaceID, slug, rele
 		}
 	}
 
-	receipt := restoreReceiptOf(row, rel, digest, installID, now, nsSlug, source, cand)
+	receipt := restoreReceiptOf(row, rel, digest, installID, now, nsSlug, source, cand, pins)
 	if err := insertPlaybookInstallOn(ctx, ex, namespaceID, row, &receipt, now); err != nil {
 		return nil, fmt.Errorf("restore playbook %q: %w", slug, err)
 	}
@@ -184,8 +177,8 @@ type restoreSource struct {
 	receipt playbook.Receipt
 }
 
-// restoreSourceReceiptOn 取该参数组的来源回执：一组 values 装过多次时，只有**最后一次**是
-// 「这套参数当时的样子」，快照也以它为准（旧回执的快照是旧版本，照旧的复原会漂移）。
+// restoreSourceReceiptOn 取该参数组的来源回执：一组 values 装过多次时只有**最后一次**是「当时的样子」，
+// 快照以它为准（旧回执的快照是旧版本，照旧的复原会漂移）。
 func restoreSourceReceiptOn(ctx context.Context, ex queryExec, namespaceID, playbookID, release, digest string) (*restoreSource, error) {
 	rows, err := ex.queryContext(ctx,
 		`SELECT id, receipt, uninstalled_at FROM playbook_installs
@@ -202,8 +195,7 @@ func restoreSourceReceiptOn(ctx context.Context, ex queryExec, namespaceID, play
 		if err := rows.Scan(&id, &raw, &uninstalledAt); err != nil {
 			return nil, fmt.Errorf("restore playbook: scan group receipt: %w", err)
 		}
-		if uninstalledAt == 0 {
-			// 这一组还在生效：复原等于「再装一遍」，该由 install 端点承接。
+		if uninstalledAt == 0 { // 还在生效：复原等于「再装一遍」，该由 install 端点承接
 			return nil, fmt.Errorf("%w: release %q valuesDigest %s", ErrPlaybookAlreadyInstalled, release, digest)
 		}
 		var receipt playbook.Receipt
@@ -218,8 +210,7 @@ func restoreSourceReceiptOn(ctx context.Context, ex queryExec, namespaceID, play
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("restore playbook: iterate group receipts: %w", err)
 	}
-	if source == nil {
-		// 组不存在与 release 不存在同一个落点（与 YAML 按组导出同口径）：都不该 404 到「包不存在」。
+	if source == nil { // 组不存在与 release 不存在同一落点（与 YAML 按组导出同口径）
 		return nil, fmt.Errorf("%w: release %q valuesDigest %s", ErrPlaybookReleaseNotFound, release, digest)
 	}
 	return source, nil
@@ -293,8 +284,7 @@ func (c *restoreCandidates) capabilityOn(ctx context.Context, ex queryExec, name
 	}
 	live, err := getCapabilityOn(ctx, ex, namespaceID, pin.Name, pin.Version)
 	switch {
-	case errors.Is(err, ErrNotFound):
-		// 只有软删行（卸载过的正常情形）：正文逐字节相同，重建的就是那一份。
+	case errors.Is(err, ErrNotFound): // 只剩软删行（卸载过的正常情形）：正文逐字节相同
 		c.createCaps = append(c.createCaps, body)
 	case err != nil:
 		return err
@@ -341,8 +331,7 @@ func (c *restoreCandidates) err(release string) error {
 	return nil
 }
 
-// capabilitySnapshotByVersionOn 按 name + version 取正文，**不过滤 deleted_at**（卸载只是打标记）。
-// 同一 (name, version) 可能有多行软删历史，取最近创建的那行：它是「最后一次装出来的样子」。
+// capabilitySnapshotByVersionOn 按 name + version 取正文，**不过滤 deleted_at**（卸载只是打标记）；多行软删历史取最近创建的那行。
 func capabilitySnapshotByVersionOn(ctx context.Context, ex queryExec, namespaceID, name string, version int) (*CapabilityVersion, error) {
 	return scanCapabilityOn(ctx, ex,
 		`SELECT `+capabilityColumns+` FROM capability_versions
@@ -350,11 +339,14 @@ func capabilitySnapshotByVersionOn(ctx context.Context, ex queryExec, namespaceI
 		  ORDER BY created_at DESC, rowid DESC LIMIT 1`, namespaceID, name, version)
 }
 
-// restoreReceiptOf 组装复原回执：与首次安装同形，多一个 restoredFrom。
-// values / valuesDigest / playbook 身份沿用来源回执（复原不重新渲染，就没有第二份 values 真相）；
-// created 是本次重建的、skipped 是复用到的，两边都带 pinned（#551 的约定）。
+// restoreReceiptOf 组装复原回执：与首次安装同形，多一个 restoredFrom；values / valuesDigest / playbook
+// 身份沿用来源回执（复原不重新渲染，就没有第二份 values 真相），created 是重建的、skipped 是复用的。
 func restoreReceiptOf(row *PlaybookRow, release, digest, installID string, now int64, nsSlug string,
-	source *restoreSource, cand *restoreCandidates) playbook.Receipt {
+	source *restoreSource, cand *restoreCandidates, pins []playbook.PinnedRef) playbook.Receipt {
+	byRef := make(map[string]playbook.PinnedRef, len(pins))
+	for _, pin := range pins {
+		byRef[pinnedKey(pin.Kind, pin.Name, pin.Version)] = pin
+	}
 	values := map[string]any{}
 	for k, v := range source.receipt.Values {
 		values[k] = v
@@ -371,12 +363,12 @@ func restoreReceiptOf(row *PlaybookRow, release, digest, installID string, now i
 		name, version, _ := SplitRef(ref)
 		skipped.Capabilities = append(skipped.Capabilities, ref)
 		skipped.Pinned = append(skipped.Pinned, playbook.PinnedRef{Kind: pinnedRefKindCapability,
-			Name: name, Version: version, Digest: pinnedDigestOf(source.receipt, ref)})
+			Name: name, Version: version, Digest: byRef[pinnedKey(pinnedRefKindCapability, name, version)].Digest})
 	}
 	for _, name := range cand.reused.Sources {
 		skipped.Sources = append(skipped.Sources, name)
 		skipped.Pinned = append(skipped.Pinned, playbook.PinnedRef{Kind: pinnedRefKindSource, Name: name,
-			KindOf: pinnedKindOf(source.receipt, name)})
+			KindOf: byRef[pinnedKey(pinnedRefKindSource, name, 0)].KindOf})
 	}
 	plan := &playbook.PlanResult{
 		Playbook:     source.receipt.Playbook,
@@ -398,25 +390,9 @@ func restoreReceiptOf(row *PlaybookRow, release, digest, installID string, now i
 	return receipt
 }
 
-// pinnedDigestOf 从来源回执的 pinned 里取某个能力的 digest（复用行不重新算：快照就是证据）。
-func pinnedDigestOf(receipt playbook.Receipt, ref string) string {
-	name, version, _ := SplitRef(ref)
-	for _, pin := range append(append([]playbook.PinnedRef{}, receipt.Created.Pinned...), receipt.Skipped.Pinned...) {
-		if pin.Kind == pinnedRefKindCapability && pin.Name == name && pin.Version == version {
-			return pin.Digest
-		}
-	}
-	return ""
-}
-
-// pinnedKindOf 从来源回执的 pinned 里取某个源的 kind（源的种类只有快照记得）。
-func pinnedKindOf(receipt playbook.Receipt, name string) string {
-	for _, pin := range append(append([]playbook.PinnedRef{}, receipt.Created.Pinned...), receipt.Skipped.Pinned...) {
-		if pin.Kind == pinnedRefKindSource && pin.Name == name {
-			return pin.KindOf
-		}
-	}
-	return ""
+// pinnedKey 是「按 (kind, name, version) 找快照项」的键（源的 version 恒为 0）。
+func pinnedKey(kind, name string, version int) string {
+	return kind + "\x00" + name + "\x00" + itoa64(int64(version))
 }
 
 // restoreAuditDetail 组装审计行的摘要（计数 + 对象名单，不含 values）。
@@ -442,8 +418,7 @@ func restoreAuditDetail(cand *restoreCandidates, pins []playbook.PinnedRef, rest
 	return detail
 }
 
-// insertPlaybookRestoreAuditOn 落一行 `install.restored`（与复原同一个事务：复原成功就一定有审计，
-// 复原被 409 拦下就一行都没有 —— 半写与「记了账但没干」都不允许）。
+// insertPlaybookRestoreAuditOn 落一行 `install.restored`：与复原同一个事务（被 409 拦下就一行都没有）。
 func insertPlaybookRestoreAuditOn(ctx context.Context, ex queryExec, namespaceID string, row *PlaybookRow,
 	release, installID, actorID string, now int64, detail PlaybookRestoreAuditDetail) error {
 	raw, err := json.Marshal(detail)
