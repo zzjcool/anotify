@@ -132,23 +132,50 @@ export E2E_CHROME_PATH="…/chromium-1208/chrome-mac-arm64/Google Chrome for Tes
 | 5 | 卸载后从包页消失；直接打开旧 URL → 明确「已卸载/不存在」 | Chrome case `playbook-release` + `go test … TestPlaybookReleaseDetailNotFound` | ✅ DELETE 后列表 1 行、旧 URL 渲染 `#rd-gone-panel`（`#rd-content` 隐藏）、HTTP 是 `404 release_not_found` |
 | 6 | e2e：两份 release → 列表 2 行 → 分别进详情 → 对象不串 | `make e2e-one S=playbook_release` + Chrome case | ✅ HTTP 断言 399 通过 / 0 失败（含新增 §12 的 85 条）；Chrome case 1 通过 / 0 失败 |
 | 7 | 变异 ① ② 必红 | 见 §6 | ✅ 两条都真改源码跑出来的红 |
-| 8 | `make ci` exit 0（见下方平台说明）；`make e2e-affected` 绿；known-env 空；注释密度不上调 | `make ci`(121s) / `make e2e-affected` | ⚠️ `make ci` 在本机（macOS）非 0：**5 个 `cmd/anode` 包**的平台用例（Linux-only 安装脚本 + `/var` 软链守卫）失败，失败集合与祖先提交 `bc2c45e9` **逐条相同**（34 条，见下）；其余 36 个包全 `ok`。已知环境性失败清单 `scripts/e2e/known-env-failures.json` 仍是 `entries: []`（未新增）。注释密度 43297 = 基线（同批下调 43300→43297） |
+| 8 | `make ci` exit 0（见下方平台说明）；`make e2e-affected` 绿；known-env 空；注释密度不上调 | `make ci`(121s) / `make e2e-affected`(657s) | ⚠️ 见 §5.1 的两条平台差异：`make ci` 在本机（macOS）非 0 只因 **5 个 `cmd/anode` 包**的平台用例；`make e2e-affected` 选到全量 30 套（`api/resource.yaml` 是共享面），本机 24 套绿 / 6 套红，红的 6 套逐条归因见 §5.1，与 #548 无关。`known-env-failures.json` 仍是 `entries: []`（未新增）。注释密度 43297 = 基线（同批下调 43300→43297） |
 | 9 | 五件套 + 四份 locale 键集一致 | `make contract` / `node scripts/check-i18n-keys.mjs` | ✅ 5 份 spec / 143 operation / 143 唯一 operationId / 258 schema；4 份 locale 键集一致（2462 key / 2248 引用点） |
 
 其它门禁（都属于 `make ci`）：`check-classes` 877 个类全在设计系统内、`check-ui-copy` 4 份 locale × 9832 条值无命中、
 `check-wire-fields` / `check-css` / `check-contrast`（48 项判定 PASS 48）/ `check-affect-map` / `check-test-discipline` 全绿。
 
-### 8 条的「平台差异」说明（不要读成"红着交付"）
+### 5.1 两条平台差异（本机 macOS；不是"红着交付"）
 
-`cmd/anode` 的 `TestInstallScript*` 一族调用 `scripts/install-anode.sh`，脚本开头就是
-`只支持 Linux（当前 Darwin）`；`TestReal*` 族要求数据目录不是 `/var` 软链。macOS 上它们与改动无关地必红：
+**(a) `make ci`**：只差 `cmd/anode` 一族 —— `TestInstallScript*` 调用 `scripts/install-anode.sh`，
+脚本开头就是「只支持 Linux（当前 Darwin）」；`TestReal*` 要求数据目录不是 `/var` 软链。其余 36 个包全 `ok`。
+祖先提交上同一组用例逐条同样失败（34 条，见下）。
+
+**(b) `make e2e-affected`**（选中全部 30 套，657s）：24 套绿，6 套红的归因 ——
+
+| 套件 | 红的原因 | 归属 |
+| --- | --- | --- |
+| `live_agent` | `install --prefix` 退出码 2（Linux-only 安装脚本） | 平台 |
+| `node_v4` | `anode serve: data directory: unsafe symlink/special file /var` | 平台 |
+| `frontend` | 仅 `observe-trace` 一张截图超时（4500ms） | 平台（**祖先提交逐字复现**） |
+| `i18n` | `navigation-*` 三条：`#lang-switcher` 点击 2.2s 超时 | 时间预算（本机慢） |
+| `i18n_coverage` | `task-states-*` 三条 `#task-cancel` 点击超时 + `pages-en-3` 的 message 页 goto 超时 | 时间预算 |
+| `ui_shift` | `shift-lang-hint` / `shift-prelayout-*` 三条帧采样断言（只采到 1 帧） | 机器帧率 |
+
+**与 #548 相关的两套单独跑是绿的**：`playbook_release` 399 通过 / 0 失败（4.9s）、
+`frontend` 除 `observe-trace` 外全部通过（278s，含新增 `playbook-release` 与更新后的 `playbook-install`）。
+全量矩阵里 `release.html` 作为新页面一次都没红过（i18n / i18n_coverage / ui_shift / pages-21-* 全通过）。
+
+
+**(a) 的复算**（干净 clone 到 `/tmp/base548`，两棵树各跑一次同一组用例）：
 
 ```bash
-# 祖先提交（bc2c45e9，干净 clone）与 HEAD 的失败集合逐条相同
 git clone --local . /tmp/base548 && cd /tmp/base548 && git checkout bc2c45e9
 go test ./cmd/anode -count=1 | grep -E '^--- FAIL' | sort > /tmp/base_fails.txt   # 34 条
 cd - && go test ./cmd/anode -count=1 | grep -E '^--- FAIL' | sort > /tmp/head_fails.txt
 diff /tmp/base_fails.txt /tmp/head_fails.txt && echo IDENTICAL                     # IDENTICAL
+```
+
+**(b) 里 `observe-trace` 的复算**（同一棵树，只换基线）：
+
+```bash
+cd /tmp/base548 && npm install && make fe && go build -tags embeddist -o .e2e-bin/anotify ./cmd/server
+ANOTIFY_BIN=/tmp/base548/.e2e-bin/anotify DEVSEED_BIN=… ANODE_BIN=… E2E_CHROME_PATH=… \
+  node scripts/e2e/suites/frontend.mjs --case observe-trace
+# → CASE_FAIL observe-trace :: page.screenshot: Timeout 4500ms exceeded.  （base 上逐字同样红）
 ```
 
 ## 6. 变异自证（真改源码跑出来的红，不是声称）
