@@ -347,7 +347,7 @@ export async function playbook(d,mode){
     const installAs = release => req(basePath + '/install', { method: 'POST', body: JSON.stringify({ values: { project: release }, release }) });
     const blue = await installAs('blue'); const green = await installAs('green');
     assert.equal(blue.install.release, 'blue'); assert.equal(green.install.release, 'green');
-    /* #553：两种空态的对照事实 —— 装过又卸载的包 vs 从来没装过的包（0 对象包，纯 API 造）。 */
+    /* #553：两种空态的对照事实 —— 装过又卸载的包 vs 从来没装过的包（对象为零的包，纯 API 造）。 */
     const emptyEntryOf = pkg => 'apiVersion: anotify/v1\nkind: Playbook\nmetadata:\n  name: ' + pkg + '\nspec:\n  capabilities: []\n  sources: []\n';
     const createPkg = pkg => req('/v1/namespaces/default/playbooks', { method: 'POST', body: JSON.stringify({ ...envelope({ 'playbook.yaml': emptyEntryOf(pkg) }), metadata: { name: pkg, namespace: 'default' } }) });
     await createPkg('hist-only');
