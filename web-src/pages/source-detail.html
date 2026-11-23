@@ -55,6 +55,21 @@
 .src-raw-hint{margin-left:auto;font-size:10.5px;color:var(--faint);text-align:right}
 .src-raw-body{display:grid;gap:6px;padding:0 10px 10px;min-width:0}
 .src-raw .code-body{overflow-x:auto;max-height:20rem}
+.sd-audit{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);min-width:0}
+.sd-audit>summary{display:flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;list-style:none}
+.sd-audit>summary::-webkit-details-marker{display:none}
+.sd-audit>summary::before{content:"▸";color:var(--faint);font-size:11px}
+.sd-audit[open]>summary::before{content:"▾"}
+.sd-audit>summary:hover>.sd-sec-title{color:var(--accent)}
+.sd-audit-body{display:grid;gap:6px;padding:0 10px 10px;min-width:0}
+.sd-audit-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;padding:4px 0;border-bottom:1px dashed var(--line);font-size:12px;color:var(--muted)}
+.sd-audit-row:last-child{border-bottom:0}
+.sd-audit-sep{color:var(--faint)}
+.sd-audit-actor{color:var(--text)}
+.sd-audit-acts{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.sd-audit-table{width:100%;border-collapse:collapse;font-size:11.5px;table-layout:fixed}
+.sd-audit-table th,.sd-audit-table td{padding:6px;text-align:left;vertical-align:top;overflow-wrap:anywhere;border-bottom:1px solid var(--line)}
+.sd-audit-table th{color:var(--muted);font-weight:500}
 </style>
 {{end}}
 
@@ -80,6 +95,21 @@
 
     <!-- 四块内容（[data-sec] 由脚本填）+ 原始 YAML 折叠块 -->
     <div id="src-detail-body" class="card card-pad sd-body hidden"></div>
+  </div>
+</div>
+
+<div id="src-secret-history" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="src-secret-history-title">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <div class="modal-title-wrap">
+        <h2 id="src-secret-history-title" class="modal-title">{{t "source_detail.secret_history_title"}}</h2>
+        <p id="src-secret-history-name" class="modal-sub mono"></p>
+      </div>
+      <button id="src-secret-history-close" type="button" class="modal-close" aria-label="{{t "source_detail.secret_history_close"}}">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="src-secret-history-body" class="sd-rows" aria-live="polite"></div>
+    </div>
   </div>
 </div>
 {{end}}
@@ -138,6 +168,9 @@ async function openEditor() {
 /* 原始 YAML 是懒加载的单例：换源/刷新时 reset，绝不拿上一个源的正文骗人。 */
 const YAML = { status: "idle", open: false, text: null, err: null };
 let RECENT_SEQ = 0; // 近期回执的请求序号：后发先至的旧响应不许覆盖新源
+const AUDIT = { status: "idle", open: false, items: [], err: null };
+let AUDIT_SEQ = 0;
+const SECRET_HISTORY = { seq: 0 };
 
 /* ============================ 小工具 ============================ */
 function isObj(v) {
@@ -310,12 +343,88 @@ function secretFacts(name) {
   const kv = el("dl", { class: "sd-kv" });
   kv.append(pair(t("source_detail.secret_name", "凭据名"), name, { mono: true }));
   const cell = el("div", { class: "sd-pair" });
-  const dd = el("dd", { class: "sd-v" });
-  dd.classList.add("is-muted"); // 内联样式里是复合选择器 .sd-v.is-muted：用 classList，不给死类守卫留静态字面量
+  const dd = el("dd", { class: "sd-v sd-copyline" });
+  const usedBy = el("span", { class: "sd-v" });
+  const history = el("button", { type: "button", class: "btn btn-ghost btn-sm", text: t("source_detail.secret_history", "凭据历史") });
+  history.addEventListener("click", () => openSecretHistory(name));
+  dd.append(usedBy, history);
   cell.append(txt("dt", "sd-k", t("source_detail.secret_used_by", "引用者")), dd);
   kv.append(cell);
-  void paintUsedBy(dd, name);
+  void paintUsedBy(usedBy, name);
   return kv;
+}
+async function nsAudit(plural, name, limit) {
+  await ready();
+  return api(nsPath(plural, name) + "/audit?limit=" + String(limit));
+}
+function secretActionLabel(action) {
+  if (action === "created") return t("source_detail.secret_action_created", "创建");
+  if (action === "rotated") return t("source_detail.secret_action_rotated", "轮换");
+  if (action === "deleted") return t("source_detail.secret_action_deleted", "删除");
+  return action == null ? "—" : String(action);
+}
+function secretHistoryTable(rows) {
+  const table = el("table", { class: "sd-audit-table" });
+  const head = el("tr");
+  for (const label of [
+    t("source_detail.secret_history_col_action", "操作"),
+    t("source_detail.secret_history_col_at", "时间"),
+    t("source_detail.secret_history_col_actor", "操作者"),
+  ]) {
+    head.append(txt("th", null, label));
+  }
+  const thead = el("thead");
+  thead.append(head);
+  const tbody = el("tbody");
+  for (const row of rows) {
+    const it = isObj(row) ? row : {};
+    const tr = el("tr");
+    tr.setAttribute("data-secret-action", it.action == null ? "" : String(it.action));
+    const actor = el("td");
+    if (it.actor) actor.append(rawText(String(it.actor)));
+    else actor.textContent = t("source_detail.audit_actor_none", "非会话主体");
+    tr.append(txt("td", null, secretActionLabel(it.action)), txt("td", null, fmtTime(it.at)), actor);
+    tbody.append(tr);
+  }
+  table.append(thead, tbody);
+  return table;
+}
+async function loadSecretHistory(seq, name) {
+  const body = $("src-secret-history-body");
+  if (!body) return;
+  try {
+    const doc = await nsAudit("secrets", name, 50);
+    if (seq !== SECRET_HISTORY.seq) return;
+    const rows = itemsOf(doc);
+    body.replaceChildren();
+    if (!rows.length) {
+      body.append(txt("p", "field-hint", t("source_detail.secret_history_empty", "这份凭据还没有历史记录。")));
+      return;
+    }
+    body.append(secretHistoryTable(rows));
+  } catch (err) {
+    if (seq !== SECRET_HISTORY.seq) return;
+    body.replaceChildren(txt("p", "field-hint", t("source_detail.secret_history_error", "凭据历史加载失败")));
+    const line = statusLine(err);
+    if (line) body.append(preBlock(line));
+    const retry = el("button", { type: "button", class: "btn btn-ghost btn-sm", text: t("common.retry", "重试") });
+    retry.addEventListener("click", () => {
+      body.replaceChildren(txt("p", "field-hint", t("source_detail.secret_history_loading", "正在读取凭据历史…")));
+      void loadSecretHistory(++SECRET_HISTORY.seq, name);
+    });
+    body.append(retry);
+  }
+}
+function openSecretHistory(name) {
+  const dlg = $("src-secret-history");
+  if (!dlg) return;
+  const seq = ++SECRET_HISTORY.seq;
+  const title = $("src-secret-history-name");
+  if (title) title.replaceChildren(rawText(name));
+  const body = $("src-secret-history-body");
+  if (body) body.replaceChildren(txt("p", "field-hint", t("source_detail.secret_history_loading", "正在读取凭据历史…")));
+  A.openModal(dlg);
+  void loadSecretHistory(seq, name);
 }
 function pollSection(m, secretName) { // 拉取区块：只对 kind: poll 出现（其它 kind 没有这些事实，摆一排空行只会教人误读）
   const cfg = m.config || {};
@@ -433,6 +542,87 @@ function pollNowRow(m) {
     }
   });
   return box;
+}
+function auditActionLabel(action) {
+  if (action === "source.polled_manually") return t("source_detail.audit_action_source_polled_manually", "手动拉取");
+  return action == null ? "—" : String(action);
+}
+function auditSection(name) {
+  const sec = section(t("source_detail.audit_title", "最近操作"), "audit");
+  const heading = sec.querySelector(".sd-sec-title");
+  if (heading) heading.remove();
+  const fold = el("details", { class: "sd-audit" });
+  fold.setAttribute("id", "src-detail-audit");
+  const sum = el("summary");
+  sum.append(txt("span", "sd-sec-title", t("source_detail.audit_title", "最近操作")));
+  const host = el("div", { class: "sd-audit-body" });
+  fold.append(sum, host);
+  const paint = () => {
+    host.replaceChildren();
+    if (AUDIT.status === "error") {
+      host.append(txt("p", "field-hint", t("source_detail.audit_error", "最近操作加载失败")));
+      const detail = statusLine(AUDIT.err);
+      if (detail) host.append(preBlock(detail));
+      const retry = el("button", { type: "button", class: "btn btn-ghost btn-sm", text: t("common.retry", "重试") });
+      retry.addEventListener("click", () => void fetchAudit());
+      const acts = el("div", { class: "sd-audit-acts" });
+      acts.append(retry);
+      host.append(acts);
+      return;
+    }
+    if (AUDIT.status === "loading") {
+      host.append(txt("p", "field-hint", t("source_detail.audit_loading", "正在读取最近操作…")));
+      return;
+    }
+    if (AUDIT.status !== "ok") return;
+    if (!AUDIT.items.length) {
+      host.append(txt("p", "field-hint", t("source_detail.audit_empty", "还没有审计记录：手动拉取会记在这里。")));
+      return;
+    }
+    for (const item of AUDIT.items) {
+      const it = isObj(item) ? item : {};
+      const row = el("div", { class: "sd-audit-row" });
+      row.setAttribute("data-audit-action", it.action == null ? "" : String(it.action));
+      const actor = el("span", it.actor ? { class: "sd-audit-actor" } : null);
+      if (it.actor) actor.append(rawText(String(it.actor)));
+      else actor.append(txt("span", null, t("source_detail.audit_actor_none", "非会话主体")));
+      row.append(
+        txt("span", "badge badge-neutral", auditActionLabel(it.action)),
+        txt("span", "sd-audit-sep", "·"),
+        txt("span", "mono", fmtTime(it.at)),
+        txt("span", "sd-audit-sep", "·"),
+        actor,
+      );
+      host.append(row);
+    }
+  };
+  async function fetchAudit() {
+    if (AUDIT.status === "loading") return;
+    const seq = ++AUDIT_SEQ;
+    AUDIT.status = "loading";
+    AUDIT.err = null;
+    paint();
+    try {
+      const doc = await nsAudit("sources", name, 20);
+      if (seq !== AUDIT_SEQ) return;
+      AUDIT.items = itemsOf(doc);
+      AUDIT.status = "ok";
+    } catch (err) {
+      if (seq !== AUDIT_SEQ) return;
+      AUDIT.err = err;
+      AUDIT.status = "error";
+    }
+    paint();
+  }
+  fold.addEventListener("toggle", () => {
+    AUDIT.open = fold.open === true;
+    if (AUDIT.open && AUDIT.status === "idle") void fetchAudit();
+  });
+  paint();
+  if (AUDIT.open) fold.open = true;
+  if (AUDIT.open && AUDIT.status === "idle") void fetchAudit();
+  sec.append(fold);
+  return sec;
 }
 /* 载荷契约（payloadSchema）→ 字段表：名字 / 类型 / 必填 / 说明。
    没有 properties 时不编一张空表，只说「没有声明字段」。 */
@@ -653,7 +843,15 @@ function render(res) {
   if (cfg.payloadSchema) cfgSec.append(schemaTable(cfg.payloadSchema));
   body.append(cfgSec);
 
-  if (m.kind === "poll") body.append(pollSection(m, secretRefName(res)));
+  if (m.kind === "poll") {
+    body.append(pollSection(m, secretRefName(res)));
+    AUDIT.status = "idle";
+    AUDIT.open = false;
+    AUDIT.items = [];
+    AUDIT.err = null;
+    AUDIT_SEQ += 1;
+    body.append(auditSection(m.name));
+  }
 
   /* ---------- 目标能力：targets[] 的 capability 与 params ---------- */
   const tSec = section(t("sources.v4.targets", "目标能力"), "targets");
@@ -751,6 +949,10 @@ async function load() {
 /* ============================ 事件绑定 ============================ */
 $("src-detail-edit").addEventListener("click", () => openEditor());
 $("src-detail-refresh").addEventListener("click", () => load());
+$("src-secret-history-close").addEventListener("click", () => A.closeModal($("src-secret-history")));
+$("src-secret-history").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) A.closeModal($("src-secret-history"));
+});
 document.addEventListener("DOMContentLoaded", () => {
   void load();
 });
