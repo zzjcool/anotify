@@ -1063,22 +1063,47 @@ paths:
       summary: "导出一个实例装出的对象（多文档 YAML）"
       description: |
         响应体**是 YAML 正文本身，不是 JSON**（`Content-Type: application/yaml; charset=utf-8`）：
-        三行头注释（包@版本 / release / valuesDigest，安装 id / 时间 / 对象数，
-        以及「以下对象为当前生效版本，不是安装时快照」的说明）之后，是一串 `---` 分隔的文档。
+        头注释之后，是一串 `---` 分隔的文档。头注释的行数由 `as` 决定（见下）。
+
+        `as` 选视图（#551）：
+
+        - **省略 / `as=current`**（缺省）：按名字取**当前生效版本**；头注释 3 行
+          （包@版本 / release / valuesDigest，安装 id / 时间 / 对象数，以及
+          「以下对象为当前生效版本，不是安装时快照」的说明）。**不带 `as` 与 `as=current` 逐字节相同**，
+          这个视图与 #551 之前的行为完全一致（含已卸载 → `404` `release_not_found`）。
+        - `as=installed`：按安装回执的 **`created.pinned`（安装时快照）** 渲染——能力给
+          **安装那一刻记下的那一版**正文（即使之后已升级），源按回执记的名字取**当前**正文
+          （源没有版本概念）。头注释固定 4 行（第 3 行说「以下对象为安装时快照」、第 4 行说明源无版本），
+          安装时记下的对象已不存在时多一行「快照缺失: N 个对象」并**跳过它**（不编造、不回退成最新版）。
+          **已卸载的实例仍 `200`**：卸载只软删能力行（正文还在）、物理删源行（源计入缺失）。
+          选中的回执都没有 pinned（安装发生在记录快照之前）→ `409` `no_snapshot`，
+          `details.causes[0].field = "release"`。
+        - 其它值 → `400` `value_invalid`。
 
         对象集合**只由安装回执的 `created` 决定**（能力 `name@version` 按名字去重、源按名字），
         **不做名字前缀匹配**，也不从 `installedFrom` 反查 —— 否则会把别人的对象算进「这个实例装出了什么」。
+        `as=installed` 进一步按回执 pinned 的 `(kind,name)` 合并：同一对象在后续安装里被重新钉过就以新的为准。
+        输出顺序两种视图一致：能力按名字升序在前，源按名字升序在后。
 
         每个文档与对应单对象端点（`GET …/capabilities/{name}/yaml`、`GET …/sources/{name}/yaml`）
-        的输出逐字节相同（同一份读投影与脱敏），顺序固定：能力按名字升序，再源按名字升序。
-        回执记过、但对象已被删除的引用不会出现在导出里（导出给的是当前生效版本）。
+        的输出逐字节相同（同一份读投影与脱敏）。
+        `as=current` 里回执记过、但对象已被删除的引用不会出现在导出里（导出给的是当前生效版本）；
+        `as=installed` 里取不到的快照版本同样不出现，但会计入头注释的「快照缺失」。
 
         `valuesDigest` 可选：把导出钉在某个参数组上（同一 release 用两套 values 装过时，
-        不带筛选的导出是两组的并集；按组导出只给这一组装出的对象）。该组不存在 → `404` `release_not_found`。
+        不带筛选的导出是两组的并集；按组导出只给这一组装出的对象）。两种 `as` 都先生效
+        （先按参数组选回执，再取快照 / 当前）。该组不存在 → `404` `release_not_found`。
 
-        release 从未存在、或该 release 已卸载（对象已删）→ `404` `release_not_found`；
+        release 从未存在 → `404` `release_not_found`（`as=current` 下已卸载也是 404，与卸载同一口径）；
         已存在但 `created` 为空 → `200` 且 `objects: 0`（只有头注释）。只读：不写库、不产生回执。
       parameters:
+        - name: as
+          in: query
+          required: false
+          description: |
+            视图：`current`（缺省 = 当前生效版本；省略与它逐字节相同）/ `installed`
+            （安装时快照，#551）/ 其它值 → `400` `value_invalid`
+          schema: {type: string}
         - name: valuesDigest
           in: query
           required: false
@@ -1093,6 +1118,7 @@ paths:
         '400': {$ref: '#/components/responses/Status400'}
         '401': {$ref: '#/components/responses/AuthError401'}
         '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
         '500': {$ref: '#/components/responses/Status500'}
 
   # ----------------------------------------------------------------- namespaces
@@ -3339,6 +3365,36 @@ components:
         sources:
           type: array
           items: {type: string}
+        pinned:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookPinnedRef'}
+          description: |
+            安装时快照（#551）：能力 `{kind,name,version,digest}`，源 `{kind,name,kindOf}`
+            （**源没有 `version`**：源无版本概念）。
+            **不在 `required` 里**：这个键是 #551 才加的，更早的回执读出来是 `[]` ——
+            客户端按「缺省 = 空数组」处理（这种老回执导出 `as=installed` 会给 `409` `no_snapshot`）。
+            `skipped.pinned` 恒为 `[]`。
+    PlaybookPinnedRef:
+      type: object
+      description: |
+        安装时快照的一条（`playbook.PinnedRef`，#551）：安装那一刻钉住的一个对象。
+        能力记 `{kind,name,version,digest}`，用于导出 `as=installed` 时取**那一版**正文；
+        源记 `{kind,name,kindOf}`，导出时按名字取当前正文。
+      required: [kind, name]
+      properties:
+        kind:
+          type: string
+          description: "对象种类：`capability`（能力）/ `source`（源）"
+        name: {type: string}
+        kindOf:
+          type: string
+          description: "仅源：源的 kind（`webhook` / `cron` / `poll` / `manual`）"
+        version:
+          type: integer
+          description: "仅能力：安装时钉住的版本号"
+        digest:
+          type: string
+          description: "仅能力：该版本行的内容摘要（`sha256:…`，与版本行同源，不重算）"
     PlaybookUpgradedEntry:
       type: object
       description: "「已存在且被本次安装升级」的一条"
@@ -4259,7 +4315,9 @@ components:
         冲突：`resource_version_conflict`（带 `details.current.resourceVersion`）、
         `AlreadyExists`、`Conflict`、`slug_taken`、`source_name_used`、`node_offline`、
         `dependency_missing`（`spec.requires` 的能力没有可见版本 / 版本不够）、
-        `dependency_locked`（能力被已生效的安装依赖着）等
+        `dependency_locked`（能力被已生效的安装依赖着）、
+        `no_snapshot`（该实例安装于未记录快照的版本：导出 `as=installed` 没有安装时快照可给，
+        `details.causes[0].field = "release"`，可改用 `as=current`）等
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Status'}

@@ -120,7 +120,7 @@ const maxRefDepth = 8
 // 删一个 schema，都必须同时改这里的数字，并在 PR 里写清为什么。
 const (
 	// parityPairsFloor 是 parityPairs() 的对数（历史区间见 git log）。
-	parityPairsFloor = 216
+	parityPairsFloor = 217
 	// bareMountFloor 是 bareMountSpec() 的条目数。
 	bareMountFloor = 27
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底），历史见提交信息。
@@ -128,7 +128,7 @@ const (
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 39
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数（历史区间见 git log）。
-	specSchemaFloor = 256
+	specSchemaFloor = 257
 )
 
 // ---------- 测试入口 ----------
@@ -328,10 +328,8 @@ func TestOpenAPIParityDTOFields(t *testing.T) {
 	}
 }
 
-// TestOpenAPIParityMutations 是负向自测：每条门禁都要能被一个具体的错误**打红**。
-//
-// 变异全部在内存里做（重新 Unmarshal 一份），绝不写盘；每条变异的断言消息里都带
-// 变异名，失败时能直接看出“哪条变异没被抓到”。
+// TestOpenAPIParityMutations 是负向自测：每条门禁都要能被一个具体的错误**打红**（变异全在内存里做，
+// 绝不写盘；断言消息带变异名，失败时能直接看出“哪条变异没被抓到”）。
 func TestOpenAPIParityMutations(t *testing.T) {
 	patterns, problems := collectMuxPatterns(serverPkgDir)
 	fatalIfProblems(t, "静态收集 mux pattern", problems)
@@ -1330,12 +1328,8 @@ func securitySchemeNames(v any) ([]string, error) {
 	return out, nil
 }
 
-// specIntegrityProblems 守 operation 的身份：同一 (method, canonical path) 不得重复，
-// operationId 跨五文件全局唯一（归属键 = method + canonical path）。
-//
-// 判重**必须用 canonical path**：`{ns}` 与 `{namespace}` 是两个不同的原始 path，却是同一个
-// 归属（`internal/server` 里只有一份路由）。按原始 path 判重会漏掉
-// 「同一端点两种占位符写法」这种重复——spec 里两条 operation、mux 上一条路由。
+// specIntegrityProblems 守 operation 的身份：同一 (method, canonical path) 不得重复，operationId 全局唯一。
+// 判重**必须用 canonical path**：`{ns}` 与 `{namespace}` 是同一个归属，按原始 path 判重会漏掉重复。
 func specIntegrityProblems(ops []specOp) []string {
 	var problems []string
 	byKey := map[string]specOp{}
@@ -1412,10 +1406,8 @@ type routePattern struct {
 // Canonical 是归一后的路径（`{ns}` → `{}`）。
 func (p routePattern) Canonical() string { return canonicalPath(p.Path) }
 
-// protocolPathConsts 是**唯一**允许出现在 pattern 表达式里的外部常量小表。
-//
-// 为什么只允许这张表：pattern 是「协议的一部分」，只能来自 protocol 包里那几个被节点共享
-// 的常量。放开任意 selector 等于让 pattern 变成运行期算出来的值，静态门禁就彻底失效。
+// protocolPathConsts 是**唯一**允许出现在 pattern 表达式里的外部常量小表：pattern 是协议的一部分，
+// 放开任意 selector 等于让它是运行期算出来的值，静态门禁就失效了。
 var protocolPathConsts = map[string]string{
 	"NodeTaskArtifactsPathPrefix": protocol.NodeTaskArtifactsPathPrefix,
 	"NodeTaskArtifactsPathInfix":  protocol.NodeTaskArtifactsPathInfix,
@@ -1582,16 +1574,7 @@ func takesServeMux(ft *ast.FuncType) bool {
 	return false
 }
 
-// scanFunc 处理一个函数体里的全部路由注册形态：
-//
-//	① 直写：            mux.Handle("GET " + base, h)
-//	② 包装闭包：        route := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, …) }
-//	                    route("GET "+nodesPath, a.list)
-//	③ 表驱动 + range：  routes := []struct{pattern string; h http.HandlerFunc}{…}
-//	                    for _, rt := range routes { mux.Handle(rt.pattern, …) }
-//
-// ② ③ 是真实代码的写法（resource_node/resource_task/retained_reads/capability/playbook）；
-// 不展开它们就等于漏掉那五个资源域的全部路由 —— 所以这里必须理解它们，而不是“跳过”。
+// scanFunc 处理一个函数体里的全部路由注册形态（三种形态见 scanBody）。
 func (c *patternCollector) scanFunc(fd *ast.FuncDecl) {
 	if fd.Body == nil {
 		return
@@ -3073,6 +3056,7 @@ func parityPairs() []parityPair {
 		{GoLabel: "playbookSourceStatus", File: "resource.yaml", Schema: "PlaybookSourceStatus", Sample: playbookSourceStatus{}},
 		{GoLabel: "playbook.UnappliedEntry", File: "resource.yaml", Schema: "PlaybookUnappliedEntry", Sample: playbook.UnappliedEntry{}},
 		{GoLabel: "playbook.Receipt", File: "resource.yaml", Schema: "PlaybookReceipt", Sample: playbook.Receipt{}},
+		{GoLabel: "playbook.PinnedRef", File: "resource.yaml", Schema: "PlaybookPinnedRef", Sample: playbook.PinnedRef{}},
 		{GoLabel: "playbook.RenderResult", File: "resource.yaml", Schema: "PlaybookRenderResult", Sample: playbook.RenderResult{}},
 		{GoLabel: "playbook.Requirement", File: "resource.yaml", Schema: "PlaybookRequirement", Sample: playbook.Requirement{}},
 		{GoLabel: "playbook.Dependency", File: "resource.yaml", Schema: "PlaybookDependency", Sample: playbook.Dependency{}},
