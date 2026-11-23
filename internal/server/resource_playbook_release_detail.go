@@ -1,14 +1,15 @@
 package server
 
-// release 详情读面（#548）：一份实例装出了什么，一次拿全。归属规则只有一条 ——
-// **对象集合由这个 release 的回执 created 决定**，不按名字前缀、不查全命名空间；
-// 语义与字段说明的真源在 api/resource.yaml 的该 operation 上。
+// release 详情读面（#548）：**对象集合由这个 release 的回执 created 决定**，不按名字前缀、
+// 不查全命名空间；语义与字段说明的真源在 api/resource.yaml 的该 operation 上。
 
 import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/zzjcool/anotify/internal/playbook"
 	"github.com/zzjcool/anotify/internal/store"
@@ -31,7 +32,13 @@ func (a *playbookAPI) getRelease(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, err)
 		return
 	}
-	if groups.Uninstalled {
+	// include=uninstalled 让已卸载的实例可读（#553）：缺省仍 404（与导出 / 卸载同一口径）。
+	withGone, err := includeUninstalledQuery(r)
+	if err != nil {
+		writePlaybookAPIError(w, err)
+		return
+	}
+	if groups.Uninstalled && !withGone {
 		writePlaybookAPIError(w, fmt.Errorf("%w: release %q", store.ErrPlaybookReleaseNotFound, groups.Release))
 		return
 	}
@@ -44,6 +51,7 @@ func (a *playbookAPI) getRelease(w http.ResponseWriter, r *http.Request) {
 }
 
 // releaseDetail 把回执折叠组投影成详情文档（对象取当前生效版本，与按 release 导出 YAML 同口径）。
+// 已卸载的实例（#553）：对象已删 → objects 如实为空 + objectsGone，另给卸载时刻与安装时快照。
 func (a *playbookAPI) releaseDetail(ctx context.Context, ns string, groups *store.PlaybookReleaseGroups) (playbookReleaseDetail, error) {
 	doc := playbookReleaseDetail{
 		Playbook:     playbookReleaseRef{Name: groups.PlaybookName, Version: groups.PlaybookVersion},
@@ -52,21 +60,33 @@ func (a *playbookAPI) releaseDetail(ctx context.Context, ns string, groups *stor
 		Dependencies: []playbook.Dependency{},
 		Objects:      playbookReleaseObjects{Capabilities: []playbookReleaseCapObject{}, Sources: []playbookReleaseSourceObject{}},
 	}
-	caps, err := a.d.DB.ListCapabilities(ctx, ns)
-	if err != nil {
-		return doc, err
-	}
-	liveCap := make(map[string]*store.CapabilityVersion, len(caps))
-	for _, row := range latestCapabilityVersions(caps) {
-		liveCap[row.Name] = row
-	}
-	srcs, err := a.d.DB.ListSources(ctx, ns)
-	if err != nil {
-		return doc, err
-	}
-	liveSrc := make(map[string]*store.Source, len(srcs))
-	for _, src := range srcs {
-		liveSrc[src.Name] = src
+	var liveCap map[string]*store.CapabilityVersion
+	var liveSrc map[string]*store.Source
+	if groups.Uninstalled {
+		doc.ObjectsGone = true
+		doc.UninstalledAt = time.Unix(groups.UninstalledAt, 0).UTC().Format(time.RFC3339)
+		pinned, err := a.releasePinnedRefs(ctx, ns, groups.Receipts)
+		if err != nil {
+			return doc, err
+		}
+		doc.Pinned = pinned
+	} else {
+		caps, err := a.d.DB.ListCapabilities(ctx, ns)
+		if err != nil {
+			return doc, err
+		}
+		liveCap = make(map[string]*store.CapabilityVersion, len(caps))
+		for _, row := range latestCapabilityVersions(caps) {
+			liveCap[row.Name] = row
+		}
+		srcs, err := a.d.DB.ListSources(ctx, ns)
+		if err != nil {
+			return doc, err
+		}
+		liveSrc = make(map[string]*store.Source, len(srcs))
+		for _, src := range srcs {
+			liveSrc[src.Name] = src
+		}
 	}
 	for i := range groups.Groups {
 		group := groups.Groups[i]
@@ -91,6 +111,49 @@ func (a *playbookAPI) releaseDetail(ctx context.Context, ns string, groups *stor
 	doc.Dependencies = primary.Dependencies
 	doc.Params = playbookReleaseParams{Digest: primary.ValuesDigest, Groups: len(doc.Groups)}
 	return doc, nil
+}
+
+// releasePinnedRefs 合并全部回执的安装时快照（与 `as=installed` 同口径，#551 D5：同一 (kind,name)
+// 后一条覆盖前一条；能力按 name 升序在前、源在后）。老回执 → 空切片：详情是只读视图，不 409。
+func (a *playbookAPI) releasePinnedRefs(ctx context.Context, ns string, receipts []playbook.Receipt) ([]playbook.PinnedRef, error) {
+	ids := make([]string, 0, len(receipts))
+	seen := make(map[string]bool, len(receipts))
+	for _, rcpt := range receipts {
+		id := strings.TrimSpace(rcpt.Install.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return []playbook.PinnedRef{}, nil
+	}
+	byInstall, err := a.d.DB.PlaybookInstallPinned(ctx, ns, ids)
+	if err != nil {
+		return nil, err
+	}
+	merged := make(map[string]playbook.PinnedRef, len(ids))
+	for _, id := range ids {
+		for _, pin := range byInstall[id] {
+			merged[pin.Kind+"\x00"+pin.Name] = pin
+		}
+	}
+	caps := make([]playbook.PinnedRef, 0, len(merged))
+	srcs := make([]playbook.PinnedRef, 0, len(merged))
+	for _, pin := range merged {
+		if pin.Kind == pinnedRefKindSource {
+			srcs = append(srcs, pin)
+			continue
+		}
+		caps = append(caps, pin)
+	}
+	byName := func(refs []playbook.PinnedRef) {
+		sort.Slice(refs, func(i, j int) bool { return refs[i].Name < refs[j].Name })
+	}
+	byName(caps)
+	byName(srcs)
+	return append(caps, srcs...), nil
 }
 
 func releaseObjectsOf(receipts []playbook.Receipt, caps map[string]*store.CapabilityVersion,
@@ -131,6 +194,10 @@ type playbookReleaseDetail struct {
 	Objects       playbookReleaseObjects      `json:"objects"`
 	Dependencies  []playbook.Dependency       `json:"dependencies"`
 	Groups        []playbookReleaseParamGroup `json:"groups"`
+	// 下面三个键只在已卸载视图（#553）出现：生效中实例的响应因此逐字节不变。
+	UninstalledAt string               `json:"uninstalledAt,omitempty"`
+	Pinned        []playbook.PinnedRef `json:"pinned,omitempty"`
+	ObjectsGone   bool                 `json:"objectsGone,omitempty"`
 }
 
 type playbookReleaseRef struct {

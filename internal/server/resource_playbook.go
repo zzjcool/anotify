@@ -124,6 +124,21 @@ func (a *playbookAPI) get(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusOK, env)
 }
 
+// includeParamUninstalled 是 `include` 的唯一合法值（#553）：其它值一律 400 value_invalid，
+// 与 `as` 同口径（不做大小写模糊匹配 —— 猜错参数名比报错更难查）。
+const includeParamUninstalled = "uninstalled"
+
+// includeUninstalledQuery 解析 `include=uninstalled`；缺省 → 只读生效中的。
+func includeUninstalledQuery(r *http.Request) (bool, error) {
+	switch strings.TrimSpace(r.URL.Query().Get("include")) {
+	case "":
+		return false, nil
+	case includeParamUninstalled:
+		return true, nil
+	}
+	return false, errStatus(http.StatusBadRequest, reasonValueInvalid, "include must be uninstalled")
+}
+
 // listInstalls 处理 GET …/playbooks/{slug}/installs：按 valuesDigest 折叠的实例清单（§4.10）。
 // 响应是读模型（total / installs），不是资源列表：一个折叠组不是可寻址对象。
 func (a *playbookAPI) listInstalls(w http.ResponseWriter, r *http.Request) {
@@ -137,7 +152,17 @@ func (a *playbookAPI) listInstalls(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, err)
 		return
 	}
-	list, err := a.d.DB.ListPlaybookInstalls(r.Context(), ns, row.ID)
+	// include=uninstalled 连带已卸载的实例（#553）；缺省只列生效中的（逐字节不变）。
+	withGone, err := includeUninstalledQuery(r)
+	if err != nil {
+		writePlaybookAPIError(w, err)
+		return
+	}
+	listFn := a.d.DB.ListPlaybookInstalls
+	if withGone {
+		listFn = a.d.DB.ListPlaybookInstallsWithUninstalled
+	}
+	list, err := listFn(r.Context(), ns, row.ID)
 	if err != nil {
 		writePlaybookAPIError(w, err)
 		return
