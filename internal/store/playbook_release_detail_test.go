@@ -1,9 +1,6 @@
 package store
 
 // 预案实例的分组读数（#548）与按组导出的读面。
-//
-// 这里只验两件事实：折叠键 `(release, valuesDigest)` 划出的组边界，以及
-// 「全部卸载」与「从未存在」都能被调用方区分开（前者 404 走到另一条分支）。
 
 import (
 	"context"
@@ -54,7 +51,6 @@ func TestGetPlaybookReleaseGroupsFoldsByValues(t *testing.T) {
 		t.Fatalf("values 应原样带回（打码后的那份）: %+v", group.Values)
 	}
 
-	// 另一套 values = 另一组（折叠键含 valuesDigest）
 	if _, err := db.InstallPlaybook(ctx, nsID, "pr-detail", "blue", pbValues("other"), false); err != nil {
 		t.Fatalf("install other values: %v", err)
 	}
@@ -65,7 +61,6 @@ func TestGetPlaybookReleaseGroupsFoldsByValues(t *testing.T) {
 	if len(groups.Groups) != 2 {
 		t.Fatalf("两套 values 应是 2 组, got %d", len(groups.Groups))
 	}
-	// 按最近安装降序：刚装的 other 在前。
 	if groups.Groups[0].Values["project"] != "other" {
 		t.Fatalf("第一组应是最近装的 other, got %+v", groups.Groups[0].Values)
 	}
@@ -149,7 +144,6 @@ func TestGetPlaybookReleaseExportGroupFiltersByDigest(t *testing.T) {
 		t.Fatalf("这一组装出的能力应是 demo-review@1, got %+v", only.Receipts[0].Created.Capabilities)
 	}
 
-	// 不存在的摘要 → 与「没有这个 release」同一个 404 语义（不静默退回全量）。
 	if _, err := db.GetPlaybookReleaseExportGroup(ctx, nsID, "pr-export", "blue", "sha256:nope"); !errors.Is(err, ErrPlaybookReleaseNotFound) {
 		t.Fatalf("未知摘要应 ErrPlaybookReleaseNotFound, got %v", err)
 	}

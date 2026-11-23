@@ -1,8 +1,6 @@
 package store
 
-// 预案实例的导出事实（#536）：按 release 取「它装出了什么」的回执读数。
-// 集合只由回执决定（不按前缀匹配、不从 installedFrom 反查）；与卸载同一判据：
-// 没有回执 → ErrPlaybookReleaseNotFound；回执全部已标记卸载 → Uninstalled。
+// 预案实例的导出事实（#536）：按 release 取「它装出了什么」的回执读数；与卸载同一判据。
 
 import (
 	"context"
@@ -27,14 +25,11 @@ func (d *DB) GetPlaybookReleaseExport(ctx context.Context, namespaceID, slug, re
 	return d.playbookReleaseExport(ctx, namespaceID, slug, release, "")
 }
 
-// GetPlaybookReleaseExportGroup 只取一个参数组（valuesDigest）的回执。
-//
-// 同一 release 装过两套 values 时是**两份实例**（对象名字可能不同）；不带摘要的导出是两者的
-// 并集，按组导出则只给这一组装出的对象 —— 页面按分组展示时，YAML 必须与所看的那组同一份。
+// GetPlaybookReleaseExportGroup 只取一个参数组（valuesDigest）的回执：页面按分组展示时，
+// 导出的 YAML 必须与所看的那一组同一份（不带摘要的导出是各组回执的并集）。
 func (d *DB) GetPlaybookReleaseExportGroup(ctx context.Context, namespaceID, slug, release, valuesDigest string) (*PlaybookReleaseExport, error) {
 	digest := strings.TrimSpace(valuesDigest)
 	if digest == "" {
-		// 空摘要 = 没指定分组，不是「摘要为空的那一组」：回落到全量导出（不带筛选时行为不变）。
 		return d.playbookReleaseExport(ctx, namespaceID, slug, release, "")
 	}
 	return d.playbookReleaseExport(ctx, namespaceID, slug, release, digest)

@@ -119,23 +119,16 @@ const maxRefDepth = 8
 // 仍然绿（F10）。所以它们是 ratchet：删一条 pair / 删一条裸挂载 / 删一条真实路由 /
 // 删一个 schema，都必须同时改这里的数字，并在 PR 里写清为什么。
 const (
-	// parityPairsFloor 是 parityPairs() 的对数（含 auth/ingress/agent 的全部 DTO 与协议帧）。
-	// 逐次只增：observed 四个子 schema、启停/试跑六对、#510 卸载两对、#511 版本历史两对、
-	// #522 router 结局三对（历史区间见 git log）。
-	parityPairsFloor = 215
+	// parityPairsFloor 是 parityPairs() 的对数（历史区间见 git log）。
+	parityPairsFloor = 216
 	// bareMountFloor 是 bareMountSpec() 的条目数。
 	bareMountFloor = 27
-	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底）。
-	//
-	// 历史只在提交信息里追溯：YAML 读写面（#463/#476）、#510 实例卸载、#511 版本历史、
-	// #522 决策端点都各 +1；本轮 #536 再 +1（`GET …/releases/{release}/yaml`）。
+	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底），历史见提交信息。
 	muxPatternCount = 132
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 39
-	// specSchemaFloor 是五份 spec 的 components.schemas 总数。
-	// 逐次只增：observed 四子 schema、启停/试跑六个、#510 两对、#513 SourceMatch、#511 两对、
-	// #519 叶子行、#522 三件（历史区间见 git log）。
-	specSchemaFloor = 255
+	// specSchemaFloor 是五份 spec 的 components.schemas 总数（历史区间见 git log）。
+	specSchemaFloor = 256
 )
 
 // ---------- 测试入口 ----------
@@ -167,10 +160,7 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 	fatalIfProblems(t, "解析 $ref（含跨文件）", refIntegrityProblems(docs))
 
 	ops, _ := collectSpecOps(docs)
-	// 快照逐次只增：#333 的 SAFE_BLOCKED 通道、两条 /yaml 只读、两条从 YAML 创建、能力的
-	// 启停/试跑/审计、Node/Namespace 的 YAML 面、#510 实例卸载、#511 版本历史、#522 决策端点；
-	// 本轮 #536 再 +1（`GET …/playbooks/{slug}/releases/{release}/yaml`），#548 再 +1
-	// （`GET …/playbooks/{slug}/releases/{release}` 的实例详情）。
+	// 快照逐次只增（历次增量见 git log）：#548 的实例详情是最近一条。
 	if len(ops) != 143 {
 		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 143（142 + #548 的实例详情）", len(ops))
 	}
@@ -3090,6 +3080,7 @@ func parityPairs() []parityPair {
 		{GoLabel: "store.PlaybookVersionList", File: "resource.yaml", Schema: "PlaybookVersionList", Sample: store.PlaybookVersionList{}},
 		{GoLabel: "store.PlaybookVersionEntry", File: "resource.yaml", Schema: "PlaybookVersionEntry", Sample: store.PlaybookVersionEntry{}},
 		{GoLabel: "store.PlaybookInstallGroup", File: "resource.yaml", Schema: "PlaybookInstallGroup", Sample: store.PlaybookInstallGroup{}},
+		{GoLabel: "playbookReleaseRef", File: "resource.yaml", Schema: "PlaybookReleaseRef", Sample: playbookReleaseRef{}},
 		{GoLabel: "playbookReleaseDetail", File: "resource.yaml", Schema: "PlaybookReleaseDetail", Sample: playbookReleaseDetail{}},
 		{GoLabel: "playbookReleaseParams", File: "resource.yaml", Schema: "PlaybookReleaseParams", Sample: playbookReleaseParams{}},
 		{GoLabel: "playbookReleaseObjects", File: "resource.yaml", Schema: "PlaybookReleaseObjects", Sample: playbookReleaseObjects{}},

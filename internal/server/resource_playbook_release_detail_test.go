@@ -1,9 +1,6 @@
 package server
 
 // #548：release 详情端点的传输面验收。
-//
-// 只断言 HTTP 形状与「对象不串」这条归属判据；折叠与排序语义由 internal/store 的
-// playbook_release_detail_test.go 覆盖。变异自证见 docs/reports/release-detail-page.md。
 
 import (
 	"encoding/json"
@@ -71,7 +68,6 @@ func (e *playbookTestEnv) releaseDetail(t *testing.T, slug, release string) pbTe
 	return doc
 }
 
-// pbTestReleaseDetailCaps 取对象里的能力名（顺序即接口返回顺序）。
 func pbTestReleaseDetailCaps(doc pbTestReleaseDetail) []string {
 	out := make([]string, 0, len(doc.Objects.Capabilities))
 	for _, cap := range doc.Objects.Capabilities {
@@ -80,10 +76,7 @@ func pbTestReleaseDetailCaps(doc pbTestReleaseDetail) []string {
 	return out
 }
 
-// TestPlaybookReleaseDetailObjectsStayPerRelease 两份 release 并存：各自详情只给自己的对象。
-//
-// 这是「详情页按 release 取对象」的判据本身：把归属换成「按 slug 查全部对象」时，
-// blue 的详情里会多出 green 的能力，这个用例直接红。
+// TestPlaybookReleaseDetailObjectsStayPerRelease：归属换成「按 slug 查全部对象」时本用例直接红。
 func TestPlaybookReleaseDetailObjectsStayPerRelease(t *testing.T) {
 	env := newPlaybookTestEnv(t)
 	env.pbTestExportMux(t)
@@ -128,7 +121,7 @@ func TestPlaybookReleaseDetailObjectsStayPerRelease(t *testing.T) {
 	}
 }
 
-// TestPlaybookReleaseDetailObjectsMatchSingleObjectEndpoints 对象的名字 + 版本 / kind 与单对象端点同源。
+// TestPlaybookReleaseDetailObjectsMatchSingleObjectEndpoints 名字 + 版本 / kind 与单对象端点同源。
 func TestPlaybookReleaseDetailObjectsMatchSingleObjectEndpoints(t *testing.T) {
 	env := newPlaybookTestEnv(t)
 	env.pbTestExportMux(t)
@@ -174,7 +167,7 @@ func TestPlaybookReleaseDetailObjectsMatchSingleObjectEndpoints(t *testing.T) {
 	}
 }
 
-// TestPlaybookReleaseDetailTwoValueGroups 同一 release 两套 values：参数 2 组，各组只列自己的对象。
+// TestPlaybookReleaseDetailTwoValueGroups 同一 release 两套 values：2 组，各组只列自己的对象。
 func TestPlaybookReleaseDetailTwoValueGroups(t *testing.T) {
 	env := newPlaybookTestEnv(t)
 	env.pbTestExportMux(t)
@@ -203,7 +196,6 @@ func TestPlaybookReleaseDetailTwoValueGroups(t *testing.T) {
 		if project == "" {
 			t.Fatalf("组里应带回打码后的 values: %+v", group.Values)
 		}
-		// 每组两个能力 + 一个源，且名字里带的是**这一组**的 project。
 		if len(group.Objects.Capabilities) != 2 || len(group.Objects.Sources) != 1 {
 			t.Fatalf("%s 组对象数不对: %+v", project, group.Objects)
 		}
@@ -213,7 +205,6 @@ func TestPlaybookReleaseDetailTwoValueGroups(t *testing.T) {
 			}
 		}
 	}
-	// 顶层 = 最近装的 group（two）。
 	if doc.ValuesDigest != doc.Groups[0].ValuesDigest {
 		t.Fatalf("顶层应是第一组（最近安装）的摘要")
 	}

@@ -1688,8 +1688,8 @@ nodes:
     name: '节点名'
     name_ph: '例如 my-mbp'
     name_hint: '小写字母、数字、点（.）、下划线（_）、短横线（-），1–63 个字符，且以字母或数字开头'
-    instances: '实例数（可选）'
-    instances_hint: '这个节点上并行跑几个实例（建议值，中枢会夹到 20）。真正的槽位数由 agent 上线握手时申报。'
+    instances: "实例（release）"
+    instances_hint: "一个实例一份：列表按 release 聚合（同一 release 用多套参数装过会显示「N 组」），点进去看对象、回执、YAML 与卸载。"
     submit: '注册'
     cancel: '取消'
     submitting: '注册中…'
@@ -2374,8 +2374,8 @@ pb:
     status_version: "版本 v{n}"
     status_instances: "{n} 个实例"
     versions_brief: "{n} 个版本"
-    instances: "按实例与安装参数折叠的安装记录"
-    instances_hint: "只读派生视图：同一个实例名 + 同一套安装参数算一组，attempts 是这组装了几次；来源只记录最初创建的回执，不是所有权。"
+    instances: "实例（release）"
+    instances_hint: "一个实例一份：列表按 release 聚合（同一 release 用多套参数装过会显示「N 组」），点进去看对象、回执、YAML 与卸载。"
     attempts_n: "尝试 {n} 次"
     template: "编辑 / 导出原始整包"
     file_path: "包内相对路径"
@@ -2419,8 +2419,11 @@ pb:
     group_count: "{n} 组安装参数"
     release_group: "{release} · {n} 组"
     single_receipt: "读取完整单次回执"
-    no_installs: "没有普通安装记录（试装不计入）。"
+    no_installs: "还没有实例。装一次会产生第一份。"
     view_yaml: "查看 YAML"
+    release_active: "生效中"
+    release_objects: "{c} 能力 / {s} 源"
+    release_last_install: "最近安装 {at}"
     yaml_title: "实例 YAML"
     yaml_empty: "该实例没有可展示的对象"
     yaml_load_failed: "YAML 载入失败"
@@ -2745,3 +2748,35 @@ namespace:
     no_nodes: "还没有节点。"
     no_param: "缺少 name 参数：从命名空间列表进入。"
     not_found: "命名空间不存在（或已被删除）。"
+release:
+  title: 实例详情
+  subtitle: '一份实例：它装出了什么，以及最近一次安装的回执与依赖'
+  back: 返回预案详情
+  loading: 正在读取…
+  release_word: 实例
+  params_full: 参数摘要
+  copy_digest: 复制完整摘要
+  installed_at: 最近安装
+  objects: 装出的对象
+  objects_hint: '名字与版本取自当前生效的对象；这里只列这一份实例自己装出来的。'
+  capabilities: 能力
+  sources: 源
+  no_objects: 这一份实例还没有装出任何对象。
+  receipt: 最近一次安装的回执
+  receipt_hint: '只读：新建、复用、内容升级与依赖，都来自这一次安装。'
+  no_receipt: 没有可读的安装回执。
+  dependencies: 外部依赖
+  no_dependencies: 没有外部依赖。
+  group_current: '第 {n} 组参数'
+  attempts: '装了 {n} 次'
+  yaml_title: 实例 YAML
+  yaml_empty: 这一份实例没有对象可导出。
+  yaml_failed: 导出失败
+  uninstall: 卸载这个实例
+  uninstall_confirm: '卸载实例「{release}」：删掉它装出的能力与源，回执保留。'
+  uninstalled: 已卸载
+  gone_title: 这份实例已卸载或不存在
+  gone_hint: '它装出的对象已经删除；回到预案详情可以看到现在在跑的实例。'
+  gone_back: 返回预案详情
+  missing_target: 链接里缺少包名或实例名。
+  invalid_detail: 服务端没有返回有效的实例详情。

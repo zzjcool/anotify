@@ -3456,12 +3456,13 @@ components:
           items: {$ref: '#/components/schemas/PlaybookInstallGroup'}
     PlaybookReleaseDetail:
       type: object
-      required: [release, valuesDigest, installedAt, lastInstallId, params, objects, dependencies, groups]
+      required: [playbook, release, valuesDigest, installedAt, lastInstallId, params, objects, dependencies, groups]
       description: |
         一个实例（release）的详情读模型。顶层字段描述「现在在跑的那一组」（最近安装的那组），
         `groups` 是全部参数组的明细 —— 单组 release 时两者逐字段一致。
         `objects` 只由这个 release 的回执 `created` 决定，不掺其它 release 或手建的行。
       properties:
+        playbook: {$ref: '#/components/schemas/PlaybookReleaseRef'}
         release: {type: string}
         valuesDigest: {type: string}
         installedAt: {type: string, format: date-time}
@@ -3475,6 +3476,13 @@ components:
           type: array
           description: "参数组明细（按最近安装降序）"
           items: {$ref: '#/components/schemas/PlaybookReleaseParamGroup'}
+    PlaybookReleaseRef:
+      type: object
+      required: [name, version]
+      description: "实例所属的包（版本是**当前**版本；安装那一刻的版本在回执原文里）"
+      properties:
+        name: {type: string}
+        version: {type: integer}
     PlaybookReleaseParams:
       type: object
       required: [digest, groups]

@@ -1,0 +1,374 @@
+{{define "title"}}{{t "release.title"}}{{end}}
+
+{{define "style"}}
+<style>
+  .rd-wrap { min-width: 0; overflow-wrap: anywhere; }
+  .rd-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .rd-stack { display: grid; gap: 14px; }
+  .rd-section { margin-top: 16px; }
+  .rd-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px; min-height: 24px; margin-top: 14px; }
+  .rd-fact { font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+  .rd-fact + .rd-fact::before { content: "·"; margin-right: 10px; color: var(--faint); }
+  .rd-pick { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .rd-objects { display: grid; gap: 8px; margin-top: 12px; }
+  .rd-object { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .rd-check { border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px; }
+  .rd-code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 22rem;
+    overflow: auto;
+    font-size: 11.5px;
+    line-height: 1.6;
+  }
+  .rd-drawer { align-items: stretch; justify-content: flex-end; padding: 0; }
+  .rd-drawer-panel {
+    max-width: min(520px, 100%);
+    height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
+    border-block: 0;
+    border-right: 0;
+    overflow-wrap: anywhere;
+  }
+  [hidden] { display: none !important; }
+</style>
+{{end}}
+
+{{define "content"}}
+{{/* #548：一份实例的详情页。层级判据 —— 实例级事实（这份 release 装出了什么、参数摘要、
+     回执、依赖、卸载）在这里；包级事实（有几份实例、版本历史、体检）留在包页。
+     对象区只列**这个 release**（以及所选参数组）装出来的对象：空态是一句话，不是一张空表
+     （0 对象的实例也是合法实例）。回执与 GET …/installs/{id} 逐字同源（只读投影，不重算）。
+     已卸载 / 不存在 / 包已删除都给一个说清楚的落点，而不是白屏或 500。 */}}
+<div id="page-main">
+  <div class="page rd-wrap">
+    <div class="page-head">
+      <div class="min-w-0">
+        <div class="rd-row">
+          <h2 id="rd-name" class="page-title">{{t "release.title"}}</h2>
+          <span id="rd-badge" class="badge badge-neutral">{{t "release.loading"}}</span>
+        </div>
+        <p id="rd-identity" class="mono field-hint"></p>
+        <p class="page-sub">{{t "release.subtitle"}}</p>
+      </div>
+      <div class="page-actions">
+        <a id="rd-back" href="playbooks.html" class="btn btn-ghost">{{t "release.back"}}</a>
+        <button id="rd-yaml" type="button" class="btn btn-ghost">{{t "pb.v4.view_yaml"}}</button>
+        <button id="rd-uninstall" type="button" class="btn btn-danger">{{t "release.uninstall"}}</button>
+      </div>
+    </div>
+    <div id="rd-load-state" aria-live="polite"></div>
+    <section id="rd-summary" class="rd-facts" aria-busy="true"></section>
+    <div id="rd-gone" class="rd-section" aria-live="polite" hidden></div>
+    <div id="rd-content" hidden>
+      <section class="card card-pad">
+        <h3 class="card-title">{{t "release.objects"}}</h3>
+        <p class="card-sub">{{t "release.objects_hint"}}</p>
+        <div id="rd-groups" class="rd-pick" hidden></div>
+        <div id="rd-objects" class="rd-objects"></div>
+      </section>
+      <section class="card card-pad rd-section">
+        <h3 class="card-title">{{t "release.receipt"}}</h3>
+        <p class="card-sub">{{t "release.receipt_hint"}}</p>
+        <div id="rd-receipt-state" aria-live="polite"></div>
+        <div id="rd-receipt"></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+{{/* YAML 抽屉挂在 #page-main 之外：.reveal 的 transform 会给 position:fixed 造包含块（与
+     playbook.html 的同一条规则）。内容复用 #538 的导出端点，按所选参数组取。 */}}
+<div id="rd-yaml-drawer" class="modal-backdrop hidden rd-drawer" role="dialog" aria-modal="true" aria-labelledby="rd-yaml-title">
+  <div class="modal-panel rd-drawer-panel">
+    <div class="modal-head">
+      <h3 id="rd-yaml-title"></h3>
+      <button id="rd-yaml-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.close"}}">×</button>
+    </div>
+    <div id="rd-yaml-body" class="modal-body"></div>
+  </div>
+</div>
+{{end}}
+
+{{define "script"}}
+<script>
+  (() => {
+    const { api, ready, nsPath, readScope: getScope, el: dom, loadErrorNode, copyText,
+      confirmDanger, openModal, closeModal, loginHref } = Anotify;
+    const t = (key, vars = {}) => {
+      let value = window.AnotifyI18n[key] || key;
+      for (const [name, text] of Object.entries(vars)) value = value.replaceAll("{" + name + "}", text);
+      return value;
+    };
+    const $ = id => document.getElementById(id);
+    const el = (tag, cls, text) => dom(tag, { class: cls }, text);
+    const params = new URLSearchParams(location.search);
+    const name = params.get("id") || "";
+    const release = params.get("release") || "";
+    Anotify.mountLayout({ active: "playbooks", title: t("release.title"), subtitle: t("release.subtitle") });
+    let detail = null;
+    const path = suffix => nsPath("playbooks", name) + (suffix || "");
+    const scoped = (page, key, value) => page + ".html?namespace=" + encodeURIComponent(getScope().namespace) +
+      (key ? "&" + key + "=" + encodeURIComponent(value) : "");
+    function shortDigest(digest) {
+      const text = String(digest || "");
+      return (text.startsWith("sha256:") ? text.slice("sha256:".length) : text).slice(0, 12);
+    }
+    function fmtTime(iso) {
+      if (!iso) return "—";
+      const at = new Date(iso);
+      if (Number.isNaN(at.getTime())) return String(iso);
+      try { return at.toLocaleString(); } catch (e) { return String(iso); }
+    }
+    function facts(group) {
+      const host = $("rd-summary");
+      host.replaceChildren();
+      const add = (key, node) => {
+        const wrap = el("span", "rd-fact");
+        wrap.dataset.fact = key;
+        wrap.append(node);
+        host.append(wrap);
+      };
+      add("playbook", el("span", "mono", detail.playbook.name + "@v" + detail.playbook.version));
+      add("release", el("span", "mono", detail.release));
+      const digest = el("span", "mono", t("release.params_full") + " " + shortDigest(group.valuesDigest));
+      digest.title = group.valuesDigest;
+      const copy = el("button", "copy-btn", t("release.copy_digest"));
+      copy.type = "button";
+      copy.id = "rd-copy-digest";
+      copy.addEventListener("click", () => copyText(copy, () => group.valuesDigest));
+      const paramRow = el("span", "rd-object");
+      paramRow.append(digest, copy);
+      add("params", paramRow);
+      add("installed", el("span", null, t("release.installed_at") + " " + fmtTime(group.installedAt)));
+      add("install", el("span", "mono field-hint", group.lastInstallId || "—"));
+    }
+    function objectRow(kind, object) {
+      const row = el("div", "rd-object");
+      row.dataset.object = kind;
+      row.dataset.name = object.name;
+      const link = el("a", "btn btn-ghost btn-sm", object.name);
+      link.href = kind === "source"
+        ? scoped("source-detail", "name", object.name)
+        : scoped("capabilities", "name", object.name);
+      row.append(link);
+      if (kind === "capability") {
+        row.append(el("span", "badge badge-neutral", "v" + object.version));
+        const digest = el("span", "mono field-hint", shortDigest(object.digest));
+        digest.title = object.digest;
+        row.append(digest);
+      } else {
+        row.append(el("span", "badge badge-neutral", object.kind));
+      }
+      return row;
+    }
+    function objects(group) {
+      const host = $("rd-objects");
+      host.replaceChildren();
+      const caps = group.objects.capabilities || [];
+      const sources = group.objects.sources || [];
+      if (!caps.length && !sources.length) {
+        host.append(el("p", "field-hint", t("release.no_objects")));
+        return;
+      }
+      if (caps.length) {
+        const block = el("div", "rd-check");
+        block.append(el("h4", "field-label", t("release.capabilities") + " · " + caps.length));
+        for (const object of caps) block.append(objectRow("capability", object));
+        host.append(block);
+      }
+      if (sources.length) {
+        const block = el("div", "rd-check");
+        block.append(el("h4", "field-label", t("release.sources") + " · " + sources.length));
+        for (const object of sources) block.append(objectRow("source", object));
+        host.append(block);
+      }
+    }
+    function groupPicker() {
+      const host = $("rd-groups");
+      host.replaceChildren();
+      host.hidden = (detail.groups || []).length < 2;
+      if (host.hidden) return;
+      for (const [index, group] of detail.groups.entries()) {
+        const button = el("button", "btn btn-ghost btn-sm", shortDigest(group.valuesDigest));
+        button.type = "button";
+        button.dataset.groupDigest = group.valuesDigest;
+        button.title = [
+          t("release.group_current", { n: String(index + 1) }),
+          t("release.attempts", { n: String(group.attempts) }),
+          fmtTime(group.installedAt),
+        ].join(" · ");
+        if (group.valuesDigest === current().valuesDigest) button.className = "btn btn-sm";
+        button.addEventListener("click", () => select(group.valuesDigest));
+        host.append(button);
+      }
+    }
+    function current() {
+      const groups = detail.groups || [];
+      return groups.find(group => group.valuesDigest === selected) || groups[0] || null;
+    }
+    let selected = "";
+    function select(digest) {
+      selected = digest;
+      const group = current();
+      if (!group) return;
+      facts(group);
+      objects(group);
+      groupPicker();
+      $("rd-yaml-title").textContent = [t("release.yaml_title"), detail.release, detail.playbook.name].join(" · ");
+      receipt(group.lastInstallId);
+    }
+    function receiptView(rcpt) {
+      const host = $("rd-receipt");
+      host.replaceChildren();
+      const grid = el("div", "rd-stack");
+      for (const axis of ["created", "skipped"]) {
+        const box = el("div", "rd-check");
+        box.dataset.receiptAxis = axis;
+        box.append(el("h4", "field-label", t("pb.v4." + axis)));
+        for (const kind of ["capabilities", "sources"]) {
+          const list = (rcpt[axis] || {})[kind] || [];
+          box.append(el("p", "field-hint", t("release." + kind) + " · " + (list.length ? list.join(", ") : t("pb.v4.none"))));
+        }
+        grid.append(box);
+      }
+      const upgraded = el("div", "rd-check");
+      upgraded.dataset.receiptAxis = "upgraded";
+      upgraded.append(el("h4", "field-label", t("pb.v4.upgraded")),
+        el("p", "field-hint", Array.isArray(rcpt.upgraded) && rcpt.upgraded.length ? JSON.stringify(rcpt.upgraded) : t("pb.v4.none")));
+      grid.append(upgraded);
+      const deps = el("div", "rd-check");
+      deps.dataset.receiptAxis = "dependencies";
+      deps.append(el("h4", "field-label", t("release.dependencies")));
+      const rows = Array.isArray(rcpt.dependencies) ? rcpt.dependencies : [];
+      if (!rows.length) deps.append(el("p", "field-hint", t("release.no_dependencies")));
+      for (const dep of rows) deps.append(el("p", "mono field-hint", dep.capability + " @ v" + dep.version));
+      grid.append(deps);
+      host.append(grid);
+    }
+    async function receipt(installId) {
+      if (!installId) {
+        $("rd-receipt").replaceChildren(el("p", "field-hint", t("release.no_receipt")));
+        return;
+      }
+      $("rd-receipt-state").textContent = t("release.loading");
+      try {
+        receiptView(await api(path("/installs/" + encodeURIComponent(installId))));
+        $("rd-receipt-state").replaceChildren();
+      } catch (error) {
+        $("rd-receipt-state").replaceChildren(loadErrorNode(error, () => receipt(installId)));
+      }
+    }
+    function gone(titleKey, hintKey) {
+      $("rd-content").hidden = true;
+      $("rd-groups").hidden = true;
+      const host = $("rd-gone");
+      host.hidden = false;
+      host.replaceChildren();
+      const box = el("div", "rd-check");
+      box.id = "rd-gone-panel";
+      box.append(el("h3", "card-title", t(titleKey)), el("p", "field-hint", t(hintKey)));
+      const back = el("a", "btn btn-ghost", t("release.gone_back"));
+      back.href = scoped("playbook", "id", name);
+      back.id = "rd-gone-back";
+      box.append(back);
+      host.append(box);
+      for (const id of ["rd-yaml", "rd-uninstall"]) $(id).disabled = true;
+    }
+    function badge(text, cls) {
+      $("rd-badge").textContent = text;
+      $("rd-badge").className = "badge " + cls;
+    }
+    async function uninstall() {
+      if (!(await confirmDanger({ body: t("release.uninstall_confirm", { release }) }))) return;
+      $("rd-uninstall").disabled = true;
+      try {
+        await api(path("/releases/" + encodeURIComponent(release)), { method: "DELETE" });
+        badge(t("release.uninstalled"), "badge-warn");
+        gone("release.gone_title", "release.gone_hint");
+        $("rd-summary").replaceChildren();
+      } catch (error) {
+        $("rd-uninstall").disabled = false;
+        $("rd-load-state").replaceChildren(loadErrorNode(error));
+      }
+    }
+    async function yamlBody(node) { $("rd-yaml-body").replaceChildren(node); }
+    function yamlEmpty() { yamlBody(dom("p", { class: "field-hint", id: "rd-yaml-empty" }, t("release.yaml_empty"))); }
+    function yamlFailed(text) { yamlBody(dom("p", { class: "field-hint" }, t("release.yaml_failed") + " · " + text)); }
+    function yamlCode(text) {
+      const wrap = el("div", "code-block"), head = el("div", "code-head");
+      const copy = el("button", "copy-btn", t("uxaudit.work.copy"));
+      copy.type = "button";
+      copy.addEventListener("click", () => copyText(copy, () => text));
+      head.append(el("span", null, t("release.yaml_title")), copy);
+      const pre = el("pre", "code-body mono rd-code", null), code = el("code", null, null);
+      code.id = "rd-yaml-text";
+      code.textContent = text;
+      pre.append(code);
+      wrap.append(head, pre);
+      yamlBody(wrap);
+    }
+    async function statusDetail(res) {
+      let text = "HTTP " + res.status;
+      try {
+        const body = await res.json();
+        text += " · " + [body.reason, body.message].filter(Boolean).join(" · ");
+      } catch (e) { /* 不是 JSON（网关错误页）：只留状态码 */ }
+      return text;
+    }
+    async function openYaml() {
+      const group = current();
+      openModal($("rd-yaml-drawer"));
+      if (!group) { yamlEmpty(); return; }
+      const objectCount = (group.objects.capabilities || []).length + (group.objects.sources || []).length;
+      if (!objectCount) { yamlEmpty(); return; }
+      yamlBody(dom("p", { class: "field-hint" }, t("release.loading")));
+      const query = "?valuesDigest=" + encodeURIComponent(group.valuesDigest);
+      try {
+        const res = await fetch(path("/releases/" + encodeURIComponent(release) + "/yaml" + query),
+          { credentials: "same-origin", headers: { Accept: "application/yaml" } });
+        if (res.status === 401) { location.href = loginHref(); return; }
+        if (!res.ok) return yamlFailed(await statusDetail(res));
+        const text = await res.text();
+        if (!text.split("\n").some(line => line.trim() === "---")) return yamlEmpty();
+        yamlCode(text);
+      } catch (error) { yamlFailed(String((error && error.message) || error)); }
+    }
+    async function load() {
+      $("rd-summary").hidden = false;
+      $("rd-load-state").textContent = t("release.loading");
+      $("rd-summary").setAttribute("aria-busy", "true");
+      try {
+        await ready();
+        if (!name || !release) throw new Error(t("release.missing_target"));
+        $("rd-back").href = scoped("playbook", "id", name);
+        detail = await api(path("/releases/" + encodeURIComponent(release)));
+        if (!detail || !Array.isArray(detail.groups) || !detail.groups.length) throw new Error(t("release.invalid_detail"));
+        $("rd-name").textContent = detail.playbook.name + " · " + detail.release;
+        $("rd-identity").textContent = getScope().namespace + " / " + detail.playbook.name + "@v" +
+          detail.playbook.version + " · " + t("release.release_word") + " " + detail.release;
+        badge(t("pb.v4.release_active"), "badge-success");
+        $("rd-content").hidden = false;
+        $("rd-load-state").replaceChildren();
+        select(detail.groups[0].valuesDigest);
+      } catch (error) {
+        if (error.status === 404) {
+          badge(t("release.uninstalled"), "badge-warn");
+          gone("release.gone_title", "release.gone_hint");
+          $("rd-load-state").replaceChildren();
+          $("rd-summary").replaceChildren();
+          return;
+        }
+        badge(t("pb.v4.load_failed"), "badge-error");
+        $("rd-load-state").replaceChildren(loadErrorNode(error, load));
+      } finally { $("rd-summary").removeAttribute("aria-busy"); }
+    }
+    $("rd-yaml").addEventListener("click", openYaml);
+    $("rd-yaml-close").addEventListener("click", () => closeModal($("rd-yaml-drawer")));
+    $("rd-yaml-drawer").addEventListener("click", event => { if (event.target === $("rd-yaml-drawer")) closeModal($("rd-yaml-drawer")); });
+    $("rd-uninstall").addEventListener("click", uninstall);
+    document.addEventListener("DOMContentLoaded", load);
+  })();
+</script>
+{{end}}

@@ -1,9 +1,7 @@
 package server
 
-// resource_playbook_release_yaml.go 是「按 release 导出实例装出的对象」的读面（#536）。
-//
-// 集合只由回执的 created 决定（不做前缀匹配、不从 installedFrom 反查）；每个文档复用单对象
-// /yaml 端点的投影与脱敏；顺序固定为能力升序 + 源升序；头注释写实「当前生效版本」。
+// resource_playbook_release_yaml.go 是「按 release 导出实例装出的对象」的读面（#536）：
+// 集合只由回执的 created 决定，每个文档复用单对象 /yaml 端点的投影与脱敏。
 
 import (
 	"bytes"

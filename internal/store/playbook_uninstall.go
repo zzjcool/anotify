@@ -13,11 +13,8 @@ import (
 	"github.com/zzjcool/anotify/internal/playbook"
 )
 
-// 预案卸载（#510）：按 release 撤掉**它装出来的**行，回执只打标记、不删。
-//
-// 归属判据是 installed_from（与 DELETE …/playbooks 的 kept 反查同一口径）：候选行 =
-// 本 release 回执 id 装出来的未删行；同名的手工行、别的 release 的行、被另一个仍生效的
-// release 记为 skipped（复用）的行都不删，进 kept[] 说明原因。
+// 预案卸载（#510）：按 release 撤掉**它装出来的**行，回执只打标记、不删。归属判据是
+// installed_from：手工行、别的 release 的行、仍被另一个 release 复用的行都不删，进 kept[]。
 var (
 	// ErrPlaybookReleaseNotFound 表示这个包名下没有该 release 的回执（404 release_not_found）。
 	ErrPlaybookReleaseNotFound = errors.New("store: playbook release not found")

@@ -13,10 +13,10 @@ import (
 	"github.com/zzjcool/anotify/internal/playbook"
 )
 
-// 预案（Playbook）领域（v4，playbook.md）：目录包 = 清单 + 回执，不是所有权；本文件是安装包在 store 的唯一落点。三条边界：
-// ① 包体是「文件集合」原文：`playbooks.files` 存 `{相对路径: 正文}`，render / install 每次从它 Parse（不另存解析态）；
-// ② 安装**只做加法**（I-P1）：只 INSERT 能力行 / 源行 / 边投影 / 回执行，想改已有东西的差异进回执 unapplied[]；
-// ③ 回执是**审计**不是锁：每次普通 install 写一行（dryRun 不写），删包不删回执，回执里的 ns / 原 slug / 原包 id 是快照。 12 格动作矩阵与回执形状由纯包 `internal/playbook` 算（Plan / BuildReceipt），本文件只做「读快照 → INSERT create → 写回执」。
+// 预案（Playbook）领域（v4，playbook.md）：目录包 = 清单 + 回执，不是所有权；本文件是安装包在 store 的唯一落点。
+// ① 包体是「文件集合」原文（`playbooks.files`），render / install 每次从它 Parse；
+// ② 安装**只做加法**（I-P1）：想改已有东西的差异进回执 unapplied[]；
+// ③ 回执是**审计**不是锁：dryRun 不写，删包不删回执；形状由 `internal/playbook` 算。
 // 事务内读一律走 txExec（见 txexec.go）；任何读错误都不允许被当成「库是空的」。
 
 // 预案写路径的哨兵错误。
@@ -375,18 +375,12 @@ func (d *DB) RenderPlaybookVersion(ctx context.Context, namespaceID, slug, relea
 	return playbook.RenderForRelease(pkg, values, release)
 }
 
-// InstallPlaybook 在**一个 BEGIN IMMEDIATE 事务**里完成一次安装（§4.4 / §4.6）。
-// release 是安装级身份（Helm 语义）：空串 = 缺省 = 包名，同一个包可以有多个 release、各是一套实例；
-// **要复用的行是别的 release 装出来的**时 Plan 给出 release_conflict，本函数在写之前就返回（0 写）。顺序固定：
-// ① 读包体（事务内，走 tx；`version` 钉住就取历史那一份）
-// ② Render + 读库快照（installSnapshot，六个只读查询也走 tx）→ Plan
-// ③ 有 conflict → 返回 *playbook.Error（完整 details / valuesDigest / conflicts / hint），0 写
-// ④ INSERT 计划里的 **create 条目**（能力行 + next 投影；新源行 + token + targets 投影）
-// ⑤ INSERT 回执行（masked values + digest + 回执原文 + ns/原 slug/原包 id 快照）
-// ⑥ COMMIT；dryRun 在 ⑤ 之后 Rollback（同一路径，0 持久写）
-// 边界（卡上红线，写代码时不要越过去）：- Plan 说 reuse 的条目**一行都不碰**：不能调 CreateCapability / UpdateSource 的折叠更新路径，
-// 否则会偷改已存行的 next / displayName / targets（I-P1）。 - 事务内的读错误必须让整次安装失败：把查询失败当「空库」会装出一批本不该存在的行。
-// - 不写 deployments / tasks / events dispatch：安装不部署，保留人工部署动作。
+// InstallPlaybook 在**一个 BEGIN IMMEDIATE 事务**里完成一次安装（§4.4 / §4.6）。release 是安装级
+// 身份（Helm 语义）：空串 = 包名，同一个包可以有多套实例；要复用的行属于别的 release 时 Plan 给出
+// release_conflict，本函数在写之前返回（0 写）。顺序固定：读包体 → Render + 读快照 → Plan →
+// 有 conflict 即返回 → INSERT create 条目 → INSERT 回执 → COMMIT（dryRun 在回执之后 Rollback）。
+// 红线：Plan 说 reuse 的条目一行都不碰（不能走折叠更新路径）；读错误必须让整次安装失败；
+// 不写 deployments / tasks / events dispatch（安装不部署）。
 func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, slug, release string, values map[string]any, dryRun bool) (*playbook.Receipt, error) {
 	return d.InstallPlaybookVersion(ctx, namespaceID, slug, release, 0, values, dryRun)
 }
@@ -541,9 +535,8 @@ func (d *DB) DeletePlaybook(ctx context.Context, namespaceID, slug string, expec
 	}, nil
 }
 
-// ListPlaybookInstalls 是实例清单（§4.10）：把回执行按 `(namespace_id, 原包 id, release, valuesDigest)` 折叠成「一套 values 装过几次」。
-// 已卸载（uninstalled_at != 0）的回执不进清单；currentPlaybookID 是当前清单 id（同 slug 重建即新 id，新包看不到旧实例）；
-// 组数上限 200、按 lastAt 降序截断，Total 是折叠组总数。
+// ListPlaybookInstalls 是实例清单（§4.10）：按 `(ns, 原包 id, release, valuesDigest)` 折叠成「一套 values 装过几次」。
+// 已卸载的回执不进清单；currentPlaybookID 是当前清单 id（同 slug 重建即新 id）；组数上限 200。
 func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlaybookID string) (*PlaybookInstallList, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -708,12 +701,9 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 	return out, nil
 }
 
-// ListPlaybookVersions 是版本历史读模型（`GET …/playbooks/{slug}/versions`）：只回身份与摘要，不回包体原文。
-//
-// currentVersion 是**当前清单**的版本号（playbooks.version）：当前版本的真身是 playbooks.files，
-// 所以历史里那一行只做标记（current=true），读当前包体仍走 GetPlaybook（不 join 这张表）。
-// 迁移前建的老包可能一行历史都没有：Total=0 是对的，当前版本依旧能装（resolvePlaybookFilesOn 的第三条分支）。
-// 过滤带 namespace：历史表没有 ns 列，但读取仍必须被作用域约束（id 是从本 ns 的行上取的）。
+// ListPlaybookVersions 是版本历史读模型：只回身份与摘要，不回包体原文。currentVersion 是当前清单的
+// 版本号，历史里那一行只做标记（current=true）；老包可能一行历史都没有（Total=0 是对的）。
+// 过滤带 namespace：历史表没有 ns 列，但读取仍必须被作用域约束。
 func (d *DB) ListPlaybookVersions(ctx context.Context, namespaceID, playbookID string, currentVersion int) (*PlaybookVersionList, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired

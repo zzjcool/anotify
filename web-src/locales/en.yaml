@@ -1686,8 +1686,8 @@ nodes:
     name: 'Node name'
     name_ph: 'e.g. my-mbp'
     name_hint: 'Lowercase letters, digits, dot (.), underscore (_) or hyphen (-) — 1–63 characters, starting with a letter or digit'
-    instances: 'Instances (optional)'
-    instances_hint: 'How many instances to run on this node (a suggestion — the hub caps it at 20). The real slot count is reported by the agent when it connects.'
+    instances: "Instances (release)"
+    instances_hint: "One row per instance: the list aggregates by release (a release installed with several value sets shows \"N groups\"), and opening a row shows its objects, receipt, YAML and uninstall."
     submit: 'Register'
     cancel: 'Cancel'
     submitting: 'Registering…'
@@ -2372,8 +2372,8 @@ pb:
     status_version: "Version v{n}"
     status_instances: "{n} instance(s)"
     versions_brief: "{n} version(s)"
-    instances: "Installs grouped by instance and values"
-    instances_hint: "Read-only derived view: one instance name plus one set of values is one group; attempts counts how many times that group was installed. Provenance records the first creation receipt, not ownership."
+    instances: "Instances (release)"
+    instances_hint: "One row per instance: the list aggregates by release (a release installed with several value sets shows \"N groups\"), and opening a row shows its objects, receipt, YAML and uninstall."
     attempts_n: "{n} attempts"
     template: "Edit / export the original package"
     file_path: "Relative package path"
@@ -2417,8 +2417,11 @@ pb:
     group_count: "{n} install groups"
     release_group: "{release} · {n} groups"
     single_receipt: "Read full single receipt"
-    no_installs: "No normal installs (dry-runs are not recorded)."
+    no_installs: "No instances yet. The first install creates one."
     view_yaml: "View YAML"
+    release_active: "Active"
+    release_objects: "{c} capabilities / {s} sources"
+    release_last_install: "installed {at}"
     yaml_title: "Instance YAML"
     yaml_empty: "This instance has no objects to show"
     yaml_load_failed: "Failed to load YAML"
@@ -2740,3 +2743,35 @@ namespace:
     no_nodes: "No nodes yet."
     no_param: "Missing the name parameter: enter from the namespace list."
     not_found: "Namespace not found (or deleted)."
+release:
+  title: Instance detail
+  subtitle: 'One instance: what it installed, plus the latest receipt and its dependencies'
+  back: Back to package
+  loading: Loading…
+  release_word: instance
+  params_full: Params
+  copy_digest: Copy full params
+  installed_at: Last installed
+  objects: Installed objects
+  objects_hint: 'Names and versions come from the currently effective objects; only what this instance installed is listed.'
+  capabilities: Capabilities
+  sources: Sources
+  no_objects: This instance has not installed any objects yet.
+  receipt: Latest install receipt
+  receipt_hint: 'Read-only: created, reused, content upgrades and dependencies from that install.'
+  no_receipt: No install receipt to show.
+  dependencies: Dependencies
+  no_dependencies: No external dependencies.
+  group_current: 'Param set {n}'
+  attempts: 'installed {n} times'
+  yaml_title: Instance YAML
+  yaml_empty: This instance has no objects to export.
+  yaml_failed: Export failed
+  uninstall: Uninstall this instance
+  uninstall_confirm: 'Uninstall “{release}”: delete the capabilities and sources it installed; receipts are kept.'
+  uninstalled: Uninstalled
+  gone_title: This instance was uninstalled or never existed
+  gone_hint: 'Its objects are gone; the package page shows the instances running now.'
+  gone_back: Back to package
+  missing_target: The link is missing the package or instance name.
+  invalid_detail: The server did not return a valid instance detail.
