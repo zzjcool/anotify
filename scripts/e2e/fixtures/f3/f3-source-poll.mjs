@@ -209,4 +209,113 @@ export async function sourcePoll(d) {
   const bodyText = await page.locator('#src-list').innerText();
   assert.equal(/undefined|null/.test(bodyText), false, '未知 kind 不许在页面上露出 undefined/null，实际 ' + bodyText.slice(0, 200));
   check('POLL-09 an unknown kind falls back to its raw value on the badge (never blank, never undefined)');
+
+  const pollPath = '/v1/namespaces/default/sources/' + SOURCE + '/poll';
+  const pollBtnSel = sec + ' #src-detail-poll-now';
+  const pollOutSel = sec + ' #src-detail-poll-result';
+  const byIdle = (sel, want) =>
+    page.waitForFunction(
+      ([s, w]) => {
+        const b = document.querySelector(s);
+        return !!b && b.disabled === w;
+      },
+      [sel, want],
+      { timeout: 15000 },
+    );
+  const FULFILLED = { items: 7, created: 5, duplicates: 2, durationMs: 33, cursorAdvanced: true };
+  let routed = 0;
+  await page.route('**' + pollPath, async (route) => {
+    routed += 1;
+    await new Promise((r) => setTimeout(r, 600));
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(FULFILLED) });
+  });
+  await goto('source-detail', 'namespace=default&name=' + SOURCE, 'zh-CN');
+  await visible('#src-detail[data-source="' + SOURCE + '"]');
+  await visible(pollBtnSel);
+  const pollBtn = page.locator(pollBtnSel);
+  assert.equal((await pollBtn.innerText()).trim(), '立即拉取', '启用的 poll 源上必须是「立即拉取」按钮');
+  await pollBtn.click();
+  await byIdle(pollBtnSel, true);
+  assert.equal((await pollBtn.innerText()).trim(), '拉取中…', '请求在飞时按钮文案必须变成进行中');
+  await page.waitForFunction(
+    (s) => {
+      const o = document.querySelector(s);
+      return !!o && o.querySelectorAll('.sd-pair').length === 4;
+    },
+    pollOutSel,
+    { timeout: 15000 },
+  );
+  const counted = await pairs(page, pollOutSel);
+  assert.equal(counted.length, 4, '成功回显必须给出四项计数，实际 ' + JSON.stringify(counted));
+  assert.deepEqual(counted.map((c) => c.k.trim()), ['取回条目', '新建', '去重命中', '耗时'], '四项计数的标签必须是本地化文案，实际 ' + JSON.stringify(counted));
+  const nums = counted.map((c) => c.v.trim());
+  if (d.mock) assert.equal(nums.every((v) => /^\d+( ms)?$/.test(v)), true, '每一项计数都必须是数字，实际 ' + JSON.stringify(nums));
+  else assert.deepEqual(nums, ['7', '5', '2', '33 ms'], '这一轮的真实计数必须原样回显，实际 ' + JSON.stringify(nums));
+  assert.ok(nums.filter((v) => /^\d+( ms)?$/.test(v)).length >= 2, '回显里至少要有两项数字，实际 ' + JSON.stringify(nums));
+  await byIdle(pollBtnSel, false);
+  assert.equal((await pollBtn.innerText()).trim(), '立即拉取', '一轮拉完之后按钮必须回到可点的「立即拉取」');
+  const pollPosts = (await calls()).filter((c) => c.method === 'POST' && c.url === pollPath);
+  if (!d.mock) assert.equal(routed, 1, '点一次只许有一个 POST 到达 ' + pollPath + '，实际 ' + routed);
+  assert.equal(pollPosts.length, 1, '点一次「立即拉取」只许发一次 POST ' + pollPath + '，实际 ' + pollPosts.length);
+  assert.deepEqual(pollPosts[0].keys, [], '立即拉取没有请求体（契约：无 body），实际 ' + JSON.stringify(pollPosts[0].keys));
+  assert.equal(pollPosts[0].httpStatus, 200, '本轮的 200 计数回执必须被页面真的读到，实际 ' + pollPosts[0].httpStatus);
+  check('POLL-10 clicking 立即拉取 fires exactly one body-less POST …/poll, disables the button while in flight, and renders the four counts');
+  await page.unroute('**' + pollPath);
+
+  await page.evaluate((path) => {
+    const inner = window.fetch;
+    window.__f3PollRestore = () => {
+      window.fetch = inner;
+    };
+    window.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : (input && input.url) || '';
+      const method = (init && init.method) || 'GET';
+      if (method === 'POST' && url === path) {
+        return new Response(
+          JSON.stringify({ apiVersion: 'anotify/v1', kind: 'Status', status: 'Failure', code: 409, reason: 'poll_in_progress', message: 'this source already has a poll round in flight', details: { causes: [] } }),
+          { status: 409, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return inner(input, init);
+    };
+  }, pollPath);
+  await pollBtn.click();
+  await page.waitForFunction(
+    (s) => {
+      const o = document.querySelector(s);
+      return !!o && o.innerText.trim().length > 0;
+    },
+    pollOutSel,
+    { timeout: 15000 },
+  );
+  const busyText = (await page.locator(pollOutSel).innerText()).trim();
+  assert.equal(busyText, '正在轮询中，稍等', '同一把锁被占时页面必须说「正在轮询中，稍等」，实际 ' + JSON.stringify(busyText));
+  assert.equal(await page.locator(pollOutSel + ' .field-error').count(), 1, '这类拒绝要用失败样式回显（不是静默）');
+  assert.equal(await page.locator(pollOutSel + ' .sd-pair').count(), 0, '被拒的那次不许留下上一次的计数');
+  await byIdle(pollBtnSel, false);
+  await page.evaluate(() => window.__f3PollRestore && window.__f3PollRestore());
+  check('POLL-10b a 409 poll_in_progress renders 「正在轮询中，稍等」 (not the generic error) and re-enables the button');
+
+  const other = d.fx('source');
+  await goto('source-detail', 'namespace=default&name=' + other, 'zh-CN');
+  await visible('#src-detail[data-source="' + other + '"]');
+  assert.equal(await page.locator('#src-detail-poll-now').count(), 0, '非 poll 源上没有「立即拉取」（源 ' + other + '）');
+  await page.addInitScript((name) => {
+    const inner = window.fetch;
+    window.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : (input && input.url) || '';
+      if (!url.endsWith('/v1/namespaces/default/sources/' + name)) return inner(input, init);
+      const res = await inner(input, init);
+      const body = await res.clone().json();
+      if (!body || !body.spec) return res;
+      body.spec.enabled = false;
+      return new Response(JSON.stringify(body), { status: res.status, headers: { 'Content-Type': 'application/json' } });
+    };
+  }, SOURCE);
+  await goto('source-detail', 'namespace=default&name=' + SOURCE, 'zh-CN');
+  await visible('#src-detail[data-source="' + SOURCE + '"]');
+  await visible(sec);
+  assert.equal(await page.locator(sec + ' .sd-sec-title').first().innerText(), '拉取', '停用的 poll 源仍然要看得到「拉取」区块');
+  assert.equal(await page.locator('#src-detail-poll-now').count(), 0, '停用的 poll 源不给「立即拉取」（否则点了只会被拒）');
+  check('POLL-10c the button appears only for kind=poll sources that are enabled');
 }

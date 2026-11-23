@@ -4725,6 +4725,29 @@
 		return json(out);
 	});
 
+	on("POST", /^\/v1\/namespaces\/([^/]+)\/sources\/([^/]+)\/poll$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findSource(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("源 ");
+		if (row.kind !== "poll") return statusErr(409, "not_poll_source", "only kind=poll sources can be polled on demand");
+		if (!row.enabled) return statusErr(409, "source_disabled", "source is disabled");
+		const started = Date.now();
+		const receipt = deliver(row, { payload: clone(row.config.sample || {}) });
+		row.lastPollAt = isoNow();
+		row.cursor = 'W/"mock-poll-round-' + (state.events.length + 1) + '"';
+		row.consecutiveFailures = 0;
+		row.lastError = null;
+		return json({
+			items: receipt.duplicate ? 0 : 1,
+			created: receipt.tasks.length,
+			duplicates: receipt.duplicate ? 1 : 0,
+			durationMs: Date.now() - started,
+			cursorAdvanced: receipt.duplicate !== true,
+		});
+	});
+
 	// 试运行：算出「会派发什么、会剪什么」，**不落库**（草稿也能先验一遍）。
 	on("POST", /^\/v1\/namespaces\/([^/]+)\/sources\/dry-run$/, (ctx) => {
 		const ns = decodeURIComponent(ctx.m[1]);
