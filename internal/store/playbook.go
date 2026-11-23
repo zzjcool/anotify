@@ -95,12 +95,10 @@ type PlaybookInstallGroup struct {
 	Release      string `json:"release"`
 	ValuesDigest string `json:"valuesDigest"`
 	// Values 是打码后的有效 values（与回执行一致：writeOnly → "***"）。
-	Values map[string]any `json:"values"`
-	// FirstAt / LastAt 是组内最早 / 最新一次 install 的时间（RFC3339）。
-	FirstAt string `json:"firstAt"`
-	LastAt  string `json:"lastAt"`
-	// Attempts 是组内回执行数。
-	Attempts int `json:"attempts"`
+	Values   map[string]any `json:"values"`
+	FirstAt  string         `json:"firstAt"` // 组内最早 / 最后一次 install 的时间（RFC3339）
+	LastAt   string         `json:"lastAt"`
+	Attempts int            `json:"attempts"` // 组内回执行数
 	// LastInstallID 是组内最新一次 install 的回执 id（单回执读取的入口）。
 	LastInstallID string `json:"lastInstallId"`
 	// UninstalledAt 是这组全部回执都已卸载时的卸载时刻（RFC3339，#553）；生效中的组没有这个键。
@@ -112,10 +110,8 @@ type PlaybookInstallGroup struct {
 
 // PlaybookInstallList 是 `GET …/installs` 的响应体（读模型，不建实例表）。
 type PlaybookInstallList struct {
-	// Total 是折叠组总数（可能大于返回条数：超过上限按 lastAt 截断）。
-	Total int `json:"total"`
-	// Installs 按 lastAt 降序；空列表是 [] 不是 null。
-	Installs []PlaybookInstallGroup `json:"installs"`
+	Total    int                    `json:"total"`    // 折叠组总数（可能大于返回条数：超过上限按 lastAt 截断）
+	Installs []PlaybookInstallGroup `json:"installs"` // 按 lastAt 降序；空列表是 [] 不是 null
 }
 
 // playbookInstallMaxGroups 是一次实例清单最多返回的组数（§4.10：实例数是十位量级）。
@@ -354,7 +350,6 @@ func (d *DB) ReplacePlaybookAs(ctx context.Context, namespaceID, slug string, ex
 }
 
 //	RenderPlaybook 是 `render` 端点（§2.4）：只读包体 → Parse → Render。**纯只读**：不读安装冲突库、不写库、不产生回执 （D19：render 是 helm template，dryRun 才读库），所以它不可能因为库里已有同名能力而失败，也不会留下任何行；
-//
 // release 只影响模板渲染（`{{release.name}}`），不读库，所以 render 不判 release 冲突。
 func (d *DB) RenderPlaybook(ctx context.Context, namespaceID, slug, release string, values map[string]any) (*playbook.RenderResult, error) {
 	return d.RenderPlaybookVersion(ctx, namespaceID, slug, release, 0, values)
@@ -538,14 +533,14 @@ func (d *DB) DeletePlaybook(ctx context.Context, namespaceID, slug string, expec
 	}, nil
 }
 
-// ListPlaybookInstalls 是实例清单（§4.10）：按 `(ns, 原包 id, release, valuesDigest)` 折叠成「一套 values 装过几次」。
-// 已卸载的回执不进清单；currentPlaybookID 是当前清单 id（同 slug 重建即新 id）；组数上限 200。
+// ListPlaybookInstalls 是实例清单（§4.10）：按 `(ns, 原包 id, release, valuesDigest)` 折叠成
+// 「一套 values 装过几次」。已卸载的回执不进清单；currentPlaybookID 是当前清单 id；组数上限 200。
 func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlaybookID string) (*PlaybookInstallList, error) {
 	return d.listPlaybookInstalls(ctx, namespaceID, currentPlaybookID, false)
 }
 
-// ListPlaybookInstallsWithUninstalled 同 ListPlaybookInstalls，但连带已卸载的回执（#553 的历史视图）：
-// 组内回执全部已卸载的组带 uninstalledAt，对象引用如实为空（对象已删，软删行不再算作「装出了什么」）。
+// ListPlaybookInstallsWithUninstalled 同 ListPlaybookInstalls，但连带已卸载的回执（#553）：整组已卸载的
+// 组带 uninstalledAt，对象引用如实为空（软删行不再算「装出了什么」）。
 func (d *DB) ListPlaybookInstallsWithUninstalled(ctx context.Context, namespaceID, currentPlaybookID string) (*PlaybookInstallList, error) {
 	return d.listPlaybookInstalls(ctx, namespaceID, currentPlaybookID, true)
 }

@@ -71,7 +71,6 @@ func TestPlaybookInstallsIncludeUninstalled(t *testing.T) {
 			if group.LastInstallID != gone.Install.ID {
 				t.Fatalf("已卸载组的 lastInstallId 应指向最后一次安装 %q，got %q", gone.Install.ID, group.LastInstallID)
 			}
-			// 对象已被卸载删除：软删的能力行与物理删的源行都不该再算作「装出了什么」。
 			if len(group.Capabilities) != 0 || len(group.Sources) != 0 {
 				t.Fatalf("已卸载组的对象引用应如实为空，got caps=%v srcs=%v", group.Capabilities, group.Sources)
 			}
@@ -84,7 +83,6 @@ func TestPlaybookInstallsIncludeUninstalled(t *testing.T) {
 		t.Fatal("live 的回执应有 id")
 	}
 
-	// 详情侧的分组读数：UninstalledAt 是 release 级的卸载时刻，回执扁平列表供快照合并。
 	groups, err := db.GetPlaybookReleaseGroups(ctx, ns, p.slug, "gone")
 	if err != nil {
 		t.Fatalf("release groups(gone): %v", err)

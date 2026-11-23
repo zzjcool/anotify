@@ -26,7 +26,6 @@ import (
 const kindPlaybook = "Playbook"
 
 // playbookAPI 是 Playbook 资源域的 handler 集合。
-//
 // 只持有 serverDeps：作用域 / 授权走 namespace_scope.go，错误映射走 api_status.go， CAS 令牌走 api_cas.go —— 三件共享判据都不在这里再抄一份。
 type playbookAPI struct{ d *serverDeps }
 
@@ -34,7 +33,6 @@ type playbookAPI struct{ d *serverDeps }
 func newPlaybookAPI(d *serverDeps) *playbookAPI { return &playbookAPI{d: d} }
 
 // register 注册全部 Playbook 路由（全部 session 包裹，未登录直 401）。
-//
 // 方法不匹配**不**兜底方法分派：只挂带方法的 pattern，其余交给末尾的静态兜底（404/503 而不是 405），
 // 见 resource_capability.go 的 register() 注释（同仓同结论只在那一处解释）。
 func (a *playbookAPI) register(mux *http.ServeMux) {
@@ -125,10 +123,9 @@ func (a *playbookAPI) get(w http.ResponseWriter, r *http.Request) {
 }
 
 // includeParamUninstalled 是 `include` 的唯一合法值（#553）：其它值一律 400 value_invalid，
-// 与 `as` 同口径（不做大小写模糊匹配 —— 猜错参数名比报错更难查）。
+// 与 `as` 同口径（不做大小写模糊匹配 —— 猜错参数名比报错更难查）。includeUninstalledQuery 读它。
 const includeParamUninstalled = "uninstalled"
 
-// includeUninstalledQuery 解析 `include=uninstalled`；缺省 → 只读生效中的。
 func includeUninstalledQuery(r *http.Request) (bool, error) {
 	switch strings.TrimSpace(r.URL.Query().Get("include")) {
 	case "":
@@ -204,7 +201,6 @@ func (a *playbookAPI) listVersions(w http.ResponseWriter, r *http.Request) {
 }
 
 // getInstall 处理 GET …/playbooks/{slug}/installs/{installId}：单次回执（§4.5）。
-//
 // 不要求当前清单存在：回执里的 slug / 包 id 是快照，删包之后仍可按旧 slug 直达（D21）。
 func (a *playbookAPI) getInstall(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
@@ -230,7 +226,6 @@ func (a *playbookAPI) getInstall(w http.ResponseWriter, r *http.Request) {
 // ---------- 写端点 ----------
 
 // create 处理 POST …/playbooks：只落一行清单（不安装）。
-//
 // 同 slug 已存在 → store.ErrSlugTaken → 409 slug_taken（api_status.go 已注册）。
 func (a *playbookAPI) create(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
@@ -272,7 +267,6 @@ func (a *playbookAPI) create(w http.ResponseWriter, r *http.Request) {
 }
 
 // replace 处理 PUT …/playbooks/{slug}：整体替换包体（CAS 令牌只在 body metadata.resourceVersion）。
-//
 // **只换模板**：已装的能力 / 源一行不动，要等下一次 install 才变（§5 / §10）。
 func (a *playbookAPI) replace(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
@@ -327,7 +321,6 @@ func (a *playbookAPI) replace(w http.ResponseWriter, r *http.Request) {
 }
 
 // delete 处理 DELETE …/playbooks/{slug}?resourceVersion=：只删清单。
-//
 // 响应是动作文档（deleted / kept / values / note），不套四键信封：它回答的是 「留下了什么」，不是一个资源的状态。
 func (a *playbookAPI) delete(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
@@ -394,7 +387,6 @@ func (a *playbookAPI) render(w http.ResponseWriter, r *http.Request) {
 }
 
 // install 处理 POST …/playbooks/{slug}/install：幂等安装（单事务；不部署）。
-//
 // dryRun=true 走同一条代码路径但 0 持久写（回执仍返回，但不落 playbook_installs）。
 func (a *playbookAPI) install(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
@@ -464,7 +456,6 @@ func (a *playbookAPI) uninstallRelease(w http.ResponseWriter, r *http.Request) {
 // ---------- 写请求体 ----------
 
 // playbookWriteSpec 是 Playbook 写请求的 spec（W3：只搬包体，不复制根清单）。
-//
 // `playbook.yaml` 仍然是唯一根清单：values / 能力 / 源相对引用都从它解析，请求体 **不要求**也不接受第二份并行的 spec.values / spec.capabilities / spec.sources （decodeWriteEnvelope 的严格解码会把它们报成 unknown_field）。
 type playbookWriteSpec struct {
 	// Files 是整份包体（相对路径 → 正文），含 playbook.yaml。
@@ -506,7 +497,6 @@ type playbookActionBody struct {
 }
 
 // pinnedVersion 把动作请求里的 version 归一成 store 的入参（0 = 当前版本）。
-//
 // 非法值（< 1）当场 400：静默当「没给」会让用户以为装的是历史版本，装的却是当前版本。
 func (b playbookActionBody) pinnedVersion() (int, error) {
 	if b.Version == nil {
@@ -547,7 +537,6 @@ func decodePlaybookAction(r *http.Request) (playbookActionBody, error) {
 // playbookStatus 是 Playbook 的 status 读模型（playbook.md §6.1）：每一项都必须真实派生，
 // 派不出来就给空（宁少不编）。items / sources / lastInstallId / unapplied 来自回执历史，
 // conditions 是成员能力四条 condition 的聚合，ready 由 conditions + unapplied 派生。
-//
 // 刻意**没有** `blocker`：条件拿不到时给一个 blocker 就是纯编造，故省略该键。
 type playbookStatus struct {
 	Ready       bool                      `json:"ready"`
@@ -571,7 +560,6 @@ type playbookCondition struct {
 }
 
 // playbookItem 是体检的一行（只有 capability / source 两类，§6.1）。
-//
 // `state` 只有 `ok`：`no_node`（节点池）/ `blocked`（targets 解析）/ `disabled` （enabled:false）/ `unapplied` 都需要能力或源的读模型，本域拿不到（D0.9），因此只声明「定义在库里」这一个已知事实。
 type playbookItem struct {
 	Kind    string `json:"kind"`
@@ -588,7 +576,6 @@ const (
 )
 
 // playbookSourceStatus 是 status.sources（§6.1 的四态计数）。
-//
 // 只报两组能派生的数：total（历史上装出来的源个数）与 unapplied（最近回执里 targets 未生效的源数）。enabled / blocked / disabled 需要读源行本身，本域不查库，所以不出现这些键——比回 0 更诚实（0 会被前端当成"全都停用了"）。
 type playbookSourceStatus struct {
 	Total     int `json:"total"`

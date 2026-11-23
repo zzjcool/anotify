@@ -50,8 +50,8 @@ func (a *playbookAPI) getRelease(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, doc)
 }
 
-// releaseDetail 把回执折叠组投影成详情文档（对象取当前生效版本，与按 release 导出 YAML 同口径）。
-// 已卸载的实例（#553）：对象已删 → objects 如实为空 + objectsGone，另给卸载时刻与安装时快照。
+// releaseDetail 把回执折叠组投影成详情文档（对象取当前生效版本，与按 release 导出 YAML 同口径；
+// 已卸载的实例则对象如实为空 + objectsGone，另给卸载时刻与安装时快照）。
 func (a *playbookAPI) releaseDetail(ctx context.Context, ns string, groups *store.PlaybookReleaseGroups) (playbookReleaseDetail, error) {
 	doc := playbookReleaseDetail{
 		Playbook:     playbookReleaseRef{Name: groups.PlaybookName, Version: groups.PlaybookVersion},
@@ -113,8 +113,7 @@ func (a *playbookAPI) releaseDetail(ctx context.Context, ns string, groups *stor
 	return doc, nil
 }
 
-// releasePinnedRefs 合并全部回执的安装时快照（与 `as=installed` 同口径，#551 D5：同一 (kind,name)
-// 后一条覆盖前一条；能力按 name 升序在前、源在后）。老回执 → 空切片：详情是只读视图，不 409。
+// releasePinnedRefs 合并全部回执的安装时快照（同 `as=installed` 口径，#551 D5）；老回执 → 空切片，不 409。
 func (a *playbookAPI) releasePinnedRefs(ctx context.Context, ns string, receipts []playbook.Receipt) ([]playbook.PinnedRef, error) {
 	ids := make([]string, 0, len(receipts))
 	seen := make(map[string]bool, len(receipts))
@@ -194,7 +193,7 @@ type playbookReleaseDetail struct {
 	Objects       playbookReleaseObjects      `json:"objects"`
 	Dependencies  []playbook.Dependency       `json:"dependencies"`
 	Groups        []playbookReleaseParamGroup `json:"groups"`
-	// 下面三个键只在已卸载视图（#553）出现：生效中实例的响应因此逐字节不变。
+	// 这三个键只在已卸载视图（#553）出现：生效中实例的响应因此逐字节不变。
 	UninstalledAt string               `json:"uninstalledAt,omitempty"`
 	Pinned        []playbook.PinnedRef `json:"pinned,omitempty"`
 	ObjectsGone   bool                 `json:"objectsGone,omitempty"`

@@ -11,7 +11,6 @@ import (
 	"time"
 )
 
-// pbTestHistoryGroup / List 只在本文件用：多一个 uninstalledAt（生产 DTO 也只在已卸载组上给）。
 type pbTestHistoryGroup struct {
 	Release       string   `json:"release"`
 	ValuesDigest  string   `json:"valuesDigest"`
@@ -27,7 +26,6 @@ type pbTestHistoryList struct {
 	Installs []pbTestHistoryGroup `json:"installs"`
 }
 
-// pbTestHistoryDetail 在 pbTestReleaseDetail 上补三个已卸载视图的键。
 type pbTestHistoryDetail struct {
 	pbTestReleaseDetail
 	UninstalledAt string `json:"uninstalledAt"`
@@ -58,7 +56,6 @@ func (e *playbookTestEnv) installsWith(t *testing.T, slug, query string) (pbTest
 	return list, rec.Body.String()
 }
 
-// pbTestHistoryUninstalledGroup 取出某个 release 的组（找不到就 Fatal）。
 func pbTestHistoryUninstalledGroup(t *testing.T, list pbTestHistoryList, release string) pbTestHistoryGroup {
 	t.Helper()
 	for _, group := range list.Installs {
@@ -101,7 +98,6 @@ func TestPlaybookInstallHistoryIncludesUninstalled(t *testing.T) {
 		t.Fatalf("卸载 gone 应 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// ① 默认清单：已卸载的实例不出现（逐字不变的口径）。
 	def, defRaw := env.installsWith(t, slug, "")
 	if def.Total != 1 || len(def.Installs) != 1 || def.Installs[0].Release != "live" {
 		t.Fatalf("默认清单应只剩 live：%+v", def.Installs)
@@ -129,7 +125,6 @@ func TestPlaybookInstallHistoryIncludesUninstalled(t *testing.T) {
 		t.Fatalf("生效中的 live 不该带 uninstalledAt：%q", liveGroup.UninstalledAt)
 	}
 
-	// ③ include 只认 uninstalled 一个值：其它值 400 value_invalid（不静默回落默认）。
 	for _, path := range []string{"/" + slug + "/installs?include=nope", "/" + slug + "/releases/live?include=nope"} {
 		rec := env.do(t, "GET", env.path(path), nil)
 		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), reasonValueInvalid) {
@@ -204,7 +199,6 @@ func TestPlaybookReleaseDetailUninstalledReadable(t *testing.T) {
 		t.Fatalf("decode 回执: %v", err)
 	}
 
-	// 对照组：生效中的详情，带不带 include 完全一样（这是「逐字不变」的机制）。
 	activeDefault, activeRaw := env.releaseDetailWith(t, slug, "gone", "")
 	if activeDefault.ObjectsGone || activeDefault.UninstalledAt != "" || strings.Contains(activeRaw, "objectsGone") {
 		t.Fatalf("生效中的详情不得带已卸载视图字段：%s", activeRaw)
@@ -218,7 +212,6 @@ func TestPlaybookReleaseDetailUninstalledReadable(t *testing.T) {
 		t.Fatalf("卸载应 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// 缺省口径不变：已卸载 → 404 release_not_found。
 	rec := env.do(t, "GET", env.path("/"+slug+"/releases/gone"), nil)
 	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "release_not_found") {
 		t.Fatalf("已卸载的详情缺省应 404 release_not_found, got %d: %s", rec.Code, rec.Body.String())
@@ -241,7 +234,6 @@ func TestPlaybookReleaseDetailUninstalledReadable(t *testing.T) {
 	if len(doc.Groups) == 0 || len(doc.Groups[0].Objects.Capabilities) != 0 || len(doc.Groups[0].Objects.Sources) != 0 {
 		t.Fatalf("每个参数组的 objects 也要为空：%+v", doc.Groups)
 	}
-	// pinned 来自回执：2 能力（带 version/digest）+ 1 源（只带 kind）。
 	if len(doc.Pinned) != 3 {
 		t.Fatalf("pinned 应有 2 能力 + 1 源，got %+v", doc.Pinned)
 	}
@@ -266,7 +258,6 @@ func TestPlaybookReleaseDetailUninstalledReadable(t *testing.T) {
 		t.Fatalf("pinned 分布不对：caps=%d srcs=%d", caps, srcs)
 	}
 
-	// 验收 3：详情页的「查看 YAML（安装时）」真的能下到安装时快照（含 installId）。
 	yamlRec := env.do(t, "GET", env.path("/"+slug+"/releases/gone/yaml?as=installed"), nil)
 	if yamlRec.Code != http.StatusOK {
 		t.Fatalf("as=installed 应 200, got %d: %s", yamlRec.Code, yamlRec.Body.String())

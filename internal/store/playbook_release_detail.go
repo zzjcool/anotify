@@ -29,10 +29,9 @@ type PlaybookReleaseGroups struct {
 	Release         string
 	Groups          []PlaybookReleaseGroup
 	Uninstalled     bool
-	// UninstalledAt 是这个 release 全部回执都已卸载时的最新卸载时刻（unix 秒，#553；未卸载为 0）。
+	// UninstalledAt / Receipts 供详情页用：最新卸载时刻（unix 秒，未卸载为 0）+ 扁平回执（安装顺序）。
 	UninstalledAt int64
-	// Receipts 是全部回执的扁平列表（安装顺序），供详情页合并安装时快照。
-	Receipts []playbook.Receipt
+	Receipts      []playbook.Receipt
 }
 
 // GetPlaybookReleaseGroups 按 (ns, slug, release) 读回执并折叠成参数组。
