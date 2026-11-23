@@ -1311,8 +1311,10 @@ paths:
         - `pin_missing_source`：某个 pinned 源不存在；
         - `restore_conflict`：同名**同版本**的能力已存在且正文不同（可见行 digest ≠ 快照 digest）。
 
-        `details.causes[]` 的 `field` 形如 `pinned.capabilities[0]` / `pinned.sources[1]`，
+        `details.causes[]` 的 `field` 形如 `pinned.capabilities[0]` / `pinned.sources[1]`：
+        下标是该对象在**这一类 pinned 序列**里的槽位（坏的是第二个对象就报 `[1]`，不是「第几条失败」）；
         对象身份（`kind` / `name` / `version`）与两边 digest 写在 `message` 字面里。
+        `already_installed` 是整请求级条件（不是某个对象坏了），不带 `causes`。
       requestBody:
         required: true
         content:
