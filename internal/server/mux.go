@@ -423,6 +423,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	newPlaybookAPI(deps).register(mux)
 	newNamespaceAPI(deps).register(mux)
 	newTaskAPI(deps).register(mux)
+	newSecretAPI(deps).register(mux)
 	// 保留域读模型（§8.4）：stats / orphans / deployments。不是资源，也不套信封。
 	newRetainedReadAPI(deps).register(mux)
 	// Node 域多一步注入：它是升级源（agent 二进制）的消费方。

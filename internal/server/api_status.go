@@ -139,6 +139,21 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		return
 	}
 
+	// #554：被源引用的凭据**不删**。causes 逐条列引用者（源名），客户端据此改 secretRef。
+	var secretInUse *store.NamespaceSecretInUseError
+	if errors.As(err, &secretInUse) {
+		causes := make([]statusCause, 0, len(secretInUse.Sources))
+		for _, src := range secretInUse.Sources {
+			causes = append(causes, statusCause{
+				Reason:  reasonSecretInUse,
+				Field:   "source",
+				Message: fmt.Sprintf("源 %q 引用它（先改该源的 secretRef 再删）", src),
+			})
+		}
+		writeStatus(w, http.StatusConflict, reasonSecretInUse, secretInUse.Error(), &statusDetails{Causes: causes})
+		return
+	}
+
 	switch {
 	case errors.Is(err, store.ErrAuthRequired):
 		writeStatus(w, http.StatusUnauthorized, reasonUnauthorized, "authentication required", nil)
@@ -164,6 +179,8 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		writeStatus(w, http.StatusNotFound, reasonNotFound, "not found", nil)
 	case errors.Is(err, store.ErrSourceNotFound):
 		writeStatus(w, http.StatusNotFound, reasonNotFound, "source not found", nil)
+	case errors.Is(err, store.ErrNamespaceSecretNotFound):
+		writeStatus(w, http.StatusNotFound, reasonSecretAbsent, "namespace secret not found", nil)
 	case errors.Is(err, store.ErrSourceNameTaken):
 		writeStatus(w, http.StatusConflict, "source_name_used", "source name already used", nil)
 	case errors.Is(err, store.ErrSourceKindImmutable):
