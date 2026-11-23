@@ -341,7 +341,7 @@ type Receipt struct {
 	Notes        []Note           `json:"notes"`
 	// Dependencies 是这次安装解析到的外部依赖（恒为 []，不是 null：空列表纪律）。
 	Dependencies []Dependency `json:"dependencies"`
-	RestoredFrom string `json:"restoredFrom,omitempty"` // 只有按快照重装（#561）才有：被复原的那次 install id
+	RestoredFrom string       `json:"restoredFrom,omitempty"` // 只有按快照重装（#561）才有：被复原的那次 install id
 }
 
 // emptyCreated 保证 created / skipped 的列表序列化成 `[]` 而不是 `null`（空列表纪律）。
