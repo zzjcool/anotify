@@ -420,7 +420,6 @@ async function putPackage(ctx, slug, files, why) {
 async function partVersions(ctx) {
 	console.log("--- 10. 包版本历史 + 按版本安装（#511）---");
 	const slug = "pb-versions";
-	// 名字带 release：三份实例各自一行（release va/vb/vc 是本段专有，不与其他段撞名）。
 	const names = {
 		capability: "{{release.name}}-{{values.project}}-review",
 		source: "{{release.name}}-{{values.project}}-on-push",
@@ -434,7 +433,6 @@ async function partVersions(ctx) {
 
 	await createPackage(ctx, slug, bundle(1, "echo v1"));
 
-	// 建包时就在历史里写出第一条。
 	let list = await readVersions(ctx, slug, "建包后");
 	H.eq("建包后历史行数 = 1", list.total, 1);
 	H.eq("建包后当前版本 = 1", list.currentVersion, 1);
@@ -459,7 +457,6 @@ async function partVersions(ctx) {
 		String(capabilityRunBody(ctx, "va-demo-review")),
 	);
 
-	// 改包成 v2（内容变化）。
 	await putPackage(ctx, slug, bundle(2, "echo v2"), "改包成 v2");
 	list = await readVersions(ctx, slug, "改包后");
 	H.eq("内容变了之后历史行数 = 2", list.total, 2);
@@ -516,7 +513,6 @@ async function partVersions(ctx) {
 	H.eq("同内容保存后仍只有 2 版", again.total, 2);
 	H.eq("同内容保存不重写历史行（createdAt 不变）", byVersion(again, 2).createdAt, stampBefore);
 
-	// 版本不存在的错误面：404 + 0 写。
 	const capsBefore = V.countRows(ctx.dbPath, "capability_versions");
 	const missing = await installPinned(ctx, slug, "vd", 9);
 	V.expectReason("按不存在的版本装 → 404 version_not_found", missing, 404, "version_not_found");
@@ -971,9 +967,158 @@ async function partReleaseYAML(ctx) {
 	H.check("0 对象只有头注释且 objects: 0", zero.text.includes("objects: 0") && !zero.text.includes("---"), zero.text);
 }
 
+// readReleaseDetail 读一份实例的详情（#548），返回 JSON 文档。
+async function readReleaseDetail(ctx, slug, rel, what) {
+	const r = await H.req(ctx.base, PB.release(slug, rel), { session: ctx.session });
+	V.expectStatus(`${what} → 200`, r, 200);
+	return r.json || {};
+}
+
+async function partReleaseDetail(ctx) {
+	console.log("--- 12. 实例详情端点与按参数组导出（#548）---");
+	const capTpl = "{{release.name}}-{{values.project}}-review";
+	const srcTpl = "{{release.name}}-{{values.project}}-on-push";
+	const capOf = (rel, project) => `${rel}-${project}-review`;
+	const srcOf = (rel, project) => `${rel}-${project}-on-push`;
+	const pack = (slug, cap, src) => ({
+		"playbook.yaml": entryDoc(slug, ["capabilities/review.yaml"], ["sources/on-push.yaml"]),
+		"capabilities/review.yaml": capabilityDoc(cap, []),
+		"sources/on-push.yaml": sourceDoc(src, [cap]),
+	});
+
+	// 两份 release 装同一套模板：详情只该看见自己那一份对象（归属由回执 created 决定，不按前缀猜）。
+	const slug = "pb-detail";
+	await createPackage(ctx, slug, pack(slug, capTpl, srcTpl));
+	const receipts = {};
+	for (const rel of ["blue", "green"]) {
+		const r = await install(ctx, slug, rel, { project: rel });
+		V.expectStatus(`release ${rel} 安装 → 200`, r, 200);
+		receipts[rel] = r.json || {};
+	}
+
+	const beforeReads = dbFingerprint(ctx.dbPath);
+	for (const rel of ["blue", "green"]) {
+		const other = rel === "blue" ? "green" : "blue";
+		const detail = await readReleaseDetail(ctx, slug, rel, `release ${rel} 的详情`);
+		H.eq(`release ${rel} 详情回显自己的 release`, detail.release, rel);
+		H.eq(`release ${rel} 详情 playbook.name 是包 slug`, detail.playbook?.name, slug);
+		H.eq(`release ${rel} 只有一套 values（params.groups）`, detail.params?.groups, 1);
+		H.check(
+			`release ${rel} 详情的 valuesDigest 非空`,
+			typeof detail.valuesDigest === "string" && detail.valuesDigest.length > 0,
+			String(detail.valuesDigest),
+		);
+		H.eq(`release ${rel} 详情 params.digest 与顶层 valuesDigest 同值`, detail.params?.digest, detail.valuesDigest);
+		H.check(
+			`release ${rel} 详情的 installedAt 能被 Date.parse 解出`,
+			typeof detail.installedAt === "string" && !Number.isNaN(Date.parse(detail.installedAt)),
+			String(detail.installedAt),
+		);
+		H.eq(`release ${rel} 详情 lastInstallId 就是那次安装的回执`, detail.lastInstallId, receipts[rel].install?.id);
+
+		const caps = detail.objects?.capabilities || [];
+		const srcs = detail.objects?.sources || [];
+		const capNames = caps.map((c) => c.name);
+		const srcNames = srcs.map((s) => s.name);
+		H.eq(`release ${rel} 装出的能力就是自己那一个`, capNames, [capOf(rel, rel)]);
+		H.eq(`release ${rel} 装出的源就是自己那一个`, srcNames, [srcOf(rel, rel)]);
+		H.check(
+			`release ${rel} 的能力名全部以 ${rel}- 开头`,
+			capNames.length > 0 && capNames.every((n) => n.startsWith(`${rel}-`)),
+			capNames.join(","),
+		);
+		H.check(`release ${rel} 的详情不含 ${other} 的能力`, !capNames.some((n) => n.startsWith(`${other}-`)), capNames.join(","));
+		H.check(`release ${rel} 的详情不含 ${other} 的源`, !srcNames.some((n) => n.startsWith(`${other}-`)), srcNames.join(","));
+		H.eq(`release ${rel} 的源 kind 是 webhook`, srcs[0]?.kind, "webhook");
+		for (const cap of caps) {
+			H.check(`能力 ${cap.name} 带 sha256 摘要`, typeof cap.digest === "string" && cap.digest.startsWith("sha256:"), String(cap.digest));
+			H.check(`能力 ${cap.name} 的 version ≥ 1`, Number.isInteger(cap.version) && cap.version >= 1, String(cap.version));
+		}
+
+		for (const cap of caps) {
+			const one = await H.req(ctx.base, V.P.capability(NS, cap.name), { session: ctx.session });
+			V.expectStatus(`单对象端点读能力 ${cap.name} → 200`, one, 200);
+			H.eq(`详情里 ${cap.name} 的版本与单对象端点一致`, one.json?.metadata?.version, cap.version);
+		}
+		for (const src of srcs) {
+			const one = await H.req(ctx.base, V.P.source(NS, src.name), { session: ctx.session });
+			V.expectStatus(`单对象端点读源 ${src.name} → 200`, one, 200);
+			H.eq(`详情里 ${src.name} 的 kind 与单对象端点一致`, one.json?.spec?.kind, src.kind);
+		}
+
+		const rcpt = await H.req(ctx.base, PB.installById(slug, detail.lastInstallId), { session: ctx.session });
+		V.expectStatus(`release ${rel} 那次安装的回执 → 200`, rcpt, 200);
+		H.eq(`release ${rel} 回执的 valuesDigest 与详情同值`, rcpt.json?.valuesDigest, detail.valuesDigest);
+	}
+	H.eq("两份 release 并存 → 实例清单仍是 2 组", (await readInstalls(ctx, slug, "详情包")).total, 2);
+	H.eq("详情 / 单对象 / 回执 / 清单的 GET 都没落库（库指纹逐字节相同）", dbFingerprint(ctx.dbPath), beforeReads);
+
+	// 同一 release 两套 values 折叠成两组：每组的 objects 来自该组回执，组间不串。
+	const grouped = "pb-detail-groups";
+	const gsRel = "gs";
+	await createPackage(ctx, grouped, pack(grouped, capTpl, srcTpl));
+	for (const project of ["one", "two"]) {
+		V.expectStatus(`release ${gsRel} 用 project=${project} 安装 → 200`, await install(ctx, grouped, gsRel, { project }), 200);
+	}
+	const beforeGroups = dbFingerprint(ctx.dbPath);
+	const gdetail = await readReleaseDetail(ctx, grouped, gsRel, `release ${gsRel} 的两组详情`);
+	H.eq("同一 release 两套 values → params.groups", gdetail.params?.groups, 2);
+	H.eq("groups 明细也是 2 组", (gdetail.groups || []).length, 2);
+	const digests = (gdetail.groups || []).map((g) => g.valuesDigest);
+	H.check("两组的 valuesDigest 不同", digests.length === 2 && digests[0] !== digests[1], digests.join(","));
+	H.eq("顶层描述的是最近安装的那一组（project=two）", gdetail.groups?.[0]?.values?.project, "two");
+	H.eq("顶层 valuesDigest 就是第一组的摘要", gdetail.valuesDigest, digests[0]);
+	const groupOf = (project) => (gdetail.groups || []).find((g) => g.values?.project === project) || {};
+	for (const project of ["one", "two"]) {
+		const other = project === "one" ? "two" : "one";
+		const g = groupOf(project);
+		const capNames = (g.objects?.capabilities || []).map((c) => c.name);
+		const srcNames = (g.objects?.sources || []).map((s) => s.name);
+		H.eq(`组 project=${project} 的能力带自己那套 values 的前缀`, capNames, [capOf(gsRel, project)]);
+		H.eq(`组 project=${project} 的源带自己那套 values 的前缀`, srcNames, [srcOf(gsRel, project)]);
+		H.check(
+			`组 project=${project} 不串另一组的对象`,
+			!capNames.concat(srcNames).some((n) => n.includes(`-${other}-`)),
+			capNames.concat(srcNames).join(","),
+		);
+		H.eq(`组 project=${project} 的 attempts = 1`, g.attempts, 1);
+		H.check(`组 project=${project} 的 lastInstallId 非空`, typeof g.lastInstallId === "string" && g.lastInstallId.length > 0, String(g.lastInstallId));
+	}
+
+	for (const project of ["one", "two"]) {
+		const other = project === "one" ? "two" : "one";
+		const path = PB.releaseYAML(grouped, gsRel) + "?valuesDigest=" + encodeURIComponent(groupOf(project).valuesDigest);
+		const r = await H.req(ctx.base, path, { session: ctx.session });
+		V.expectStatus(`按参数组导出（project=${project}）→ 200`, r, 200);
+		H.check(
+			`按组导出只含 project=${project} 的对象`,
+			r.text.includes(capOf(gsRel, project)) && !r.text.includes(`${gsRel}-${other}-`),
+			r.text.slice(0, 300),
+		);
+	}
+	const allGroups = await H.req(ctx.base, PB.releaseYAML(grouped, gsRel), { session: ctx.session });
+	V.expectStatus("不带 valuesDigest 的导出 → 200", allGroups, 200);
+	H.check(
+		"不带 valuesDigest 时两组对象都在（并集，不是只剩第一组）",
+		allGroups.text.includes(capOf(gsRel, "one")) && allGroups.text.includes(capOf(gsRel, "two")),
+		allGroups.text.slice(0, 300),
+	);
+	H.eq("详情与按组导出的 GET 都没落库（库指纹逐字节相同）", dbFingerprint(ctx.dbPath), beforeGroups);
+
+	// 404 面与「卸载后详情消失」；DELETE 会写库，所以卸载之后重新取指纹，只断言读不改库。
+	const beforeNope = dbFingerprint(ctx.dbPath);
+	V.expectReason("release 不存在 → 404 release_not_found", await H.req(ctx.base, PB.release(slug, "nope"), { session: ctx.session }), 404, "release_not_found");
+	H.eq("404 的详情读不改库（库指纹逐字节相同）", dbFingerprint(ctx.dbPath), beforeNope);
+	V.expectStatus("卸载 release blue → 200", await uninstall(ctx, slug, "blue"), 200);
+	const afterUninstall = dbFingerprint(ctx.dbPath);
+	V.expectReason("已卸载的 release 详情 → 404 release_not_found", await H.req(ctx.base, PB.release(slug, "blue"), { session: ctx.session }), 404, "release_not_found");
+	V.expectStatus("blue 卸载后 green 的详情仍能读 → 200", await H.req(ctx.base, PB.release(slug, "green"), { session: ctx.session }), 200);
+	H.eq("卸载之后的这几次读都不改库（库指纹逐字节相同）", dbFingerprint(ctx.dbPath), afterUninstall);
+}
+
 async function main() {
 	H.startTimer();
-	console.log("=== SUITE: playbook_release（#505 安装 release 身份 / #510 按 release 卸载 / #511 包版本历史 / #534 依赖锁）===");
+	console.log("=== SUITE: playbook_release（#505 安装 release 身份 / #510 按 release 卸载 / #511 包版本历史 / #534 依赖锁 / #548 实例详情）===");
 	const server = await H.startServer({ suiteName: SUITE, rpId: "localhost" });
 	try {
 		const seeded = H.seed(server.dbPath, "e2e");
@@ -988,6 +1133,7 @@ async function main() {
 		await partUninstallIdempotent(ctx);
 		await partUninstallErrors(ctx);
 		await partReleaseYAML(ctx);
+		await partReleaseDetail(ctx);
 		await partVersions(ctx);
 		await partRequires(ctx);
 	} finally {
