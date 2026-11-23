@@ -1,52 +1,20 @@
 #!/usr/bin/env node
-/* SUITE: namespace_secrets — 命名空间凭据 CRUD（#554）
- *
- * 被测面（`api/resource.yaml`「secrets（#554）」一节冻结的四条端点）：
- *   GET    /v1/namespaces/{ns}/secrets           → 200 **非信封** {items:[{name,updatedAt,usedBy}]}
- *   GET    /v1/namespaces/{ns}/secrets/{name}    → 200 读投影；不存在 404 reason=secret_not_found
- *   PUT    /v1/namespaces/{ns}/secrets/{name}    → 200 读投影（**永不回显 value**）
- *   DELETE /v1/namespaces/{ns}/secrets/{name}    → 204；被源引用 409 reason=secret_in_use
- *
- * 覆盖 issue #554 验收里**能由黑盒 HTTP 证明**的那几条（编号与 issue 对齐）：
- *   1  值只写不读：PUT/GET/列表/轮换的响应里只有 name/updatedAt/usedBy
- *       ⇒ A2/A3（空列表形状）、B1–B14（三键投影）、G1–G6（轮换不回显）
- *   3  被源引用不删：409 secret_in_use + causes 点名源；换掉源 secretRef 后 204，再读 404
- *       ⇒ C1–C19
- *   4  非法名字 → 400 且 details.causes[].field == "name" ⇒ D1–D3
- *   5  老路径 config.secret + secretRef 一次写入仍能创建（同一份 store 写入）
- *       ⇒ E1–E9
- *   6  明文扫描：本套件**所有响应 body** 拼起来 grep 不到任何一个写入的值 ⇒ G7–G9
- *   7  匿名 401（身份域冻结形状 {error:"未登录"}）⇒ F1–F4
- *       （401 的形状是身份域而不是资源 Status：session 中间件的 http.Error 写出，见
- *        docs/contracts/v4/AUTH-HANDOFF.md；断言方式与 api_contract 的 expectAnon401 同源。）
- *
- * 刻意**不**覆盖：『轮换对下一轮 poll 立即生效』——那需要真实到点的上游并把套件拖到分钟级，
- * 已由 `internal/server/resource_secret_test.go::TestSecretResourceRotationTakesEffectOnNextPoll`
- * 用真 Poller 打真 httptest 上游覆盖。本套件所有 poll 源的 schedule 都排到「1 月 1 日 0 点」，
- * 保证测试窗口内**不会**触发任何真实外网请求（也不等排期）。
- *
- * 明文口径：每条写进去的值都是 `tok-e2e-<tag>-<随机>` 且互不相同；随机后缀让「哪条断言
- * 意外把值写进了响应」不会因为长得像别的测试常量而被扫描放过。
- */
+
+
 import * as H from "../lib/harness.mjs";
 import * as V from "../lib/v4.mjs";
 
 const API_VERSION = "anotify/v1";
 const seg = (v) => encodeURIComponent(String(v));
 
-// 凭据路径（v4 的 ns 在**路径**里；凭据不是信封资源，lib/v4.mjs 的 P 表里没有它们）。
 const secretsPath = (ns) => `/v1/namespaces/${seg(ns)}/secrets`;
 const secretPath = (ns, name) => `${secretsPath(ns)}/${seg(name)}`;
 const sourcesPath = (ns) => `/v1/namespaces/${seg(ns)}/sources`;
 const sourcePath = (ns, name) => `${sourcesPath(ns)}/${seg(name)}`;
 
-// 凭据值：形状固定（可 grep）、后缀随机（互不相同）、长度远短于 check-secrets 的
-// 「Bearer/token 后跟 ≥32 字符随机串」判据 —— 它是夹具，不是秘密。
 const rand = () => Math.random().toString(36).slice(2, 10);
 const secretValue = (tag) => `tok-e2e-${tag}-${rand()}`;
 
-// poll 源的 config：schedule 排到 1 月 1 日 0 点，本套件窗口内绝不触发真实请求。
-// url 用 example.com（公网 https，过 SSRF 判据又不依赖本机任何端口）。
 function pollConfig(extra = {}) {
 	return {
 		url: "https://example.com/feed",
@@ -64,8 +32,6 @@ function sourceBody(name, config) {
 	};
 }
 
-// expectAnon401 钉住「会话层未登录」的冻结形状：401 + `{error:"未登录"}`。
-// 与 api_contract.mjs 的同名 helper 同源（身份域的错误体不是资源 Status，没有 reason）。
 function expectAnon401(name, res) {
 	H.eq(name, res.status, 401);
 	const err = res.json?.error;
@@ -78,10 +44,10 @@ function expectAnon401(name, res) {
 }
 
 async function main() {
-	console.log("=== SUITE: namespace_secrets（命名空间凭据 CRUD · #554）===");
+	console.log("=== SUITE: namespace_credentials（命名空间凭据 CRUD · #554）===");
 	H.startTimer();
 	const server = await H.startServer({
-		suiteName: "namespace_secrets",
+		suiteName: "namespace_credentials",
 		rpId: "localhost",
 	});
 	const B = server.base;
@@ -92,9 +58,6 @@ async function main() {
 	if (!ns) throw new Error("无法解析默认命名空间（GET /v1/namespaces 列表信封）");
 	const NS = ns.slug;
 
-	// bodies 是本套件**所有响应 body** 的池子：验收 6 的明文扫描扫的就是它。
-	// 收进 call() 而不是在末尾重放一遍，是为了让「某个中间步骤泄露了值」也被抓到
-	// （只扫最终读面会漏掉错误体 / 源响应 / 409 这些面）。
 	const bodies = [];
 	const call = async (path, { anon = false, ...opts } = {}) => {
 		const res = await H.req(B, path, anon ? opts : { session, ...opts });
@@ -108,7 +71,6 @@ async function main() {
 	const v2 = secretValue("gh2");
 	const legacy = secretValue("legacy");
 
-	// ---------- A. 空列表：非信封 + items 是 []（不是 null）----------
 	const empty = await call(L());
 	V.expectStatus("A1 空列表 → 200", empty, 200);
 	H.check(
@@ -122,7 +84,6 @@ async function main() {
 		JSON.stringify(empty.json),
 	);
 
-	// ---------- B. PUT 创建 → 读投影只有 name/updatedAt/usedBy（验收 1/4）----------
 	const created = await call(S("gh-token"), { method: "PUT", body: { value: v1 } });
 	V.expectStatus("B1 PUT 新建凭据 → 200", created, 200);
 	H.eq("B2 读投影的 name 就是路径里的名字", created.json?.name, "gh-token");
@@ -171,7 +132,6 @@ async function main() {
 	H.check("B13 列表正文里没有值", !listed.text.includes(v1), "响应正文含明文值");
 	H.eq("B14 单条与列表的 updatedAt 是同一个事实", row.updatedAt, one.json?.updatedAt);
 
-	// ---------- C. secretRef 引用 → usedBy；被引用 DELETE 409（验收 3）----------
 	const srcName = "poll-src";
 	const madeSource = await call(sourcesPath(NS), {
 		body: sourceBody(
@@ -215,7 +175,6 @@ async function main() {
 	const stillThere = await call(S("gh-token"));
 	V.expectStatus("C9 拒删之后凭据还在（GET → 200）", stillThere, 200);
 
-	// 换掉源的 secretRef（PATCH 对 poll 是整份 config 替换，带 CAS 令牌）→ 引用解除
 	const cur = await call(sourcePath(NS, srcName));
 	V.expectStatus("C10 读源取 CAS 令牌 → 200", cur, 200);
 	const rv = cur.json?.metadata?.resourceVersion;
@@ -253,7 +212,6 @@ async function main() {
 		JSON.stringify(V.items(listGone)),
 	);
 
-	// ---------- D. 写面边界（验收 4 + 语义 5：名字规则与 secretRef 同一份）----------
 	const badName = await call(S("-bad"), { method: "PUT", body: { value: v1 } });
 	V.expectReason("D1 非法名字（-bad）PUT → 400", badName, 400, "value_invalid");
 	const nameCauses = badName.json?.details?.causes || [];
@@ -290,7 +248,6 @@ async function main() {
 		"secret_not_found",
 	);
 
-	// ---------- E. 老路径 config.secret + secretRef 一次写入（验收 5）----------
 	const legacySrc = "legacy-src";
 	const legacySource = await call(sourcesPath(NS), {
 		body: sourceBody(
@@ -349,7 +306,6 @@ async function main() {
 		204,
 	);
 
-	// ---------- F. 匿名一律 401（验收 7）----------
 	expectAnon401("F1 匿名 GET 列表 → 401", await call(L(), { anon: true }));
 	expectAnon401(
 		"F2 匿名 GET 单条 → 401",
@@ -364,7 +320,6 @@ async function main() {
 		await call(S("anon-probe"), { anon: true, method: "DELETE" }),
 	);
 
-	// ---------- G. 轮换不回显 + 明文扫描总结（验收 1 / 验收 6）----------
 	const rotCreate = await call(S("rot-token"), { method: "PUT", body: { value: v1 } });
 	V.expectStatus("G1 PUT 新建（轮换前）→ 200", rotCreate, 200);
 	const rotReplace = await call(S("rot-token"), { method: "PUT", body: { value: v2 } });
@@ -384,7 +339,6 @@ async function main() {
 		"响应正文含明文值",
 	);
 
-	// 验收 6 的判据：本套件所有响应 body 拼起来 grep 不到任何一个写入的值。
 	const seen = bodies.join("\n");
 	const leaked = [v1, v2, legacy].filter((v) => seen.includes(v));
 	H.check(
@@ -392,15 +346,13 @@ async function main() {
 		leaked.length === 0,
 		`泄露：${leaked.join(", ")}`,
 	);
-	// 反假绿：扫描必须在「真的有内容的池子」上跑。响应池里一定含凭据**名字**
-	// （读面投影），所以「一条都搜不到」不可能是池子为空导致的假通过。
 	H.check(
 		"G8 扫描池非空转（响应里确实有凭据名）",
 		seen.includes("gh-token") && seen.includes("rot-token") && bodies.length >= 20,
 		`bodies=${bodies.length}`,
 	);
 
-	const passed = H.summary("namespace_secrets");
+	const passed = H.summary("namespace_credentials");
 	server.stop();
 	process.exit(passed ? 0 : 1);
 }

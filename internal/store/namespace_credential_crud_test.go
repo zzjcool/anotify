@@ -10,9 +10,6 @@ import (
 	"github.com/zzjcool/anotify/internal/sourcespec"
 )
 
-// 凭据资源面（#554）：CRUD + 引用查询 + 审计。值与引用的语义在这里钉死——
-// server 只投影，老路径（config.secret + secretRef）与本面共用同一条值写入语句。
-
 func TestNamespaceSecretPutListGetRoundTrip(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -102,7 +99,6 @@ func TestNamespaceSecretUsageAndDeleteGuard(t *testing.T) {
 		t.Fatalf("拒删不得删掉它: %v", err)
 	}
 
-	// 把两个源的 secretRef 换掉（PATCH config 走既有写面）后再删。
 	if _, err := db.PutNamespaceSecret(ctx, nsID, "other", "tok2", ""); err != nil {
 		t.Fatalf("建替代凭据: %v", err)
 	}
@@ -137,7 +133,6 @@ func TestNamespaceSecretUsageAndDeleteGuard(t *testing.T) {
 	}
 }
 
-// 名字规则只有一份：新面与 config.secretRef.name 必须对同一批字符串给出同一结论。
 func TestNamespaceSecretNameRuleIsShared(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -164,7 +159,6 @@ func TestNamespaceSecretNameRuleIsShared(t *testing.T) {
 	}
 }
 
-// 老路径（config.secret + secretRef）行为逐字不变：仍能一次创建，且不产生新面的审计行。
 func TestNamespaceSecretLegacySourcePathUnchanged(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()

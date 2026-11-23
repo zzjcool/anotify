@@ -99,7 +99,7 @@ const CHROME_CLASS_HINT = undefined; // 已废弃：Chrome 类由 chromeSuites()
 export const HTTP_SUITES = [
 	"api_contract", "contract", "ws_protocol", "routing", "persistence", "security",
 	"edge_cases", "passkeys", "capacity", "orphans", "deploy", "live_agent", "node_v4",
-	"playbook_release", "namespace_secrets",
+	"playbook_release", "namespace_credentials",
 ];
 
 /**

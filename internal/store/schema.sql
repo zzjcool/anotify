@@ -293,7 +293,6 @@ CREATE TABLE IF NOT EXISTS capability_switches (
     enabled      INTEGER NOT NULL DEFAULT 1,
     reason       TEXT NOT NULL DEFAULT '',
     updated_at   INTEGER NOT NULL,
-    -- users.id；空串 = 非会话主体（命令行/系统），不伪造 system 用户。
     updated_by   TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (namespace_id, name)
 );
@@ -755,7 +754,7 @@ ALTER TABLE sources ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sources ADD COLUMN skipped_overlaps INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sources ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 
--- 命名空间凭据（#532 的 secretRef 指向它）：值只写不读，写入口只有 poll 的 config.secret。
+-- 命名空间凭据（#532 的 secretRef 指向它）：值只写不读；写入口是 poll 的 config.secret 与 PUT …/secrets/{name}。
 CREATE TABLE IF NOT EXISTS namespace_secrets (
     namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
     name         TEXT NOT NULL,
@@ -795,8 +794,6 @@ CREATE TABLE IF NOT EXISTS playbook_install_pinned (
 CREATE INDEX IF NOT EXISTS idx_playbook_pinned_lookup
     ON playbook_install_pinned(namespace_id, ref_kind, name, version);
 
--- 命名空间凭据的审计（#554）：创建/轮换/删除各一条，**不含值**（值只在 namespace_secrets.value）。
--- 凭据删了不删审计：它回答的是「谁在什么时候动过这个凭据名」，与凭据当前是否存在无关。
 -- +migration 9 secret_audit
 CREATE TABLE IF NOT EXISTS namespace_secret_audit (
     id           TEXT PRIMARY KEY,

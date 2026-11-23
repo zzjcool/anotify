@@ -90,9 +90,7 @@ const HTTP_SUITES = [
 	// → task.result → 日志 / 产物上传与私有下载 / 两种取消。
 	"node_v4",
 	"playbook_release",
-	// #554：命名空间凭据 CRUD 的纯 HTTP 面（值只写不读 / usedBy 引用 / 409 secret_in_use）。
-	// 不跑 Chrome、不起节点：它与 api_contract 的区别是「凭据域的四条端点 + 老路径仍能建」。
-	"namespace_secrets",
+	"namespace_credentials",
 ];
 const CHROME_SUITES = [
 	"i18n",
@@ -226,7 +224,7 @@ const SUITE_TIMEOUT_OVERRIDE = {
 	// capacity（#336）：保留期清理挂 30s 租约巡检 tick，三轮 ≈150s；默认 120s 会 SIGKILL。
 	capacity: 300_000,
 };
-// 注册套件数冻结（#338）：一次全量 = 31 个套件（#476 vars_ui，#505 playbook_release，#554 namespace_secrets）；
+// 注册套件数冻结（#338）：一次全量 = 31 个套件（#476 vars_ui，#505 playbook_release，#554 namespace_credentials）；
 // 增删套件要同步 AUTHORITY 清单（离线核对 --authority-plan），否则启动即 exit 2。
 const SUITE_REGISTRY_SIZE = 31;
 const RESULTS_DIR =

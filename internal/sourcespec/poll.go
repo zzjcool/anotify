@@ -232,9 +232,6 @@ func checkHeaderText(text string, isName bool) error {
 	return nil
 }
 
-// ValidateSecretName 是命名空间凭据名的唯一校验（#554）：`config.secretRef.name` 与
-// `PUT /v1/namespaces/{ns}/secrets/{name}` 共用它——两份规则迟早分叉成「同一个名字在一条面能建、
-// 另一条面不能」。错误文本直接面向调用方（进 details.causes[].message）。
 func ValidateSecretName(name string) error {
 	if name == "" {
 		return errors.New("name 必填（命名空间凭据的名字）")

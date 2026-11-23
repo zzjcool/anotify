@@ -12,7 +12,7 @@ import (
 	"github.com/zzjcool/anotify/internal/sourcespec"
 )
 
-// 命名空间凭据（#532）：值只写不读（不进 config、不进回显、不进日志），写入口只有 poll 的 config.secret。
+// 命名空间凭据（#532/#554）：值只写不读（不进 config/回显/日志/审计），写入口 = poll 的 config.secret 与 PUT …/secrets/{name}。
 var ErrNamespaceSecretNotFound = errors.New("store: 命名空间凭据不存在")
 
 func (d *DB) UpsertNamespaceSecret(ctx context.Context, namespaceID, name, value string) error {
@@ -101,9 +101,6 @@ func resolveSourceSecretOn(ctx context.Context, ex queryExec, namespaceID, kind 
 	return nil
 }
 
-// ---------- 凭据资源面（#554）：CRUD + 引用查询 + 审计 ----------
-
-// NamespaceSecretFact 是凭据的读投影：**没有 value**（值只写不读）。
 type NamespaceSecretFact struct {
 	NamespaceID string
 	Name        string
@@ -112,14 +109,12 @@ type NamespaceSecretFact struct {
 	UsedBy      []string
 }
 
-// 审计动作的闭集（与 schema.sql 的 CHECK 同口径）。
 const (
 	NamespaceSecretCreated = "created"
 	NamespaceSecretRotated = "rotated"
 	NamespaceSecretDeleted = "deleted"
 )
 
-// NamespaceSecretAuditEntry 是 namespace_secret_audit 的一行（append-only，不含值）。
 type NamespaceSecretAuditEntry struct {
 	ID          string
 	NamespaceID string
@@ -129,7 +124,6 @@ type NamespaceSecretAuditEntry struct {
 	CreatedAt   int64
 }
 
-// NamespaceSecretInUseError：被源引用的凭据**不删**（409 secret_in_use）。
 type NamespaceSecretInUseError struct {
 	Name    string
 	Sources []string
@@ -140,7 +134,6 @@ func (e *NamespaceSecretInUseError) Error() string {
 		e.Name, len(e.Sources), strings.Join(e.Sources, ", "))
 }
 
-// ListNamespaceSecrets 列本 ns 的凭据读投影（按名字排序，UsedBy 已算好）。
 func (d *DB) ListNamespaceSecrets(ctx context.Context, namespaceID string) ([]NamespaceSecretFact, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -171,7 +164,6 @@ func (d *DB) ListNamespaceSecrets(ctx context.Context, namespaceID string) ([]Na
 	return out, nil
 }
 
-// GetNamespaceSecretMeta 读单条凭据的读投影（不含值）。
 func (d *DB) GetNamespaceSecretMeta(ctx context.Context, namespaceID, name string) (*NamespaceSecretFact, error) {
 	return getNamespaceSecretMetaOn(ctx, d, namespaceID, name)
 }
@@ -198,7 +190,6 @@ func getNamespaceSecretMetaOn(ctx context.Context, ex queryExec, namespaceID, na
 	return f, nil
 }
 
-// secretUsageOn 扫本 ns 的源，按 config.secretRef.name 归组（Go 侧解析，不依赖 SQLite json1）。
 func secretUsageOn(ctx context.Context, ex queryExec, namespaceID string) (map[string][]string, error) {
 	rows, err := ex.queryContext(ctx, `SELECT name, kind, config FROM sources WHERE namespace_id = ?`, namespaceID)
 	if err != nil {
@@ -226,7 +217,6 @@ func secretUsageOn(ctx context.Context, ex queryExec, namespaceID string) (map[s
 	return usage, nil
 }
 
-// usedByOf 取引用者（空列表是 [] 不是 nil：空列表纪律）。
 func usedByOf(usage map[string][]string, name string) []string {
 	if names := usage[name]; len(names) > 0 {
 		return names
@@ -234,8 +224,6 @@ func usedByOf(usage map[string][]string, name string) []string {
 	return []string{}
 }
 
-// PutNamespaceSecret 新建或轮换：值写入走 upsertNamespaceSecretOn（与老路径**同一条语句**），
-// 同事务补一条审计。created 由事务内「行在不在」判（并发两次不会都报 created）。
 func (d *DB) PutNamespaceSecret(ctx context.Context, namespaceID, name, value, actorID string) (bool, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return false, ErrNamespaceRequired
@@ -276,7 +264,6 @@ func (d *DB) PutNamespaceSecret(ctx context.Context, namespaceID, name, value, a
 	return created, nil
 }
 
-// DeleteNamespaceSecret 删除一个未被引用的凭据。被任一源引用 → *NamespaceSecretInUseError（不删）。
 func (d *DB) DeleteNamespaceSecret(ctx context.Context, namespaceID, name, actorID string) error {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return ErrNamespaceRequired
@@ -320,7 +307,6 @@ func (d *DB) DeleteNamespaceSecret(ctx context.Context, namespaceID, name, actor
 	return nil
 }
 
-// appendNamespaceSecretAuditOn 是凭据审计的唯一写入实现：只记 name/action/actor，**不记值**。
 func appendNamespaceSecretAuditOn(ctx context.Context, ex queryExec, namespaceID, name, action, actorID string) error {
 	switch action {
 	case NamespaceSecretCreated, NamespaceSecretRotated, NamespaceSecretDeleted:
@@ -336,7 +322,6 @@ func appendNamespaceSecretAuditOn(ctx context.Context, ex queryExec, namespaceID
 	return nil
 }
 
-// ListNamespaceSecretAudit 读审计（最新在前；name 为空 = 本 ns 全部）。
 func (d *DB) ListNamespaceSecretAudit(ctx context.Context, namespaceID, name string, limit int) ([]NamespaceSecretAuditEntry, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -353,7 +338,6 @@ func (d *DB) ListNamespaceSecretAudit(ctx context.Context, namespaceID, name str
 		q += ` AND name = ?`
 		args = append(args, name)
 	}
-	// 同一秒内多次操作要按插入顺序（rowid）决出先后：id 是随机 base62，排序不可用。
 	q += ` ORDER BY created_at DESC, rowid DESC LIMIT ?`
 	args = append(args, limit)
 	rows, err := d.queryContext(ctx, q, args...)

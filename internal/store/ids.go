@@ -114,7 +114,6 @@ func idHashSuffix(hash string) string {
 // 审计是 append-only 的高频人动作记录：id 只需唯一、不需要可读内容前缀。
 func NewCapabilityAuditID() string { return newID("aud") }
 
-// NewNamespaceSecretAuditID 生成凭据审计行 ID：saud_<base62>（同样只需唯一）。
 func NewNamespaceSecretAuditID() string { return newID("saud") }
 
 // NewCapabilityID 生成能力版本 ID：cap_<UTC 秒>_<hash8>（契约 §2.2 的形态）。

@@ -1,13 +1,5 @@
 package server
 
-// resource_secret_test.go 是 #554 的验收面：凭据 CRUD 的四条端点 + 六条语义。
-//
-// 夹具口径与 resource_source_test.go 一致：真 SQLite + 真 store + 真 route/source service，
-// 只把会话中间件换成「直接往 context 里放登录用户」——被替换的那一层不参与任何被测逻辑。
-// 轮换「立即生效」用**真 Poller.Sweep** 打真 httptest 上游（断言请求头），不用注释声称。
-//
-// 每条用例点名它守的验收号（issue #554「验收」1–7）。
-
 import (
 	"bytes"
 	"context"
@@ -123,7 +115,6 @@ func (e *secretResEnv) doc(rr *httptest.ResponseRecorder) map[string]any {
 	return out
 }
 
-// putSecret 走 HTTP 写一个凭据，返回读投影文档。
 func (e *secretResEnv) putSecret(name, value string) map[string]any {
 	e.t.Helper()
 	rr := e.request(http.MethodPut, e.secretPath(name), map[string]any{"value": value})
@@ -136,7 +127,6 @@ func (e *secretResEnv) putSecret(name, value string) map[string]any {
 	return e.doc(rr)
 }
 
-// createPollSource 走 HTTP 建一个 poll 源（config 由调用方给）。
 func (e *secretResEnv) createPollSource(name string, config map[string]any) *httptest.ResponseRecorder {
 	e.t.Helper()
 	return e.request(http.MethodPost, e.sourcesPath(), map[string]any{
@@ -160,7 +150,6 @@ func (e *secretResEnv) auditRows(name string) []store.NamespaceSecretAuditEntry 
 	return rows
 }
 
-// expectCauseField 断言 400 的 details.causes[] 里有指向该字段的一条。
 func expectCauseField(t *testing.T, rr *httptest.ResponseRecorder, field string) map[string]any {
 	t.Helper()
 	var body struct {
@@ -184,8 +173,6 @@ func expectCauseField(t *testing.T, rr *httptest.ResponseRecorder, field string)
 	return nil
 }
 
-// TestSecretResourceReadFaceHasNoValue 守验收 4 的读面一半 + 语义 1/5/6：
-// 四条端点里只有 name/updatedAt/usedBy，审计只记 name/action/actor。
 func TestSecretResourceReadFaceHasNoValue(t *testing.T) {
 	env := newSecretResEnv(t)
 	const v1 = "tok-first-9f1"
@@ -223,7 +210,6 @@ func TestSecretResourceReadFaceHasNoValue(t *testing.T) {
 		t.Fatalf("单条读回显了值或状态不对（%d）：%s", single.Code, single.Body.String())
 	}
 
-	// 轮换：响应仍不含新值，store 里是真新值。
 	env.putSecret("gh-token", v2)
 	if got, err := env.db.GetNamespaceSecret(context.Background(), env.nsID, "gh-token"); err != nil || got != v2 {
 		t.Fatalf("轮换后 store 里必须是新值：%q %v", got, err)
@@ -243,7 +229,6 @@ func TestSecretResourceReadFaceHasNoValue(t *testing.T) {
 	}
 }
 
-// TestSecretResourceDeleteGuardListsReferencingSources 守验收 3 + 语义 3。
 func TestSecretResourceDeleteGuardListsReferencingSources(t *testing.T) {
 	env := newSecretResEnv(t)
 	env.putSecret("gh-token", "tok-1")
@@ -288,7 +273,6 @@ func TestSecretResourceDeleteGuardListsReferencingSources(t *testing.T) {
 		t.Fatalf("拒删不得删掉凭据：%d %s", rr.Code, rr.Body.String())
 	}
 
-	// 先改源的 secretRef（PATCH 对 poll 是整份配置替换），再删。
 	cur := env.request(http.MethodGet, env.sourcesPath()+"/poll-src", nil)
 	if cur.Code != http.StatusOK {
 		t.Fatalf("读源取 CAS 令牌失败：%d %s", cur.Code, cur.Body.String())
@@ -325,8 +309,6 @@ func TestSecretResourceDeleteGuardListsReferencingSources(t *testing.T) {
 	}
 }
 
-// TestSecretResourceNameRuleSharedWithSecretRef 守验收 6 + 语义 5：非法名字 400 且 field=name，
-// 同一串名字在 config.secretRef 上被判非法（同一个校验函数的两个调用点）。
 func TestSecretResourceNameRuleSharedWithSecretRef(t *testing.T) {
 	env := newSecretResEnv(t)
 	for _, name := range []string{"-bad", "has%20space", strings.Repeat("a", 65)} {
@@ -354,7 +336,6 @@ func TestSecretResourceNameRuleSharedWithSecretRef(t *testing.T) {
 	}
 }
 
-// TestSecretResourceWriteBodyIsStrict 守 PUT 的入参边界（未知字段 / 缺 value / 空值 / 头注入）。
 func TestSecretResourceWriteBodyIsStrict(t *testing.T) {
 	env := newSecretResEnv(t)
 	cases := []struct {
@@ -382,8 +363,6 @@ func TestSecretResourceWriteBodyIsStrict(t *testing.T) {
 	}
 }
 
-// TestSecretResourceOldPathStillCreates 守验收 5：config.secret + secretRef 一次写入仍能创建，
-// 且用同一份 store 写入（读面看得见它、usedBy 指向那个源）。
 func TestSecretResourceOldPathStillCreates(t *testing.T) {
 	env := newSecretResEnv(t)
 	const legacy = "legacy-tok-77"
@@ -409,8 +388,6 @@ func TestSecretResourceOldPathStillCreates(t *testing.T) {
 	}
 }
 
-// TestSecretResourceRotationTakesEffectOnNextPoll 守验收 1 + 2：PUT 之后真 Poller 的下一轮
-// 请求头就是新值（旧值不再出现）。这是「轮换不必动源」的实证。
 func TestSecretResourceRotationTakesEffectOnNextPoll(t *testing.T) {
 	env := newSecretResEnv(t)
 	const v1 = "token-one-31"
@@ -423,7 +400,6 @@ func TestSecretResourceRotationTakesEffectOnNextPoll(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	// 验收 1：先 PUT 凭据，再建只带 secretRef 的源（老路径不参与）。
 	env.putSecret("gh-token", v1)
 	created := env.createPollSource("poll-src", map[string]any{
 		"url":           upstream.URL,
@@ -441,8 +417,6 @@ func TestSecretResourceRotationTakesEffectOnNextPoll(t *testing.T) {
 	}
 	now := time.Unix(*src.NextFireAt, 0)
 
-	// 每一轮用**独立**的 Poller：共用实例靠 begin() 去重，上一轮未收尾会被记成 skippedOverlaps；
-	// 收尾判据是 LastPollAt 真的变了（读到上一轮的值会被当成「这轮已完成」，那不是证据）。
 	round := func(want string, prevLastPoll *int64) *int64 {
 		t.Helper()
 		poller := source.NewPoller(env.db, env.svc, nil, source.WithClock(func() time.Time { return now }))
@@ -461,6 +435,8 @@ func TestSecretResourceRotationTakesEffectOnNextPoll(t *testing.T) {
 			t.Fatal("上游没收到 poll 请求")
 		}
 		deadline := time.Now().Add(5 * time.Second)
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
 		for {
 			got, err := env.db.GetSourceByName(context.Background(), env.nsID, "poll-src")
 			if err != nil {
@@ -473,7 +449,7 @@ func TestSecretResourceRotationTakesEffectOnNextPoll(t *testing.T) {
 			if time.Now().After(deadline) {
 				t.Fatalf("这一轮没跑完：%+v", got)
 			}
-			time.Sleep(10 * time.Millisecond)
+			<-tick.C
 		}
 	}
 
@@ -486,8 +462,6 @@ func TestSecretResourceRotationTakesEffectOnNextPoll(t *testing.T) {
 	}
 }
 
-// TestSecretResourcePlaintextNeverLeaks 守验收 4：全流程（成功/失败/错误体/日志/审计）里
-// grep 不到任何明文值。
 func TestSecretResourcePlaintextNeverLeaks(t *testing.T) {
 	var logBuf bytes.Buffer
 	old := slog.Default()

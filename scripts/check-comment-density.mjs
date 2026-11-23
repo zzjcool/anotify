@@ -28,9 +28,9 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const BASELINE = {
 	"schemaVersion": 2,
 	"measuredAt": "2026-11-23",
-	"commentLines": 43297,
-	"codeLines": 283214,
-	"files": 724,
+	"commentLines": 43296,
+	"codeLines": 286250,
+	"files": 729,
 	"dirs": {
 		".": 89,
 		".github/workflows": 108,
@@ -73,7 +73,7 @@ export const BASELINE = {
 		"internal/resultspool": 184,
 		"internal/route": 299,
 		"internal/schema": 73,
-		"internal/server": 7765,
+		"internal/server": 7764,
 		"internal/server/testdata": 2,
 		"internal/sitegen": 471,
 		"internal/sitegen/testdata/specs": 40,

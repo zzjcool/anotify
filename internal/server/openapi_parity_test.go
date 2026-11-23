@@ -3084,7 +3084,6 @@ func parityPairs() []parityPair {
 		{GoLabel: "systemConfigDoc", File: "resource.yaml", Schema: "SystemConfig", Sample: systemConfigDoc{}},
 		{GoLabel: "retentionDoc", File: "resource.yaml", Schema: "Retention", Sample: retentionDoc{}},
 
-		// ---- namespace secrets（#554）：值只写不读，读投影没有 value ----
 		{GoLabel: "namespaceSecretDoc", File: "resource.yaml", Schema: "NamespaceSecret", Sample: namespaceSecretDoc{}},
 		{GoLabel: "namespaceSecretListDoc", File: "resource.yaml", Schema: "NamespaceSecretList", Sample: namespaceSecretListDoc{}},
 		{GoLabel: "namespaceSecretWrite", File: "resource.yaml", Schema: "NamespaceSecretWrite", Sample: namespaceSecretWrite{}},

@@ -79,7 +79,6 @@ func errStatus(code int, reason, message string) error {
 	return &apiError{Code: code, Reason: reason, Message: message}
 }
 
-// writeStatus 写一个 Status 响应。
 func writeStatus(w http.ResponseWriter, code int, reason, message string, details *statusDetails) {
 	writeJSON(w, code, statusDoc{
 		APIVersion: apiVersionV1,
@@ -139,7 +138,7 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		return
 	}
 
-	// #554：被源引用的凭据**不删**。causes 逐条列引用者（源名），客户端据此改 secretRef。
+	// #554：被源引用的凭据不删；causes 逐条列引用者（源名），客户端据此改 secretRef。
 	var secretInUse *store.NamespaceSecretInUseError
 	if errors.As(err, &secretInUse) {
 		causes := make([]statusCause, 0, len(secretInUse.Sources))
