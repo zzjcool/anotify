@@ -12,7 +12,6 @@
 // 凭据语义（与既有 GET 逐字一致，别按直觉断言）：`spec.config.token` / `secret`
 // 是只写字段 —— 响应里没有这两个**键**；但 webhook 源的 `spec.config.hookUrl`
 // 按设计内嵌真实 token（`/v1/hooks/<token>`，控制台就是让用户复制这个 URL）。
-// 所以「token 的值不出现」是错的断言，只有 secret 的值必须一个字符都不出现。
 import assert from 'node:assert/strict';
 
 const CAP_NAME = 'yaml-made';

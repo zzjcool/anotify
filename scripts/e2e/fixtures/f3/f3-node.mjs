@@ -8,12 +8,6 @@
 //     → WS hello → welcome → config.applied。本文件因此**不碰数据库**。
 //   - 观测类用例需要节点回答 `logs_request`、按 attempt 上传产物（PUT …/artifacts）、
 //     在取消时回报 `cancel.ack{processGroupReaped:true}`。这些是协议里已有的事实来源，
-//     lib/nodes.mjs 的 MockNode 有意没做（它的边界是「只发执行语义帧」）。这里补齐，
-//     但**仍然只是「一个守协议的节点会说什么」**：不跑脚本、不产生执行事实。
-//
-// 帧形状仍然只有一份镜像：hello / accept / grant / emit / result 全部复用
-// lib/nodes.mjs 的 nodeHello 与 … 的字段口径；本文件只负责把自己收发的帧按
-// internal/protocol 的名字发出（logs_request/logs_response、cancel.ack）。
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { wsConnect } from '../../lib/wsclient.mjs';
@@ -273,12 +267,6 @@ export class FixtureNode {
 //
 //   POST /v1/nodes（登记 + 授权 ns + 机器 vars/limits）
 //   → POST /v1/nodes/{name}/tokens（明文只在签发响应里出现一次）
-//   → WS hello（localVars / localLimits 是**本机**事实）
-//   → welcome（中枢下发 nodeVars/nodeLimits/configRevision）
-//   → config.applied（节点回报 applied_revision + 合并后内容哈希）
-//
-// 三次握手没有捷径：缺 config.applied 时 grant 会以 stale_config 被拒（任务退回
-// waiting_for_config），症状看起来像「中枢不派发」。
 export async function bringUpFixtureNode({ base, session, name, namespaces = ['default'], vars = {}, limits = {}, localVars = {}, localLimits = {}, slots = 1, agentVersion }) {
   assert.ok(base && session && name, 'bringUpFixtureNode: base/session/name 必填');
   const headers = { Cookie: 'anotify_session=' + session, 'Content-Type': 'application/json' };

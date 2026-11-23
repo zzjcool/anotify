@@ -13,7 +13,6 @@
 //      且写请求带 `metadata.resourceVersion`（CAS 语义没被这次重构弄丢）；
 //   3. 深链 `?edit=1` 直接打开编辑器（刷新/分享同一个 URL 都能工作）；
 //   4. 编辑流程的请求全部落在**资源自己的 ns**（default），一条 `/v1/namespaces/prod/` 都不许有。
-// 附带同族检查：能力详情页的「返回能力列表」同样落在资源自己的 ns。
 import assert from 'node:assert/strict';
 
 /** 把失败时需要的现场（URL / 导航链 / 请求 / localStorage）一次性附在错误里。 */

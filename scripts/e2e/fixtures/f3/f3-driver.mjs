@@ -601,9 +601,6 @@ SCENARIOS.set('node-config', async (server, fixtures) => {
 // 真 digest 跑一次部署，等到行推进到 applied。
 //
 // C-3 的另一半（超过默认行数时要有「查看全部」）也在这里造：投多条真事件 → 中枢真派发到
-// 这台节点（派发会写下 node_name，这正是节点页过滤最近任务的条件）。不造这些任务，
-// 「默认只铺前几行」的截断就是不可观测的 —— 行数不足时截不截断都长一个样。
-// slots 给足是因为派发要过容量：槽位不够时其余任务会停在未派发，node_name 为空。
 SCENARIOS.set('node-deployments', async (server, fixtures) => {
   const s = fixtures.adminSession;
   const cap = await rawReq(server.base, `/v1/namespaces/${DEFAULT_NS}/capabilities/${MOCK_FIXTURES.capability}`, { headers: sessionCookie(s) });

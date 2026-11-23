@@ -14,7 +14,6 @@
 // 为什么断言「回执 + trace 事件」而不是 `status.observed.pruned`：#432 的设计草案 §10
 // 曾期望剪枝出现在 `status.observed.pruned`，但该投影以**最近一个任务**的 trace 为键
 // （`observedPrunes` 按 taskId 过滤）。一次被完全剪掉的触发没有任务，投影因此为空——
-// 证据在回执与 trace 事件里。这条差异在交付报告里作为 finding 明确列出。
 import assert from 'node:assert/strict';
 import { acceptDialog } from './f3-dialogs.mjs';
 

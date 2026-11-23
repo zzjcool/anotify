@@ -6,9 +6,6 @@
 //   · real（默认）：事实只能由产品自己长出来。夹具用真实事件入口 + 一个守协议的
 //     节点（fixtures/f3/f3-node.mjs）造出**同语义**的事实，断言按真实派生值对齐：
 //     KPI = /v1/stats 与 TaskList 的真实计数；trace 节点数 = readmodel.tasks；
-//     事件面板显示每一条事件的真实 eventType；剪枝面板显示真实原因码。
-// 两条分支都不放宽：mock 分支保留原来的固定值断言，real 分支把每个数字都先读成
-// 真实事实再等值比较（不写“至少/不为空”这种无法证伪的形状）。
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';

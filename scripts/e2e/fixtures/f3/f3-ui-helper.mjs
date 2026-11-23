@@ -102,6 +102,7 @@ export function query(page, f = {}, guest) {
     if (page === "source-detail" && f.source) p.set("name", f.source);
     if (page === "node" && f.node) p.set("id", f.node);
     if (page === "playbook" && f.playbook) p.set("id", f.playbook);
+    if (page === "release" && f.playbook) { p.set("id", f.playbook); p.set("release", f.playbook); }
     // 能力详情页的深链形状与列表行链接一致：?namespace=<ns>&name=<cap>。
     if (page === "capability" && f.cap) p.set("name", f.cap);
   }
