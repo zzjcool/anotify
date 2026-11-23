@@ -36,8 +36,7 @@ func pbInsertRawInstall(t *testing.T, db *store.DB, nsID, playbookID, id, values
 	}
 }
 
-// TestPlaybookInstallsFoldAttemptsAndUnion 验折叠读模型：
-// 同 values 装两次 = 1 组 attempts=2，capabilities 是两次 install id 的 installed_from 并集。
+// TestPlaybookInstallsFoldAttemptsAndUnion：同 values 装两次 = 1 组 attempts=2，capabilities 是两次的并集。
 func TestPlaybookInstallsFoldAttemptsAndUnion(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

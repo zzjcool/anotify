@@ -30,8 +30,7 @@ export async function playbook(d,mode){
  const keptResources=async receiptId=>JSON.stringify([await resources(),await req(basePath+'/installs/'+encodeURIComponent(receiptId)),await req('/v1/namespaces/default/tasks?limit=100'),await req('/v1/console/events?namespace=default')]);
  const archive=d.archive;
   const stored = () => req(basePath + '?includeBody=true');
-  // #376：导入表单搬进就地弹层（页头 #btn-import 与空态 CTA 是同一个入口），
-  // 所以「上传/新建」之前必须先把弹层打开。
+// #376：导入表单在就地弹层里（页头与空态 CTA 同一入口）——「上传/新建」前先打开它。
   const openImport = async () => {
     await page.locator('#btn-import').click();
     await page.waitForSelector('#pb-import-modal:not(.hidden)');
@@ -161,8 +160,7 @@ export async function playbook(d,mode){
     await shot('drawer-360-no-hscroll');
     await page.setViewportSize(viewport);
     const before = await facts();
-    // /render 返回平铺 RenderResult（能力在 response.capabilities、源在 response.sources，
-    // 没有 documents 包装、也从不返回 install）："render 是纯的"就断言响应里没有 install 键。
+// /render 返回平铺 RenderResult（无 documents 包装、从不返回 install）——「render 是纯的」。
     const rendered = await clickAction('#btn-render', '/render');
     assert.equal(rendered.response.capabilities.length, 2);
     assert.equal(rendered.response.sources.length, 1);
@@ -170,8 +168,7 @@ export async function playbook(d,mode){
     assert.equal(await facts(), before); await shot('pure-render');
     const dry = await clickAction('#btn-dry-run', '/install'); assert.equal(dry.response.install.dryRun, true); assert.equal(await facts(), before);
     assert.equal(dry.response.values.credential, '***');
-    // install.id 是 required:string（PlaybookInstallRef）：dryRun 也带真实 ins_ 身份，
-    // 区别只在"不进库"——所以断言「id 是真实身份 + 库里查不到实例」。
+// install.id 是 required:string：dryRun 也带真实 ins_ 身份，区别只在「不进库」。
     assert.match(String(dry.response.install.id), /^ins_/);
     assert.equal((await req(basePath + '/installs')).total, 0, 'dryRun 不得落任何实例');
     await shot('dry-run-zero-writes');
@@ -344,12 +341,19 @@ export async function playbook(d,mode){
     check('True disconnected errors/retry both pages, genuine HTTP400 schema error, 4 languages and real empty list after manifest deletion');
   }
   if (mode === 'release') {
-    /* #548：包页只列 release，实例级事实在详情页；对象不串的判据是「只由本 release 的回执 created 决定」。 */
+    /* #548/#553：包页只列 release；对象不串的判据是「只由本 release 的回执 created 决定」。 */
     await goto('playbooks');
     await req('/v1/namespaces/default/playbooks', { method: 'POST', body: JSON.stringify(envelope(files)) });
     const installAs = release => req(basePath + '/install', { method: 'POST', body: JSON.stringify({ values: { project: release }, release }) });
     const blue = await installAs('blue'); const green = await installAs('green');
     assert.equal(blue.install.release, 'blue'); assert.equal(green.install.release, 'green');
+    /* #553：两种空态的对照事实 —— 装过又卸载的包 vs 从来没装过的包（对象为零的包，纯 API 造）。 */
+    const emptyEntryOf = pkg => 'apiVersion: anotify/v1\nkind: Playbook\nmetadata:\n  name: ' + pkg + '\nspec:\n  capabilities: []\n  sources: []\n';
+    const createPkg = pkg => req('/v1/namespaces/default/playbooks', { method: 'POST', body: JSON.stringify({ ...envelope({ 'playbook.yaml': emptyEntryOf(pkg) }), metadata: { name: pkg, namespace: 'default' } }) });
+    await createPkg('hist-only');
+    await req('/v1/namespaces/default/playbooks/hist-only/install', { method: 'POST', body: JSON.stringify({ values: { project: 'a' } }) });
+    await req('/v1/namespaces/default/playbooks/hist-only/releases/hist-only', { method: 'DELETE' });
+    await createPkg('hist-none');
     await goto('playbook', 'namespace=default&id=project-chain');
     await page.locator('#pb-installs [data-release="blue"]').waitFor();
     const rows = await page.locator('#pb-installs [data-release]').evaluateAll(nodes => nodes.map(node => ({
@@ -421,18 +425,80 @@ export async function playbook(d,mode){
     await shot('release-yaml');
     await page.locator('#rd-yaml-close').click();
     await page.locator('#rd-yaml-drawer').waitFor({ state: 'hidden' });
+    /* #553：卸载后不再是「已卸载或不存在」面板，而是已卸载视图：顶部说明 + 对象空态 + 卸载按钮 hidden。 */
     await acceptDialog(page, () => page.locator('#rd-uninstall').click());
-    await page.locator('#rd-gone-panel').waitFor();
-    assert.match(await page.locator('#rd-gone-panel').innerText(), /uninstalled or never existed/i);
+    await page.locator('[data-uninstalled-notice]').waitFor();
+    assert.match(await page.locator('#rd-objects').innerText(), /uninstalled/i,
+      '#553 卸载后对象区给「对象已卸载」空态（不再是 gone 面板）：' + await page.locator('#rd-objects').innerText());
+    assert.equal(await page.locator('#rd-uninstall').isVisible(), false, '#553 已卸载的详情页不得再露出卸载按钮（hidden，不是只 disabled）');
+    assert.equal(await page.locator('#rd-gone-panel').count(), 0, '#553 页内卸载成功走已卸载视图，不再落 gone()');
+    await shot('release-uninstalled');
+    /* #553：缺省 404 仍是契约，但 UI 恒带 ?include=uninstalled → 显式打一次，否则 expectHttpStatus 声明零命中。 */
+    const uninstalledDefault = await d.response(basePath + '/releases/blue');
+    assert.equal(uninstalledDefault.status, 404,
+      '#553 缺省口径的已卸载详情仍必须 404（只有 ?include=uninstalled 才 200）：' + JSON.stringify(uninstalledDefault.body));
     await goto('playbook', 'namespace=default&id=project-chain');
     await page.waitForFunction(() => document.querySelectorAll('#pb-installs [data-release]').length === 1);
-    assert.equal(await page.locator('#pb-installs [data-release="blue"]').count(), 0, '卸载后从包页消失');
-    await goto('release', 'namespace=default&id=project-chain&release=blue');
-    await page.locator('#rd-gone-panel').waitFor();
-    assert.ok((await page.locator('#rd-gone-panel').innerText()).trim().length > 0, '旧 URL 给明确状态，不是白屏');
-    assert.equal(await page.locator('#rd-content').isVisible(), false, '已卸载不渲染对象区');
-    assert.equal(await page.locator('#rd-gone-back').getAttribute('href'), 'playbook.html?namespace=default&id=project-chain');
-    await shot('release-uninstalled');
+    assert.equal(await page.locator('#pb-installs [data-release="blue"]').count(), 0, '#553 开关默认关 ⇒ 已卸载的 blue 不占一行（默认不含已卸载）');
+    const uninstalledSwitch = page.locator('#pb-show-uninstalled');
+    assert.equal(await uninstalledSwitch.count(), 1, '#553 实例卡片头必须有「显示已卸载」开关（#pb-show-uninstalled）');
+    assert.equal(await uninstalledSwitch.getAttribute('aria-checked'), 'false', '#553 开关默认是关的（aria-checked=false）');
+    assert.equal(await uninstalledSwitch.getAttribute('role'), 'switch', '#553 开关是 switch 语义（读屏当开关播报），不是普通按钮');
+    await uninstalledSwitch.click();
+    await page.waitForFunction(() => document.querySelectorAll('#pb-installs [data-release="blue"]').length === 1);
+    assert.equal(await page.locator('#pb-installs [data-release]').count(), 2, '#553 打开开关后 blue+green 都占一行（共 2 行）');
+    assert.equal(await uninstalledSwitch.getAttribute('aria-checked'), 'true', '#553 打开后 aria-checked=true');
+    const blueRow = page.locator('#pb-installs [data-release="blue"]');
+    const greenRow = page.locator('#pb-installs [data-release="green"]');
+    assert.equal(await blueRow.getAttribute('data-uninstalled'), '1', '#553 已卸载行必须自报 data-uninstalled=1');
+    assert.match(await blueRow.innerText(), /Uninstalled/, '#553 已卸载行的状态文案是 Uninstalled（英文站点）：' + await blueRow.innerText());
+    assert.equal(await blueRow.locator('[data-release-uninstall]').count(), 0, '#553 已卸载行**不得**渲染卸载按钮（否则点了就是个 404）');
+    assert.equal(await greenRow.getAttribute('data-uninstalled'), '0', '#553 生效中行 data-uninstalled=0');
+    assert.equal(await greenRow.locator('[data-release-uninstall]').count(), 1, '#553 生效中行保留卸载按钮');
+    assert.equal(await blueRow.locator('[data-release-yaml]').count(), 1, '#553 每行都有「查看 YAML」入口（含已卸载行）');
+    const blueYamlHref = await blueRow.locator('[data-release-yaml]').getAttribute('href');
+    assert.ok(String(blueYamlHref).includes('yaml=installed'), '#553 已卸载行的 YAML 深链必须直接指到「安装时」视图：' + blueYamlHref);
+    await uninstalledSwitch.click();
+    await page.waitForFunction(() => document.querySelectorAll('#pb-installs [data-release]').length === 1);
+    assert.equal(await page.locator('#pb-installs [data-release="blue"]').count(), 0, '#553 关掉开关后已卸载的 blue 又从列表消失');
+    assert.equal(await uninstalledSwitch.getAttribute('aria-checked'), 'false', '#553 关掉后 aria-checked 回到 false');
+    await uninstalledSwitch.click();
+    await page.waitForFunction(() => document.querySelectorAll('#pb-installs [data-release="blue"]').length === 1);
+    await page.locator('#pb-installs [data-release="blue"] [data-release-yaml]').click();
+    await page.waitForURL('**/release.html?**release=blue**');
+    await page.locator('[data-uninstalled-notice]').waitFor();
+    assert.equal(await page.locator('#rd-content').isVisible(), true, '#553 已卸载视图仍渲染内容区（不是把整页换成 gone 面板）');
+    assert.equal(await page.locator('#rd-objects [data-object]').count(), 0, '#553 已卸载详情不得渲染任何对象行');
+    assert.equal(await page.locator('#rd-gone-panel').count(), 0, '#553 已卸载**不是**「已卸载或不存在」面板（#553 改的就是这条）');
+    await page.locator('#rd-yaml-drawer').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#rd-as-installed').getAttribute('aria-selected'), 'true', '#553 已卸载的 YAML 抽屉默认选「安装时」视图');
+    assert.equal(await page.locator('#rd-as-current').isDisabled(), true, '#553 已卸载的「当前生效」视图必须 disabled');
+    assert.equal(await page.locator('#rd-as-current').getAttribute('aria-disabled'), 'true', '#553 …同时 aria-disabled（读屏也要知道）');
+    await page.locator('#rd-yaml-text').waitFor();
+    assert.match(await page.locator('#rd-yaml-text').evaluate(node => node.textContent), /install: ins_/,
+      '#553 已卸载的导出直接是安装时快照（头注释带那次安装的 id）');
+    await page.locator('#rd-yaml-close').click();
+    await page.locator('#rd-yaml-drawer').waitFor({ state: 'hidden' });
+    await shot('release-uninstalled-view');
+    await goto('playbook', 'namespace=default&id=hist-only');
+    await page.waitForFunction(() => /uninstalled/i.test(document.querySelector('#pb-installs')?.innerText || ''));
+    assert.equal(await page.locator('#pb-installs [data-release]').count(), 0, '#553 只剩已卸载的包：默认视图一行都不渲染');
+    const onlyUninstalledText = (await page.locator('#pb-installs').innerText()).trim();
+    const emptyCopies = await page.evaluate(() => ({
+      only: (window.AnotifyI18n && window.AnotifyI18n['pb.v4.no_installs_uninstalled_only']) || '',
+      none: (window.AnotifyI18n && window.AnotifyI18n['pb.v4.no_installs']) || '',
+    }));
+    assert.ok(emptyCopies.only.length > 0, '#553 字典必须有 pb.v4.no_installs_uninstalled_only（否则前端只能显示裸 key）');
+    assert.equal(onlyUninstalledText, emptyCopies.only, '#553 只剩已卸载时渲染「只有已卸载」那条，不是「还没有实例」：' + onlyUninstalledText);
+    assert.match(onlyUninstalledText, /uninstalled/i, '#553 这条文案要让人看出是「只剩已卸载」：' + onlyUninstalledText);
+    assert.ok(!onlyUninstalledText.includes('pb.v4.'), '#553 空态文案不得漏出裸 i18n key：' + onlyUninstalledText);
+    await shot('empty-state-uninstalled-only');
+    await goto('playbook', 'namespace=default&id=hist-none');
+    await page.waitForFunction(() => /No instances/i.test(document.querySelector('#pb-installs')?.innerText || ''));
+    assert.equal(await page.locator('#pb-installs [data-release]').count(), 0, '#553 从没装过的包：一行都不渲染');
+    const neverInstalledText = (await page.locator('#pb-installs').innerText()).trim();
+    assert.equal(neverInstalledText, emptyCopies.none, '#553 从没装过时渲染「还没有实例」文案（不变的那条）：' + neverInstalledText);
+    assert.notEqual(onlyUninstalledText, neverInstalledText, '#553 两种空态文案必须不同（只有已卸载 ≠ 从来没有实例）');
     const emptyEntry = 'apiVersion: anotify/v1\nkind: Playbook\nmetadata:\n  name: empty-pkg\nspec:\n  capabilities: []\n  sources: []\n';
     await req('/v1/namespaces/default/playbooks', { method: 'POST', body: JSON.stringify({ ...envelope({ 'playbook.yaml': emptyEntry }), metadata: { name: 'empty-pkg', namespace: 'default' } }) });
     await req('/v1/namespaces/default/playbooks/empty-pkg/install', { method: 'POST', body: JSON.stringify({ values: { project: 'a' } }) });
@@ -448,12 +514,11 @@ export async function playbook(d,mode){
     assert.equal((await calls()).filter(call => call.url.endsWith('/yaml')).length, yamlCallsBefore, '0 对象空态不发请求');
     await page.locator('#rd-yaml-close').click();
     await page.locator('#rd-yaml-drawer').waitFor({ state: 'hidden' });
-    check('#548 two-level IA: release list without objects, per-release detail objects/receipt, no crossing, direct URL, uninstall → explicit state, empty YAML');
+    check('#548 two-level IA: release list without objects, per-release detail objects/receipt, no crossing, direct URL, empty YAML; #553 uninstall → uninstalled view (notice/empty objects/hidden uninstall, YAML drawer on as=installed) + list switch two states + two distinct empty states');
     await clean('release');
   }
   if (mode === 'missing') {
-    // #380：不存在的 playbook id → 徽章必须从「正在读取…」收敛到失败态，
-    // 且失败路径不得留下空圆角容器（#pb-summary 是 card card-pad + min-height:80px）。
+    // #380：不存在的 playbook id → 徽章收敛到失败态，且不留空圆角容器（#pb-summary 有 min-height）。
     const missing = 'f3-no-such-package';
     await goto('playbook', 'namespace=default&id=' + missing);
     await page.waitForFunction(() => document.querySelector('#pb-badge').className.includes('badge-error'));

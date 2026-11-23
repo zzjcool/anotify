@@ -88,9 +88,10 @@ add('observe-message',d=>observability(d,'message'),{expectHttpStatus:[
 add('playbook-install',d=>playbook(d,'install'));
 // playbook-matrix 故意触发**真实** playbook_conflict（库里已有行不许改 → 400）：
 // dryRun 与真装各一次，两次都必须原子 0 写。
-// playbook-release（#548）：两份实例 → 各自详情断言不串 → 卸载后旧 URL 真 404（页面给明确状态）。
+// playbook-release（#548/#553）：两份实例 → 详情不串 → 卸载后页面走「已卸载视图」；
+// 缺省 404 仍是契约（只有 include=uninstalled 才 200），由用例显式打一次缺省 GET 命中这条声明。
 add('playbook-release',d=>playbook(d,'release'),{expectHttpStatus:[
-  {status:404,path:'/v1/namespaces/default/playbooks/project-chain/releases/blue',exact:true,note:'release_not_found：已卸载的实例没有详情可读，页面显示「已卸载或不存在」而不是白屏'},
+  {status:404,path:'/v1/namespaces/default/playbooks/project-chain/releases/blue',exact:true,note:'release_not_found：默认口径仍是 404（?include=uninstalled 才 200），用例显式打一次缺省 GET 验证这条口径不变'},
 ]});
 add('playbook-matrix',d=>playbook(d,'matrix'),{expectHttpStatus:[
   {status:400,path:'/v1/namespaces/default/playbooks/project-chain/install',exact:true,note:'playbook_conflict：复用行的 next/targets 与库里不一致 → 400，原子 0 写'},
