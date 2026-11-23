@@ -156,3 +156,39 @@ $ go test ./internal/store/ -run TestRestoreConflictAndReuse
 
 ## 5. 门禁数字
 
+### 5.1 `make ci`（`timeout 1500`，exit 0）
+
+```text
+✅ 契约静态断言（A2/A4/A5/A6/A7 + openapi 一致性 + 字段级核对 + anode 可编译）通过
+   A2/A4/A5/A6/A7/A8/A9/A11 通过（36 张表；5 份 spec）
+   OpenAPI exact-five 通过（5 份文件 / 151 个 operation / 151 个唯一 operationId）
+✅ 契约字段守卫通过（264 个 schema、810 个已知字段；已知遗留 9 个）
+✅ sitegen：4 languages × 23 pages → web；指纹 33 个资源 / 92 个 HTML
+   go test：43 个包 ok / 0 FAIL（含 internal/store、internal/server、internal/playbook、cmd/anode…）
+✅ 五项全部与基线一致（测试纪律：t.Skip 3/3、waitForTimeout 21/21、吞异常 38/38…）
+✅ 注释密度：注释行 43295 / 基线 43295（同批把 internal/store 6788→6787、总量 43296→43295 下调）
+✅ 注解即外键守卫通过（unbacked 296 / 基线 296 —— 同批从 297 下调）
+✅ i18n 键守卫：4 份 locale 键集合一致，2310 个引用点全部有词条
+✅ 文案守卫通过：4 份 locale / 10064 条值 · 23 个页面 / 243 个文本节点
+✅ class 校验通过：889 个类全部落在设计系统 / Tailwind 工具类内
+```
+
+### 5.2 `make e2e-affected`（`timeout 2400`，exit 0）
+
+```text
+✅ E2E 全绿：31/31 个请求套件均达标（断言 3575 通过 / 0 失败，authority 清单覆盖 31 个）
+  ✅ playbook_release   614通过/0失败  7.6s  mode=real
+  总耗时: 364.5s
+✅ 临时目录零残留（隔离 TMPDIR 内本次新增 = 0）
+```
+
+`scripts/e2e/known-env-failures.json` **entries = 0 且本票未改**（没有把任何失败写进 known-env）。
+
+### 5.3 落点行数（`git diff --stat main`）
+
+本票新增 1 个迁移块（`headVersion` 10 → 11）、1 个 store 文件、1 个 server handler、3 个 OpenAPI schema，
+e2e §15 约 105 条断言。整体 `git diff --stat main` 末行：
+
+```text
+ 30 files changed, 2356 insertions(+), 161 deletions(-)
+```
