@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -138,30 +139,78 @@ func (r *Poller) done(id string) {
 	delete(r.inflight, id)
 }
 
+// ErrPollInFlight 表示该源已有一轮在飞（调度器或另一次手动触发）：本轮未执行，也不排队。
+var ErrPollInFlight = errors.New("source: 该源已有一轮在飞")
+
+// PollResult 是一轮拉取的可观测事实（「立即拉取一次」的 200 回执就投影它）。
+//
+// 它只描述**这一轮发生了什么**，不承担资源投影：游标是否前进由 Cursor / CursorAdvanced 说，
+// 计数来自 envelope.items 与入库回执的去重位。
+type PollResult struct {
+	NotModified    bool
+	Items          int
+	Created        int
+	Duplicates     int
+	DurationMs     int64
+	Cursor         string
+	CursorAdvanced bool
+}
+
+// PollOnce 同步跑一轮「立即拉取一次」：**同一把** in-flight 锁 + **同一份** roundOnce。
+//
+// 已在飞 → ErrPollInFlight（不排队、不并发），这个判断与 Sweep 里那个是一把锁；
+// 本轮失败 → 返回 error，游标不动（与定时轮询同一条不变量）。
+func (r *Poller) PollOnce(ctx context.Context, src *store.Source) (PollResult, error) {
+	if src == nil {
+		return PollResult{}, fmt.Errorf("source: 缺少源行")
+	}
+	if !r.begin(src.ID) {
+		return PollResult{}, ErrPollInFlight
+	}
+	defer r.done(src.ID)
+	return r.roundOnce(ctx, src, true)
+}
+
 func (r *Poller) round(ctx context.Context, src *store.Source) {
+	_, _ = r.roundOnce(ctx, src, false)
+}
+
+// roundOnce 是一轮拉取的**唯一实现**：定时轮询与「立即拉取一次」（#555）都走这里。
+//
+// manual 只改一件事：下一步排期不写（next_fire_at 原样保留，成功与失败都是）。
+// 抓取、解包、入库、游标前进、失败退避全在同一份代码里——另写一条「手动拉取」
+// 路径迟早与定时那一条对同一个配置给出两种结论。
+func (r *Poller) roundOnce(ctx context.Context, src *store.Source, manual bool) (PollResult, error) {
 	started := r.now()
 	cfg := sourcespec.ParseConfig(sourcespec.KindPoll, src.Config)
-	out := store.PollOutcome{PolledAt: started.Unix(), Cursor: src.PollCursor}
-	res, err := r.fetch(ctx, src, cfg)
-	if err == nil && !res.notModified {
+	out := store.PollOutcome{PolledAt: started.Unix(), Cursor: src.PollCursor, KeepNextFire: manual}
+	res := PollResult{}
+	fetched, err := r.fetch(ctx, src, cfg)
+	res.NotModified = fetched.notModified
+	if err == nil && !fetched.notModified {
 		var items []any
-		if items, err = r.items(cfg, res.doc); err == nil {
-			err = r.ingest(ctx, src, cfg, items)
+		if items, err = r.items(cfg, fetched.doc); err == nil {
+			res.Items = len(items)
+			res.Created, res.Duplicates, err = r.ingest(ctx, src, cfg, items)
 		}
 	}
 	if err != nil {
 		out.Failures = src.ConsecutiveFailures + 1
 		out.Error = err.Error()
-		out.NextFire = r.failureNextFire(src, started, out.Failures, res.retryAfter)
+		out.NextFire = r.failureNextFire(src, started, out.Failures, fetched.retryAfter)
 		r.log.Warn("poll failed", "source", src.Name, "namespace", src.NamespaceID, "failures", out.Failures, "err", err)
 	} else {
 		out.Success = true
-		out.Cursor = res.cursor
+		out.Cursor = fetched.cursor
 		out.NextFire = r.successNextFire(src, started)
+		res.Cursor = fetched.cursor
+		res.CursorAdvanced = fetched.cursor != src.PollCursor
 	}
+	res.DurationMs = r.now().Sub(started).Milliseconds()
 	if err := r.db.MarkSourcePolled(ctx, src.ID, out); err != nil {
 		r.log.Warn("poll status write failed", "source", src.Name, "err", err)
 	}
+	return res, err
 }
 
 func (r *Poller) successNextFire(src *store.Source, now time.Time) int64 {
@@ -208,15 +257,22 @@ func (r *Poller) items(cfg sourcespec.Config, doc any) ([]any, error) {
 	return items, nil
 }
 
-func (r *Poller) ingest(ctx context.Context, src *store.Source, cfg sourcespec.Config, items []any) error {
+func (r *Poller) ingest(ctx context.Context, src *store.Source, cfg sourcespec.Config, items []any) (created, duplicates int, err error) {
 	for i, item := range items {
 		in, err := inputFor(src, cfg, item)
 		if err != nil {
-			return fmt.Errorf("poll: 第 %d 条 item 不合法: %w", i, err)
+			return created, duplicates, fmt.Errorf("poll: 第 %d 条 item 不合法: %w", i, err)
 		}
-		if _, err := r.services.Ingest(ctx, in); err != nil {
-			return fmt.Errorf("poll: 第 %d 条 item 入站失败: %w", i, err)
+		receipt, err := r.services.Ingest(ctx, in)
+		if err != nil {
+			return created, duplicates, fmt.Errorf("poll: 第 %d 条 item 入站失败: %w", i, err)
+		}
+		// 去重口径以入库回执为准（窗口内同 deliveryId 命中会回第一次那份回执）。
+		if receipt != nil && receipt.Duplicate {
+			duplicates++
+		} else {
+			created++
 		}
 	}
-	return nil
+	return created, duplicates, nil
 }

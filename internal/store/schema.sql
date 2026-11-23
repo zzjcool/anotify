@@ -794,3 +794,16 @@ CREATE TABLE IF NOT EXISTS playbook_install_pinned (
 );
 CREATE INDEX IF NOT EXISTS idx_playbook_pinned_lookup
     ON playbook_install_pinned(namespace_id, ref_kind, name, version);
+
+-- +migration 9 source_audit
+CREATE TABLE IF NOT EXISTS source_audit (
+    id           TEXT PRIMARY KEY,
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    source_id    TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    action       TEXT NOT NULL CHECK (action IN ('source.polled_manually')),
+    actor_id     TEXT NOT NULL DEFAULT '',
+    detail       TEXT NOT NULL DEFAULT '{}',
+    created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_audit_source
+    ON source_audit(namespace_id, source_id, created_at DESC, id DESC);

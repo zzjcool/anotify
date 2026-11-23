@@ -744,13 +744,17 @@ func (d *DB) MarkSourceFired(ctx context.Context, id string, firedAt, nextFire i
 }
 
 // PollOutcome 是一轮轮询的终局（Poll 是唯一写者）：Cursor / NextFireAt 只在 Success 时前进。
+//
+// KeepNextFire 是「立即拉取一次」（#555）的唯一差别：手动触发不改排期，nextFireAt 原样保留
+// （失败退避也不写），其余事实（游标、lastPollAt、lastFiredAt、失败计数与错误）照常记。
 type PollOutcome struct {
-	Success  bool
-	Cursor   string
-	PolledAt int64
-	NextFire int64
-	Failures int
-	Error    string
+	Success      bool
+	Cursor       string
+	PolledAt     int64
+	NextFire     int64
+	KeepNextFire bool
+	Failures     int
+	Error        string
 }
 
 func (d *DB) MarkSourcePolled(ctx context.Context, id string, out PollOutcome) error {
@@ -767,9 +771,10 @@ func (d *DB) MarkSourcePolled(ctx context.Context, id string, out PollOutcome) e
 	if _, err := d.ExecContext(ctx,
 		`UPDATE sources
 		    SET poll_cursor = COALESCE(?, poll_cursor), last_poll_at = ?, consecutive_failures = ?,
-		        last_error = ?, next_fire_at = ?, last_fired_at = COALESCE(?, last_fired_at)
+		        last_error = ?, next_fire_at = CASE WHEN ? THEN next_fire_at ELSE ? END,
+		        last_fired_at = COALESCE(?, last_fired_at)
 		  WHERE id = ?`,
-		cursor, out.PolledAt, out.Failures, lastErr, out.NextFire, firedAt, id); err != nil {
+		cursor, out.PolledAt, out.Failures, lastErr, out.KeepNextFire, out.NextFire, firedAt, id); err != nil {
 		return fmt.Errorf("mark source polled: %w", err)
 	}
 	return nil
