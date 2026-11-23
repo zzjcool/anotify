@@ -8,7 +8,7 @@ export const LOCALE_OUT = path.join(TEAM, 'screenshots/f3locales');
 const NS = '/v1/namespaces/default';
 // #381：登录页默认 tab 跟实例/浏览器状态走（首跑默认落在「注册」），#login-panel 可能
 // 是 hidden。锚点换成两个 tab 都在里面的容器：仍然证「这一页真的渲染了」，不赌默认态。
-const anchors = {admin:'#kpi-devices',capabilities:'[data-cap]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',login:'.auth-tabs',message:'#task-facts',namespace:'#ns-name',namespaces:'#ns-list [data-ns]',node:'#node-slots',nodes:'[data-node]','passkey-enroll':'#code-input',playbook:'#pb-installs',playbooks:'#pb-grid [data-slug]',receivers:'#current-device-card',security:'#passkey-list',source:'#src-name',
+const anchors = {admin:'#kpi-devices',capabilities:'[data-cap]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',login:'.auth-tabs',message:'#task-facts',namespace:'#ns-name',namespaces:'#ns-list [data-ns]',node:'#node-slots',nodes:'[data-node]','passkey-enroll':'#code-input',playbook:'#pb-installs',playbooks:'#pb-grid [data-slug]',release:'#rd-gone-panel',receivers:'#current-device-card',security:'#passkey-list',source:'#src-name',
   // 源只读详情页：渲染成功后才带 data-source（空态/404 不带），所以它是吊吊的事实锤。
   'source-detail':'#src-detail[data-source]',
   sources:'#src-list [data-name]',trace:'#trace-tasks [data-task]'};

@@ -260,7 +260,7 @@
         $("rd-receipt-state").replaceChildren(loadErrorNode(error, () => receipt(installId)));
       }
     }
-    function gone(titleKey, hintKey) {
+    function gone(titleKey, hintKey, backKey) {
       $("rd-content").hidden = true;
       $("rd-groups").hidden = true;
       const host = $("rd-gone");
@@ -269,8 +269,8 @@
       const box = el("div", "rd-check");
       box.id = "rd-gone-panel";
       box.append(el("h3", "card-title", t(titleKey)), el("p", "field-hint", t(hintKey)));
-      const back = el("a", "btn btn-ghost", t("release.gone_back"));
-      back.href = scoped("playbook", "id", name);
+      const back = el("a", "btn btn-ghost", t(backKey || "release.gone_back"));
+      back.href = name ? scoped("playbook", "id", name) : "playbooks.html";
       back.id = "rd-gone-back";
       box.append(back);
       host.append(box);
@@ -341,7 +341,13 @@
       $("rd-summary").setAttribute("aria-busy", "true");
       try {
         await ready();
-        if (!name || !release) throw new Error(t("release.missing_target"));
+        if (!name || !release) {
+          badge(t("release.no_target_badge"), "badge-neutral");
+          gone("release.missing_target", "release.missing_hint", "release.missing_back");
+          $("rd-summary").replaceChildren();
+          $("rd-load-state").replaceChildren();
+          return;
+        }
         $("rd-back").href = scoped("playbook", "id", name);
         detail = await api(path("/releases/" + encodeURIComponent(release)));
         if (!detail || !Array.isArray(detail.groups) || !detail.groups.length) throw new Error(t("release.invalid_detail"));

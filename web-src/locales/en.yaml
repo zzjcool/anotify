@@ -2773,5 +2773,8 @@ release:
   gone_title: This instance was uninstalled or never existed
   gone_hint: 'Its objects are gone; the package page shows the instances running now.'
   gone_back: Back to package
+  no_target_badge: No instance
+  missing_hint: 'Open it from the package page instance list, or add the package and instance names to the link.'
+  missing_back: Back to packages
   missing_target: The link is missing the package or instance name.
   invalid_detail: The server did not return a valid instance detail.

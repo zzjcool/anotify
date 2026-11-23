@@ -31,6 +31,7 @@ export const ANCHORS = Object.freeze({
   events: "#ev-list article", index: "#kpi-total", keys: "#keys-body tr", login: ".auth-tabs",
   message: "#task-facts", namespace: "#ns-name", namespaces: "#ns-list [data-ns]", node: "#node-slots", nodes: "[data-node]", "passkey-enroll": "#code-input",
   playbook: "#pb-installs", playbooks: "#pb-grid", receivers: "#current-device-card",
+  release: "#rd-gone-panel",
   security: "#passkey-list",
   // 源只读详情页：根元素渲染成功后才有 data-source（深链成立 = 真的读到了那个源）。
   "source-detail": "#src-detail[data-source]", sources: "#src-list [data-name]", trace: "#trace-tasks",

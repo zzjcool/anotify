@@ -2773,5 +2773,8 @@ release:
   gone_title: Esta instancia fue desinstalada o no existe
   gone_hint: 'Sus objetos ya no están; la página del paquete muestra las instancias activas.'
   gone_back: Volver al paquete
+  no_target_badge: Sin instancia
+  missing_hint: 'Ábralo desde la lista de instancias del paquete o añada el nombre del paquete y de la instancia al enlace.'
+  missing_back: Volver a paquetes
   missing_target: Al enlace le falta el nombre del paquete o de la instancia.
   invalid_detail: El servidor no devolvió un detalle de instancia válido.

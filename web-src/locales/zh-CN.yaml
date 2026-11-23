@@ -2778,5 +2778,8 @@ release:
   gone_title: 这份实例已卸载或不存在
   gone_hint: '它装出的对象已经删除；回到预案详情可以看到现在在跑的实例。'
   gone_back: 返回预案详情
+  no_target_badge: 缺少实例
+  missing_hint: '从预案详情的实例列表点进来，或补上包名与实例名再打开。'
+  missing_back: 返回预案列表
   missing_target: 链接里缺少包名或实例名。
   invalid_detail: 服务端没有返回有效的实例详情。
