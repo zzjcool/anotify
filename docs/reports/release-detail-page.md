@@ -151,7 +151,7 @@ export E2E_CHROME_PATH="…/chromium-1208/chrome-mac-arm64/Google Chrome for Tes
 | `live_agent` | `install --prefix` 退出码 2（Linux-only 安装脚本） | 平台 |
 | `node_v4` | `anode serve: data directory: unsafe symlink/special file /var` | 平台 |
 | `frontend` | 仅 `observe-trace` 一张截图超时（4500ms） | 平台（**祖先提交逐字复现**） |
-| `i18n` | `navigation-*` 三条：`#lang-switcher` 点击 2.2s 超时 | 时间预算（本机慢） |
+| `i18n` | `navigation-*` 三条：`#lang-switcher` 点击 2.2s 超时 | 时间预算（**祖先提交同样红 4 条，同一条 `#lang-switcher` 点击超时**） |
 | `i18n_coverage` | `task-states-*` 三条 `#task-cancel` 点击超时 + `pages-en-3` 的 message 页 goto 超时 | 时间预算 |
 | `ui_shift` | `shift-lang-hint` / `shift-prelayout-*` 三条帧采样断言（只采到 1 帧） | 机器帧率 |
 
@@ -176,6 +176,10 @@ cd /tmp/base548 && npm install && make fe && go build -tags embeddist -o .e2e-bi
 ANOTIFY_BIN=/tmp/base548/.e2e-bin/anotify DEVSEED_BIN=… ANODE_BIN=… E2E_CHROME_PATH=… \
   node scripts/e2e/suites/frontend.mjs --case observe-trace
 # → CASE_FAIL observe-trace :: page.screenshot: Timeout 4500ms exceeded.  （base 上逐字同样红）
+
+# i18n 的那三条在 base 上同样红（4 条断言失败，都是 #lang-switcher 的 2.2s 点击超时）：
+cd /tmp/base548 && E2E_LOCK=0 E2E_CONCURRENCY=1 … ./scripts/e2e/run_all.sh --serial i18n
+# → ❌ i18n  98.1s  断言失败 4 条（与 HEAD 同一组 navigation-* 用例）
 ```
 
 ## 6. 变异自证（真改源码跑出来的红，不是声称）
