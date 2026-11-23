@@ -380,6 +380,18 @@ export async function playbook(d,mode){
     assert.match(await page.locator('#rd-receipt [data-receipt-axis="created"]').innerText(), /blue-review/, '回执 created 与这次安装一致');
     assert.equal(await page.locator('#rd-receipt [data-receipt-axis="dependencies"]').count(), 1);
     await shot('release-detail-blue');
+    await page.locator('#rd-yaml').click();
+    await page.locator('#rd-yaml-text').waitFor();
+    assert.equal(await page.locator('#rd-as-current').getAttribute('aria-selected'), 'true', 'YAML 默认看当前生效');
+    assert.ok(!(await calls()).some(c => c.url.includes('as=installed')), '默认视图不得带 as=installed');
+    await page.locator('#rd-as-installed').click();
+    await page.waitForFunction(() => {
+      const body = document.querySelector('#rd-yaml-text');
+      return body && body.innerText.includes('\u5b89\u88c5\u65f6\u5feb\u7167');
+    });
+    assert.equal(await page.locator('#rd-as-installed').getAttribute('aria-selected'), 'true', '切到安装时视图');
+    await shot('release-yaml-installed');
+    await page.locator('#rd-yaml-close').click();
     await page.goBack();
     await page.locator('#pb-installs [data-release="green"] a[data-release-link]').click();
     await page.waitForURL('**/release.html?**release=green');

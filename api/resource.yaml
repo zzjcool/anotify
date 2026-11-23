@@ -3373,7 +3373,7 @@ components:
             （**源没有 `version`**：源无版本概念）。
             **不在 `required` 里**：这个键是 #551 才加的，更早的回执读出来是 `[]` ——
             客户端按「缺省 = 空数组」处理（这种老回执导出 `as=installed` 会给 `409` `no_snapshot`）。
-            `skipped.pinned` 恒为 `[]`。
+            `skipped.pinned` 同口径：本次安装**复用**到的对象也记（版本与摘要来自复用到的版本行）。
     PlaybookPinnedRef:
       type: object
       description: |

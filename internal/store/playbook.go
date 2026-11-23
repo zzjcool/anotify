@@ -463,6 +463,9 @@ func (d *DB) InstallPlaybookVersion(ctx context.Context, namespaceID, slug, rele
 	if plan.Created.Pinned, err = pinnedRefsOn(ctx, ex, namespaceID, plan.Created); err != nil {
 		return nil, fmt.Errorf("install playbook %q: %w", slug, err)
 	}
+	if plan.Skipped.Pinned, err = pinnedRefsOn(ctx, ex, namespaceID, plan.Skipped); err != nil { // 复用的对象也记
+		return nil, fmt.Errorf("install playbook %q: %w", slug, err)
+	}
 	receipt := playbook.BuildReceipt(plan, plan.Values, plan.ValuesDigest, playbook.InstallMeta{
 		ID:        installID,
 		At:        time.Unix(now, 0).UTC().Format(time.RFC3339),

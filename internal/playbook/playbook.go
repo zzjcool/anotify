@@ -265,7 +265,7 @@ type InstallRef struct {
 // Created 是"这次建了什么"：能力写 `name@version`，源写名字。
 //
 // **两份（created / skipped）都是对象而不是数组**：`{capabilities: [], sources: [], pinned: []}`
-// （W3 冻结；空列表是 `[]` 不是 `null`；#551 的 pinned 只有 created 有值，skipped 恒空）。
+// （W3 冻结；空列表是 `[]` 不是 `null`；#551 的 pinned 两边都记：created 是新建、skipped 是复用到的版本）。
 type Created struct {
 	Capabilities []string `json:"capabilities"`
 	Sources      []string `json:"sources"`

@@ -498,13 +498,17 @@ func insertPlaybookInstallOn(ctx context.Context, ex queryExec, namespaceID stri
 		}
 	}
 	// 安装时快照的 SQL 侧索引（#551）：与回执 JSON 同一份切片、同一事务（seq = 切片下标）。
-	for seq, pin := range receipt.Created.Pinned {
-		if _, err := ex.execContext(ctx,
-			`INSERT INTO playbook_install_pinned
-			   (install_id, namespace_id, seq, ref_kind, name, obj_kind, version, digest)
-			 VALUES (?,?,?,?,?,?,?,?)`,
-			receipt.Install.ID, namespaceID, seq, pin.Kind, pin.Name, pin.KindOf, pin.Version, pin.Digest); err != nil {
-			return fmt.Errorf("insert install pinned %s %s: %w", pin.Kind, pin.Name, err)
+	seq := 0
+	for _, list := range [][]playbook.PinnedRef{receipt.Created.Pinned, receipt.Skipped.Pinned} {
+		for _, pin := range list {
+			if _, err := ex.execContext(ctx,
+				`INSERT INTO playbook_install_pinned
+				   (install_id, namespace_id, seq, ref_kind, name, obj_kind, version, digest)
+				 VALUES (?,?,?,?,?,?,?,?)`,
+				receipt.Install.ID, namespaceID, seq, pin.Kind, pin.Name, pin.KindOf, pin.Version, pin.Digest); err != nil {
+				return fmt.Errorf("insert install pinned %s %s: %w", pin.Kind, pin.Name, err)
+			}
+			seq++
 		}
 	}
 	return nil

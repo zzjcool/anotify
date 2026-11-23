@@ -9,8 +9,6 @@ import (
 	"github.com/zzjcool/anotify/internal/playbook"
 )
 
-// 安装时快照（#551）的 store 侧验收：回执 created.pinned 记 (name,version,digest) / (name,kindOf)，同一事务双写索引表；老回执读出来是 []（原文不动）。
-
 // pbPinnedBundle 是「2 能力 + 1 源」的包：入口按 review、gate 的顺序声明（与名字升序相反），用来验回执里的 pinned 按 name 重排、不是照包内顺序抄的。
 func pbPinnedBundle(slug string) map[string]string {
 	gatePath := "capabilities/gate.yaml"
@@ -219,5 +217,36 @@ func TestPlaybookInstallPinnedEmptyIDs(t *testing.T) {
 		if got == nil || len(got) != 0 {
 			t.Fatalf("空 installIDs (%v) 应返回空 map, got %#v", ids, got)
 		}
+	}
+}
+
+// TestInstallReceiptPinnedSkipped：只复用、没新建的安装也要记 pinned（否则导出它的快照会是空的），且第二次的 skipped.pinned 与第一次的 created.pinned 逐项相同。
+func TestInstallReceiptPinnedSkipped(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	pbCreate(t, db, nsID, "pinned-twice", pbPinnedBundle("pinned-twice"))
+
+	first, err := db.InstallPlaybook(ctx, nsID, "pinned-twice", "blue", pbValues("demo"), false)
+	if err != nil {
+		t.Fatalf("install 1: %v", err)
+	}
+	second, err := db.InstallPlaybook(ctx, nsID, "pinned-twice", "blue", pbValues("demo"), false)
+	if err != nil {
+		t.Fatalf("install 2: %v", err)
+	}
+	if len(second.Created.Pinned) != 0 {
+		t.Fatalf("重装不该新建对象，created.pinned = %+v", second.Created.Pinned)
+	}
+	if !reflect.DeepEqual(second.Skipped.Pinned, first.Created.Pinned) {
+		t.Fatalf("重装的 skipped.pinned 与首次 created.pinned 不一致:\n got  %+v\n want %+v",
+			second.Skipped.Pinned, first.Created.Pinned)
+	}
+	byInstall, err := db.PlaybookInstallPinned(ctx, nsID, []string{second.Install.ID})
+	if err != nil {
+		t.Fatalf("PlaybookInstallPinned: %v", err)
+	}
+	if !reflect.DeepEqual(byInstall[second.Install.ID], second.Skipped.Pinned) {
+		t.Fatalf("索引表里第二次安装的行 %+v, want %+v", byInstall[second.Install.ID], second.Skipped.Pinned)
 	}
 }
