@@ -5,31 +5,15 @@ import (
 	"fmt"
 )
 
-// RoleAuto 是 RegisterUser 的**入参专用**值，永不落库：它要求本函数在自己那个
-// 事务里数一次 users，据此决定角色 —— 0 个用户 ⇒ RoleAdmin（首个注册用户是超管，
-// 契约 §2.1），否则 RoleMember。
-//
-// 为什么必须在**同一个事务**里判：调用方「先查 count、再 INSERT」是两次独立的
-// 连接池操作。连接池放开到 8（store.go defaultMaxOpenConns，#240）之后，两个并发
-// 首注册可以先后读到 count=0，于是**双双拿到 admin**（凭空多出一个超管账户）。
-// 移进本函数后，count 与 INSERT 共享同一个 BEGIN IMMEDIATE 事务（写锁在事务起点
-// 就持有），后一个注册者的 BeginTx 会等到前一个提交后才开始 —— 它必然读到已提交
-// 的那一行，因此只可能有一个 admin。
-//
-// 注意：本值是 role 字段的第三种取值，**不能**被其它写用户路径（CreateUser /
-// UpdateUserRole）接受；它们仍只认 admin|member。
+// RoleAuto 是 RegisterUser 的**入参专用**值，永不落库：0 个用户 ⇒ RoleAdmin（首个注册用户是超管），
+// 否则 RoleMember。必须在**同一个事务**里判：调用方「先查 count 再 INSERT」是两次池操作，池放开到 8
+// 后两个并发首注册会双双拿到 admin（#240）；移进本函数后 count 与 INSERT 共享 BEGIN IMMEDIATE，
+// 后一个 BeginTx 要等前一个提交，必然读到那一行。本值**不能**被其它写用户路径接受（它们只认 admin|member）。
 const RoleAuto = "auto"
 
-// 注册（#204 A1 / #205）：建用户 + 建 `default` 命名空间，**在一个事务内**。
-//
-// 为什么必须原子：代码里不存在「没有命名空间」的分支。用户建好了却没有命名空间，
-// 后续所有资源端点无处安放 —— 只能靠"稍后补"，而"稍后补"在失败时没人会发现。
-//
-// 与旧 RegisterUserWithOrg 的差别（组织层已删之后）：
-//   - 不再建组织、不再写 org_members（这两张表已经删了）；
-//   - 「首个注册用户是超管」的判定也在本函数内：调用方传 RoleAuto，本函数在
-//     建用户的**同一个事务**里数用户数并定角色（见 RoleAuto）。让调用方先查后写
-//     会与 INSERT 拆成两次池操作，池放开后就不再串行（#240 → 双 admin 竞态）。
+// 注册（#204 A1 / #205）：建用户 + 建 `default` 命名空间，**在一个事务内**——代码里不存在
+// 「没有命名空间」的分支，半成品没人会发现。已无组织层（不建组织、不写 org_members）；
+// 首个注册用户是超管的判定同样在这个事务里（RoleAuto，见上，避免 #240 的双 admin 竞态）。
 func (d *DB) RegisterUser(ctx context.Context, u *User) (*Namespace, error) {
 	// Passkey 注册路径：不写密码列（"" / 0 = 迁移 8 的列默认值）。
 	return d.registerUser(ctx, u, "", 0)

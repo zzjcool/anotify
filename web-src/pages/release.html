@@ -58,6 +58,11 @@
       <div class="page-actions">
         <a id="rd-back" href="playbooks.html" class="btn btn-ghost">{{t "release.back"}}</a>
         <button id="rd-yaml" type="button" class="btn btn-ghost">{{t "pb.v4.view_yaml"}}</button>
+        {{/* #561：按快照重装只对「已卸载 + 安装时留了快照（pinned）」的实例出现，默认 hidden；
+             显隐与 #rd-uninstall 同一套机制（都在 load() 里按 detail 决定），
+             所以生效中实例的 DOM 与交互一条都不变。老回执没有 pinned ⇒ 不出按钮，
+             改在已卸载提示里说明「这次安装没有留下快照」。 */}}
+        <button id="rd-restore" type="button" class="btn btn-primary" hidden>{{t "release.restore"}}</button>
         <button id="rd-uninstall" type="button" class="btn btn-danger">{{t "release.uninstall"}}</button>
       </div>
     </div>
@@ -288,7 +293,8 @@
       back.id = "rd-gone-back";
       box.append(back);
       host.append(box);
-      for (const id of ["rd-yaml", "rd-uninstall"]) $(id).disabled = true;
+      $("rd-restore").hidden = true;
+      for (const id of ["rd-yaml", "rd-uninstall", "rd-restore"]) $(id).disabled = true;
     }
     function badge(text, cls) {
       $("rd-badge").textContent = text;
@@ -301,7 +307,61 @@
       box.id = "rd-notice";
       box.dataset.uninstalledNotice = "";
       box.append(el("p", "field-hint", t("release.uninstalled_notice", { at: fmtTime(detail.uninstalledAt) })));
+      if (!pinnedRefs().length) box.append(el("p", "field-hint", t("release.restore_no_snapshot")));
       $("rd-summary").before(box);
+    }
+    const restoreReasons = {
+      already_installed: "release.restore_already_installed",
+      no_snapshot: "release.restore_no_snapshot",
+      pinned_gone: "release.restore_pinned_gone",
+      pin_missing_source: "release.restore_pin_missing_source",
+      restore_conflict: "release.restore_conflict",
+    };
+    function pinnedRefs() { return Array.isArray(detail && detail.pinned) ? detail.pinned : []; }
+    function pinLabel(pin) { return pin.name + (pin.version ? "@v" + pin.version : ""); }
+    function pinSummary(pins) {
+      const labels = pins.slice(0, 6).map(pinLabel); // 超过 6 个就截断成「…等 N 个」
+      const text = labels.join(t("release.restore_list_sep"));
+      return pins.length > labels.length ? text + t("release.restore_more", { n: String(pins.length) }) : text;
+    }
+    function restoreDialog() {
+      const pins = pinnedRefs();
+      const caps = pins.filter(pin => pin.kind === "capability").sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      return {
+        title: t("release.restore_confirm_title"),
+        body: t("release.restore_confirm_body", { caps: caps.length ? pinSummary(caps) : t("pb.v4.none"), sources: String(pins.length - caps.length) }),
+        note: t("release.restore_confirm_note"),
+        confirmLabel: t("release.restore_confirm_ok"),
+      };
+    }
+    function restoreFailure(error) {
+      const previous = $("rd-restore-error");
+      if (previous) previous.remove();
+      if (!error) return;
+      const causes = Array.isArray(error.details && error.details.causes) ? error.details.causes : [];
+      const labels = causes.filter(cause => cause && cause.name).slice(0, 6).map(pinLabel);
+      const key = restoreReasons[error.reason];
+      const suffix = labels.length ? " · " + labels.join(t("release.restore_list_sep")) : "";
+      const line = el("p", "field-hint", (key ? t(key) : String(error.message || error)) + suffix);
+      line.id = "rd-restore-error";
+      line.dataset.restoreError = "";
+      ($("rd-notice") || $("rd-load-state")).append(line);
+    }
+    async function restore() {
+      const group = current();
+      if (!group) return;
+      if (!(await confirmDanger({ ...restoreDialog(), danger: false }))) return;
+      const button = $("rd-restore");
+      button.disabled = true;
+      restoreFailure(null);
+      try {
+        await api(path("/releases/" + encodeURIComponent(release) + "/restore"),
+          { method: "POST", body: JSON.stringify({ valuesDigest: group.valuesDigest }) });
+        location.href = scoped("playbook", "id", name) + "&restored=" + encodeURIComponent(release); // 回包页高亮新实例
+      } catch (error) {
+        button.disabled = false;
+        restoreFailure(error);
+      }
     }
     async function uninstall() {
       if (!(await confirmDanger({ body: t("release.uninstall_confirm", { release }) }))) return;
@@ -413,8 +473,9 @@
       $("rd-summary").hidden = false;
       $("rd-load-state").textContent = t("release.loading");
       $("rd-summary").setAttribute("aria-busy", "true");
-      for (const id of ["rd-yaml", "rd-uninstall"]) $(id).disabled = false;
+      for (const id of ["rd-yaml", "rd-uninstall", "rd-restore"]) $(id).disabled = false;
       $("rd-uninstall").hidden = false;
+      $("rd-restore").hidden = true;
       try {
         await ready();
         if (!name || !release) {
@@ -433,6 +494,7 @@
         const uninstalledView = detail.objectsGone === true;
         badge(uninstalledView ? t("release.uninstalled") : t("pb.v4.release_active"), uninstalledView ? "badge-warn" : "badge-success");
         $("rd-uninstall").hidden = uninstalledView;
+        $("rd-restore").hidden = !(uninstalledView && pinnedRefs().length); // 已卸载且有快照才出「按快照重装」
         if (uninstalledView) uninstalledNotice(); // 只在已卸载视图出现，生效中实例的 DOM 不变
         $("rd-content").hidden = false;
         $("rd-load-state").replaceChildren();
@@ -462,6 +524,7 @@
     $("rd-yaml-close").addEventListener("click", () => closeModal($("rd-yaml-drawer")));
     $("rd-yaml-drawer").addEventListener("click", event => { if (event.target === $("rd-yaml-drawer")) closeModal($("rd-yaml-drawer")); });
     $("rd-uninstall").addEventListener("click", uninstall);
+    $("rd-restore").addEventListener("click", restore);
     document.addEventListener("DOMContentLoaded", load);
   })();
 </script>

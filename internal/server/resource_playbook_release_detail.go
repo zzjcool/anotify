@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -47,7 +48,39 @@ func (a *playbookAPI) getRelease(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, err)
 		return
 	}
+	if doc.Restores, err = a.releaseRestores(r.Context(), ns, slug, groups.Release); err != nil {
+		writePlaybookAPIError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, doc)
+}
+
+// releaseRestores 是 `install.restored` 的读面（#561）：复原次数是十位量级，不分页；读失败整份 500。
+func (a *playbookAPI) releaseRestores(ctx context.Context, ns, slug, release string) ([]playbookRestoreEntry, error) {
+	rows, err := a.d.DB.ListPlaybookInstallAudit(ctx, ns, slug, release)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]playbookRestoreEntry, 0, len(rows))
+	for _, row := range rows {
+		if row.Action != store.PlaybookInstallAuditRestored {
+			continue
+		}
+		var detail store.PlaybookRestoreAuditDetail
+		if err := json.Unmarshal(row.Detail, &detail); err != nil {
+			return nil, fmt.Errorf("decode restore audit %s: %w", row.ID, err)
+		}
+		out = append(out, playbookRestoreEntry{
+			Action:       row.Action,
+			InstallID:    row.InstallID,
+			RestoredFrom: detail.RestoredFrom,
+			Actor:        row.ActorID,
+			Recreated:    playbookRestoreCounts{Capabilities: len(detail.Recreated.Capabilities), Sources: len(detail.Recreated.Sources)},
+			Reused:       playbookRestoreCounts{Capabilities: len(detail.Reused.Capabilities), Sources: len(detail.Reused.Sources)},
+			At:           time.Unix(row.CreatedAt, 0).UTC().Format(time.RFC3339),
+		})
+	}
+	return out, nil
 }
 
 // releaseDetail 把回执折叠组投影成详情文档（对象取当前生效版本，与按 release 导出 YAML 同口径；
@@ -183,6 +216,22 @@ func releaseObjectsOf(receipts []playbook.Receipt, caps map[string]*store.Capabi
 	return out, deps
 }
 
+// playbookRestoreEntry 是一条 `install.restored`。
+type playbookRestoreEntry struct {
+	Action       string                `json:"action"`
+	InstallID    string                `json:"installId"`
+	RestoredFrom string                `json:"restoredFrom"`
+	Actor        string                `json:"actor,omitempty"`
+	Recreated    playbookRestoreCounts `json:"recreated"`
+	Reused       playbookRestoreCounts `json:"reused"`
+	At           string                `json:"at"`
+}
+
+type playbookRestoreCounts struct {
+	Capabilities int `json:"capabilities"`
+	Sources      int `json:"sources"`
+}
+
 type playbookReleaseDetail struct {
 	Playbook      playbookReleaseRef          `json:"playbook"`
 	Release       string                      `json:"release"`
@@ -197,6 +246,8 @@ type playbookReleaseDetail struct {
 	UninstalledAt string               `json:"uninstalledAt,omitempty"`
 	Pinned        []playbook.PinnedRef `json:"pinned,omitempty"`
 	ObjectsGone   bool                 `json:"objectsGone,omitempty"`
+	// 没有复原过时**不出现**（生效中实例的响应逐字节不变）。
+	Restores []playbookRestoreEntry `json:"restores,omitempty"`
 }
 
 type playbookReleaseRef struct {

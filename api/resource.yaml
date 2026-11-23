@@ -1265,6 +1265,73 @@ paths:
         '404': {$ref: '#/components/responses/Status404'}
         '500': {$ref: '#/components/responses/Status500'}
 
+  /v1/namespaces/{namespace}/playbooks/{slug}/releases/{release}/restore:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: slug
+        in: path
+        required: true
+        schema: {type: string}
+      - name: release
+        in: path
+        required: true
+        description: "实例身份（`^(a-z0-9)[a-z0-9._-]{0,62}$`）"
+        schema: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,62}$'}
+    post:
+      operationId: restorePlaybookRelease
+      tags: [playbooks]
+      security: [{session: []}]
+      summary: "按安装时快照重装（照 pinned 版本复原已卸载的实例）"
+      description: |
+        照**安装时快照**（回执 `created.pinned` / `skipped.pinned`，#551）把一个已卸载的实例装回去。
+        与首次安装的差别只有两点，其余（单事务、整包原子、回执形状）逐字相同：
+
+        1. 正文来源是 **pinned 版本**，不是「包当前版本」也不是「当前生效版本」：能力取
+           `(name, pinned.version)` 那一行的正文（卸载只打 `deleted_at` 标记，正文还在）。
+           那一版已被物理回收（GC）→ `409` `pinned_gone`，`details.causes[]` 逐条列出
+           `{kind,name,version}`；**绝不静默降级成最新版**。
+        2. 源只能**复用**：源没有版本，正文也不在回执里。同名源已存在 → 记进 `reused.sources`；
+           不存在 → `409` `pin_missing_source`（不假装能重建源，先把源建起来）。
+
+        `valuesDigest` 选「复原哪一组参数」：同一 release 用两套 values 装过是两组实例，
+        复原只复原选中的那组（该组不存在与 release 不存在同一个落点：`404 release_not_found`）。
+
+        `200` 的响应是**完整回执**（与首次安装同形），多一个 `restoredFrom`（被复原的那次 install id）：
+        `created` 是本次重建的对象、`skipped` 是复用到的对象（两边都带 `pinned`），
+        `install.id` 是新回执、`install.release` 与原回执相同，`values` / `valuesDigest` /
+        `playbook` 身份沿用原回执（复原不重新渲染，不存在第二份 values 真相）。
+        每次成功复原另记一行审计 `install.restored`（`playbook_install_audit`），
+        并出现在详情端点 `GET …/releases/{release}` 的 `restores[]` 里。
+
+        四种 409 的判定顺序固定（都在写之前返回，**整包 0 写**）：
+
+        - `already_installed`：该组参数当前仍在生效（回执未卸载）——那是「再装一遍」，用 install 端点；
+        - `no_snapshot`：该组最新回执没有快照（迁移 8 之前装的），`details.causes[0].field = "release"`；
+        - `pinned_gone`：某个 pinned 能力版本的正文已被回收；
+        - `pin_missing_source`：某个 pinned 源不存在；
+        - `restore_conflict`：同名**同版本**的能力已存在且正文不同（可见行 digest ≠ 快照 digest）。
+
+        `details.causes[]` 的 `field` 形如 `pinned.capabilities[0]` / `pinned.sources[1]`：
+        下标是该对象在**这一类 pinned 序列**里的槽位（坏的是第二个对象就报 `[1]`，不是「第几条失败」）；
+        对象身份（`kind` / `name` / `version`）与两边 digest 写在 `message` 字面里。
+        `already_installed` 是整请求级条件（不是某个对象坏了），不带 `causes`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PlaybookRestoreRequest'}
+      responses:
+        '200':
+          description: "复原回执（完整回执 + `restoredFrom`；values 沿用原回执的打码后形态）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PlaybookReceipt'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
   /v1/namespaces/{namespace}/playbooks/{slug}/releases/{release}/yaml:
     parameters:
       - $ref: '#/components/parameters/NamespacePath'
@@ -3742,6 +3809,20 @@ components:
         notes:
           type: array
           items: {$ref: '#/components/schemas/PlaybookNote'}
+        restoredFrom:
+          type: string
+          description: |
+            只有「按快照重装」（#561）的回执才有：被复原的那次 install id。
+            首次安装 / dryRun 的回执没有这个键（与 #561 之前逐字节相同）。
+    PlaybookRestoreRequest:
+      type: object
+      required: [valuesDigest]
+      properties:
+        valuesDigest:
+          type: string
+          description: |
+            要复原哪一组参数（`GET …/releases/{release}` 的 `params.digest` / `groups[].valuesDigest`）。
+            该组不存在 → `404 release_not_found`；空串 → `400 value_invalid`。
     RenderedCapability:
       type: object
       description: "归一化后的能力文档（默认值已补齐；与手工创建逐字节等价）"
@@ -3841,6 +3922,37 @@ components:
             （同一 `(kind,name)` 取最后一条回执；能力按 name 升序在前、源按 name 升序在后）。
             老回执没有记录快照时该键不出现。
           items: {$ref: '#/components/schemas/PlaybookPinnedRef'}
+        restores:
+          type: array
+          description: |
+            按快照重装的审计行（#561，`install.restored`），按时间正序；**没复原过时该键不出现**
+            （生效中实例的响应因此逐字节不变）。actor 为空串 = 非会话主体（命令行/系统）。
+          items: {$ref: '#/components/schemas/PlaybookRestoreEntry'}
+    PlaybookRestoreEntry:
+      type: object
+      required: [action, installId, restoredFrom, recreated, reused, at]
+      description: "一次 `install.restored` 的审计投影：谁、哪次回执、重建/复用了多少对象"
+      properties:
+        action: {type: string, enum: [install.restored]}
+        installId:
+          type: string
+          description: "这次复原产生的新回执 id"
+        restoredFrom:
+          type: string
+          description: "被复原的那次 install id"
+        actor:
+          type: string
+          description: "操作者 user id；空串 = 非会话主体（命令行/系统）"
+        recreated: {$ref: '#/components/schemas/PlaybookRestoreCounts'}
+        reused: {$ref: '#/components/schemas/PlaybookRestoreCounts'}
+        at: {type: string, format: date-time}
+    PlaybookRestoreCounts:
+      type: object
+      required: [capabilities, sources]
+      description: "对象计数（能力 + 源），不是名单：名单在回执的 `created` / `skipped` 里"
+      properties:
+        capabilities: {type: integer}
+        sources: {type: integer}
     PlaybookReleaseRef:
       type: object
       required: [name, version]

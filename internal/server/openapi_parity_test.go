@@ -120,15 +120,15 @@ const maxRefDepth = 8
 // 删一个 schema，都必须同时改这里的数字，并在 PR 里写清为什么。
 const (
 	// parityPairsFloor 是 parityPairs() 的对数（历史区间见 git log）。
-	parityPairsFloor = 222
+	parityPairsFloor = 225
 	// bareMountFloor 是 bareMountSpec() 的条目数。
 	bareMountFloor = 27
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底），历史见提交信息。
-	muxPatternCount = 139
+	muxPatternCount = 140
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 39
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数（历史区间见 git log）。
-	specSchemaFloor = 262
+	specSchemaFloor = 265
 )
 
 // ---------- 测试入口 ----------
@@ -160,9 +160,9 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 	fatalIfProblems(t, "解析 $ref（含跨文件）", refIntegrityProblems(docs))
 
 	ops, _ := collectSpecOps(docs)
-	// 快照逐次只增（历次增量见 git log）：#554 的凭据 CRUD 四条 + #555 的立即拉取。
-	if len(ops) != 150 {
-		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 150（143 + 凭据 CRUD 四条 + 立即拉取 + 审计两条）", len(ops))
+	// 快照逐次只增（历次增量见 git log）：#554 的凭据 CRUD 四条 + #555 的立即拉取 + #561 的按快照重装。
+	if len(ops) != 151 {
+		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 151（143 + 凭据 CRUD 四条 + 立即拉取 + 审计两条 + 按快照重装）", len(ops))
 	}
 	// 至少一条来自 components.pathItems（agent.yaml 四条 + events/ingress 的共享 pathItem）。
 	fromPathItems := 0
@@ -3080,6 +3080,8 @@ func parityPairs() []parityPair {
 		{GoLabel: "store.PlaybookKept", File: "resource.yaml", Schema: "PlaybookKept", Sample: store.PlaybookKept{}},
 		{GoLabel: "store.PlaybookUninstallResult", File: "resource.yaml", Schema: "PlaybookUninstallResult", Sample: store.PlaybookUninstallResult{}},
 		{GoLabel: "store.PlaybookUninstallKept", File: "resource.yaml", Schema: "PlaybookUninstallKept", Sample: store.PlaybookUninstallKept{}},
+		{GoLabel: "playbookRestoreEntry", File: "resource.yaml", Schema: "PlaybookRestoreEntry", Sample: playbookRestoreEntry{}},
+		{GoLabel: "playbookRestoreCounts", File: "resource.yaml", Schema: "PlaybookRestoreCounts", Sample: playbookRestoreCounts{}},
 
 		// ---- namespace / system config ----
 		{GoLabel: "namespaceCounts", File: "resource.yaml", Schema: "NamespaceCounts", Sample: namespaceCounts{}},
@@ -3236,6 +3238,7 @@ func parityPairs() []parityPair {
 		{GoLabel: "nodeAPI.upgradeNode", File: "resource.yaml", Schema: "NodeUpgradeResult",
 			Wire: &goWire{File: "resource_node.go", Func: "nodeAPI.upgradeNode", Kind: "response", Select: 0}},
 		{GoLabel: "playbookActionBody", File: "resource.yaml", Schema: "PlaybookActionRequest", Sample: playbookActionBody{}},
+		{GoLabel: "playbookRestoreBody", File: "resource.yaml", Schema: "PlaybookRestoreRequest", Sample: playbookRestoreBody{}},
 		{GoLabel: "protocol.DecisionRequest", File: "resource.yaml", Schema: "TaskDecisionRequest", Sample: protocol.DecisionRequest{}},
 		{GoLabel: "protocol.DecisionResponse", File: "resource.yaml", Schema: "TaskDecisionResponse", Sample: protocol.DecisionResponse{}},
 		{GoLabel: "taskActionReason", File: "resource.yaml", Schema: "TaskActionRequest",

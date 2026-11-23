@@ -2425,6 +2425,7 @@ pb:
     release_uninstalled: "アンインストール済み · {at}"
     release_objects: "{c} ケイパビリティ / {s} ソース"
     release_last_install: "{at} にインストール"
+    restore_highlight: "スナップショットから復元して作成したインスタンス"
     yaml_title: "インスタンス YAML"
     yaml_empty: "このインスタンスに表示できるオブジェクトはありません"
     yaml_load_failed: "YAML の読み込みに失敗しました"
@@ -2820,3 +2821,15 @@ release:
   missing_back: パッケージ一覧に戻る
   missing_target: リンクにパッケージ名またはインスタンス名がありません。
   invalid_detail: サーバーが有効なインスタンス詳細を返しませんでした。
+  restore: スナップショットから復元
+  restore_confirm_title: スナップショットからこのインスタンスを復元
+  restore_confirm_body: "スナップショットから次のケイパビリティを作り直します：{caps}。関与するソースは {sources} 件です。"
+  restore_confirm_note: "ソースは作り直しません：1 つでも欠けていると復元は拒否されます（409）。"
+  restore_confirm_ok: スナップショットから復元
+  restore_list_sep: 、
+  restore_more: "…ほか計 {n} 件"
+  restore_no_snapshot: このインストールにはスナップショットが残っていないため、スナップショットから復元できません。
+  restore_already_installed: このインスタンスはまだ有効なため、復元は不要です。
+  restore_pinned_gone: スナップショット内のケイパビリティのバージョンが削除済みのため、復元できません。
+  restore_pin_missing_source: スナップショット内のソースがこの名前空間に存在しません。先にソースを作成してから復元してください。
+  restore_conflict: 同じ名前・バージョンのケイパビリティが別の内容で存在するため、復元できません。

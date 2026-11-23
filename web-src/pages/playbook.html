@@ -90,6 +90,11 @@
   .pb-details[open] > summary { margin-bottom: 12px; }
   /* #521：安装抽屉 —— 复用全站 .modal-backdrop/.modal-panel，只把面板改成右侧整高一片。 */
   .pb-drawer { align-items: stretch; justify-content: flex-end; padding: 0; }
+  .pb-restored { border-radius: var(--r-md); animation: pb-restored-fade 3.2s var(--ease) 1 both; } /* #561：重装回来后那一行从 accent 底色褪回透明 */
+  @keyframes pb-restored-fade {
+    from { background-color: var(--accent-soft); }
+    to { background-color: transparent; }
+  }
   .pb-drawer-panel {
     max-width: min(520px, 100%);
     height: 100dvh;
@@ -141,6 +146,8 @@
              折叠键是 (release, valuesDigest)：同一 release 用两套参数装过是两组，但列表按
              **release** 聚合，组数进行内（「N 组」），不拆成多行。 */}}
         {{/* #553：已卸载的实例默认不进列表；开关只换 query，聚合与渲染仍按 release。 */}}
+        {{/* #561：从实例详情页「按快照重装」成功后回包页带 &restored=<release>，这里把
+             那一行滚到视口中间、加 .pb-restored 高亮，然后用 replaceState 抹掉参数（刷新不再滚）。 */}}
         <div id="pb-installs-head" class="flex items-center gap-2">
           <button id="pb-show-uninstalled" type="button" class="switch" role="switch" aria-checked="false" data-toggle="uninstalled" aria-label="{{t "pb.v4.show_uninstalled"}}"></button>
           <span class="field-label">{{t "pb.v4.show_uninstalled"}}</span>
@@ -296,7 +303,9 @@
     };
     const $ = id => document.getElementById(id);
     const el = (tag, cls, text) => dom(tag, { class: cls }, text);
-    const name = new URLSearchParams(location.search).get("id") || "";
+    const params = new URLSearchParams(location.search);
+    const name = params.get("id") || "";
+    const restoredRelease = params.get("restored") || "";
     Anotify.mountLayout({ active: "playbooks", title: t("pb.title"), subtitle: t("pb.v4.detail_hint") });
     let resource, schema, draft, filePath, templateRV;
     let fields = [], jsonValues = null, loading = false, currentVersion = 0;
@@ -639,6 +648,20 @@
       const data = await api(path("/installs?include=uninstalled"));
       return Array.isArray(data.installs) && data.installs.length > 0;
     }
+    let restoredPending = restoredRelease !== "";
+    function highlightRestored() {
+      if (!restoredPending) return;
+      restoredPending = false;
+      const row = [...$("pb-installs").querySelectorAll("[data-release]")].find(node => node.dataset.release === restoredRelease);
+      if (!row) return;
+      row.dataset.restored = "1";
+      row.classList.add("pb-restored");
+      row.title = t("pb.v4.restore_highlight");
+      row.scrollIntoView({ behavior: "smooth", block: "center" });
+      params.delete("restored"); // 用过即抹：刷新 / 回退不会反复滚动
+      const query = params.toString();
+      history.replaceState(null, "", location.pathname + (query ? "?" + query : ""));
+    }
     async function installs() {
       $("pb-installs").textContent = t("pb.v4.loading");
       try {
@@ -656,6 +679,7 @@
           if (uninstalledOnly) empty.textContent = t("pb.v4.no_installs_uninstalled_only");
           host.append(empty);
         }
+        highlightRestored();
       } catch (error) { $("pb-installs").replaceChildren(loadErrorNode(error, installs)); }
     }
     async function singleReceipt(id) {
