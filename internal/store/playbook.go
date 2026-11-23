@@ -350,6 +350,7 @@ func (d *DB) ReplacePlaybookAs(ctx context.Context, namespaceID, slug string, ex
 }
 
 //	RenderPlaybook 是 `render` 端点（§2.4）：只读包体 → Parse → Render。**纯只读**：不读安装冲突库、不写库、不产生回执 （D19：render 是 helm template，dryRun 才读库），所以它不可能因为库里已有同名能力而失败，也不会留下任何行；
+//
 // release 只影响模板渲染（`{{release.name}}`），不读库，所以 render 不判 release 冲突。
 func (d *DB) RenderPlaybook(ctx context.Context, namespaceID, slug, release string, values map[string]any) (*playbook.RenderResult, error) {
 	return d.RenderPlaybookVersion(ctx, namespaceID, slug, release, 0, values)
@@ -427,8 +428,7 @@ func (d *DB) InstallPlaybookVersion(ctx context.Context, namespaceID, slug, rele
 	if planErr != nil {
 		return nil, planErr
 	}
-	// 回执的包身份记**这次真的用的那一版**（钉住的版本号 + 那份文件的 digest），
-	// 而不是包当下的版本：否则按 v1 装的回执会自称 v2。
+	// 回执的包身份记这次真的用的那一版（钉住的版本 + 那份文件的 digest），不是包当下的版本。
 	plan.Playbook.Version = pinned
 
 	nsSlug, err := getNamespaceSlugOn(ctx, ex, namespaceID)
