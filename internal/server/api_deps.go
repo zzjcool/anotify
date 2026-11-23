@@ -22,6 +22,9 @@ type serverDeps struct {
 	DB      *store.DB
 	Router  *route.Router
 	Sources *source.Service
+	// Poller 是拉取型源的执行器（#555）：HTTP 的「立即拉取一次」与后台排期调**同一个**实例，
+	// 所以 in-flight 锁只有一把、拉取逻辑只有一份。nil = 未接线（端点回 503）。
+	Poller  *source.Poller
 	Hub     *ws.Hub
 	Sweeper *lease.Sweeper
 	Log     *slog.Logger

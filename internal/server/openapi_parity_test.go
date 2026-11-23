@@ -120,15 +120,15 @@ const maxRefDepth = 8
 // 删一个 schema，都必须同时改这里的数字，并在 PR 里写清为什么。
 const (
 	// parityPairsFloor 是 parityPairs() 的对数（历史区间见 git log）。
-	parityPairsFloor = 217
+	parityPairsFloor = 218
 	// bareMountFloor 是 bareMountSpec() 的条目数。
 	bareMountFloor = 27
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底），历史见提交信息。
-	muxPatternCount = 132
+	muxPatternCount = 133
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 39
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数（历史区间见 git log）。
-	specSchemaFloor = 257
+	specSchemaFloor = 258
 )
 
 // ---------- 测试入口 ----------
@@ -160,9 +160,9 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 	fatalIfProblems(t, "解析 $ref（含跨文件）", refIntegrityProblems(docs))
 
 	ops, _ := collectSpecOps(docs)
-	// 快照逐次只增（历次增量见 git log）：#548 的实例详情是最近一条。
-	if len(ops) != 143 {
-		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 143（142 + #548 的实例详情）", len(ops))
+	// 快照逐次只增（历次增量见 git log）：#555 的立即拉取是最近一条。
+	if len(ops) != 144 {
+		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 144（143 + #555 的立即拉取）", len(ops))
 	}
 	// 至少一条来自 components.pathItems（agent.yaml 四条 + events/ingress 的共享 pathItem）。
 	fromPathItems := 0
@@ -3046,6 +3046,7 @@ func parityPairs() []parityPair {
 		{GoLabel: "srcReceiptDoc", File: "resource.yaml", Schema: "SourceReceipt", Sample: srcReceiptDoc{}},
 		{GoLabel: "srcReceiptTask", File: "resource.yaml", Schema: "SourceReceiptTask", Sample: srcReceiptTask{}},
 		{GoLabel: "route.Prune", File: "resource.yaml", Schema: "PruneFact", Sample: route.Prune{}},
+		{GoLabel: "srcPollResultDoc", File: "resource.yaml", Schema: "SourcePollResult", Sample: srcPollResultDoc{}},
 		{GoLabel: "srcPreviewDoc", File: "resource.yaml", Schema: "SourcePreview", Sample: srcPreviewDoc{}},
 		{GoLabel: "srcPreviewTarget", File: "resource.yaml", Schema: "SourcePreviewTarget", Sample: srcPreviewTarget{}},
 

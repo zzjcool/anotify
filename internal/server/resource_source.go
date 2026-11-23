@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/source"
 	"github.com/zzjcool/anotify/internal/sourcespec"
@@ -29,6 +30,7 @@ import (
 //	PATCH  /v1/namespaces/{ns}/sources/{name}                改 displayName/config/targets/enabled
 //	DELETE /v1/namespaces/{ns}/sources/{name}?resourceVersion= 删（CAS 只在 query）
 //	POST   /v1/namespaces/{ns}/sources/{name}/fire           手动触发 → 接收回执
+//	POST   /v1/namespaces/{ns}/sources/{name}/poll           立即拉取一次（kind=poll）→ 计数回执
 //	POST   /v1/namespaces/{ns}/sources/{name}/dry-run        已保存源试运行 → 预览文档
 //	POST   /v1/namespaces/{ns}/sources/dry-run               未保存草稿试运行 → 预览文档
 //	POST   /v1/hooks/{token}                                 外部投递（无会话；token 即凭据）
@@ -97,6 +99,8 @@ func (a *sourceAPI) register(mux *http.ServeMux) {
 	mux.Handle("PATCH "+base+"/{name}", noStore(a.d.session(http.HandlerFunc(a.patch))))
 	mux.Handle("DELETE "+base+"/{name}", noStore(a.d.session(http.HandlerFunc(a.remove))))
 	mux.Handle("POST "+base+"/{name}/fire", noStore(a.d.session(a.d.backpressure(http.HandlerFunc(a.fire)))))
+	// `poll` 是拉取型源的写入口（#555）：与 `/fire` 同一种中间件形态（写入口 → 背压）。
+	mux.Handle("POST "+base+"/{name}/poll", noStore(a.d.session(a.d.backpressure(http.HandlerFunc(a.poll)))))
 	mux.Handle("POST "+base+"/{name}/dry-run", noStore(a.d.session(http.HandlerFunc(a.previewSaved))))
 	mux.Handle("POST /v1/hooks/{token}", noStore(a.d.backpressure(http.HandlerFunc(a.hook))))
 }
@@ -409,6 +413,75 @@ func (a *sourceAPI) fire(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, srcReceiptDocOf(receipt))
 }
 
+// poll 处理 POST …/sources/{name}/poll：立即拉取一次（#555）。
+//
+// 三条语义共用同一份実现（不在 handler 里重写）：在飞 → 409（同一把锁）、本轮失败 → 502
+// 且游标不动（与定时轮询同一条不变量）、SSRF 三道闸照常生效（走的是同一个 fetch）。
+// 只改一件事：不写 nextFireAt（排期不被手动触发重置），另记一行审计（actor + 计数）。
+func (a *sourceAPI) poll(w http.ResponseWriter, r *http.Request) {
+	ns, err := a.d.authorizePathNamespace(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if !a.pollerReady(w) {
+		return
+	}
+	src, err := a.d.DB.GetSourceByName(r.Context(), ns, srcPathName(r))
+	if err != nil {
+		a.writeSourceError(w, err)
+		return
+	}
+	if src.Kind != sourcespec.KindPoll {
+		writeStatus(w, http.StatusConflict, reasonNotPollSource, "only kind=poll sources can be polled on demand", nil)
+		return
+	}
+	if !src.Enabled {
+		writeStatus(w, http.StatusConflict, reasonSourceDisabled, "source is disabled", nil)
+		return
+	}
+	res, err := a.d.Poller.PollOnce(r.Context(), src)
+	a.auditSourcePolled(r, ns, src, res, err)
+	if err != nil {
+		a.writePollError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, srcPollResultDocOf(res))
+}
+
+// writePollError 把「立即拉取」的两种失败分开：在飞是 409（重试有意义），本轮失败是 502
+// （上游/配置问题，错误原文要回给调用方——与 status.lastError 同源同文案）。
+func (a *sourceAPI) writePollError(w http.ResponseWriter, err error) {
+	if errors.Is(err, source.ErrPollInFlight) {
+		writeStatus(w, http.StatusConflict, reasonPollInProgress,
+			"this source already has a poll round in flight", nil)
+		return
+	}
+	writeStatus(w, http.StatusBadGateway, reasonPollFailed, err.Error(), nil)
+}
+
+// auditSourcePolled 记一行 `source.polled_manually`（append-only）。
+//
+// 审计是记账、不是执行的一部分：写不进去只记日志——那一轮已经真的跑完了，
+// 因为一条记账失败就回 500 会让调用方误以为没拉。
+func (a *sourceAPI) auditSourcePolled(r *http.Request, ns string, src *store.Source, res source.PollResult, pollErr error) {
+	if a.d == nil || a.d.DB == nil {
+		return
+	}
+	detail, mErr := json.Marshal(srcPollAuditDetail{
+		OK: pollErr == nil, Items: res.Items, Created: res.Created, Duplicates: res.Duplicates,
+	})
+	if mErr != nil {
+		return
+	}
+	if _, err := a.d.DB.AppendSourceAudit(r.Context(), store.SourceAuditInput{
+		NamespaceID: ns, SourceID: src.ID, Action: store.SourceAuditPolledManually,
+		ActorID: auth.UserIDFromContext(r.Context()), Detail: detail,
+	}); err != nil {
+		a.d.logger().Warn("source poll audit write failed", "source", src.Name, "err", err)
+	}
+}
+
 // previewSaved 处理 POST …/sources/{name}/dry-run：拿**已保存**的源试运行。
 func (a *sourceAPI) previewSaved(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
@@ -575,6 +648,15 @@ func (a *sourceAPI) sourcesReady(w http.ResponseWriter) bool {
 		return true
 	}
 	writeStatus(w, http.StatusServiceUnavailable, reasonInternal, "source service is not configured", nil)
+	return false
+}
+
+// pollerReady 同理：轮询执行器未注入时给 503，而不是 panic。
+func (a *sourceAPI) pollerReady(w http.ResponseWriter) bool {
+	if a.d != nil && a.d.Poller != nil {
+		return true
+	}
+	writeStatus(w, http.StatusServiceUnavailable, reasonInternal, "poll runner is not configured", nil)
 	return false
 }
 
@@ -881,6 +963,39 @@ type srcReceiptDoc struct {
 	Duplicate bool             `json:"duplicate"`
 	Tasks     []srcReceiptTask `json:"tasks"`
 	Pruned    []route.Prune    `json:"pruned"`
+}
+
+// source 域的三个动作语义词（#555）：与 api 里 Status409 / Status502 的 description 逐字对应。
+const (
+	reasonNotPollSource  = "not_poll_source"
+	reasonPollInProgress = "poll_in_progress"
+	reasonPollFailed     = "poll_failed"
+	reasonSourceDisabled = "source_disabled"
+)
+
+// srcPollResultDoc 是「立即拉取一次」的回执：只述这一轮发生了什么，不是资源信封。
+type srcPollResultDoc struct {
+	Items          int   `json:"items"`
+	Created        int   `json:"created"`
+	Duplicates     int   `json:"duplicates"`
+	DurationMs     int64 `json:"durationMs"`
+	CursorAdvanced bool  `json:"cursorAdvanced"`
+}
+
+// srcPollResultDocOf 把一轮的可观测事实投影成 wire 文档。
+func srcPollResultDocOf(res source.PollResult) srcPollResultDoc {
+	return srcPollResultDoc{
+		Items: res.Items, Created: res.Created, Duplicates: res.Duplicates,
+		DurationMs: res.DurationMs, CursorAdvanced: res.CursorAdvanced,
+	}
+}
+
+// srcPollAuditDetail 是审计行 detail 的摘要（不存响应正文：里面可能有业务数据）。
+type srcPollAuditDetail struct {
+	OK         bool `json:"ok"`
+	Items      int  `json:"items"`
+	Created    int  `json:"created"`
+	Duplicates int  `json:"duplicates"`
 }
 
 // srcReceiptTask 是回执里的一条任务（真实请求名 + 已解析版本；version 0 = 没有事实，省略）。
