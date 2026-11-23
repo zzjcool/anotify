@@ -34,6 +34,7 @@ var baselineTables = []string{
 	"node_instances",
 	"nodes",
 	"passkeys",
+	"playbook_install_audit",
 	"playbook_install_pinned",
 	"playbook_install_requires",
 	"playbook_installs",
@@ -196,6 +197,11 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 			// digest 与回执的 playbook.filesDigest 同一算法，current 版本仍以 playbooks.files 为准。
 			"playbook_id", "version", "files", "digest", "created_at", "created_by",
 		},
+		"playbook_install_audit": {
+			// 复原审计（#561）：action 是闭集，detail 只存计数与对象名单（不含 values）。
+			"id", "namespace_id", "playbook_id", "playbook_slug", "release", "install_id",
+			"action", "actor_id", "detail", "created_at",
+		},
 		"playbook_install_pinned": {
 			// 安装时快照（#551）：与回执 created.pinned 同一事务双写；seq 保序，ref_kind ∈ capability/source。 列名不用 kind（I3 只放行 sources / cli_auth_sessions 的 kind 列）。
 			"install_id", "namespace_id", "seq", "ref_kind", "name", "obj_kind", "version", "digest",
@@ -296,6 +302,7 @@ func TestSchemaBaselineIndexes(t *testing.T) {
 		{name: "idx_deploy_capability", table: "deployments", cols: []string{"capability_id"}},
 		{name: "idx_playbooks_ns", table: "playbooks", cols: []string{"namespace_id", "created_at"}},
 		{name: "idx_playbook_installs_lookup", table: "playbook_installs", cols: []string{"namespace_id", "playbook_id", "values_digest", "created_at"}},
+		{name: "idx_playbook_install_audit_release", table: "playbook_install_audit", cols: []string{"namespace_id", "playbook_slug", "release", "created_at", "id"}},
 		{name: "idx_playbook_pinned_lookup", table: "playbook_install_pinned", cols: []string{"namespace_id", "ref_kind", "name", "version"}},
 		{name: "idx_source_audit_source", table: "source_audit", cols: []string{"namespace_id", "source_id", "created_at", "id"}},
 		{name: "idx_sources_ns", table: "sources", cols: []string{"namespace_id", "created_at"}},
@@ -606,16 +613,15 @@ func TestSchemaBaselineLayoutMarkerIsSeparateFromLedger(t *testing.T) {
 	if got := rawUserVersion(t, path); got != 4 {
 		t.Fatalf("新库 PRAGMA user_version = %d, want 4（v4 布局格式标记）", got)
 	}
-	if v, err := db.SchemaVersion(); err != nil || v != 10 {
-		t.Fatalf("SchemaVersion = %d, %v; want 10（记账 = 块数，不是布局标记）", v, err)
+	if v, err := db.SchemaVersion(); err != nil || v != 11 {
+		t.Fatalf("SchemaVersion = %d, %v; want 11（记账 = 块数，不是布局标记）", v, err)
 	}
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&n); err != nil {
 		t.Fatalf("count schema_version: %v", err)
 	}
-	if n != 10 {
-		t.Fatalf("schema_version 行数 = %d, want 10（baseline + release + 卸载标记 + 包版本历史 + router 结局表 + 轮询状态 + 依赖索引 + 安装时快照 + 凭据审计）", n)
-		t.Fatalf("schema_version 行数 = %d, want 10（baseline + release + 卸载标记 + 包版本历史 + router 结局表 + 轮询状态 + 依赖索引 + 安装时快照 + 手动拉取审计）", n)
+	if n != 11 {
+		t.Fatalf("schema_version 行数 = %d, want 11（baseline + release + 卸载标记 + 包版本历史 + router 结局表 + 轮询状态 + 依赖索引 + 安装时快照 + 凭据审计 + 手动拉取审计 + 复原审计）", n)
 	}
 }
 

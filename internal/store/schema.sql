@@ -818,3 +818,19 @@ CREATE TABLE IF NOT EXISTS source_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_source_audit_source
     ON source_audit(namespace_id, source_id, created_at DESC, id DESC);
+
+-- +migration 11 playbook_restore_audit
+CREATE TABLE IF NOT EXISTS playbook_install_audit (
+    id            TEXT PRIMARY KEY,
+    namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    playbook_id   TEXT NOT NULL DEFAULT '',
+    playbook_slug TEXT NOT NULL DEFAULT '',
+    release       TEXT NOT NULL DEFAULT '',
+    install_id    TEXT NOT NULL DEFAULT '',
+    action        TEXT NOT NULL CHECK (action IN ('install.restored')),
+    actor_id      TEXT NOT NULL DEFAULT '',
+    detail        TEXT NOT NULL DEFAULT '{}',
+    created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_playbook_install_audit_release
+    ON playbook_install_audit(namespace_id, playbook_slug, release, created_at DESC, id DESC);
