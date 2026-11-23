@@ -1013,6 +1013,36 @@ paths:
         '404': {$ref: '#/components/responses/Status404'}
         '409': {$ref: '#/components/responses/Status409'}
         '500': {$ref: '#/components/responses/Status500'}
+    get:
+      operationId: getPlaybookRelease
+      tags: [playbooks]
+      security: [{session: []}]
+      summary: "读一个实例的详情（对象 / 依赖 / 参数分组，一次拿全）"
+      description: |
+        一份实例的只读视图：身份（`release` / `valuesDigest` / `installedAt` / `lastInstallId`）、
+        它装出的对象、安装时解析到的依赖、以及**参数组数**。页面因此只发这一个请求，
+        不必自己拼「实例清单 + 能力列表 + 源列表」三个端点。
+
+        `objects` 的集合**只由这个 release 的回执 `created` 决定**（能力 `name@version` 按名字去重、
+        源按名字），不按名字前缀、不查全命名空间：两份 release 并存时，各自的详情就是各自的实例。
+        每个对象给的是**当前生效版本**（`version` / `digest` 与 `GET …/capabilities/{name}` 同源；
+        源给 `kind`）——回执记过、但行已被删除的引用不出现在列表里（不编造幽灵行）。
+
+        同一 release 用不同 values 装过会折叠成多个参数组（`groups`，按最近安装降序）；
+        顶层字段描述的是第一组（现在在跑的那一套），`params.groups` 是组数。
+
+        release 从未存在、或该 release 已卸载（对象已删）→ `404` `release_not_found`
+        （与导出 / 卸载同一口径）。只读：不写库、不产生回执。
+      responses:
+        '200':
+          description: "实例详情"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PlaybookReleaseDetail'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
 
   /v1/namespaces/{namespace}/playbooks/{slug}/releases/{release}/yaml:
     parameters:
@@ -1043,8 +1073,17 @@ paths:
         的输出逐字节相同（同一份读投影与脱敏），顺序固定：能力按名字升序，再源按名字升序。
         回执记过、但对象已被删除的引用不会出现在导出里（导出给的是当前生效版本）。
 
+        `valuesDigest` 可选：把导出钉在某个参数组上（同一 release 用两套 values 装过时，
+        不带筛选的导出是两组的并集；按组导出只给这一组装出的对象）。该组不存在 → `404` `release_not_found`。
+
         release 从未存在、或该 release 已卸载（对象已删）→ `404` `release_not_found`；
         已存在但 `created` 为空 → `200` 且 `objects: 0`（只有头注释）。只读：不写库、不产生回执。
+      parameters:
+        - name: valuesDigest
+          in: query
+          required: false
+          description: "只导出这个参数组（`valuesDigest`）；省略 = 该 release 的全部回执"
+          schema: {type: string}
       responses:
         '200':
           description: "多文档 YAML 正文（头注释 + `---` 分隔的对象文档）"
@@ -3415,6 +3454,86 @@ components:
         installs:
           type: array
           items: {$ref: '#/components/schemas/PlaybookInstallGroup'}
+    PlaybookReleaseDetail:
+      type: object
+      required: [playbook, release, valuesDigest, installedAt, lastInstallId, params, objects, dependencies, groups]
+      description: |
+        一个实例（release）的详情读模型。顶层字段描述「现在在跑的那一组」（最近安装的那组），
+        `groups` 是全部参数组的明细 —— 单组 release 时两者逐字段一致。
+        `objects` 只由这个 release 的回执 `created` 决定，不掺其它 release 或手建的行。
+      properties:
+        playbook: {$ref: '#/components/schemas/PlaybookReleaseRef'}
+        release: {type: string}
+        valuesDigest: {type: string}
+        installedAt: {type: string, format: date-time}
+        lastInstallId: {type: string}
+        params: {$ref: '#/components/schemas/PlaybookReleaseParams'}
+        objects: {$ref: '#/components/schemas/PlaybookReleaseObjects'}
+        dependencies:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookDependency'}
+        groups:
+          type: array
+          description: "参数组明细（按最近安装降序）"
+          items: {$ref: '#/components/schemas/PlaybookReleaseParamGroup'}
+    PlaybookReleaseRef:
+      type: object
+      required: [name, version]
+      description: "实例所属的包（版本是**当前**版本；安装那一刻的版本在回执原文里）"
+      properties:
+        name: {type: string}
+        version: {type: integer}
+    PlaybookReleaseParams:
+      type: object
+      required: [digest, groups]
+      description: "参数面的一行摘要：主分组的摘要 + 几套 values 装过（折叠组数）"
+      properties:
+        digest: {type: string}
+        groups: {type: integer}
+    PlaybookReleaseObjects:
+      type: object
+      required: [capabilities, sources]
+      description: "实例装出的对象（能力按名字升序，其后源按名字升序）；空集合是 []"
+      properties:
+        capabilities:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookReleaseCapabilityObject'}
+        sources:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookReleaseSourceObject'}
+    PlaybookReleaseCapabilityObject:
+      type: object
+      required: [name, version, digest]
+      description: "实例装出的一个能力的当前生效身份（与 `GET …/capabilities/{name}` 同源）"
+      properties:
+        name: {type: string}
+        version: {type: integer}
+        digest: {type: string}
+    PlaybookReleaseSourceObject:
+      type: object
+      required: [name, kind]
+      description: "实例装出的一个源（kind 决定它怎么触发）"
+      properties:
+        name: {type: string}
+        kind: {type: string}
+    PlaybookReleaseParamGroup:
+      type: object
+      required: [valuesDigest, values, attempts, installedAt, lastInstallId, objects, dependencies]
+      description: |
+        一套 values 装出的那一份明细。`attempts` 是这组装了几次（不是版本号），
+        `values` 是回执里那份已打码的有效 values（writeOnly → `***`）。
+      properties:
+        valuesDigest: {type: string}
+        values:
+          type: object
+          additionalProperties: true
+        attempts: {type: integer}
+        installedAt: {type: string, format: date-time}
+        lastInstallId: {type: string}
+        objects: {$ref: '#/components/schemas/PlaybookReleaseObjects'}
+        dependencies:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookDependency'}
     PlaybookKept:
       type: object
       required: [capabilities, sources]

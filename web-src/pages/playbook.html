@@ -135,8 +135,12 @@
                刷新一起重拉。卡片的说明改成标题上的 tooltip，不再白占一行。 */}}
           <h3 class="card-title" title="{{t "pb.v4.instances_hint"}}">{{t "pb.v4.instances"}}</h3>
         </div>
+        {{/* #548 的两级 IA：这一页只回答「有几份实例」，每行一个 release —— 名字 · 状态 ·
+             参数摘要（短号，hover 全文）· 对象数 · 最近安装时间。对象 / 回执 / YAML / 卸载都进
+             release 详情页：一旦在这里重新展开对象，「包」和「一份实例」两层就又糊在一起了。
+             折叠键是 (release, valuesDigest)：同一 release 用两套参数装过是两组，但列表按
+             **release** 聚合，组数进行内（「N 组」），不拆成多行。 */}}
         <div id="pb-installs" aria-live="polite"></div>
-        <div id="pb-uninstall-result" class="pb-section" aria-live="polite"></div>
         {{/* 动作结果（试装/安装/单次回执）是状态展示，不是第二个主操作：动作发生后
              才出现，首屏与「只看清单」的路径上一直 hidden。 */}}
         <div id="pb-result" class="pb-section" hidden>
@@ -273,15 +277,6 @@
   </div>
 </div>
 
-<div id="pb-yaml-drawer" class="modal-backdrop hidden pb-drawer" role="dialog" aria-modal="true" aria-labelledby="pb-yaml-title">
-  <div class="modal-panel pb-drawer-panel">
-    <div class="modal-head">
-      <h3 id="pb-yaml-title"></h3>
-      <button id="pb-yaml-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.close"}}">×</button>
-    </div>
-    <div id="pb-yaml-body" class="modal-body"></div>
-  </div>
-</div>
 {{end}}
 
 {{define "script"}}
@@ -351,6 +346,7 @@
       if (lastReceiptId) {
         const button = el("button", "btn btn-ghost btn-sm", t("pb.v4.last_install") + ": " + lastReceiptId);
         button.type = "button";
+        button.id = "pb-last-install";
         button.addEventListener("click", () => singleReceipt(lastReceiptId));
         host.append(button);
       }
@@ -564,78 +560,62 @@
       const text = String(digest || "");
       return (text.startsWith("sha256:") ? text.slice("sha256:".length) : text).slice(0, 12);
     }
+    function releaseHref(release) {
+      return "release.html?namespace=" + encodeURIComponent(getScope().namespace) +
+        "&id=" + encodeURIComponent(name) + "&release=" + encodeURIComponent(release);
+    }
+    function releaseRows(groups) {
+      const byRelease = new Map();
+      for (const group of groups) {
+        const release = group.release || "";
+        let row = byRelease.get(release);
+        if (!row) {
+          row = { release, groups: 0, digest: group.valuesDigest || "", lastAt: "", caps: new Set(), sources: new Set() };
+          byRelease.set(release, row);
+        }
+        row.groups += 1;
+        if (group.lastAt && group.lastAt > row.lastAt) row.lastAt = group.lastAt;
+        for (const ref of group.capabilities || []) row.caps.add(String(ref).split("@")[0]);
+        for (const ref of group.sources || []) row.sources.add(String(ref));
+      }
+      return [...byRelease.values()].sort((a, b) => (a.release < b.release ? -1 : a.release > b.release ? 1 : 0));
+    }
+    function fmtTime(iso) {
+      if (!iso) return "—";
+      const at = new Date(iso);
+      if (Number.isNaN(at.getTime())) return String(iso);
+      try { return at.toLocaleString(); } catch (e) { return String(iso); }
+    }
+    function releaseRow(row) {
+      const item = el("div", "pb-group");
+      item.dataset.release = row.release;
+      const head = el("div", "pb-row");
+      const link = el("a", "field-label mono", row.release);
+      link.href = releaseHref(row.release);
+      link.dataset.releaseLink = row.release;
+      const digest = el("span", "mono field-hint", shortDigest(row.digest));
+      digest.title = row.digest;
+      digest.dataset.digest = row.digest;
+      head.append(link, el("span", "badge badge-success", t("pb.v4.release_active")), digest,
+        el("span", "field-hint", t("pb.v4.release_objects", { c: String(row.caps.size), s: String(row.sources.size) })),
+        el("span", "field-hint", t("pb.v4.release_last_install", { at: fmtTime(row.lastAt) })));
+      if (row.groups > 1) head.append(el("span", "field-hint", t("pb.v4.group_count", { n: String(row.groups) })));
+      item.append(head);
+      return item;
+    }
     async function installs() {
       $("pb-installs").textContent = t("pb.v4.loading");
-      $("pb-uninstall-result").replaceChildren();
       try {
         const data = await api(path("/installs"));
         if (!Array.isArray(data.installs) || typeof data.total !== "number") throw new Error(t("pb.v4.invalid_installs"));
-        status.instances = t("pb.v4.status_instances", { n: String(data.total) });
+        const rows = releaseRows(data.installs);
+        status.instances = t("pb.v4.status_instances", { n: String(rows.length) });
         renderStatus();
         const host = $("pb-installs");
-        host.replaceChildren(el("p", "field-hint", t("pb.v4.group_count", { n: data.total })));
-        const byRelease = new Map();
-        for (const group of data.installs) {
-          const release = group.release || "";
-          if (!byRelease.has(release)) byRelease.set(release, []);
-          byRelease.get(release).push(group);
-        }
-        for (const release of [...byRelease.keys()].sort()) {
-          const rows = byRelease.get(release);
-          const section = el("div", "pb-section"); section.dataset.release = release;
-          section.append(el("p", "field-label", t("pb.v4.release_group", { release, n: rows.length })));
-          for (const group of rows) {
-            const item = el("div", "pb-group");
-            item.dataset.digest = group.valuesDigest; item.dataset.release = group.release || "";
-            const refs = ["capabilities", "sources"]
-              .map(kind => kind + ": " + (group[kind] && group[kind].length ? group[kind].join(", ") : t("pb.v4.none")))
-              .join(" · ");
-            item.append(el("p", "field-label mono", shortDigest(group.valuesDigest)), el("p", "field-hint", t("pb.v4.attempts_n", { n: group.attempts }) + " · " + refs));
-            const open = el("button", "btn btn-ghost btn-sm", t("pb.v4.single_receipt") + " · " + group.lastInstallId);
-            open.type = "button";
-            open.addEventListener("click", () => singleReceipt(group.lastInstallId));
-            item.append(open);
-            const yaml = el("button", "btn btn-ghost btn-sm", t("pb.v4.view_yaml"));
-            yaml.type = "button"; yaml.dataset.action = "release-yaml"; yaml.dataset.release = item.dataset.release; // empty 由折叠组自己的 created 名单决定（两条都空 = 空态）。
-            yaml.addEventListener("click", () => openYamlDrawer(item.dataset.release, !group.capabilities?.length && !group.sources?.length));
-            item.append(yaml); section.append(item);
-          }
-          if (release) {
-            const uninstallButton = el("button", "btn btn-ghost btn-sm", t("pb.v4.uninstall"));
-            uninstallButton.type = "button"; uninstallButton.dataset.action = "uninstall"; uninstallButton.dataset.release = release;
-            uninstallButton.addEventListener("click", () => uninstall(release, uninstallButton));
-            section.append(uninstallButton);
-          }
-          host.append(section);
-        }
-        if (!data.installs.length) host.append(el("p", "field-hint", t("pb.v4.no_installs")));
+        host.replaceChildren();
+        for (const row of rows) host.append(releaseRow(row));
+        if (!rows.length) host.append(el("p", "field-hint", t("pb.v4.no_installs")));
       } catch (error) { $("pb-installs").replaceChildren(loadErrorNode(error, installs)); }
-    }
-    function uninstallResult(result) {
-      const host = $("pb-uninstall-result");
-      const doc = result || {};
-      const removed = doc.removed || {};
-      const capabilities = Array.isArray(removed.capabilities) ? removed.capabilities : [];
-      const sources = Array.isArray(removed.sources) ? removed.sources : [];
-      const kept = Array.isArray(doc.kept) ? doc.kept : [];
-      const line = doc.alreadyUninstalled
-        ? t("pb.v4.uninstall_already")
-        : t("pb.v4.uninstalled_n", { release: doc.release || "", c: capabilities.length, s: sources.length });
-      host.append(el("p", "field-hint", line));
-      if (!kept.length) return;
-      host.append(el("p", "field-hint", t("pb.v4.uninstall_kept_n", { n: kept.length })));
-      host.append(el("p", "field-hint", t("pb.v4.uninstall_reason")));
-      host.append(code(kept));
-    }
-    async function uninstall(release, button) {
-      if (!(await confirmDanger({ body: t("pb.v4.uninstall_confirm", { release }) }))) return;
-      button.disabled = true;
-      $("pb-uninstall-result").replaceChildren();
-      try {
-        const result = await api(path("/releases/" + encodeURIComponent(release)), { method: "DELETE" });
-        await refreshSummary(); await installs();
-        uninstallResult(result);
-      } catch (error) { $("pb-uninstall-result").replaceChildren(loadErrorNode(error)); button.disabled = false; }
     }
     async function singleReceipt(id) {
       try {
@@ -668,39 +648,6 @@
       if (first) first.focus({ preventScroll: true });
     }
     function closeDrawer() { closeModal($("pb-install-drawer")); }
-    function yamlBody(node) { $("pb-yaml-body").replaceChildren(node); }
-    function yamlEmpty() { yamlBody(dom("p", { class: "field-hint", id: "pb-yaml-empty" }, t("pb.v4.yaml_empty"))); }
-    function yamlFailed(detail) { yamlBody(dom("p", { class: "field-hint" }, t("pb.v4.yaml_load_failed") + " · " + detail)); }
-    function yamlCode(text) {
-      const wrap = el("div", "code-block"), head = el("div", "code-head");
-      const copy = el("button", "copy-btn", t("uxaudit.work.copy"));
-      copy.type = "button"; copy.id = "pb-yaml-copy";
-      copy.addEventListener("click", () => copyText(copy, () => text));
-      head.append(el("span", null, t("pb.v4.yaml_title")), copy);
-      const pre = el("pre", "code-body mono pb-code", null), code = el("code", null, null);
-      code.id = "pb-yaml-text"; code.textContent = text;
-      pre.append(code); wrap.append(head, pre); yamlBody(wrap);
-    }
-    async function yamlStatusDetail(res) {
-      let detail = "HTTP " + res.status;
-      try { const status = await res.json(); detail += " · " + [status.reason, status.message].filter(Boolean).join(" · "); }
-      catch { /* 不是 JSON（网关错误页）：只留状态码 */ }
-      return detail;
-    }
-    async function openYamlDrawer(release, empty) {
-      $("pb-yaml-title").textContent = [t("pb.v4.yaml_title"), release, name].join(" · ");
-      openModal($("pb-yaml-drawer"));
-      if (empty) { yamlEmpty(); return; } // 组里一个对象都没有：不发请求，也不留空的 <pre>。
-      yamlBody(dom("p", { class: "field-hint" }, t("pb.v4.loading")));
-      try {
-        const res = await fetch(path("/releases/" + encodeURIComponent(release) + "/yaml"), { credentials: "same-origin", headers: { Accept: "application/yaml" } }); // 裸多文档 YAML 不是 JSON：api() 会判成解析失败，所以这一处直读正文。
-        if (res.status === 401) { location.href = loginHref(); return; } // 与 api() 的 401 同一个落点（loginHref 是唯一白名单）。
-        if (!res.ok) return yamlFailed(await yamlStatusDetail(res));
-        const text = await res.text();
-        if (!text.split("\n").some(line => line.trim() === "---")) return yamlEmpty(); // 头注释之外一个文档都没有 = 同一个空态（服务端也可能给 objects: 0）。
-        yamlCode(text);
-      } catch (error) { yamlFailed(String((error && error.message) || error)); }
-    }
     /* #380：徽章必须两条路径都收敛。「正在读取…」只在 checkup() 里被改写，404/409/网络错误
        会永久停在 loading 并留下一个空的 #pb-summary 圆角容器。失败分支改成 badge-error +
        「载入失败」并移除空容器（hidden）；重试会把它复位成 loading 再走一遍。 */
@@ -827,8 +774,6 @@
     $("pb-install-open").addEventListener("click", openDrawer);
     $("pb-drawer-close").addEventListener("click", closeDrawer);
     $("pb-install-drawer").addEventListener("click", event => { if (event.target === $("pb-install-drawer")) closeDrawer(); });
-    $("pb-yaml-close").addEventListener("click", () => closeModal($("pb-yaml-drawer")));
-    $("pb-yaml-drawer").addEventListener("click", event => { if (event.target === $("pb-yaml-drawer")) closeModal($("pb-yaml-drawer")); });
     document.addEventListener("DOMContentLoaded", load);
   })();
 </script>

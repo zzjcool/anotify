@@ -1,9 +1,9 @@
 package server
 
-// Playbook 资源域（v4 HTTP 资源层，contract.md D2 / WIRE-HANDOFF.md W3）。三条语义边界决定了这里的形状：
-// 1. **包是清单 + 回执，不是所有权**（playbook.md §7）：DELETE 只删清单行，已装出去的 能力 / 源一行不动，响应必须告诉用户留下了什么（kept / values）；#510 的 uninstall 同理——按 release 撤行、回执只打标记。
-// 2. **默认是摘要**（W3）：包体是 `{相对路径: 正文}` 的整份 map，列表 / 详情默认不回它 （spec 是空投影 `{}`）；只有 `?includeBody=true` 才回原始未渲染的 `spec.files`，供编辑 / 导出。默认摘要**不能**当完整 PUT 模板。
-// 3. **安装不部署，冲突 0 写**：install 只在单事务里建能力 / 源 + 写回执；有冲突时整包 一行不写并回 400 `playbook_conflict`，details 里带 valuesDigest / conflicts[] / hint （12 格矩阵明细不能被裁成 causes）。
+// Playbook 资源域（v4 HTTP 资源层，contract.md D2 / WIRE-HANDOFF.md W3）。三条语义边界：
+// 1. **包是清单 + 回执，不是所有权**（playbook.md §7）：DELETE 只删清单行，已装出去的能力 / 源一行不动，响应必须告诉用户留下了什么（kept / values）。
+// 2. **默认是摘要**（W3）：包体是 `{相对路径: 正文}` 的整份 map，只有 `?includeBody=true` 才回 `spec.files`；默认摘要**不能**当完整 PUT 模板。
+// 3. **安装不部署，冲突 0 写**：有冲突时整包一行不写并回 400 `playbook_conflict`（details 带矩阵明细）。
 
 import (
 	"bytes"
@@ -35,7 +35,8 @@ func newPlaybookAPI(d *serverDeps) *playbookAPI { return &playbookAPI{d: d} }
 
 // register 注册全部 Playbook 路由（全部 session 包裹，未登录直 401）。
 //
-// 方法不匹配（例如 `PATCH …/playbooks/{slug}`）本函数**不**兜底方法分派：这里只挂带方法的 pattern，生产 mux 会把这类请求交给末尾的静态兜底（回 404/503 而不是 405）。两种挂载方式 为什么答案不同，见 resource_capability.go 的 register() 注释——同仓同结论只在那一处解释。
+// 方法不匹配**不**兜底方法分派：只挂带方法的 pattern，其余交给末尾的静态兜底（404/503 而不是 405），
+// 见 resource_capability.go 的 register() 注释（同仓同结论只在那一处解释）。
 func (a *playbookAPI) register(mux *http.ServeMux) {
 	const base = "/v1/namespaces/{ns}/playbooks"
 	routes := []struct {
@@ -51,6 +52,7 @@ func (a *playbookAPI) register(mux *http.ServeMux) {
 		{"POST " + base + "/{slug}/install", a.install},
 		{"GET " + base + "/{slug}/versions", a.listVersions},
 		{"DELETE " + base + "/{slug}/releases/{release}", a.uninstallRelease},
+		{"GET " + base + "/{slug}/releases/{release}", a.getRelease},
 		{"GET " + base + "/{slug}/releases/{release}/yaml", a.releaseYAML},
 		{"GET " + base + "/{slug}/installs", a.listInstalls},
 		{"GET " + base + "/{slug}/installs/{installId}", a.getInstall},
@@ -123,8 +125,7 @@ func (a *playbookAPI) get(w http.ResponseWriter, r *http.Request) {
 }
 
 // listInstalls 处理 GET …/playbooks/{slug}/installs：按 valuesDigest 折叠的实例清单（§4.10）。
-//
-// 响应是**读模型**（total / installs），不是资源列表：一个折叠组不是可寻址对象，别把它包装成 `PlaybookInstallList` kind 的 items。
+// 响应是读模型（total / installs），不是资源列表：一个折叠组不是可寻址对象。
 func (a *playbookAPI) listInstalls(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -150,7 +151,8 @@ func (a *playbookAPI) listInstalls(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
-// listVersions 处理 GET …/playbooks/{slug}/versions：版本历史读模型（#511）。只回身份与摘要，**不回包体原文**（要文件就 `?includeBody=true` 拿当前版本，历史版本靠 install 取）；当前版本的那一行带 `current: true` —— 但当前版本的真身始终是 `playbooks.files`（本读模型不 join 它）。
+// listVersions 处理 GET …/playbooks/{slug}/versions：版本历史读模型（#511）—— 只回身份与摘要，
+// 不回包体原文；当前版本的真身始终是 `playbooks.files`（本读模型不 join 它）。
 func (a *playbookAPI) listVersions(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -518,14 +520,10 @@ func decodePlaybookAction(r *http.Request) (playbookActionBody, error) {
 // ---------- 响应形状 ----------
 
 // playbookStatus 是 Playbook 的 status 读模型（playbook.md §6.1）：每一项都必须真实派生，
-// 派不出来就给空（宁少不编）。
-// - items / sources / lastInstallId / unapplied 来自回执历史（`ListPlaybookInstalls` 的
-// installed_from 反查 + 最近一组回执的 unapplied[]）。
-// - conditions 是成员能力四条 condition 的聚合（逐行取该能力的 status 派生）；反查不到行
-// 就不参与，四种 type 都聚不出来时仍是 []。
-// - ready 由 conditions + unapplied 派生（四条全 True 且 unapplied 为空）。
+// 派不出来就给空（宁少不编）。items / sources / lastInstallId / unapplied 来自回执历史，
+// conditions 是成员能力四条 condition 的聚合，ready 由 conditions + unapplied 派生。
 //
-// 刻意**没有** `blocker`：它要求「最该先做的一件事」，来源正是成员能力的四条 condition；条件拿不到时给一个 blocker 就是纯编造，故省略该键（派生出事实时再加）。
+// 刻意**没有** `blocker`：条件拿不到时给一个 blocker 就是纯编造，故省略该键。
 type playbookStatus struct {
 	Ready       bool                      `json:"ready"`
 	Unapplied   []playbook.UnappliedEntry `json:"unapplied"`

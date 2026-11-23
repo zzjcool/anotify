@@ -1686,8 +1686,8 @@ nodes:
     name: 'Nombre del nodo'
     name_ph: 'p. ej. my-mbp'
     name_hint: 'Minúsculas, dígitos, punto (.), guion bajo (_) o guion (-): de 1 a 63 caracteres, empezando por letra o dígito'
-    instances: 'Instancias (opcional)'
-    instances_hint: 'Cuántas instancias ejecutar en este nodo (valor sugerido; el hub lo limita a 20). El número real de slots lo declara el agent al conectarse.'
+    instances: "Instancias (release)"
+    instances_hint: "Una fila por instancia: la lista agrupa por release (un release instalado con varios valores muestra «N grupos»); al abrirla se ven objetos, recibo, YAML y desinstalación."
     submit: 'Registrar'
     cancel: 'Cancelar'
     submitting: 'Registrando…'
@@ -2372,8 +2372,8 @@ pb:
     status_version: "Versión v{n}"
     status_instances: "{n} instancia(s)"
     versions_brief: "{n} versión(es)"
-    instances: "Instalaciones agrupadas por instancia y valores"
-    instances_hint: "Vista de lectura: un nombre de instancia con un conjunto de valores forma un grupo; attempts cuenta cuántas veces se instaló ese grupo. La procedencia es el primer recibo de creación, no propiedad."
+    instances: "Instancias (release)"
+    instances_hint: "Una fila por instancia: la lista agrupa por release (un release instalado con varios valores muestra «N grupos»); al abrirla se ven objetos, recibo, YAML y desinstalación."
     attempts_n: "{n} intentos"
     template: "Editar / exportar paquete original"
     file_path: "Ruta relativa del paquete"
@@ -2417,8 +2417,11 @@ pb:
     group_count: "{n} grupos de instalación"
     release_group: "{release} · {n} grupos"
     single_receipt: "Leer recibo individual completo"
-    no_installs: "Sin instalaciones normales (las simulaciones no se registran)."
+    no_installs: "Todavía no hay instancias. La primera instalación crea una."
     view_yaml: "Ver YAML"
+    release_active: "Activa"
+    release_objects: "{c} capacidades / {s} fuentes"
+    release_last_install: "instalada {at}"
     yaml_title: "YAML de la instancia"
     yaml_empty: "Esta instancia no tiene objetos que mostrar"
     yaml_load_failed: "No se pudo cargar el YAML"
@@ -2740,3 +2743,38 @@ namespace:
     no_nodes: "Todavía no hay nodos."
     no_param: "Falta el parámetro name: entre desde la lista de espacios."
     not_found: "El espacio de nombres no existe (o fue eliminado)."
+release:
+  title: Detalle de la instancia
+  subtitle: 'Una instancia: qué instaló, más el último recibo y sus dependencias'
+  back: Volver al paquete
+  loading: Cargando…
+  release_word: instancia
+  params_full: Parámetros
+  copy_digest: Copiar parámetros completos
+  installed_at: Última instalación
+  objects: Objetos instalados
+  objects_hint: 'Los nombres y versiones corresponden a los objetos vigentes; solo se listan los de esta instancia.'
+  capabilities: Capacidades
+  sources: Fuentes
+  no_objects: Esta instancia todavía no instaló ningún objeto.
+  receipt: Último recibo de instalación
+  receipt_hint: 'Solo lectura: creados, reutilizados, actualizaciones de contenido y dependencias de esa instalación.'
+  no_receipt: No hay recibo de instalación para mostrar.
+  dependencies: Dependencias
+  no_dependencies: Sin dependencias externas.
+  group_current: 'Conjunto de parámetros {n}'
+  attempts: 'instalada {n} veces'
+  yaml_title: YAML de la instancia
+  yaml_empty: Esta instancia no tiene objetos para exportar.
+  yaml_failed: La exportación falló
+  uninstall: Desinstalar esta instancia
+  uninstall_confirm: 'Desinstalar «{release}»: elimina las capacidades y fuentes que instaló; los recibos se conservan.'
+  uninstalled: Desinstalada
+  gone_title: Esta instancia fue desinstalada o no existe
+  gone_hint: 'Sus objetos ya no están; la página del paquete muestra las instancias activas.'
+  gone_back: Volver al paquete
+  no_target_badge: Sin instancia
+  missing_hint: 'Ábralo desde la lista de instancias del paquete o añada el nombre del paquete y de la instancia al enlace.'
+  missing_back: Volver a paquetes
+  missing_target: Al enlace le falta el nombre del paquete o de la instancia.
+  invalid_detail: El servidor no devolvió un detalle de instancia válido.

@@ -141,7 +141,9 @@ export async function playbook(d,mode){
     assert.equal(await page.locator('#pb-conditions').isVisible(), false, '体检明细不在首屏');
     await page.locator('#pb-installs').waitFor();
     assert.equal(await page.locator('#pb-installs').isVisible(), true, '实例列表在首屏');
-    assert.match(await page.locator('#pb-installs').innerText(), /install groups?/i, '实例列表不是空壳');
+    await page.waitForFunction(() => (document.querySelector('#pb-installs')?.textContent || '').trim().length > 0);
+    assert.equal(await page.locator('#pb-installs [data-release]').count(), 0, '没有实例时一行都不渲染');
+    assert.ok((await page.locator('#pb-installs').innerText()).trim().length > 0, '空态要有文案');
     await shot('first-screen-ia');
     check('Default IA: one status line + install trigger + instance list on screen; version history and checkup detail stay collapsed');
     await fill(true);
@@ -175,14 +177,16 @@ export async function playbook(d,mode){
     await shot('dry-run-zero-writes');
     const first = await clickAction('#btn-install', '/install'); const second = await clickAction('#btn-install', '/install');
     assert.notEqual(first.response.install.id, second.response.install.id); assert.deepEqual(second.response.skipped, first.response.created);
+    await page.locator('#pb-installs [data-release]').first().waitFor();
+    assert.equal(await page.locator('#pb-installs [data-release]').count(), 1, '同参数的两次安装仍是 1 份实例（1 行）');
+    assert.equal(await page.locator('#pb-installs a[data-release-link]').getAttribute('href'),
+      'release.html?namespace=default&id=project-chain&release=project-chain', '行链到实例详情（缺省 release = 包名）');
     const groups = await req(basePath + '/installs'); assert.equal(groups.total, 1); assert.equal(groups.installs[0].attempts, 2);
     assert.equal(groups.installs[0].lastInstallId, second.response.install.id); assert.equal(groups.installs[0].values.credential, '***');
     assert.ok(!JSON.stringify(groups).includes(credential));
     assert.equal((await req(basePath+'/installs/'+first.response.install.id)).install.id, first.response.install.id);
-    // 打开「单次回执」的那个按钮。install 组里现在还有 code-block 头部的复制按钮（.copy-btn）、
-    // 每个 release 的卸载按钮（[data-action="uninstall"]，#510）和「查看 YAML」
-    // （[data-action="release-yaml"]，#536），所以这里显式排除它们——strict mode 会命中多个。
-    await page.locator('#pb-installs button:not(.copy-btn):not([data-action="uninstall"]):not([data-action="release-yaml"])').click();
+    /* #548：列表只留「一份实例一行」，单次回执的入口搬到状态行的「最近安装回执」上。 */
+    await page.locator('#pb-last-install').click();
     await page.waitForFunction(id => __c1Calls.some(c => c.url.endsWith('/installs/' + id)), second.response.install.id);
     assert.match(await page.locator('#pb-receipt').innerText(), /Install|receipt/i);
     assert.ok(!((await page.locator('#pb-receipt').innerText()).includes(credential)));
@@ -195,36 +199,6 @@ export async function playbook(d,mode){
     assert.ok(await sourceRefs.count() >= 1, '回执里源的引用必须链到 source-detail.html（实际：' + await page.locator('#pb-receipt').innerText() + '）');
     assert.match(await sourceRefs.first().getAttribute('href'), /^source-detail\.html\?namespace=default&name=/);
     assert.equal(await page.locator('#pb-receipt a[href^="source.html"]').count(), 0, '不得再链回已删除的 source.html');
-    await page.locator('#pb-installs [data-action="release-yaml"]').first().click(); // #536：实例 YAML 抽屉读多文档正文（能力整体在源之前，凭据只以 secretSet 出现）。
-    await page.locator('#pb-yaml-drawer').waitFor({ state: 'visible' });
-    await page.locator('#pb-yaml-text').waitFor();
-    const releaseYaml = await page.locator('#pb-yaml-text').evaluate(node => node.textContent);
-    assert.equal(releaseYaml.split('\n').filter(line => line.trim() === '---').length, 3, '2 能力 + 1 源 → 3 段 --- 文档：' + releaseYaml);
-    for (const ref of ['name: a-review', 'name: a-fixer', 'name: a-push']) assert.ok(releaseYaml.includes(ref), '导出缺 ' + ref + '：' + releaseYaml);
-    const pushAt = releaseYaml.indexOf('name: a-push');
-    assert.ok(releaseYaml.indexOf('name: a-review') < pushAt && releaseYaml.indexOf('name: a-fixer') < pushAt, '能力文档整体在源文档之前：' + releaseYaml);
-    assert.match(releaseYaml, /secretSet: true/, '源的凭据只以 secretSet 出现');
-    assert.ok(!releaseYaml.includes(hookSecret), '导出不得回显 config.secret 原文');
-    assert.ok(!releaseYaml.includes('config.secret') && !/^\s*token:/m.test(releaseYaml), '导出不得回显 secret/token 键');
-    await shot('release-yaml-export');
-    await page.locator('#pb-yaml-close').click();
-    await page.locator('#pb-yaml-drawer').waitFor({ state: 'hidden' });
-    assert.equal(await page.locator('#pb-yaml-drawer').isVisible(), false, '关掉后抽屉不可见');
-    check('#536 instance YAML drawer: 3 documents caps-first, secret only as secretSet, no credential/config.secret/token, closes clean');
-    const emptyEntry = 'apiVersion: anotify/v1\nkind: Playbook\nmetadata:\n  name: empty-pkg\nspec:\n  capabilities: []\n  sources: []\n'; // #536 空实例：只装 playbook.yaml → objects: 0，正文没有任何文档。
-    await req('/v1/namespaces/default/playbooks', { method: 'POST', body: JSON.stringify({ ...envelope({ 'playbook.yaml': emptyEntry }), metadata: { name: 'empty-pkg', namespace: 'default' } }) });
-    assert.equal((await req('/v1/namespaces/default/playbooks/empty-pkg/install', { method: 'POST', body: JSON.stringify({ values: { project: 'a' } }) })).install.release, 'empty-pkg');
-    await goto('playbook', 'namespace=default&id=empty-pkg');
-    await page.locator('#pb-installs [data-action="release-yaml"]').first().click();
-    await page.locator('#pb-yaml-drawer').waitFor({ state: 'visible' });
-    assert.equal(await page.locator('#pb-yaml-empty').isVisible(), true, '0 对象实例直接给空态');
-    assert.ok((await page.locator('#pb-yaml-empty').innerText()).trim().length > 0, '空态文案非空');
-    assert.equal(await page.locator('#pb-yaml-text').count(), 0, '空态不得留空的 <pre>/<code>');
-    assert.equal((await calls()).filter(call => call.url.endsWith('/yaml')).length, 0, '0 对象空态不发请求');
-    await shot('release-yaml-empty');
-    await page.locator('#pb-yaml-close').click();
-    await page.locator('#pb-yaml-drawer').waitFor({ state: 'hidden' });
-    check('#536 zero-object instance: empty-state node, no request, no empty <pre>');
     check('Render differs from dryRun; all-state0 dry run, real repeat creates new receipts, digest-fold group/single receipt, exact writeOnly mask/provenance and manual-only deploy CTA');
     await clean('install');
   }
@@ -368,6 +342,102 @@ export async function playbook(d,mode){
     await page.locator('#btn-refresh').click(); await page.waitForFunction(() => !document.querySelector('#pb-empty').classList.contains('hidden'));
     assert.match(await page.locator('#pb-empty').innerText(), /No playbooks/);
     check('True disconnected errors/retry both pages, genuine HTTP400 schema error, 4 languages and real empty list after manifest deletion');
+  }
+  if (mode === 'release') {
+    /* #548：包页只列 release，实例级事实在详情页；对象不串的判据是「只由本 release 的回执 created 决定」。 */
+    await goto('playbooks');
+    await req('/v1/namespaces/default/playbooks', { method: 'POST', body: JSON.stringify(envelope(files)) });
+    const installAs = release => req(basePath + '/install', { method: 'POST', body: JSON.stringify({ values: { project: release }, release }) });
+    const blue = await installAs('blue'); const green = await installAs('green');
+    assert.equal(blue.install.release, 'blue'); assert.equal(green.install.release, 'green');
+    await goto('playbook', 'namespace=default&id=project-chain');
+    await page.locator('#pb-installs [data-release="blue"]').waitFor();
+    const rows = await page.locator('#pb-installs [data-release]').evaluateAll(nodes => nodes.map(node => ({
+      release: node.dataset.release, text: node.innerText,
+      href: node.querySelector('a[data-release-link]')?.getAttribute('href') || '',
+      digest: node.querySelector('[data-digest]')?.getAttribute('title') || '',
+    })));
+    assert.equal(rows.length, 2, '两份实例 → 列表 2 行：' + JSON.stringify(rows));
+    assert.deepEqual(rows.map(row => row.release).sort(), ['blue', 'green']);
+    for (const row of rows) {
+      assert.equal(row.href, 'release.html?namespace=default&id=project-chain&release=' + row.release, '行必须链到实例详情');
+      assert.ok(row.text.includes('Active'), '行里有状态：' + row.text);
+      assert.match(row.text, /2 capabilities \/ 1 sources/, '行里有对象数：' + row.text);
+      assert.match(row.digest, /^sha256:[0-9a-f]{64}$/, '参数摘要的全文放在 hover 上：' + row.digest);
+    }
+    assert.ok(!(await page.locator('#pb-installs').innerText()).includes('blue-review'), '包页不得展开对象（这一页只说有几份实例）');
+    await shot('release-list-two');
+    const objects = () => page.locator('#rd-objects [data-object]').evaluateAll(nodes => nodes.map(node => [node.dataset.object, node.dataset.name]));
+    await page.locator('#pb-installs [data-release="blue"] a[data-release-link]').click();
+    await page.waitForURL('**/release.html?**release=blue');
+    await page.locator('#rd-objects [data-object]').first().waitFor();
+    assert.deepEqual((await objects()).map(o => o[1]).sort(), ['blue-fixer', 'blue-push', 'blue-review'], 'blue 详情只列 blue 的对象');
+    assert.deepEqual([...new Set((await objects()).map(o => o[0]))].sort(), ['capability', 'source']);
+    const facts = await page.locator('#rd-summary [data-fact]').evaluateAll(nodes => Object.fromEntries(nodes.map(node => [node.dataset.fact, node.innerText])));
+    assert.match(facts.playbook, /project-chain@v1/, '身份行有包名@版本：' + JSON.stringify(facts));
+    assert.equal(facts.release.trim(), 'blue');
+    assert.equal(await page.locator('#rd-copy-digest').count(), 1, '参数摘要全文可复制');
+    assert.match(await page.locator('#rd-receipt [data-receipt-axis="created"]').innerText(), /blue-review/, '回执 created 与这次安装一致');
+    assert.equal(await page.locator('#rd-receipt [data-receipt-axis="dependencies"]').count(), 1);
+    await shot('release-detail-blue');
+    await page.goBack();
+    await page.locator('#pb-installs [data-release="green"] a[data-release-link]').click();
+    await page.waitForURL('**/release.html?**release=green');
+    await page.locator('#rd-objects [data-object]').first().waitFor();
+    const greenObjects = (await objects()).map(o => o[1]).sort();
+    assert.deepEqual(greenObjects, ['green-fixer', 'green-push', 'green-review'], 'green 详情只列 green 的对象');
+    assert.ok(!greenObjects.some(name => name.startsWith('blue-')), 'green 的详情里不得混进 blue 的对象');
+    const directUrl = page.url().replace('release=green', 'release=blue');
+    const other = await page.context().newPage();
+    await other.goto(directUrl);
+    await other.locator('#rd-objects [data-object]').first().waitFor();
+    const directObjects = await other.locator('#rd-objects [data-object]').evaluateAll(nodes => nodes.map(node => node.dataset.name).sort());
+    await other.close();
+    assert.deepEqual(directObjects, ['blue-fixer', 'blue-push', 'blue-review'], '直接打开 URL 与点进来的结果一致');
+    await goto('release', 'namespace=default&id=project-chain&release=blue');
+    await page.locator('#rd-objects [data-object]').first().waitFor();
+    await page.locator('#rd-yaml').click();
+    await page.locator('#rd-yaml-drawer').waitFor({ state: 'visible' });
+    await page.locator('#rd-yaml-text').waitFor();
+    const releaseYaml = await page.locator('#rd-yaml-text').evaluate(node => node.textContent);
+    assert.equal(releaseYaml.split('\n').filter(line => line.trim() === '---').length, 3, '2 能力 + 1 源 → 3 段文档：' + releaseYaml);
+    for (const ref of ['name: blue-review', 'name: blue-fixer', 'name: blue-push']) assert.ok(releaseYaml.includes(ref), '导出缺 ' + ref);
+    assert.ok(releaseYaml.indexOf('name: blue-review') < releaseYaml.indexOf('name: blue-push'), '能力文档整体在源文档之前');
+    assert.match(releaseYaml, /secretSet: true/);
+    assert.ok(!releaseYaml.includes(hookSecret) && !releaseYaml.includes('config.secret'), '导出不得回显凭据原文');
+    assert.ok(!releaseYaml.includes('green-'), '按组导出不得混进另一份实例的对象');
+    await shot('release-yaml');
+    await page.locator('#rd-yaml-close').click();
+    await page.locator('#rd-yaml-drawer').waitFor({ state: 'hidden' });
+    await acceptDialog(page, () => page.locator('#rd-uninstall').click());
+    await page.locator('#rd-gone-panel').waitFor();
+    assert.match(await page.locator('#rd-gone-panel').innerText(), /uninstalled or never existed/i);
+    await goto('playbook', 'namespace=default&id=project-chain');
+    await page.waitForFunction(() => document.querySelectorAll('#pb-installs [data-release]').length === 1);
+    assert.equal(await page.locator('#pb-installs [data-release="blue"]').count(), 0, '卸载后从包页消失');
+    await goto('release', 'namespace=default&id=project-chain&release=blue');
+    await page.locator('#rd-gone-panel').waitFor();
+    assert.ok((await page.locator('#rd-gone-panel').innerText()).trim().length > 0, '旧 URL 给明确状态，不是白屏');
+    assert.equal(await page.locator('#rd-content').isVisible(), false, '已卸载不渲染对象区');
+    assert.equal(await page.locator('#rd-gone-back').getAttribute('href'), 'playbook.html?namespace=default&id=project-chain');
+    await shot('release-uninstalled');
+    const emptyEntry = 'apiVersion: anotify/v1\nkind: Playbook\nmetadata:\n  name: empty-pkg\nspec:\n  capabilities: []\n  sources: []\n';
+    await req('/v1/namespaces/default/playbooks', { method: 'POST', body: JSON.stringify({ ...envelope({ 'playbook.yaml': emptyEntry }), metadata: { name: 'empty-pkg', namespace: 'default' } }) });
+    await req('/v1/namespaces/default/playbooks/empty-pkg/install', { method: 'POST', body: JSON.stringify({ values: { project: 'a' } }) });
+    await goto('release', 'namespace=default&id=empty-pkg&release=empty-pkg');
+    await page.locator('#rd-objects').waitFor();
+    assert.equal(await page.locator('#rd-objects [data-object]').count(), 0);
+    assert.match(await page.locator('#rd-objects').innerText(), /has not installed any objects/i);
+    const yamlCallsBefore = (await calls()).filter(call => call.url.endsWith('/yaml')).length;
+    await page.locator('#rd-yaml').click();
+    await page.locator('#rd-yaml-drawer').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#rd-yaml-empty').isVisible(), true, '0 对象实例直接给空态');
+    assert.equal(await page.locator('#rd-yaml-text').count(), 0, '空态不得留空的 <pre>/<code>');
+    assert.equal((await calls()).filter(call => call.url.endsWith('/yaml')).length, yamlCallsBefore, '0 对象空态不发请求');
+    await page.locator('#rd-yaml-close').click();
+    await page.locator('#rd-yaml-drawer').waitFor({ state: 'hidden' });
+    check('#548 two-level IA: release list without objects, per-release detail objects/receipt, no crossing, direct URL, uninstall → explicit state, empty YAML');
+    await clean('release');
   }
   if (mode === 'missing') {
     // #380：不存在的 playbook id → 徽章必须从「正在读取…」收敛到失败态，

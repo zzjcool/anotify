@@ -1,9 +1,7 @@
 package server
 
-// resource_playbook_release_yaml.go 是「按 release 导出实例装出的对象」的读面（#536）。
-//
-// 集合只由回执的 created 决定（不做前缀匹配、不从 installedFrom 反查）；每个文档复用单对象
-// /yaml 端点的投影与脱敏；顺序固定为能力升序 + 源升序；头注释写实「当前生效版本」。
+// resource_playbook_release_yaml.go 是「按 release 导出实例装出的对象」的读面（#536）：
+// 集合只由回执的 created 决定，每个文档复用单对象 /yaml 端点的投影与脱敏。
 
 import (
 	"bytes"
@@ -31,7 +29,10 @@ func (a *playbookAPI) releaseYAML(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, errStatus(http.StatusBadRequest, reasonBadRequest, "playbook slug and release are required"))
 		return
 	}
-	exp, err := a.d.DB.GetPlaybookReleaseExport(r.Context(), ns, slug, release)
+	// `valuesDigest` 可选：把导出钉在某个参数组上（同一 release 装过两套 values 时，
+	// 不带筛选的导出是两组的并集，按组导出只给这一组装出的对象）。
+	digest := strings.TrimSpace(r.URL.Query().Get("valuesDigest"))
+	exp, err := a.d.DB.GetPlaybookReleaseExportGroup(r.Context(), ns, slug, release, digest)
 	if err != nil {
 		writePlaybookAPIError(w, err)
 		return

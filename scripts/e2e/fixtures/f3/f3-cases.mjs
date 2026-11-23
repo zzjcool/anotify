@@ -88,6 +88,10 @@ add('observe-message',d=>observability(d,'message'),{expectHttpStatus:[
 add('playbook-install',d=>playbook(d,'install'));
 // playbook-matrix 故意触发**真实** playbook_conflict（库里已有行不许改 → 400）：
 // dryRun 与真装各一次，两次都必须原子 0 写。
+// playbook-release（#548）：两份实例 → 各自详情断言不串 → 卸载后旧 URL 真 404（页面给明确状态）。
+add('playbook-release',d=>playbook(d,'release'),{expectHttpStatus:[
+  {status:404,path:'/v1/namespaces/default/playbooks/project-chain/releases/blue',exact:true,note:'release_not_found：已卸载的实例没有详情可读，页面显示「已卸载或不存在」而不是白屏'},
+]});
 add('playbook-matrix',d=>playbook(d,'matrix'),{expectHttpStatus:[
   {status:400,path:'/v1/namespaces/default/playbooks/project-chain/install',exact:true,note:'playbook_conflict：复用行的 next/targets 与库里不一致 → 400，原子 0 写'},
 ]});
@@ -323,7 +327,7 @@ const queryFor=(file,d)=>file==='namespace'?'namespace=default&name=default':fil
 // 推送是关闭的 —— 按设计此时页面上不存在 #current-device-card（只在 push 开放分支
 // 创建，ux_regression_19_23 断言 card===null），所以 real 锚点必须是"永远存在"的
 // 真实控制器输出 #push-count（mock 权威下同样存在，两个权威都不放水）。
-const pageAnchors={admin:'#kpi-devices',capabilities:'[data-cap="fixer"]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',message:'#task-facts',namespace:'#namespace-vars:not([disabled])',namespaces:'#ns-list [data-ns]',node:'#node-machine-vars [data-key]',nodes:'[data-node="anode-1"]','passkey-enroll':'#code-input',playbook:'#pb-installs',playbooks:'#pb-grid [data-slug]',receivers:'#push-count',security:'#passkey-list',source:'#src-name',
+const pageAnchors={admin:'#kpi-devices',capabilities:'[data-cap="fixer"]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',message:'#task-facts',namespace:'#namespace-vars:not([disabled])',namespaces:'#ns-list [data-ns]',node:'#node-machine-vars [data-key]',nodes:'[data-node="anode-1"]','passkey-enroll':'#code-input',playbook:'#pb-installs',playbooks:'#pb-grid [data-slug]',release:'#rd-gone-panel',receivers:'#push-count',security:'#passkey-list',source:'#src-name',
   // 源只读详情页：data-source 只在真的读到一个源之后才落盘（空态/404 不带它）。
   'source-detail':'#src-detail[data-source]',
   sources:'#src-list > div[data-name]',trace:'#trace-tasks [data-task]'};

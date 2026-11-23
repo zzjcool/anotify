@@ -189,10 +189,10 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		writeStatus(w, http.StatusBadRequest, "version_content_immutable", err.Error(), nil)
 	case errors.Is(err, store.ErrSlugTaken):
 		writeStatus(w, http.StatusConflict, "slug_taken", "playbook slug already exists", nil)
-	// #510：release 不在这个包名下 → 404；installId 与本次 release 对不上 ⇒ 客户端视图过期（409，不删不猜）。
+	// release 不在这个包名下（含已卸载）→ 404；installId 对不上 ⇒ 视图过期（409，不删不猜）。
 	case errors.Is(err, store.ErrPlaybookReleaseNotFound):
 		writeStatus(w, http.StatusNotFound, "release_not_found", err.Error(), nil)
-	// #511：钉住的包版本既不在历史里、也不是当前版本 → 404（不回退成「装当前版」：那就成了静默装错）。
+	// 钉住的包版本不在历史里也不是当前版本 → 404（不回退成「装当前版」= 静默装错）。
 	case errors.Is(err, store.ErrPlaybookVersionNotFound):
 		writeStatus(w, http.StatusNotFound, "version_not_found", err.Error(), nil)
 	case errors.Is(err, store.ErrPlaybookInstallMismatch):

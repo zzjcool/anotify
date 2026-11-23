@@ -1686,8 +1686,8 @@ nodes:
     name: 'ノード名'
     name_ph: '例: my-mbp'
     name_hint: '小文字・数字・ドット（.）・アンダースコア（_）・ハイフン（-）のみ、1〜63 文字、先頭は英数字'
-    instances: 'インスタンス数（任意）'
-    instances_hint: 'このノードで並列に走らせるインスタンス数（目安。中枢が 20 に丸めます）。実際のスロット数は agent が接続時に申告します。'
+    instances: "インスタンス（release）"
+    instances_hint: "1 行が 1 インスタンス：一覧は release でまとめ（同じ release を複数の値で入れた場合は「N グループ」）、開くとオブジェクト・結果・YAML・削除を扱います。"
     submit: '登録'
     cancel: 'キャンセル'
     submitting: '登録中…'
@@ -2372,8 +2372,8 @@ pb:
     status_version: "バージョン v{n}"
     status_instances: "{n} 件のインスタンス"
     versions_brief: "{n} バージョン"
-    instances: "インスタンスと値ごとのインストール記録"
-    instances_hint: "読み取り専用ビュー：同じインスタンス名と同じ値の組み合わせが 1 グループ。attempts はその組をインストールした回数です。由来は初回作成の記録であり、所有権ではありません。"
+    instances: "インスタンス（release）"
+    instances_hint: "1 行が 1 インスタンス：一覧は release でまとめ（同じ release を複数の値で入れた場合は「N グループ」）、開くとオブジェクト・結果・YAML・削除を扱います。"
     attempts_n: "{n} 回試行"
     template: "元パッケージの編集／エクスポート"
     file_path: "パッケージ内の相対パス"
@@ -2417,8 +2417,11 @@ pb:
     group_count: "{n} グループ"
     release_group: "{release} · {n} グループ"
     single_receipt: "完全な単一記録を読む"
-    no_installs: "通常インストール記録なし（試行は記録しません）。"
+    no_installs: "インスタンスはまだありません。最初のインストールで 1 つ作られます。"
     view_yaml: "YAML を表示"
+    release_active: "稼働中"
+    release_objects: "{c} ケイパビリティ / {s} ソース"
+    release_last_install: "{at} にインストール"
     yaml_title: "インスタンス YAML"
     yaml_empty: "このインスタンスに表示できるオブジェクトはありません"
     yaml_load_failed: "YAML の読み込みに失敗しました"
@@ -2740,3 +2743,38 @@ namespace:
     no_nodes: "ノードがまだありません。"
     no_param: "name パラメータがありません：ネームスペース一覧から入ってください。"
     not_found: "ネームスペースが存在しません（または削除済み）。"
+release:
+  title: インスタンスの詳細
+  subtitle: '1 つのインスタンス：作成したオブジェクトと、直近のインストール結果・依存関係'
+  back: パッケージに戻る
+  loading: 読み込み中…
+  release_word: インスタンス
+  params_full: パラメータ
+  copy_digest: パラメータ全文をコピー
+  installed_at: 最終インストール
+  objects: 作成したオブジェクト
+  objects_hint: '名前とバージョンは現在有効なオブジェクトのものです。このインスタンスが作成した分だけを表示します。'
+  capabilities: ケイパビリティ
+  sources: ソース
+  no_objects: このインスタンスはまだオブジェクトを作成していません。
+  receipt: 直近のインストール結果
+  receipt_hint: '読み取り専用：作成・再利用・内容更新・依存関係はそのインストールによるものです。'
+  no_receipt: 表示できるインストール結果がありません。
+  dependencies: 依存関係
+  no_dependencies: 外部依存はありません。
+  group_current: 'パラメータセット {n}'
+  attempts: '{n} 回インストール'
+  yaml_title: インスタンスの YAML
+  yaml_empty: このインスタンスにはエクスポートできるオブジェクトがありません。
+  yaml_failed: エクスポートに失敗しました
+  uninstall: このインスタンスを削除
+  uninstall_confirm: 'インスタンス「{release}」を削除します：作成したケイパビリティとソースを削除し、結果は保持します。'
+  uninstalled: 削除済み
+  gone_title: このインスタンスは削除済みか存在しません
+  gone_hint: '作成したオブジェクトは削除されました。パッケージのページで現在稼働中のインスタンスを確認できます。'
+  gone_back: パッケージに戻る
+  no_target_badge: インスタンス未指定
+  missing_hint: 'パッケージのインスタンス一覧から開くか、リンクにパッケージ名とインスタンス名を足してください。'
+  missing_back: パッケージ一覧に戻る
+  missing_target: リンクにパッケージ名またはインスタンス名がありません。
+  invalid_detail: サーバーが有効なインスタンス詳細を返しませんでした。
