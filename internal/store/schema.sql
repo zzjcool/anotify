@@ -794,3 +794,18 @@ CREATE TABLE IF NOT EXISTS playbook_install_pinned (
 );
 CREATE INDEX IF NOT EXISTS idx_playbook_pinned_lookup
     ON playbook_install_pinned(namespace_id, ref_kind, name, version);
+
+-- 命名空间凭据的审计（#554）：创建/轮换/删除各一条，**不含值**（值只在 namespace_secrets.value）。
+-- 凭据删了不删审计：它回答的是「谁在什么时候动过这个凭据名」，与凭据当前是否存在无关。
+-- +migration 9 secret_audit
+CREATE TABLE IF NOT EXISTS namespace_secret_audit (
+    id           TEXT PRIMARY KEY,
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    action       TEXT NOT NULL CHECK (action IN ('created', 'rotated', 'deleted')),
+    -- users.id；空串 = 非会话主体（命令行/系统），不伪造 system 用户。
+    actor_id     TEXT NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_namespace_secret_audit_ns
+    ON namespace_secret_audit(namespace_id, name, created_at);
