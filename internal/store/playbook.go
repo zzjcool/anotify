@@ -375,12 +375,7 @@ func (d *DB) RenderPlaybookVersion(ctx context.Context, namespaceID, slug, relea
 	return playbook.RenderForRelease(pkg, values, release)
 }
 
-// InstallPlaybook 在**一个 BEGIN IMMEDIATE 事务**里完成一次安装（§4.4 / §4.6）。release 是安装级
-// 身份（Helm 语义）：空串 = 包名，同一个包可以有多套实例；要复用的行属于别的 release 时 Plan 给出
-// release_conflict，本函数在写之前返回（0 写）。顺序固定：读包体 → Render + 读快照 → Plan →
-// 有 conflict 即返回 → INSERT create 条目 → INSERT 回执 → COMMIT（dryRun 在回执之后 Rollback）。
-// 红线：Plan 说 reuse 的条目一行都不碰（不能走折叠更新路径）；读错误必须让整次安装失败；
-// 不写 deployments / tasks / events dispatch（安装不部署）。
+// InstallPlaybook 在**一个 BEGIN IMMEDIATE 事务**里完成一次安装（§4.4 / §4.6）。release 是安装级 身份（Helm 语义）：空串 = 包名，同一个包可以有多套实例；要复用的行属于别的 release 时 Plan 给出 release_conflict，本函数在写之前返回（0 写）。顺序固定：读包体 → Render + 读快照 → Plan → 有 conflict 即返回 → INSERT create 条目 → INSERT 回执 → COMMIT（dryRun 在回执之后 Rollback）。 红线：Plan 说 reuse 的条目一行都不碰（不能走折叠更新路径）；读错误必须让整次安装失败； 不写 deployments / tasks / events dispatch（安装不部署）。
 func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, slug, release string, values map[string]any, dryRun bool) (*playbook.Receipt, error) {
 	return d.InstallPlaybookVersion(ctx, namespaceID, slug, release, 0, values, dryRun)
 }
@@ -464,7 +459,10 @@ func (d *DB) InstallPlaybookVersion(ctx context.Context, namespaceID, slug, rele
 		}
 	}
 
-	// ⑤ 回执：values 打码、digest 对打码前算（BuildReceipt 的约定）。
+	// ⑤ 回执：values 打码、digest 对打码前算（BuildReceipt 的约定）。安装时快照（#551）必须在 BuildReceipt **之前**装进 plan（回执是它唯一的出口，dryRun 也走这条）。
+	if plan.Created.Pinned, err = pinnedRefsOn(ctx, ex, namespaceID, plan.Created); err != nil {
+		return nil, fmt.Errorf("install playbook %q: %w", slug, err)
+	}
 	receipt := playbook.BuildReceipt(plan, plan.Values, plan.ValuesDigest, playbook.InstallMeta{
 		ID:        installID,
 		At:        time.Unix(now, 0).UTC().Format(time.RFC3339),
@@ -755,6 +753,16 @@ func anyArgs(ss []string) []any {
 	return out
 }
 
+// normalizePinned 把回执两个 created 对象的 pinned 归一成 `[]`（#534 dependencies 的同一惯例）；**不改回执原文**。
+func normalizePinned(receipt *playbook.Receipt) {
+	if receipt.Created.Pinned == nil {
+		receipt.Created.Pinned = []playbook.PinnedRef{}
+	}
+	if receipt.Skipped.Pinned == nil {
+		receipt.Skipped.Pinned = []playbook.PinnedRef{}
+	}
+}
+
 // GetPlaybookInstall 按「历史 ns + 原 slug + installId」读取一次 install 的完整回执。
 // **不要求当前清单存在**：回执行的 playbook_id / playbook_slug 是快照，删包之后单条回执仍可按旧 slug 直达（§4.10 / D21）；未命中返回 ErrNotFound。
 func (d *DB) GetPlaybookInstall(ctx context.Context, namespaceID, slug, installID string) (*playbook.Receipt, error) {
@@ -779,6 +787,7 @@ func (d *DB) GetPlaybookInstall(ctx context.Context, namespaceID, slug, installI
 	if receipt.Dependencies == nil {
 		receipt.Dependencies = []playbook.Dependency{}
 	}
+	normalizePinned(&receipt)
 	if receipt.Install.Release == "" {
 		// 迁移前写的回执原文里没有 release；列上已经回填成包名。回执是**审计快照**，不改它的原文，只在读的时候把「这次安装属于哪个 release」补齐——否则同一次 安装从实例清单（按列分组）点进来会显示成另一个身份。
 		receipt.Install.Release = release

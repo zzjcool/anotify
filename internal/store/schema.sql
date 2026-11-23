@@ -777,3 +777,20 @@ CREATE TABLE IF NOT EXISTS playbook_install_requires (
 
 CREATE INDEX IF NOT EXISTS idx_playbook_requires_capability
     ON playbook_install_requires(namespace_id, capability);
+
+-- 安装时快照（#551）：回执里的 pinned 在 SQL 侧也要能查，与回执 JSON 同一事务双写；ref_kind ∈ capability / source，
+-- obj_kind 只对源有意义、version / digest 只对能力有意义，seq 保住回执顺序；列名不用 kind（I3 只放行 sources / cli_auth_sessions）。
+-- +migration 8 install_pinned
+CREATE TABLE IF NOT EXISTS playbook_install_pinned (
+    install_id   TEXT NOT NULL REFERENCES playbook_installs(id) ON DELETE CASCADE,
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    seq          INTEGER NOT NULL,
+    ref_kind     TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    obj_kind     TEXT NOT NULL DEFAULT '',
+    version      INTEGER NOT NULL DEFAULT 0,
+    digest       TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (install_id, ref_kind, name)
+);
+CREATE INDEX IF NOT EXISTS idx_playbook_pinned_lookup
+    ON playbook_install_pinned(namespace_id, ref_kind, name, version);
