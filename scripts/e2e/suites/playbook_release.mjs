@@ -1498,7 +1498,7 @@ function capabilityRowOf(ctx, name, version) {
 	);
 }
 
-// 版本号由 API 分配、脚本指定不了第几版，所以“同名同版本已存在”的两个面只能直插行来造。
+// 版本号由 API 分配、脚本指定不了第几版，“同名同版本已存在”的两个面只能直插行来造。
 function insertManualCapabilityRow(ctx, { name, version, script }) {
 	const row = capabilityRowOf(ctx, name, version);
 	const spec = JSON.parse(row.spec || "{}");
@@ -1667,7 +1667,6 @@ async function partRestore(ctx) {
 	V.expectReason("③ 老回执（无 pinned）复原 → 409", noSnap, 409, "no_snapshot");
 	H.eq("③ details.causes[0].field 指到 release", noSnap.json?.details?.causes?.[0]?.field, "release");
 
-	// 两个能力的包：硬删**第二个**（按名字排序在后的那个），用来钉住 cause 的指路下标。
 	const goneSlug = "pb-restore-gone";
 	const goneFirst = "restore-gone-a";
 	const goneCap = "restore-gone-b";

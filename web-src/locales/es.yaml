@@ -2425,6 +2425,7 @@ pb:
     release_uninstalled: "Desinstalada · {at}"
     release_objects: "{c} capacidades / {s} fuentes"
     release_last_install: "instalada {at}"
+    restore_highlight: "Instancia nueva creada al restaurar desde una instantánea"
     yaml_title: "YAML de la instancia"
     yaml_empty: "Esta instancia no tiene objetos que mostrar"
     yaml_load_failed: "No se pudo cargar el YAML"
@@ -2820,3 +2821,15 @@ release:
   missing_back: Volver a paquetes
   missing_target: Al enlace le falta el nombre del paquete o de la instancia.
   invalid_detail: El servidor no devolvió un detalle de instancia válido.
+  restore: Restaurar desde instantánea
+  restore_confirm_title: Restaurar esta instancia desde su instantánea
+  restore_confirm_body: "Se reconstruirán estas capacidades desde la instantánea: {caps}. Fuentes implicadas: {sources}."
+  restore_confirm_note: "Las fuentes no se reconstruyen: si falta alguna, la restauración se rechaza (409)."
+  restore_confirm_ok: Restaurar desde instantánea
+  restore_list_sep: ", "
+  restore_more: "…{n} en total"
+  restore_no_snapshot: Esta instalación no dejó instantánea, así que no se puede restaurar desde ella.
+  restore_already_installed: Esta instancia sigue vigente, así que no hace falta restaurar.
+  restore_pinned_gone: Se eliminó una versión de capacidad de la instantánea, así que no se puede restaurar.
+  restore_pin_missing_source: Una fuente de la instantánea no existe en este espacio de nombres; cree la fuente y vuelva a restaurar.
+  restore_conflict: Ya existe una capacidad con el mismo nombre y versión pero con otro contenido, así que no se puede restaurar.

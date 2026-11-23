@@ -41,8 +41,7 @@ type PlaybookRestoreCause struct {
 	Kind    string `json:"kind"`
 	Name    string `json:"name"`
 	Version int    `json:"version,omitempty"`
-	// Index 是这一类（能力 / 源）在自己那条 pinned 序列里的下标 —— 不是「同类失败的序号」：
-	// 坏的是第二个对象时，指路必须指到第二个，否则用户按 field 去改会改错对象。
+	// Index 是这类对象在自己那条 pinned 序列里的下标（**不是**「同类失败的序号」：坏的是第二个就报 1）。
 	Index   int    `json:"index"`
 	Reason  string `json:"reason"`
 	Message string `json:"message"`

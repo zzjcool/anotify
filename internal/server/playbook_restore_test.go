@@ -73,7 +73,6 @@ func pbTestCapsOnlyBundle(slug string) map[string]string {
 	}
 }
 
-// pbTestTwoCapBundle 是「2 能力、无源」的包：演示 cause 指路是否指到坏的那个对象（不是第一个）。
 func pbTestTwoCapBundle(slug string) map[string]string {
 	return map[string]string{
 		"playbook.yaml":       pbTestEntryDoc(slug, 1, []string{"capabilities/a.yaml", "capabilities/b.yaml"}, nil),
