@@ -23,6 +23,16 @@ func restoreBundle(slug, script string) map[string]string {
 	}
 }
 
+// restoreTwoCapBundle 是「2 能力、无源」的包：冲突用例需要「一个冲突 + 一个本该新建」——只有存在
+// 本该新建的对象，0 写才有可证伪的靶子（「先写一半再报错」的变异会改指纹）。演示名 a / b 都不带模板。
+func restoreTwoCapBundle(slug string) map[string]string {
+	return map[string]string{
+		"playbook.yaml":       pbEntry(slug, 1, []string{"capabilities/a.yaml", "capabilities/b.yaml"}, nil),
+		"capabilities/a.yaml": pbCapabilityDoc("demo-a", nil, "#!/bin/sh\necho a1\n"),
+		"capabilities/b.yaml": pbCapabilityDoc("demo-b", nil, "#!/bin/sh\necho b1\n"),
+	}
+}
+
 // restoreRecreateSource 把卸载时被物理删掉的源按名字补回来（源正文不在回执里：复原只复用、不重建）。
 func restoreRecreateSource(t *testing.T, db *DB, nsID, name string) {
 	t.Helper()
@@ -280,21 +290,20 @@ func TestRestorePinnedGone(t *testing.T) {
 	}
 }
 
-// 验收 5：同名同版本内容不同 → 409 restore_conflict + 0 写；内容相同 → 200 且记进 reused（既有行一字节不动）。
+// 验收 5：同名同版本内容不同 → 409 restore_conflict + 0 写（同包另一个能力本该新建）；内容相同 → 200 且记进 reused。
 func TestRestoreConflictAndReuse(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	slug := "restore-conflict"
-	pbCreate(t, db, nsID, slug, restoreBundle(slug, "#!/bin/sh\necho v1\n"))
+	pbCreate(t, db, nsID, slug, restoreTwoCapBundle(slug))
 	rcpt := installForRestore(t, db, nsID, slug, "alpha", pbValues("demo"))
 	if _, err := db.UninstallPlaybookRelease(ctx, nsID, slug, "alpha", ""); err != nil {
 		t.Fatalf("卸载: %v", err)
 	}
 
-	restoreRecreateSource(t, db, nsID, "demo-on-push")
-	// ① 同名同版本、正文不同：手工建一条 demo-review@1，脚本是 v9。
-	foreign := mkCap(nsID, "demo-review", 1, nil)
+	// ① 同名同版本、正文不同：手工建一条 demo-a@1，脚本是 v9；demo-b 缺席（本该被新建）。
+	foreign := mkCap(nsID, "demo-a", 1, nil)
 	foreign.Spec.Run.Files["run.sh"] = "#!/bin/sh\necho v9\n"
 	if err := db.CreateCapability(ctx, foreign); err != nil {
 		t.Fatalf("手工建冲突行: %v", err)
@@ -305,28 +314,30 @@ func TestRestoreConflictAndReuse(t *testing.T) {
 	if !errors.As(err, &restoreErr) || !errors.Is(err, ErrPlaybookRestoreConflict) {
 		t.Fatalf("内容不同应 restore_conflict, got %v", err)
 	}
-	if len(restoreErr.Causes) != 1 || restoreErr.Causes[0].Name != "demo-review" || restoreErr.Causes[0].Version != 1 {
-		t.Fatalf("causes = %+v, want 点名 demo-review@1", restoreErr.Causes)
+	if len(restoreErr.Causes) != 1 || restoreErr.Causes[0].Name != "demo-a" || restoreErr.Causes[0].Version != 1 {
+		t.Fatalf("causes = %+v, want 点名 demo-a@1", restoreErr.Causes)
 	}
 	if after := restoreFingerprint(t, db); after != before {
-		t.Fatalf("restore_conflict 必须整包 0 写（指纹变了）")
+		t.Fatalf("restore_conflict 必须整包 0 写（demo-b 也不许先写进去）")
+	}
+	if n := liveCapabilityRows(t, db, nsID, "demo-b"); n != 0 {
+		t.Fatalf("冲突时 demo-b 不该被写进库, got %d 行", n)
 	}
 
-	// ② 内容相同：换成与快照逐字节相同的正文，复原应复用（reused）而不是报错、也不覆盖。
+	// ② 内容相同：把 demo-a 换成与快照逐字节相同的正文，复原应复用（demo-b 才是本次要建的）。
 	if _, err := db.ExecContext(ctx,
-		`DELETE FROM capability_versions WHERE namespace_id = ? AND name = 'demo-review' AND deleted_at IS NULL`,
-		nsID); err != nil {
+		`DELETE FROM capability_versions WHERE namespace_id = ? AND name = 'demo-a' AND deleted_at IS NULL`, nsID); err != nil {
 		t.Fatalf("清掉冲突行: %v", err)
 	}
-	same := mkCap(nsID, "demo-review", 1, nil)
-	same.Spec.Run.Files["run.sh"] = "#!/bin/sh\necho v1\n"
+	same := mkCap(nsID, "demo-a", 1, nil)
+	same.Spec.Run.Files["run.sh"] = "#!/bin/sh\necho a1\n"
 	if err := db.CreateCapability(ctx, same); err != nil {
 		t.Fatalf("手工建同内容行: %v", err)
 	}
 	var sameID string
 	var sameRV int64
 	if err := db.QueryRow(`SELECT id, resource_version FROM capability_versions
-		 WHERE namespace_id = ? AND name = 'demo-review' AND version = 1 AND deleted_at IS NULL`,
+		 WHERE namespace_id = ? AND name = 'demo-a' AND version = 1 AND deleted_at IS NULL`,
 		nsID).Scan(&sameID, &sameRV); err != nil {
 		t.Fatalf("读同内容行: %v", err)
 	}
@@ -335,21 +346,58 @@ func TestRestoreConflictAndReuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("同内容复原应 200: %v", err)
 	}
-	if got := rcpt2.Skipped.Capabilities; len(got) != 1 || got[0] != "demo-review@1" {
-		t.Fatalf("skipped.capabilities = %v, want [demo-review@1]（复用，不是重建）", got)
+	if got := rcpt2.Skipped.Capabilities; len(got) != 1 || got[0] != "demo-a@1" {
+		t.Fatalf("skipped.capabilities = %v, want [demo-a@1]（复用，不是重建）", got)
 	}
-	if got := rcpt2.Created.Capabilities; len(got) != 0 {
-		t.Fatalf("created.capabilities = %v, want []（内容相同就没有要建的东西）", got)
+	if got := rcpt2.Created.Capabilities; len(got) != 1 || got[0] != "demo-b@1" {
+		t.Fatalf("created.capabilities = %v, want [demo-b@1]（只有它该被建）", got)
 	}
 	var gotID string
 	var gotRV int64
 	if err := db.QueryRow(`SELECT id, resource_version FROM capability_versions
-		 WHERE namespace_id = ? AND name = 'demo-review' AND version = 1 AND deleted_at IS NULL`,
+		 WHERE namespace_id = ? AND name = 'demo-a' AND version = 1 AND deleted_at IS NULL`,
 		nsID).Scan(&gotID, &gotRV); err != nil {
 		t.Fatalf("复用后读行: %v", err)
 	}
 	if gotID != sameID || gotRV != sameRV {
 		t.Fatalf("复用不该覆盖既有行: id %s→%s, rv %d→%d", sameID, gotID, sameRV, gotRV)
+	}
+}
+
+// liveCapabilityRows 数某个名字当前可见的行数（0 写断言的第二道证词）。
+func liveCapabilityRows(t *testing.T, db *DB, nsID, name string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM capability_versions
+		 WHERE namespace_id = ? AND name = ? AND deleted_at IS NULL`, nsID, name).Scan(&n); err != nil {
+		t.Fatalf("数 %s 可见行: %v", name, err)
+	}
+	return n
+}
+
+// cause 的 Index 是「类内下标」而不是「失败序号」：2 个 pinned 能力、坏的是第二个时要指到第二个。
+func TestRestoreCauseIndexPointsAtPinnedSlot(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	slug := "restore-index"
+	pbCreate(t, db, nsID, slug, restoreTwoCapBundle(slug))
+	rcpt := installForRestore(t, db, nsID, slug, "alpha", pbValues("demo"))
+	if _, err := db.UninstallPlaybookRelease(ctx, nsID, slug, "alpha", ""); err != nil {
+		t.Fatalf("卸载: %v", err)
+	}
+	// demo-a 排在前（=0），demo-b 排在后（=1）：只硬删 demo-b，期望 Index=1。
+	if _, err := db.ExecContext(ctx,
+		`DELETE FROM capability_versions WHERE namespace_id = ? AND name = 'demo-b'`, nsID); err != nil {
+		t.Fatalf("硬删 demo-b: %v", err)
+	}
+	_, err := db.RestorePlaybookRelease(ctx, nsID, slug, "alpha", rcpt.ValuesDigest, "")
+	var restoreErr *PlaybookRestoreError
+	if !errors.As(err, &restoreErr) || !errors.Is(err, ErrPlaybookPinnedGone) {
+		t.Fatalf("应 pinned_gone, got %v", err)
+	}
+	if len(restoreErr.Causes) != 1 || restoreErr.Causes[0].Name != "demo-b" || restoreErr.Causes[0].Index != 1 {
+		t.Fatalf("causes = %+v, want {demo-b Index:1}（不是 0 —— 0 会指到 demo-a）", restoreErr.Causes)
 	}
 }
 

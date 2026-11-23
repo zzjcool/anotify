@@ -41,6 +41,9 @@ type PlaybookRestoreCause struct {
 	Kind    string `json:"kind"`
 	Name    string `json:"name"`
 	Version int    `json:"version,omitempty"`
+	// Index 是这一类（能力 / 源）在自己那条 pinned 序列里的下标 —— 不是「同类失败的序号」：
+	// 坏的是第二个对象时，指路必须指到第二个，否则用户按 field 去改会改错对象。
+	Index   int    `json:"index"`
 	Reason  string `json:"reason"`
 	Message string `json:"message"`
 }
@@ -244,16 +247,20 @@ func installPinnedRefsOn(ctx context.Context, ex queryExec, namespaceID, install
 // restoreCandidatesOn 逐对象判定「重建 / 复用 / 报错」，**不写任何行**。
 func (d *DB) restoreCandidatesOn(ctx context.Context, ex queryExec, namespaceID string, pins []playbook.PinnedRef) (*restoreCandidates, error) {
 	cand := &restoreCandidates{reused: playbook.Created{Capabilities: []string{}, Sources: []string{}}}
+	// 两条序列各数一遍：cause 的 Index 是「类内下标」，与详情 pinned 的分组（能力在前、源在后）一致。
+	capIndex, srcIndex := 0, 0
 	for _, pin := range pins {
 		switch pin.Kind {
 		case pinnedRefKindCapability:
-			if err := cand.capabilityOn(ctx, ex, namespaceID, pin); err != nil {
+			if err := cand.capabilityOn(ctx, ex, namespaceID, pin, capIndex); err != nil {
 				return nil, err
 			}
+			capIndex++
 		case pinnedRefKindSource:
-			if err := cand.sourceOn(ctx, ex, namespaceID, pin); err != nil {
+			if err := cand.sourceOn(ctx, ex, namespaceID, pin, srcIndex); err != nil {
 				return nil, err
 			}
+			srcIndex++
 		default:
 			return nil, fmt.Errorf("restore playbook: 快照里未知的 kind %q（%s）", pin.Kind, pin.Name)
 		}
@@ -270,11 +277,11 @@ func (d *DB) restoreCandidatesOn(ctx context.Context, ex queryExec, namespaceID 
 }
 
 // capabilityOn 判一个 pinned 能力：正文没了 → gone；可见行内容相同 → 复用；可见行同版本不同内容 → 冲突。
-func (c *restoreCandidates) capabilityOn(ctx context.Context, ex queryExec, namespaceID string, pin playbook.PinnedRef) error {
+func (c *restoreCandidates) capabilityOn(ctx context.Context, ex queryExec, namespaceID string, pin playbook.PinnedRef, index int) error {
 	ref := FormatRef(pin.Name, pin.Version)
 	body, err := capabilitySnapshotByVersionOn(ctx, ex, namespaceID, pin.Name, pin.Version)
 	if errors.Is(err, ErrNotFound) {
-		c.gone = append(c.gone, PlaybookRestoreCause{Kind: pin.Kind, Name: pin.Name, Version: pin.Version,
+		c.gone = append(c.gone, PlaybookRestoreCause{Kind: pin.Kind, Name: pin.Name, Version: pin.Version, Index: index,
 			Reason: "pinned_gone", Message: "kind=capability name=" + pin.Name + " version=" + itoa64(int64(pin.Version)) +
 				"：正文已被硬删，无法照快照重建"})
 		return nil
@@ -291,7 +298,7 @@ func (c *restoreCandidates) capabilityOn(ctx context.Context, ex queryExec, name
 	case live.Digest == pin.Digest:
 		c.reused.Capabilities = append(c.reused.Capabilities, ref)
 	default:
-		c.conflicts = append(c.conflicts, PlaybookRestoreCause{Kind: pin.Kind, Name: pin.Name, Version: pin.Version,
+		c.conflicts = append(c.conflicts, PlaybookRestoreCause{Kind: pin.Kind, Name: pin.Name, Version: pin.Version, Index: index,
 			Reason: "restore_conflict", Message: "kind=capability name=" + pin.Name + " version=" + itoa64(int64(pin.Version)) +
 				"：同名同版本已存在且正文不同（库里 " + live.Digest + "，快照 " + pin.Digest + "）"})
 	}
@@ -299,11 +306,11 @@ func (c *restoreCandidates) capabilityOn(ctx context.Context, ex queryExec, name
 }
 
 // sourceOn 判一个 pinned 源：同名存在 → 复用（不比对内容：源名是身份）；不存在 → pin_missing_source。
-func (c *restoreCandidates) sourceOn(ctx context.Context, ex queryExec, namespaceID string, pin playbook.PinnedRef) error {
+func (c *restoreCandidates) sourceOn(ctx context.Context, ex queryExec, namespaceID string, pin playbook.PinnedRef, index int) error {
 	_, err := getSourceByNameOn(ctx, ex, namespaceID, pin.Name)
 	switch {
 	case errors.Is(err, ErrSourceNotFound):
-		c.missing = append(c.missing, PlaybookRestoreCause{Kind: pin.Kind, Name: pin.Name,
+		c.missing = append(c.missing, PlaybookRestoreCause{Kind: pin.Kind, Name: pin.Name, Index: index,
 			Reason: "pin_missing_source", Message: "kind=source name=" + pin.Name + "：源不存在，且源正文不在回执里（先建源再复原）"})
 	case err != nil:
 		return err

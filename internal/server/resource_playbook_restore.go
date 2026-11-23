@@ -112,16 +112,13 @@ func restoreReasonOf(err error) string {
 // restoreCausesOf 把逐对象原因搬进 Status.causes[]（field 用 `pinned.capabilities[i]` / `pinned.sources[i]`）。
 func restoreCausesOf(causes []store.PlaybookRestoreCause) []statusCause {
 	out := make([]statusCause, 0, len(causes))
-	caps, srcs := 0, 0
 	for _, c := range causes {
-		field := "pinned.sources[" + strconv.Itoa(srcs) + "]"
+		kind := "sources"
 		if c.Kind == "capability" {
-			field = "pinned.capabilities[" + strconv.Itoa(caps) + "]"
-			caps++
-		} else {
-			srcs++
+			kind = "capabilities"
 		}
-		out = append(out, statusCause{Reason: c.Reason, Field: field, Message: c.Message})
+		out = append(out, statusCause{Reason: c.Reason,
+			Field: "pinned." + kind + "[" + strconv.Itoa(c.Index) + "]", Message: c.Message})
 	}
 	return out
 }

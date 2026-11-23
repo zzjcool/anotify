@@ -73,6 +73,15 @@ func pbTestCapsOnlyBundle(slug string) map[string]string {
 	}
 }
 
+// pbTestTwoCapBundle 是「2 能力、无源」的包：演示 cause 指路是否指到坏的那个对象（不是第一个）。
+func pbTestTwoCapBundle(slug string) map[string]string {
+	return map[string]string{
+		"playbook.yaml":       pbTestEntryDoc(slug, 1, []string{"capabilities/a.yaml", "capabilities/b.yaml"}, nil),
+		"capabilities/a.yaml": pbTestCapabilityDoc("demo-a", nil),
+		"capabilities/b.yaml": pbTestCapabilityDoc("demo-b", nil),
+	}
+}
+
 func (e *playbookTestEnv) restore(t *testing.T, slug, release string, body any) (int, []byte) {
 	t.Helper()
 	rec := e.do(t, "POST", e.path("/"+slug+"/releases/"+release+"/restore"), body)
@@ -235,6 +244,38 @@ func TestPlaybookRestoreErrors(t *testing.T) {
 		}
 		if !containsAll(doc.Details.Causes[0].Message, "capability", "demo-review", "1") {
 			t.Fatalf("cause.message 没有点名 {kind,name,version}: %q", doc.Details.Causes[0].Message)
+		}
+	})
+
+	t.Run("pinned_gone_second_slot", func(t *testing.T) {
+		env := newPlaybookTestEnv(t)
+		slug := "pr-restore-gone2"
+		env.create(t, slug, pbTestTwoCapBundle(slug))
+		code, raw := env.install(t, slug, "alpha", pbTestValues("demo"))
+		if code != http.StatusOK {
+			t.Fatalf("install 应 200, got %d: %s", code, raw)
+		}
+		var installed pbTestReleaseReceipt
+		if err := json.Unmarshal(raw, &installed); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if rec := env.do(t, "DELETE", env.path("/"+slug+"/releases/alpha"), nil); rec.Code != http.StatusOK {
+			t.Fatalf("卸载应 200: %s", rec.Body.String())
+		}
+		if _, err := env.db.ExecContext(t.Context(),
+			`DELETE FROM capability_versions WHERE namespace_id = ? AND name = 'demo-b'`, env.nsID); err != nil {
+			t.Fatalf("模拟 GC 硬删第二个能力: %v", err)
+		}
+		code, raw = env.restore(t, slug, "alpha", map[string]any{"valuesDigest": installed.ValuesDigest})
+		if code != http.StatusConflict {
+			t.Fatalf("第二个能力被硬删后应 409, got %d: %s", code, raw)
+		}
+		doc := decodeRestoreErr(t, http.StatusConflict, raw)
+		if doc.Reason != "pinned_gone" {
+			t.Fatalf("reason = %q, want pinned_gone", doc.Reason)
+		}
+		if len(doc.Details.Causes) != 1 || doc.Details.Causes[0].Field != "pinned.capabilities[1]" {
+			t.Fatalf("causes = %+v, want field=pinned.capabilities[1]（坏的是第二个对象）", doc.Details.Causes)
 		}
 	})
 
