@@ -283,7 +283,41 @@ function healthTone(health) {
   if (health === "disabled" || !health) return "badge-neutral";
   return "badge-warn";
 }
-function pollSection(m) { // 拉取区块：只对 kind: poll 出现（其它 kind 没有这些事实，摆一排空行只会教人误读）
+function secretRefName(res) { // 凭据引用只显示名字与引用者（值只写不读）；名字取自原始资源 —— model 的 config 白名单剪掉了 secretRef
+  const cfg = isObj(res) && isObj(res.spec) ? res.spec.config : null;
+  const ref = isObj(cfg) ? cfg.secretRef : null;
+  return isObj(ref) && typeof ref.name === "string" ? ref.name.trim() : "";
+}
+async function paintUsedBy(dd, name) {
+  const paint = (node, muted) => {
+    dd.replaceChildren(node);
+    dd.classList.toggle("is-muted", !!muted);
+  };
+  paint(txt("span", null, t("source_detail.secret_loading", "正在加载…")), true);
+  try {
+    const doc = await nsApi("secrets", name);
+    if (!doc || !Array.isArray(doc.usedBy)) throw new Error("usedBy missing");
+    const usedBy = doc.usedBy.filter((n) => typeof n === "string" && n);
+    if (!usedBy.length) paint(txt("span", null, t("source_detail.secret_only_self", "只有本源引用")), true);
+    else paint(rawText(usedBy.join(", ")), false);
+  } catch (err) {
+    const missing = !!err && err.status === 404;
+    const text = missing ? t("source_detail.secret_missing", "凭据不存在") : t("source_detail.secret_used_by_failed", "引用者加载失败");
+    paint(txt("span", null, text), true);
+  }
+}
+function secretFacts(name) {
+  const kv = el("dl", { class: "sd-kv" });
+  kv.append(pair(t("source_detail.secret_name", "凭据名"), name, { mono: true }));
+  const cell = el("div", { class: "sd-pair" });
+  const dd = el("dd", { class: "sd-v" });
+  dd.classList.add("is-muted"); // 内联样式里是复合选择器 .sd-v.is-muted：用 classList，不给死类守卫留静态字面量
+  cell.append(txt("dt", "sd-k", t("source_detail.secret_used_by", "引用者")), dd);
+  kv.append(cell);
+  void paintUsedBy(dd, name);
+  return kv;
+}
+function pollSection(m, secretName) { // 拉取区块：只对 kind: poll 出现（其它 kind 没有这些事实，摆一排空行只会教人误读）
   const cfg = m.config || {};
   const sec = section(t("sources.kind.poll", "拉取"), "poll");
   const urlValue = el("span", { class: "sd-copyline" });
@@ -305,6 +339,7 @@ function pollSection(m) { // 拉取区块：只对 kind: poll 出现（其它 ki
     pair(t("source_detail.poll_max_items", "单轮条目上限"), cfg.maxItems == null ? null : String(cfg.maxItems), { muted: cfg.maxItems == null }),
   );
   sec.append(ckv);
+  if (secretName) sec.append(secretFacts(secretName));
   const env = cfg.envelope || {};
   const envPair = (label, wire, key, fallbackText) =>
     wire ? pair(label, wire) : pair(label, t(key, fallbackText), { plain: true, muted: true });
@@ -570,7 +605,7 @@ function render(res) {
   if (cfg.payloadSchema) cfgSec.append(schemaTable(cfg.payloadSchema));
   body.append(cfgSec);
 
-  if (m.kind === "poll") body.append(pollSection(m));
+  if (m.kind === "poll") body.append(pollSection(m, secretRefName(res)));
 
   /* ---------- 目标能力：targets[] 的 capability 与 params ---------- */
   const tSec = section(t("sources.v4.targets", "目标能力"), "targets");
