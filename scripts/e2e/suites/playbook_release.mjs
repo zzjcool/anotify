@@ -367,7 +367,6 @@ async function partInvalidRelease(ctx) {
 	H.eq("坏 release 不留回执（实例组数 0）", list.total, 0);
 }
 
-// pbVersionRows 读版本历史（只取本套件关心的三列）。
 function pbVersionRows(ctx, slug) {
 	return dbRows(
 		ctx,
@@ -379,7 +378,7 @@ function pbVersionRows(ctx, slug) {
 	);
 }
 
-// installPinned 是带 version 的 install（version 为空 = 不传，即老包行为）。
+// version 为空 = 不传，即老包行为。
 function installPinned(ctx, slug, release, version, values = VALUES) {
 	const body = { values };
 	if (release !== undefined) body.release = release;
@@ -434,7 +433,6 @@ async function partVersions(ctx) {
 
 	await createPackage(ctx, slug, bundle(1, "echo v1"));
 
-	// 建包时就在历史里写出第一条。
 	let list = await readVersions(ctx, slug, "建包后");
 	H.eq("建包后历史行数 = 1", list.total, 1);
 	H.eq("建包后当前版本 = 1", list.currentVersion, 1);
@@ -459,7 +457,6 @@ async function partVersions(ctx) {
 		String(capabilityRunBody(ctx, "va-demo-review")),
 	);
 
-	// 改包成 v2（内容变化）。
 	await putPackage(ctx, slug, bundle(2, "echo v2"), "改包成 v2");
 	list = await readVersions(ctx, slug, "改包后");
 	H.eq("内容变了之后历史行数 = 2", list.total, 2);
@@ -971,6 +968,104 @@ async function partReleaseYAML(ctx) {
 	H.check("0 对象只有头注释且 objects: 0", zero.text.includes("objects: 0") && !zero.text.includes("---"), zero.text);
 }
 
+async function partReleaseDetail(ctx) {
+	console.log("--- 12. 实例详情读面（#548）：一个 release 一份详情，两份 release 的对象不串 ---");
+	// 能力 / 源的名字必须含 `{{release.name}}`：否则第二份 release 会去认领第一份的行 → 409 release_conflict。
+	const slug = "pb-release-detail";
+	await createPackage(ctx, slug, {
+		"playbook.yaml": entryDoc(slug, ["capabilities/review.yaml", "capabilities/fixer.yaml"], ["sources/on-push.yaml"]),
+		"capabilities/review.yaml": capabilityDoc("{{release.name}}-review", [], ["{{release.name}}-fixer"]),
+		"capabilities/fixer.yaml": capabilityDoc("{{release.name}}-fixer", []),
+		"sources/on-push.yaml": sourceDoc("{{release.name}}-on-push", ["{{release.name}}-review"]),
+	});
+	const a = await install(ctx, slug, "a");
+	V.expectStatus("装 release a → 200", a, 200);
+	const b = await install(ctx, slug, "b");
+	V.expectStatus("装 release b → 200", b, 200);
+	H.eq("回执 a 只记自己的两个能力", (a.json?.created?.capabilities || []).slice().sort(), ["a-fixer@1", "a-review@1"]);
+
+	const before = dbFingerprint(ctx.dbPath);
+	const readA = await H.req(ctx.base, PB.release(slug, "a"), { session: ctx.session });
+	V.expectStatus("GET …/releases/a → 200", readA, 200);
+	const docA = readA.json || {};
+	H.eq("release 身份 = URL 里的 a", docA.release, "a");
+	H.eq("objects.capabilities 只有 a 的两个能力（按 name 升序）", (docA.objects?.capabilities || []).map((c) => c.name), ["a-fixer", "a-review"]);
+	H.eq("objects.sources 只有 a 的源", (docA.objects?.sources || []).map((s) => s.name), ["a-on-push"]);
+	H.eq("源的 kind 取 sources.kind", (docA.objects?.sources || []).map((s) => s.kind), ["webhook"]);
+	H.check(
+		"能力带当前生效的 version + digest（sha256:…）",
+		(docA.objects?.capabilities || []).length === 2 &&
+			docA.objects.capabilities.every((c) => c.version === 1 && typeof c.digest === "string" && c.digest.startsWith("sha256:")),
+		JSON.stringify(docA.objects?.capabilities),
+	);
+	H.eq("params.count = 1（这个 release 只有一套 values）", docA.params?.count, 1);
+	H.eq("params.digest 与顶层 valuesDigest 同值", docA.params?.digest, docA.valuesDigest);
+	H.eq("lastInstallId 是最近一次安装（a）", docA.lastInstallId, a.json?.install?.id);
+	H.eq("installedAt 是最新一次安装的 at", docA.installedAt, a.json?.install?.at);
+	H.eq("groups 恰好 1 组", (docA.groups || []).length, 1);
+	H.eq("groups[0].valuesDigest 镜像顶层", docA.groups?.[0]?.valuesDigest, docA.valuesDigest);
+	H.eq("groups[0].installedAt 镜像顶层", docA.groups?.[0]?.installedAt, docA.installedAt);
+	H.eq("groups[0].lastInstallId 镜像顶层", docA.groups?.[0]?.lastInstallId, docA.lastInstallId);
+	H.eq("groups[0].attempts = 该组回执条数（1）", docA.groups?.[0]?.attempts, 1);
+	H.eq("params.digest 与回执的 valuesDigest 一致", docA.valuesDigest, a.json?.valuesDigest);
+	const receiptA = await H.req(ctx.base, PB.installById(slug, String(docA.lastInstallId)), { session: ctx.session });
+	V.expectStatus("GET …/installs/{lastInstallId} → 200", receiptA, 200);
+	H.eq("receipt 与 GET …/installs/{id} 逐字段一致", docA.receipt, receiptA.json);
+
+	const readB = await H.req(ctx.base, PB.release(slug, "b"), { session: ctx.session });
+	V.expectStatus("GET …/releases/b → 200", readB, 200);
+	const docB = readB.json || {};
+	H.eq("objects.capabilities 只有 b 的两个能力", (docB.objects?.capabilities || []).map((c) => c.name), ["b-fixer", "b-review"]);
+	H.eq("objects.sources 只有 b 的源", (docB.objects?.sources || []).map((s) => s.name), ["b-on-push"]);
+	H.check("a 的详情里没有 b 的任何一个对象", !JSON.stringify(docA.objects).includes('"b-'), JSON.stringify(docA.objects));
+	H.check("b 的详情里没有 a 的任何一个对象", !JSON.stringify(docB.objects).includes('"a-'), JSON.stringify(docB.objects));
+	H.check("a / b 的 lastInstallId 不是同一条", docA.lastInstallId !== docB.lastInstallId, `${docA.lastInstallId} vs ${docB.lastInstallId}`);
+	H.eq("读路径不写库（两次详情读取后库指纹逐个字节相同）", dbFingerprint(ctx.dbPath), before);
+
+	// 同一 release 装过两套 values：params.count 是**不同 valuesDigest 的个数**，groups 最近安装的组在前。
+	const valuesSlug = "pb-release-values";
+	await createPackage(ctx, valuesSlug, {
+		"playbook.yaml": entryDoc(valuesSlug, ["capabilities/review.yaml"], []),
+		"capabilities/review.yaml": capabilityDoc("{{values.project}}-review", []),
+	});
+	V.expectStatus("装 release g（project=one）→ 200", await install(ctx, valuesSlug, "g", { project: "one" }), 200);
+	V.expectStatus("再装 release g（project=two）→ 200", await install(ctx, valuesSlug, "g", { project: "two" }), 200);
+	const docG = (await H.req(ctx.base, PB.release(valuesSlug, "g"), { session: ctx.session })).json || {};
+	H.eq("同一 release 两套 values → params.count = 2", docG.params?.count, 2);
+	H.eq("groups 2 条（一组一个 valuesDigest）", (docG.groups || []).length, 2);
+	H.eq("groups[0].valuesDigest 镜像顶层", docG.groups?.[0]?.valuesDigest, docG.valuesDigest);
+	H.eq("groups[0].installedAt 镜像顶层", docG.groups?.[0]?.installedAt, docG.installedAt);
+	H.eq("groups[0].lastInstallId 镜像顶层", docG.groups?.[0]?.lastInstallId, docG.lastInstallId);
+	H.eq(
+		"最近安装的组在前（groups[0] 是 project=two 那一组）",
+		(docG.groups || []).map((g) => (g.objects?.capabilities || []).map((c) => c.name).join(",")),
+		["two-review", "one-review"],
+	);
+	H.eq(
+		"顶层 objects 是两组的并集（升序）",
+		(docG.objects?.capabilities || []).map((c) => c.name).slice().sort(),
+		["one-review", "two-review"],
+	);
+	H.eq("每组 attempts = 该组回执条数", (docG.groups || []).map((g) => g.attempts), [1, 1]);
+	H.check("两个组的 valuesDigest 不同", docG.groups?.[0]?.valuesDigest !== docG.groups?.[1]?.valuesDigest, JSON.stringify((docG.groups || []).map((g) => g.valuesDigest)));
+
+	// 空实例：空列表一律 []（不是 null），groups 仍有一组。
+	const emptySlug = "pb-release-detail-empty";
+	await createPackage(ctx, emptySlug, { "playbook.yaml": entryDoc(emptySlug, [], []) });
+	V.expectStatus("0 对象的包安装 → 200", await install(ctx, emptySlug), 200);
+	const zero = (await H.req(ctx.base, PB.release(emptySlug, emptySlug), { session: ctx.session })).json || {};
+	H.eq("0 对象的能力列表是 []（不是 null）", zero.objects?.capabilities, []);
+	H.eq("0 对象的源列表是 []", zero.objects?.sources, []);
+	H.eq("0 对象的 dependencies 是 []", zero.dependencies, []);
+	H.eq("0 对象的 groups 仍有 1 条", (zero.groups || []).length, 1);
+
+	V.expectReason("从未存在的 release → 404 release_not_found", await H.req(ctx.base, PB.release(slug, "ghost"), { session: ctx.session }), 404, "release_not_found");
+	V.expectStatus("卸载 a → 200", await uninstall(ctx, slug, "a"), 200);
+	V.expectReason("已卸载的 release → 404 release_not_found", await H.req(ctx.base, PB.release(slug, "a"), { session: ctx.session }), 404, "release_not_found");
+	V.expectStatus("卸载 a 不波及 b（b 仍 200）", await H.req(ctx.base, PB.release(slug, "b"), { session: ctx.session }), 200);
+	V.expectReason("包不存在 → 404 NotFound", await H.req(ctx.base, PB.release("no-such-package", "a"), { session: ctx.session }), 404, "NotFound");
+}
+
 async function main() {
 	H.startTimer();
 	console.log("=== SUITE: playbook_release（#505 安装 release 身份 / #510 按 release 卸载 / #511 包版本历史 / #534 依赖锁）===");
@@ -990,6 +1085,7 @@ async function main() {
 		await partReleaseYAML(ctx);
 		await partVersions(ctx);
 		await partRequires(ctx);
+		await partReleaseDetail(ctx);
 	} finally {
 		server.stop();
 	}

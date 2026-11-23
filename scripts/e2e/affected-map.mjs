@@ -134,9 +134,10 @@ export const SUITE_SURFACES = {
 		paths: ["cmd/anode/**", "internal/protocol/**", "internal/ws/**", "internal/artifact/**"],
 	},
 	playbook_release: {
-		why: "#505 预案安装的 release 身份（缺省 release=包名 / 多实例 / 跨 release 409 / 模板透传）+#510 uninstall（按 release 撤行 / kept / 幂等）+#511 包版本历史（内容变了才留版 / 按版本装 v1 与 v2 并存 / 回执 version+filesDigest / 404 version_not_found）；#524 该页同时登记 pages 与 paths（两种登记方式都算命中）",
-		pages: ["playbook"],
-		paths: ["internal/playbook/**", "internal/store/playbook*.go", "internal/server/resource_playbook.go", "web-src/pages/playbook.html"],
+		// #548：实例详情读面（对象 / 分组 / 回执）在 release.html 上验，所以它也属于这个套件的风险面。
+		why: "#505 预案安装的 release 身份（缺省 release=包名 / 多实例 / 跨 release 409 / 模板透传）+#510 uninstall（按 release 撤行 / kept / 幂等）+#511 包版本历史（内容变了才留版 / 按版本装 v1 与 v2 并存 / 回执 version+filesDigest / 404 version_not_found）；#524 该页同时登记 pages 与 paths（两种登记方式都算命中）；#548 实例详情读面（GET …/releases/{release}：对象不串 / params.count / groups 镜像 / 404 release_not_found）",
+		pages: ["playbook", "release"],
+		paths: ["internal/playbook/**", "internal/store/playbook*.go", "internal/server/resource_playbook.go", "internal/server/resource_playbook_release.go", "web-src/pages/playbook.html", "web-src/pages/release.html"],
 	},
 
 	// ---- Chrome 类（15）----
@@ -144,7 +145,7 @@ export const SUITE_SURFACES = {
 	// pages: ALL 的来源：矩阵/批次遍历 PAGES（f3-i18n-cases / f3-ui-helper）。
 	frontend: {
 		why: "注册 case 逐个起真 server + 真 Chrome（real authority）；web/yamldoc.js 经预览 mock 参与每个页面的文档渲染（它一坏就是页面级 pageerror）",
-		pages: ["admin", "capabilities", "capability", "sources", "source-detail", "events", "trace", "message", "index", "playbooks", "playbook", "nodes", "node", "namespace", "namespaces", "security", "docs", "cli-auth", "login"],
+		pages: ["admin", "capabilities", "capability", "sources", "source-detail", "events", "trace", "message", "index", "playbooks", "playbook", "release", "nodes", "node", "namespace", "namespaces", "security", "docs", "cli-auth", "login"],
 		paths: ["internal/sitegen/**", "cmd/sitegen/**", "web-src/layouts/**", "web-src/locales/**", "web/yamldoc.js"],
 	},
 	vars_ui: {
@@ -209,8 +210,7 @@ export const SUITE_SURFACES = {
 	},
 	p2_guards: {
 		why: "字体自托管 / 抽屉 a11y / reduce 语义 / View Transitions / #489 ⋯ 菜单 reduce 下不自激重排",
-		// 源页只剩下 sources（行内 ⋯）；旧的 source 重复页已删除（#479 黑盒审计 B-4），
-		// 所以第 5 段现在只有一处 placeMenu 拷贝可验。
+		// 源页只剩 sources（行内 ⋯）；第 5 段现在只有一处 placeMenu 拷贝可验。
 		pages: ["docs", "events", "login", "sources"],
 		paths: ["web/fonts/**"],
 	},

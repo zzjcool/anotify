@@ -11,6 +11,7 @@ const NS = '/v1/namespaces/default';
 const anchors = {admin:'#kpi-devices',capabilities:'[data-cap]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',login:'.auth-tabs',message:'#task-facts',namespace:'#ns-name',namespaces:'#ns-list [data-ns]',node:'#node-slots',nodes:'[data-node]','passkey-enroll':'#code-input',playbook:'#pb-installs',playbooks:'#pb-grid [data-slug]',receivers:'#current-device-card',security:'#passkey-list',source:'#src-name',
   // 源只读详情页：渲染成功后才带 data-source（空态/404 不带），所以它是吊吊的事实锤。
   'source-detail':'#src-detail[data-source]',
+  release:'#rel-state',
   sources:'#src-list [data-name]',trace:'#trace-tasks [data-task]'};
 const pkgFiles = {
   'playbook.yaml': 'apiVersion: anotify/v1\nkind: Playbook\nmetadata:\n  name: f3-locale-package\n  version: 1\nspec:\n  values: { type: object }\n  capabilities:\n    - cap.yaml\n  sources: []\n',
@@ -19,7 +20,7 @@ const pkgFiles = {
 export const pageBatches = Object.freeze(Array.from({length:6},(_,i)=>PAGES.slice(i*4,i*4+4)));
 // 裸 i18n key 扫描：前缀必须是一个独立 token，绝不能在 `-`、`/`、`.` 之后——否则
 // 渲染文本里的真实路径（如 locales 的 `common/login.sh`）会被当成 `login.sh` 裸 key（假阳）。
-const bareKeys = /(?<![-/\w.])(?:pb\.v4|nodes\.v4|sources\.v4|events\.v4|message\.v4|caps|receivers|keys|security|login)\.[a-z_]+/;
+const bareKeys = /(?<![-/\w.])(?:pb\.v4|nodes\.v4|sources\.v4|events\.v4|message\.v4|rel|caps|receivers|keys|security|login)\.[a-z_]+/;
 const zhOnly = ['总览','通知接收','已停用','确定停用','已删除','已吊销','暂无该状态的通知','最近收录'];
 export function residue(text, lang) {
   if(lang==='en'||lang==='es') return text.split('\n').filter(x=>/[\u4e00-\u9fff\u3400-\u4dbf]/.test(x));
@@ -75,7 +76,9 @@ async function fixture(d) {
   const namespaces=await d.req('/v1/namespaces');for(const n of namespaces.items)strings(n.metadata.displayName);
   return {tasks,sources,nodes,caps,pb:created.body.metadata.name,userValues:[...userValues].filter(Boolean)};
 }
-const query=(file,f)=>new URLSearchParams({namespace:'default',...(file==='namespace'?{name:'default'}:file==='message'?{id:f.tasks[0].metadata.name}:file==='trace'?{traceUID:f.tasks[0].spec.traceUID}:file==='source'?{name:f.sources[0].metadata.name}:file==='source-detail'?{name:f.sources[0].metadata.name}:file==='node'?{id:f.nodes[0].metadata.name}:file==='playbook'?{id:f.pb}:file==='capability'?{name:f.caps[0].metadata.name}:{})}).toString();
+const query=(file,f)=>new URLSearchParams({namespace:'default',...(file==='namespace'?{name:'default'}:file==='message'?{id:f.tasks[0].metadata.name}:file==='trace'?{traceUID:f.tasks[0].spec.traceUID}:file==='source'?{name:f.sources[0].metadata.name}:file==='source-detail'?{name:f.sources[0].metadata.name}:file==='node'?{id:f.nodes[0].metadata.name}:file==='playbook'?{id:f.pb}:file==='capability'?{name:f.caps[0].metadata.name}:
+  // #548：刻意用不存在的 slug/release —— 页面必须给「已卸载或从未安装」，而不是白屏/500。
+  file==='release'?{id:'f3-locale-release-missing',release:'f3-locale-release-missing'}:{})}).toString();
 async function scan(d,lang,f) {
   if(d.mock)assert.ok((await d.page.locator('body').innerText()).includes('前端预览 · 数据均为 mock（接口未真正调用）'),'Explicit preview authority banner must remain visible');
   const finite=await d.page.evaluate(scanRawChrome);

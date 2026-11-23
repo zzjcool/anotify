@@ -13,6 +13,7 @@ import { sourceEditJump } from './f3-source-edit.mjs';
 import { sourcePoll } from './f3-source-poll.mjs';
 import { sourcePollEdit } from './f3-source-poll-edit.mjs';
 import { playbook } from './f3-playbook.mjs';
+import { releaseDetail } from './f3-release.mjs';
 import { nodeRetained } from './f3-node-retained.mjs';
 import { nsScopeTopbar } from './f3-ns-scope.mjs';
 import { bootstrap, aba, matrix, historyMask } from './f3-extra.mjs';
@@ -105,6 +106,9 @@ add('playbook-errors',d=>playbook(d,'errors'),{expectHttpStatus:[{status:400,pat
 // playbook-missing（#380）：访问不存在的 playbook id。GET 这个资源**必须** 404，
 // 前端失败路径要露出它就是靠这个真实拒绝，且要能重试（重试会再发一次同样的 404）。
 add('playbook-missing',d=>playbook(d,'missing'),{expectHttpStatus:[{status:404,path:'/v1/namespaces/default/playbooks/f3-no-such-package',exact:true,note:'not_found：不存在的 playbook id，前端必须把徽章收敛成失败态并移除残留空容器'}]});
+add('release-detail',releaseDetail,{lang:'en',expectHttpStatus:[
+  {status:404,path:'/v1/namespaces/default/playbooks/f3-release-pkg/releases/b',exact:true,note:'release_not_found：已卸载的实例，旧 URL 必须渲染明确状态（不是白屏/500）'},
+]});
 add('playbook-matrix-12',matrix,{expectHttpStatus:[
   {status:400,path:'/v1/namespaces/default/playbooks/f3-matrix-6/install',exact:true,note:'version_content_immutable：同版本号内容变化必须在 install 被拒'},
   {status:400,path:'/v1/namespaces/default/playbooks/f3-matrix-10/install',exact:true,note:'playbook_conflict：复用行与库里不一致 → 400，原子 0 写'},
@@ -318,7 +322,8 @@ add('auth-route-guards',async d=>{
 ]});
 // 深链里的对象身份来自当前权威：mock 是固定事实，real 是 bootstrap 用真实 API 造出来的同一角色。
 // 名字类（source/playbook）两边一致，只有中枢生成的 id（任务/追踪/节点）需要经 d.fx 取。
-const queryFor=(file,d)=>file==='namespace'?'namespace=default&name=default':file==='message'?'namespace=default&id='+d.fx('msgTask'):file==='trace'?'namespace=default&traceUID='+d.fx('defaultTrace'):file==='node'?'namespace=default&id='+d.fx('node'):file==='source'?'namespace=default&name='+d.fx('source'):file==='source-detail'?'namespace=default&name='+d.fx('source'):file==='playbook'?'namespace=default&id=f3-page-package':file==='capability'?'namespace=default&name='+d.fx('capability'):'namespace=default';
+const queryFor=(file,d)=>file==='namespace'?'namespace=default&name=default':file==='message'?'namespace=default&id='+d.fx('msgTask'):file==='trace'?'namespace=default&traceUID='+d.fx('defaultTrace'):file==='node'?'namespace=default&id='+d.fx('node'):file==='source'?'namespace=default&name='+d.fx('source'):file==='source-detail'?'namespace=default&name='+d.fx('source'):file==='playbook'?'namespace=default&id=f3-page-package':file==='capability'?'namespace=default&name='+d.fx('capability'):
+  file==='release'?'namespace=default&id=f3-page-package&release=f3-page-package':'namespace=default';
 // receivers：e2e 真实权威**没有 VAPID 密钥**（run_all.sh 只在有 vapid.json 时注入），
 // 推送是关闭的 —— 按设计此时页面上不存在 #current-device-card（只在 push 开放分支
 // 创建，ux_regression_19_23 断言 card===null），所以 real 锚点必须是"永远存在"的
@@ -326,11 +331,15 @@ const queryFor=(file,d)=>file==='namespace'?'namespace=default&name=default':fil
 const pageAnchors={admin:'#kpi-devices',capabilities:'[data-cap="fixer"]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',message:'#task-facts',namespace:'#namespace-vars:not([disabled])',namespaces:'#ns-list [data-ns]',node:'#node-machine-vars [data-key]',nodes:'[data-node="anode-1"]','passkey-enroll':'#code-input',playbook:'#pb-installs',playbooks:'#pb-grid [data-slug]',receivers:'#push-count',security:'#passkey-list',source:'#src-name',
   // 源只读详情页：data-source 只在真的读到一个源之后才落盘（空态/404 不带它）。
   'source-detail':'#src-detail[data-source]',
-  sources:'#src-list > div[data-name]',trace:'#trace-tasks [data-task]'};
+  sources:'#src-list > div[data-name]',trace:'#trace-tasks [data-task]',
+  // #548 实例详情页：`data-release` 只在真读到那个 release 后才写上 → 深链就是「真的读到了实例」。
+  release:'#release-detail[data-release]'};
 async function seedPagePackage(d){
   await d.goto('playbooks');
   const files={'playbook.yaml':JSON.stringify({apiVersion:'anotify/v1',kind:'Playbook',metadata:{name:'f3-page-package',version:1},spec:{values:{type:'object'},capabilities:['cap.yaml'],sources:[]}}),'cap.yaml':JSON.stringify({apiVersion:'anotify/v1',kind:'Capability',metadata:{name:'f3-page-cap'},spec:{next:[],run:{entrypoint:'run.sh',files:{'run.sh':'#!/bin/sh\necho page'}}}})};
   await d.req('/v1/namespaces/default/playbooks',{method:'POST',body:JSON.stringify({apiVersion:'anotify/v1',kind:'Playbook',metadata:{name:'f3-page-package',namespace:'default'},spec:{files}})});
+  // #548：详情页要有真实数据 → 用页面请求路径真装一次（缺省 release = 包名，重复装幂等）。
+  await d.req('/v1/namespaces/default/playbooks/f3-page-package/install',{method:'POST',body:JSON.stringify({values:{}})});
 }
 for(const lang of LANGS)add('pages-21-'+lang,async d=>{
   await seedPagePackage(d);
@@ -351,9 +360,10 @@ for(const lang of LANGS)add('pages-21-'+lang,async d=>{
     await d.page.locator(pageAnchors[file]).first().waitFor();
     assert.equal(await d.page.evaluate(()=>document.documentElement.lang),lang);
     const title=(await d.page.title()).trim();assert.ok(title.length>0);
-    const text=await d.page.locator('body').innerText();assert.ok(!/\b(?:pb\.v4|nodes\.v4|sources\.v4|caps\.[a-z_])/.test(text),'No bare translation keys');
+    const text=await d.page.locator('body').innerText();assert.ok(!/\b(?:pb\.v4|nodes\.v4|sources\.v4|rel\.[a-z_]+|caps\.[a-z_])/.test(text),'No bare translation keys');
     const cs=await d.calls();
     if(['source','source-detail','message','node','playbook'].includes(file))assert.ok(cs.some(c=>c.httpStatus===200&&c.result?.metadata?.name),'Actual detail controller successfully GETs named object');
+    if(file==='release')assert.ok(cs.some(c=>c.httpStatus===200&&c.result?.release==='f3-page-package'&&Array.isArray(c.result?.objects?.capabilities)),'Actual release detail GET returns the addressed instance');
     if(file==='docs'){await d.page.locator('a[href="#auth"]:visible').first().click();assert.equal(new URL(d.page.url()).hash,'#auth');}
     if(file==='cli-auth'||file==='passkey-enroll'){await d.page.locator('#code-input').fill('TEST-AB');assert.equal(await d.page.inputValue('#code-input'),'TEST-AB');}
     await d.clean('F3-PAGE '+lang+' '+file);

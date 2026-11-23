@@ -8,7 +8,7 @@ import { openDriver } from "./f3-driver.mjs";
 export const LANGS = Object.freeze(["zh-CN", "en", "ja", "es"]);
 // 旧的 source 页已删除（B-4）：它与 source-detail 是同一件事的两页，只留后者；
 // `/source.html` 现在是 404，所以矩阵里不能再有它（否则整格 404 判红）。
-export const PAGES = Object.freeze(["admin","capabilities","capability","cli-auth","docs","events","index","keys","login","message","namespace","namespaces","node","nodes","passkey-enroll","playbook","playbooks","receivers","security","source-detail","sources","trace"]);
+export const PAGES = Object.freeze(["admin","capabilities","capability","cli-auth","docs","events","index","keys","login","message","namespace","namespaces","node","nodes","passkey-enroll","playbook","playbooks","receivers","release","security","source-detail","sources","trace"]);
 export const THEMES = Object.freeze(["light", "dark"]);
 export const VIEWPORTS = Object.freeze({ desktop: Object.freeze({ width: 1440, height: 900 }), mobile: Object.freeze({ width: 390, height: 844 }) });
 // #384：「内容档」768×1024（竖屏平板）。**不进 VIEWPORTS** —— 那份是 PAGES × 4 语言 ×
@@ -31,6 +31,7 @@ export const ANCHORS = Object.freeze({
   events: "#ev-list article", index: "#kpi-total", keys: "#keys-body tr", login: ".auth-tabs",
   message: "#task-facts", namespace: "#ns-name", namespaces: "#ns-list [data-ns]", node: "#node-slots", nodes: "[data-node]", "passkey-enroll": "#code-input",
   playbook: "#pb-installs", playbooks: "#pb-grid", receivers: "#current-device-card",
+  release: "#rel-state",
   security: "#passkey-list",
   // 源只读详情页：根元素渲染成功后才有 data-source（深链成立 = 真的读到了那个源）。
   "source-detail": "#src-detail[data-source]", sources: "#src-list [data-name]", trace: "#trace-tasks",

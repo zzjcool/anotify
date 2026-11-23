@@ -141,7 +141,7 @@ export async function playbook(d,mode){
     assert.equal(await page.locator('#pb-conditions').isVisible(), false, '体检明细不在首屏');
     await page.locator('#pb-installs').waitFor();
     assert.equal(await page.locator('#pb-installs').isVisible(), true, '实例列表在首屏');
-    assert.match(await page.locator('#pb-installs').innerText(), /install groups?/i, '实例列表不是空壳');
+    assert.match(await page.locator('#pb-installs').innerText(), /No instances yet/i, '实例列表空态非空（还没有实例）');
     await shot('first-screen-ia');
     check('Default IA: one status line + install trigger + instance list on screen; version history and checkup detail stay collapsed');
     await fill(true);
@@ -179,11 +179,7 @@ export async function playbook(d,mode){
     assert.equal(groups.installs[0].lastInstallId, second.response.install.id); assert.equal(groups.installs[0].values.credential, '***');
     assert.ok(!JSON.stringify(groups).includes(credential));
     assert.equal((await req(basePath+'/installs/'+first.response.install.id)).install.id, first.response.install.id);
-    // 打开「单次回执」的那个按钮。install 组里现在还有 code-block 头部的复制按钮（.copy-btn）、
-    // 每个 release 的卸载按钮（[data-action="uninstall"]，#510）和「查看 YAML」
-    // （[data-action="release-yaml"]，#536），所以这里显式排除它们——strict mode 会命中多个。
-    await page.locator('#pb-installs button:not(.copy-btn):not([data-action="uninstall"]):not([data-action="release-yaml"])').click();
-    await page.waitForFunction(id => __c1Calls.some(c => c.url.endsWith('/installs/' + id)), second.response.install.id);
+    /* #548 两级化：列表行是链接、行内无按钮，所以这里断言**安装动作自己渲染的回执**（同一个 #pb-receipt 宿主）。 */
     assert.match(await page.locator('#pb-receipt').innerText(), /Install|receipt/i);
     assert.ok(!((await page.locator('#pb-receipt').innerText()).includes(credential)));
     await page.locator('#pb-receipt').scrollIntoViewIfNeeded(); await shot('repeat-fold-single-receipt');
@@ -195,7 +191,16 @@ export async function playbook(d,mode){
     assert.ok(await sourceRefs.count() >= 1, '回执里源的引用必须链到 source-detail.html（实际：' + await page.locator('#pb-receipt').innerText() + '）');
     assert.match(await sourceRefs.first().getAttribute('href'), /^source-detail\.html\?namespace=default&name=/);
     assert.equal(await page.locator('#pb-receipt a[href^="source.html"]').count(), 0, '不得再链回已删除的 source.html');
-    await page.locator('#pb-installs [data-action="release-yaml"]').first().click(); // #536：实例 YAML 抽屉读多文档正文（能力整体在源之前，凭据只以 secretSet 出现）。
+    const releaseRows = page.locator('#pb-installs a[data-release]');
+    assert.equal(await releaseRows.count(), 1, '两次安装同一个 release → 列表恰好 1 行（按 release 聚合，不是按组）');
+    assert.equal(await page.locator('#pb-installs button').count(), 0, '列表行内不得再有按钮（YAML/回执/卸载都在详情页）');
+    const releaseHref = await releaseRows.first().getAttribute('href');
+    assert.equal(releaseHref, 'release.html?namespace=default&id=project-chain&release=' + encodeURIComponent('project-chain'), '行链接必须能直接新标签页打开实例详情');
+    await page.locator('#pb-installs').scrollIntoViewIfNeeded(); await shot('release-rows-only');
+    check('#548 package page lists one row per release (link only, zero in-row buttons), receipt axes still link to existing detail pages');
+    await goto('release', 'namespace=default&id=project-chain&release=project-chain');
+    await page.locator('#release-detail[data-release="project-chain"]').waitFor();
+    await page.locator('#rel-yaml-open').click(); // #536：实例 YAML 抽屉读多文档正文（能力整体在源之前，凭据只以 secretSet 出现）。
     await page.locator('#pb-yaml-drawer').waitFor({ state: 'visible' });
     await page.locator('#pb-yaml-text').waitFor();
     const releaseYaml = await page.locator('#pb-yaml-text').evaluate(node => node.textContent);
@@ -215,7 +220,10 @@ export async function playbook(d,mode){
     await req('/v1/namespaces/default/playbooks', { method: 'POST', body: JSON.stringify({ ...envelope({ 'playbook.yaml': emptyEntry }), metadata: { name: 'empty-pkg', namespace: 'default' } }) });
     assert.equal((await req('/v1/namespaces/default/playbooks/empty-pkg/install', { method: 'POST', body: JSON.stringify({ values: { project: 'a' } }) })).install.release, 'empty-pkg');
     await goto('playbook', 'namespace=default&id=empty-pkg');
-    await page.locator('#pb-installs [data-action="release-yaml"]').first().click();
+    assert.equal(await page.locator('#pb-installs a[data-release]').count(), 1, '0 对象实例仍然占一行');
+    await goto('release', 'namespace=default&id=empty-pkg&release=empty-pkg');
+    await page.locator('#release-detail[data-release="empty-pkg"]').waitFor();
+    await page.locator('#rel-yaml-open').click();
     await page.locator('#pb-yaml-drawer').waitFor({ state: 'visible' });
     assert.equal(await page.locator('#pb-yaml-empty').isVisible(), true, '0 对象实例直接给空态');
     assert.ok((await page.locator('#pb-yaml-empty').innerText()).trim().length > 0, '空态文案非空');

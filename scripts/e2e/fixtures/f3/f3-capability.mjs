@@ -413,7 +413,6 @@ export async function capability(d){
 			assert.equal(await page.inputValue("#cap-version"), "2", "400 后输入保留");
 			assert.equal(await page.locator("#cap-modal:not(.hidden)").count(), 1);
 			await shot(page, "04-version-immutable-400");
-			// 版本切换：显式改成 3 再存
 			await page.fill("#cap-version", "3");
 			await takeRec(page);
 			await page.click("#cap-submit");

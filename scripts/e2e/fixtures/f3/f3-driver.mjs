@@ -43,9 +43,9 @@ export function withDeadline(label, promise, ms = WAIT_DEADLINE_MS) {
   });
 }
 export const LANGS = ['zh-CN', 'en', 'ja', 'es'];
-// 旧的 source 页已删除（黑盒审计 B-4：两个源详情页重复，只留 source-detail 这一页）；
-// 无参/带参访问 `/source.html` 一律 404（internal/server/static.go 的未知文件路径）。
-export const PAGES = ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','namespace','namespaces','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source-detail','sources','trace'];
+// 已删除的 source 页：无参/带参访问 `/source.html` 一律 404（internal/server/static.go 的未知文件路径）。
+// #548：实例详情页（release）也必须登记在这里 —— affected.test.mjs 硬校验它与 web-src/pages 逐项相等。
+export const PAGES = ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','namespace','namespaces','node','nodes','passkey-enroll','playbook','playbooks','receivers','release','security','source-detail','sources','trace'];
 // 401 → 登录页那条用例覆盖的页面。capability.html 是**受保护的深层链接页**：
 // 它自己的布局挂载就会打 /v1/auth/me，游客必得 401，且它在 partials.js 的
 // loginHref 白名单里（next=capability.html 必须保住 ?namespace=&name=），
