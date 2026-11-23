@@ -11,6 +11,7 @@ const secretsPath = (ns) => `/v1/namespaces/${seg(ns)}/secrets`;
 const secretPath = (ns, name) => `${secretsPath(ns)}/${seg(name)}`;
 const sourcesPath = (ns) => `/v1/namespaces/${seg(ns)}/sources`;
 const sourcePath = (ns, name) => `${sourcesPath(ns)}/${seg(name)}`;
+const secretAuditPath = (ns, name) => `${secretPath(ns, name)}/audit`;
 
 const rand = () => Math.random().toString(36).slice(2, 10);
 const secretValue = (tag) => `tok-e2e-${tag}-${rand()}`;
@@ -337,6 +338,169 @@ async function main() {
 		"G6 轮换后单条读仍不含任何一版值",
 		!rotGet.text.includes(v1) && !rotGet.text.includes(v2),
 		"响应正文含明文值",
+	);
+
+	const meRes = await call("/v1/auth/me");
+	V.expectStatus("AU1 GET /v1/auth/me → 200（actor 的逐字基准）", meRes, 200);
+	const actorId = meRes.json?.id;
+	H.check(
+		"AU1 会话用户 id 非空",
+		typeof actorId === "string" && actorId.length > 0,
+		JSON.stringify(meRes.json),
+	);
+
+	const auName = "audit-a";
+	const auV1 = secretValue("au1");
+	const auV2 = secretValue("au2");
+	V.expectStatus(
+		"AU2 PUT 建 standalone 凭据 A → 200（审计 created）",
+		await call(S(auName), { method: "PUT", body: { value: auV1 } }),
+		200,
+	);
+	V.expectStatus(
+		"AU3 同名再 PUT（轮换）→ 200（审计 rotated）",
+		await call(S(auName), { method: "PUT", body: { value: auV2 } }),
+		200,
+	);
+
+	const auditRes = await call(secretAuditPath(NS, auName));
+	V.expectStatus("AU4 GET …/secrets/audit-a/audit → 200", auditRes, 200);
+	const auRows = V.items(auditRes) || [];
+	H.eq("AU4 审计 2 条（created + rotated）", auRows.length, 2);
+	H.eq(
+		"AU4 最新在前：actions = [rotated, created]",
+		JSON.stringify(auRows.map((r) => r?.action)),
+		JSON.stringify(["rotated", "created"]),
+	);
+	H.check(
+		"AU4 每项恰好 4 键（id/action/actor/at，没有 detail、没有 value）",
+		auRows.every(
+			(r) => JSON.stringify(Object.keys(r || {}).sort()) === JSON.stringify(["action", "actor", "at", "id"]),
+		),
+		JSON.stringify(auRows.map((r) => Object.keys(r || {}))),
+	);
+	H.check(
+		"AU4 两行 actor 都是会话用户 id（逐字相等）",
+		auRows.every((r) => r?.actor === actorId),
+		JSON.stringify(auRows.map((r) => r?.actor)),
+	);
+	H.check(
+		"AU4 at 都是 RFC3339 且能被 Date.parse",
+		auRows.every((r) => typeof r?.at === "string" && !Number.isNaN(Date.parse(r.at))),
+		JSON.stringify(auRows.map((r) => r?.at)),
+	);
+	H.check(
+		"AU4 items[0].at >= items[1].at（同秒时也成立）",
+		Date.parse(auRows[0]?.at) >= Date.parse(auRows[1]?.at),
+		`${auRows[0]?.at} vs ${auRows[1]?.at}`,
+	);
+	H.check(
+		"AU4 两行 id 不同（一次操作一行）",
+		!!auRows[0]?.id && auRows[0].id !== auRows[1]?.id,
+		`${auRows[0]?.id} vs ${auRows[1]?.id}`,
+	);
+	H.check(
+		"AU4 审计正文里没有写入的任何一版值",
+		!auditRes.text.includes(auV1) && !auditRes.text.includes(auV2),
+		"审计响应含明文值",
+	);
+
+	const auLimit1 = V.items(await call(secretAuditPath(NS, auName) + "?limit=1")) || [];
+	H.eq("AU5 limit=1 → 恰好 1 条", auLimit1.length, 1);
+	H.eq("AU5 limit=1 回的是最新那条（与全量第一条同 id）", auLimit1[0]?.id, auRows[0]?.id);
+
+	const auBad = {};
+	for (const qs of ["limit=0", "limit=201", "limit=-1", "limit=abc", "before=abc"]) {
+		auBad[qs] = await call(secretAuditPath(NS, auName) + "?" + qs);
+		V.expectReason(`AU6 ?${qs} → 400`, auBad[qs], 400, "BadRequest");
+	}
+	const auMsg = (qs) => String(auBad[qs]?.json?.message || "");
+	H.eq("AU6 limit=0 的 message 点名 1..200 区间", auMsg("limit=0"), "limit must be between 1 and 200");
+	H.eq("AU6 limit=201 的 message 与 limit=0 逐字相同（三个数字只有一个家）", auMsg("limit=201"), auMsg("limit=0"));
+	H.eq("AU6 limit=abc 的 message 是「limit must be an integer」", auMsg("limit=abc"), "limit must be an integer");
+	H.eq(
+		"AU6 before=abc 的 message 是「before must be an RFC3339 timestamp」",
+		auMsg("before=abc"),
+		"before must be an RFC3339 timestamp",
+	);
+
+	const auEpoch = (await call(secretAuditPath(NS, auName) + "?before=1970-01-01T00:00:00Z")).json;
+	H.check(
+		"AU7 before=1970-01-01T00:00:00Z → 正文恰好 {\"items\":[]}",
+		JSON.stringify(auEpoch) === '{"items":[]}',
+		JSON.stringify(auEpoch),
+	);
+	const auFuture = V.items(await call(secretAuditPath(NS, auName) + "?before=" + encodeURIComponent("2999-01-01T00:00:00Z"))) || [];
+	H.eq("AU7 before=<未来> 条数不变（严格早于口径不裁未来行）", auFuture.length, auRows.length);
+
+	const nsAuditB = "aud" + Date.now().toString(36);
+	V.expectStatus("AU8 建第二个命名空间 → 201", await V.createNamespace(B, session, nsAuditB, "审计隔离"), 201);
+	const crossNsAudit = await call(secretAuditPath(nsAuditB, auName));
+	V.expectReason("AU8 nsB 里没有该凭据 → 404", crossNsAudit, 404, "secret_not_found");
+	const ghostAudit = await call(secretAuditPath(NS, "audit-ghost"));
+	V.expectReason("AU8 本 ns 里不存在的凭据 → 404", ghostAudit, 404, "secret_not_found");
+	H.eq(
+		"AU8 两种 404 正文逐字节相同（跨 ns 与不存在同形，不泄露存在性）",
+		crossNsAudit.text,
+		ghostAudit.text,
+	);
+	V.expectStatus(
+		"AU8 在 nsB 用老路径（config.secret，不写审计）造同名凭据 → 201",
+		await call(sourcesPath(nsAuditB), {
+			body: sourceBody(
+				"audit-src-b",
+				pollConfig({
+					secretRef: { name: auName, header: "Authorization", prefix: "Bearer " },
+					secret: auV1 + "-b",
+				}),
+			),
+		}),
+		201,
+	);
+	const bAudit = await call(secretAuditPath(nsAuditB, auName));
+	V.expectStatus("AU8 nsB 的同名凭据有审计端点 → 200", bAudit, 200);
+	H.check(
+		"AU8 nsB 读到的是空的 {\"items\":[]}（同名不串号：变异②的 HTTP 探测器）",
+		JSON.stringify(bAudit.json) === '{"items":[]}',
+		JSON.stringify(bAudit.json),
+	);
+
+	const delName = "audit-del";
+	const delV1 = secretValue("del1");
+	const delV2 = secretValue("del2");
+	V.expectStatus("AU9 建删除用例凭据 → 200", await call(S(delName), { method: "PUT", body: { value: delV1 } }), 200);
+	V.expectStatus("AU9 轮换它 → 200", await call(S(delName), { method: "PUT", body: { value: delV2 } }), 200);
+	const delBefore = V.items(await call(secretAuditPath(NS, delName))) || [];
+	H.eq("AU9 删除前审计 2 条", delBefore.length, 2);
+	H.eq("AU9 无人引用时 DELETE → 204", (await call(S(delName), { method: "DELETE" })).status, 204);
+	V.expectReason(
+		"AU9 删除后实体已不存在 → 审计端点同样 404（handler 先解析实体，契约 D4）",
+		await call(secretAuditPath(NS, delName)),
+		404,
+		"secret_not_found",
+	);
+	const delRowsDB = V.withDB(server.dbPath, (db) =>
+		db
+			.prepare(
+				`SELECT action FROM namespace_secret_audit WHERE namespace_id = ? AND name = ? ORDER BY rowid`,
+			)
+			.all(ns.id, delName)
+			.map((r) => r.action),
+	);
+	H.check(
+		"AU9 落盘证三动作齐全（created → rotated → deleted，deleted 行确实写了）",
+		JSON.stringify(delRowsDB) === JSON.stringify(["created", "rotated", "deleted"]),
+		JSON.stringify(delRowsDB),
+	);
+
+	expectAnon401("AU10 匿名 GET 凭据审计 → 401", await call(secretAuditPath(NS, auName), { anon: true }));
+
+	const seenAudit = bodies.join("\n");
+	const leakedAudit = [auV1, auV2, auV1 + "-b", delV1, delV2].filter((v) => seenAudit.includes(v));
+	H.check(
+		`AU11 全部响应 body（${bodies.length} 份，含审计响应）里 grep 不到任何新写入的值`,
+		leakedAudit.length === 0,
+		`泄露：${leakedAudit.join(", ")}`,
 	);
 
 	const seen = bodies.join("\n");
