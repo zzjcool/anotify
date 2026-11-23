@@ -51,6 +51,7 @@ func (a *playbookAPI) register(mux *http.ServeMux) {
 		{"POST " + base + "/{slug}/install", a.install},
 		{"GET " + base + "/{slug}/versions", a.listVersions},
 		{"DELETE " + base + "/{slug}/releases/{release}", a.uninstallRelease},
+		{"GET " + base + "/{slug}/releases/{release}", a.getRelease},
 		{"GET " + base + "/{slug}/releases/{release}/yaml", a.releaseYAML},
 		{"GET " + base + "/{slug}/installs", a.listInstalls},
 		{"GET " + base + "/{slug}/installs/{installId}", a.getInstall},
@@ -202,9 +203,7 @@ func (a *playbookAPI) getInstall(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 写端点 ----------
 
-// create 处理 POST …/playbooks：只落一行清单（不安装）。
-//
-// 同 slug 已存在 → store.ErrSlugTaken → 409 slug_taken（api_status.go 已注册）。
+// create 处理 POST …/playbooks：只落一行清单（不安装）；同 slug 已存在 → 409 slug_taken。
 func (a *playbookAPI) create(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -244,9 +243,7 @@ func (a *playbookAPI) create(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusCreated, env)
 }
 
-// replace 处理 PUT …/playbooks/{slug}：整体替换包体（CAS 令牌只在 body metadata.resourceVersion）。
-//
-// **只换模板**：已装的能力 / 源一行不动，要等下一次 install 才变（§5 / §10）。
+// replace 处理 PUT …/playbooks/{slug}：整体替换包体（CAS 令牌只在 body metadata.resourceVersion；已装的能力 / 源一行不动）。
 func (a *playbookAPI) replace(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -299,9 +296,7 @@ func (a *playbookAPI) replace(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusOK, env)
 }
 
-// delete 处理 DELETE …/playbooks/{slug}?resourceVersion=：只删清单。
-//
-// 响应是动作文档（deleted / kept / values / note），不套四键信封：它回答的是 「留下了什么」，不是一个资源的状态。
+// delete 处理 DELETE …/playbooks/{slug}?resourceVersion=：只删清单，回动作文档（deleted / kept / values / note）。
 func (a *playbookAPI) delete(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -366,9 +361,7 @@ func (a *playbookAPI) render(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-// install 处理 POST …/playbooks/{slug}/install：幂等安装（单事务；不部署）。
-//
-// dryRun=true 走同一条代码路径但 0 持久写（回执仍返回，但不落 playbook_installs）。
+// install 处理 POST …/playbooks/{slug}/install：幂等安装（单事务；不部署；dryRun=true 走同一路径但 0 持久写）。
 func (a *playbookAPI) install(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -518,14 +511,7 @@ func decodePlaybookAction(r *http.Request) (playbookActionBody, error) {
 // ---------- 响应形状 ----------
 
 // playbookStatus 是 Playbook 的 status 读模型（playbook.md §6.1）：每一项都必须真实派生，
-// 派不出来就给空（宁少不编）。
-// - items / sources / lastInstallId / unapplied 来自回执历史（`ListPlaybookInstalls` 的
-// installed_from 反查 + 最近一组回执的 unapplied[]）。
-// - conditions 是成员能力四条 condition 的聚合（逐行取该能力的 status 派生）；反查不到行
-// 就不参与，四种 type 都聚不出来时仍是 []。
-// - ready 由 conditions + unapplied 派生（四条全 True 且 unapplied 为空）。
-//
-// 刻意**没有** `blocker`：它要求「最该先做的一件事」，来源正是成员能力的四条 condition；条件拿不到时给一个 blocker 就是纯编造，故省略该键（派生出事实时再加）。
+// 派不出来就给空（宁少不编）；刻意没有 `blocker`（条件拿不到时给一个就是纯编造）。
 type playbookStatus struct {
 	Ready       bool                      `json:"ready"`
 	Unapplied   []playbook.UnappliedEntry `json:"unapplied"`

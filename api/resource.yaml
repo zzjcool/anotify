@@ -978,6 +978,47 @@ paths:
         required: true
         description: "实例身份（`^(a-z0-9)[a-z0-9._-]{0,62}$`）"
         schema: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,62}$'}
+    get:
+      operationId: getPlaybookRelease
+      tags: [playbooks]
+      security: [{session: []}]
+      summary: "读取一个实例的详情（身份 / 对象 / 参数分组 / 回执）"
+      description: |
+        一次 GET 拿全这个 release 的现状，**不套四键信封**（读模型，与实例清单 / 回执同口径）。
+
+        口径（逐条都是断言点）：
+
+        1. `valuesDigest` / `installedAt` / `lastInstallId` / `receipt` 都取**最新一条回执**
+           （回执按 `created_at` 升序，取最后一条）；`receipt` 与 `GET …/installs/{lastInstallId}`
+           逐字段一致。
+        2. `objects` 是这个 release **全部回执** `install.id` 名下、当前未删除的能力行与源行：
+           归属判据是行的 `installed_from` 落在本 release 的回执 id 集合里 —— **不按名字前缀匹配**，
+           也不含手工行（`installedFrom` 为空）与别的 release 的行。能力取库里**当前生效**的
+           `version` / `digest`（与 `GET …/releases/{release}/yaml` 同口径），源取 `sources.kind`；
+           顺序是能力 `(name, version)` 升序、源 `name` 升序。
+        3. `params.count` 是这个 release 内**不同 `valuesDigest` 的个数**（同一 digest 装多次算 1 组），
+           `params.digest` 与顶层 `valuesDigest` 同值。
+        4. `groups` 是参数分组明细，**最近安装的组在前**，所以 `groups[0]` 的
+           `valuesDigest` / `installedAt` / `lastInstallId` 与顶层同名字段一致；每组 `objects`
+           只含该组回执名下的行，`attempts` 是该组回执条数。
+        5. `dependencies` 顶层 = 全部回执的 `dependencies` 按 `capability` 去重取**最高 version**、
+           按 `capability` 升序；组内同法只算该组。
+        6. 空列表一律 `[]` 而不是 `null`（`objects.capabilities` / `objects.sources` /
+           `dependencies` / `groups`；`groups` 恒有至少 1 条）。
+
+        release 从未存在、或这个 release 已卸载（它装出的行已删）→ `404` `release_not_found`；
+        包不存在 → `404` `NotFound`；release 形状非法 → `400` `invalid_playbook`。
+        只读：不写库、不产生回执。
+      responses:
+        '200':
+          description: "实例详情读模型"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PlaybookRelease'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
     delete:
       operationId: uninstallPlaybookRelease
       tags: [playbooks]
@@ -3415,6 +3456,107 @@ components:
         installs:
           type: array
           items: {$ref: '#/components/schemas/PlaybookInstallGroup'}
+    PlaybookRelease:
+      type: object
+      description: |
+        一个实例（release）的详情读模型（`GET …/releases/{release}`，不套四键信封）。
+
+        1. `valuesDigest` / `installedAt` / `lastInstallId` / `receipt` 都取**最新一条回执**；
+           `receipt` 与 `GET …/installs/{lastInstallId}` 逐字段一致。
+        2. `objects` 是这个 release 全部回执 `install.id` 名下、当前未删除的行（归属判据是行的
+           `installedFrom` ∈ 回执 id 集合，**不按名字前缀**）；能力取当前生效的 `version` / `digest`，
+           源取 `sources.kind`；能力 `(name, version)` 升序、源 `name` 升序。
+        3. `params.count` 是不同 `valuesDigest` 的个数（同一 digest 装多次算 1 组），
+           `params.digest` 与顶层 `valuesDigest` 同值。
+        4. `groups` 按参数分组、**最近安装的组在前**（`groups[0]` 三个身份字段与顶层一致），
+           `attempts` 是该组回执条数，组内 `objects` 只含该组回执名下的行。
+        5. `dependencies` 按 `capability` 去重取**最高 version**、按 `capability` 升序（组内同法）。
+        6. 空列表一律 `[]` 而不是 `null`（`groups` 恒有至少 1 条）。
+      required: [release, valuesDigest, installedAt, lastInstallId, objects, dependencies, params, groups, receipt]
+      properties:
+        release:
+          type: string
+          description: "实例身份（缺省时是包名）"
+        valuesDigest: {type: string}
+        installedAt:
+          type: string
+          format: date-time
+          description: "最新一次安装的时间（回执的 `install.at`）"
+        lastInstallId:
+          type: string
+          description: "最新一次安装的回执 id（`ins_…`）"
+        objects: {$ref: '#/components/schemas/PlaybookReleaseObjects'}
+        dependencies:
+          type: array
+          description: "全部回执的依赖去重取最高版本"
+          items: {$ref: '#/components/schemas/PlaybookDependency'}
+        params: {$ref: '#/components/schemas/PlaybookReleaseParams'}
+        groups:
+          type: array
+          description: "参数分组明细（最近安装的组在前，恒 ≥ 1 条）"
+          items: {$ref: '#/components/schemas/PlaybookReleaseGroup'}
+        receipt: {$ref: '#/components/schemas/PlaybookReceipt'}
+      additionalProperties: false
+    PlaybookReleaseObjects:
+      type: object
+      description: "一个实例装出、当前未删除的对象集合（两个列表恒为数组）"
+      required: [capabilities, sources]
+      properties:
+        capabilities:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookReleaseCapability'}
+        sources:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookReleaseSource'}
+      additionalProperties: false
+    PlaybookReleaseCapability:
+      type: object
+      description: "能力行：`version` / `digest` 取库里当前生效的那一行"
+      required: [name, version, digest]
+      properties:
+        name: {type: string}
+        version: {type: integer}
+        digest:
+          type: string
+          description: "该版本当前的部署身份（`sha256:<hex>`）"
+      additionalProperties: false
+    PlaybookReleaseSource:
+      type: object
+      description: "源行（`kind` 取 `sources.kind`）"
+      required: [name, kind]
+      properties:
+        name: {type: string}
+        kind:
+          type: string
+          description: "源类型（`webhook` / `cron` / `manual` / `poll`，即 `sources.kind`）"
+      additionalProperties: false
+    PlaybookReleaseParams:
+      type: object
+      description: "参数摘要：`count` 是不同 valuesDigest 的个数"
+      required: [digest, count]
+      properties:
+        digest:
+          type: string
+          description: "与顶层 `valuesDigest` 同值"
+        count:
+          type: integer
+      additionalProperties: false
+    PlaybookReleaseGroup:
+      type: object
+      description: "一组参数（一个 valuesDigest）的明细"
+      required: [valuesDigest, installedAt, lastInstallId, attempts, objects, dependencies]
+      properties:
+        valuesDigest: {type: string}
+        installedAt: {type: string, format: date-time}
+        lastInstallId: {type: string}
+        attempts:
+          type: integer
+          description: "该组回执条数（装了几次，不是版本号）"
+        objects: {$ref: '#/components/schemas/PlaybookReleaseObjects'}
+        dependencies:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookDependency'}
+      additionalProperties: false
     PlaybookKept:
       type: object
       required: [capabilities, sources]

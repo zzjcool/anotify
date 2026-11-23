@@ -121,21 +121,22 @@ const maxRefDepth = 8
 const (
 	// parityPairsFloor 是 parityPairs() 的对数（含 auth/ingress/agent 的全部 DTO 与协议帧）。
 	// 逐次只增：observed 四个子 schema、启停/试跑六对、#510 卸载两对、#511 版本历史两对、
-	// #522 router 结局三对（历史区间见 git log）。
-	parityPairsFloor = 209
+	// #522 router 结局三对、#548 实例详情六对（历史区间见 git log）。
+	parityPairsFloor = 215
 	// bareMountFloor 是 bareMountSpec() 的条目数。
 	bareMountFloor = 27
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底）。
 	//
 	// 历史只在提交信息里追溯：YAML 读写面（#463/#476）、#510 实例卸载、#511 版本历史、
-	// #522 决策端点都各 +1；本轮 #536 再 +1（`GET …/releases/{release}/yaml`）。
-	muxPatternCount = 131
+	// #522 决策端点都各 +1；#536 再 +1（`GET …/releases/{release}/yaml`）；
+	// 本轮 #548 再 +1（`GET …/releases/{release}`）。
+	muxPatternCount = 132
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 39
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数。
 	// 逐次只增：observed 四子 schema、启停/试跑六个、#510 两对、#513 SourceMatch、#511 两对、
-	// #519 叶子行、#522 三件（历史区间见 git log）。
-	specSchemaFloor = 249
+	// #519 叶子行、#522 三件、#548 实例详情六件（历史区间见 git log）。
+	specSchemaFloor = 254
 )
 
 // ---------- 测试入口 ----------
@@ -169,9 +170,10 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 	ops, _ := collectSpecOps(docs)
 	// 快照逐次只增：#333 的 SAFE_BLOCKED 通道、两条 /yaml 只读、两条从 YAML 创建、能力的
 	// 启停/试跑/审计、Node/Namespace 的 YAML 面、#510 实例卸载、#511 版本历史、#522 决策端点；
-	// 本轮 #536 再 +1（`GET …/playbooks/{slug}/releases/{release}/yaml`）。
-	if len(ops) != 142 {
-		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 142（141 + #536 的实例导出）", len(ops))
+	// #536 再 +1（`GET …/playbooks/{slug}/releases/{release}/yaml`）；
+	// 本轮 #548 再 +1（`GET …/playbooks/{slug}/releases/{release}` 实例详情）。
+	if len(ops) != 143 {
+		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 143（142 + #548 的实例详情）", len(ops))
 	}
 	// 至少一条来自 components.pathItems（agent.yaml 四条 + events/ingress 的共享 pathItem）。
 	fromPathItems := 0
@@ -3093,6 +3095,13 @@ func parityPairs() []parityPair {
 		{GoLabel: "store.PlaybookKept", File: "resource.yaml", Schema: "PlaybookKept", Sample: store.PlaybookKept{}},
 		{GoLabel: "store.PlaybookUninstallResult", File: "resource.yaml", Schema: "PlaybookUninstallResult", Sample: store.PlaybookUninstallResult{}},
 		{GoLabel: "store.PlaybookUninstallKept", File: "resource.yaml", Schema: "PlaybookUninstallKept", Sample: store.PlaybookUninstallKept{}},
+		// #548 实例详情：一个读模型 + 四个子形状（能力 / 源 / 参数摘要 / 分组）。
+		{GoLabel: "PlaybookRelease", File: "resource.yaml", Schema: "PlaybookRelease", Sample: PlaybookRelease{}},
+		{GoLabel: "PlaybookReleaseObjects", File: "resource.yaml", Schema: "PlaybookReleaseObjects", Sample: PlaybookReleaseObjects{}},
+		{GoLabel: "PlaybookReleaseCapability", File: "resource.yaml", Schema: "PlaybookReleaseCapability", Sample: PlaybookReleaseCapability{}},
+		{GoLabel: "PlaybookReleaseSource", File: "resource.yaml", Schema: "PlaybookReleaseSource", Sample: PlaybookReleaseSource{}},
+		{GoLabel: "PlaybookReleaseParams", File: "resource.yaml", Schema: "PlaybookReleaseParams", Sample: PlaybookReleaseParams{}},
+		{GoLabel: "PlaybookReleaseGroup", File: "resource.yaml", Schema: "PlaybookReleaseGroup", Sample: PlaybookReleaseGroup{}},
 
 		// ---- namespace / system config ----
 		{GoLabel: "namespaceCounts", File: "resource.yaml", Schema: "NamespaceCounts", Sample: namespaceCounts{}},
