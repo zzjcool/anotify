@@ -496,7 +496,6 @@ async function partVersions(ctx) {
 		JSON.stringify([pinned.json?.playbook, fresh.json?.playbook]),
 	);
 
-	// 单回执 GET 也能看出装的是哪一版。
 	const one = await H.req(ctx.base, PB.installById(slug, pinned.json?.install?.id), { session: ctx.session });
 	V.expectStatus("按 v1 装的单回执 → 200", one, 200);
 	H.eq("单回执 playbook.version = 1", one.json?.playbook?.version, 1);
@@ -1143,7 +1142,6 @@ async function partInstalledSnapshot(ctx) {
 	H.check("老回执的当前视图取的是当前生效的 v4", legacyCurrent.text.includes("snap-v4"), legacyCurrent.text.slice(0, 400));
 }
 
-// readReleaseDetail 读一份实例的详情（#548），返回 JSON 文档。
 async function readReleaseDetail(ctx, slug, rel, what) {
 	const r = await H.req(ctx.base, PB.release(slug, rel), { session: ctx.session });
 	V.expectStatus(`${what} → 200`, r, 200);
@@ -1292,9 +1290,174 @@ async function partReleaseDetail(ctx) {
 	H.eq("卸载之后的这几次读都不改库（库指纹逐字节相同）", dbFingerprint(ctx.dbPath), afterUninstall);
 }
 
+    // partInstallHistory（#553）：已卸载的回执与详情（objectsGone + pinned），缺省两个读面逐字节不变。
+async function partInstallHistory(ctx) {
+	console.log("--- 14. 安装历史（含已卸载）：include=uninstalled / objectsGone / pinned（#553）---");
+	const slug = "pb-history";
+	// 两个 release 装同一套模板但要建出不同名的对象（`{{release.name}}` 前缀），否则第二份安装会认领冲突。
+	const capTpl = "{{release.name}}-{{values.project}}-review";
+	const srcTpl = "{{release.name}}-{{values.project}}-on-push";
+	await createPackage(ctx, slug, {
+		"playbook.yaml": entryDoc(slug, ["capabilities/review.yaml"], ["sources/on-push.yaml"]),
+		"capabilities/review.yaml": capabilityDoc(capTpl, []),
+		"sources/on-push.yaml": sourceDoc(srcTpl, [capTpl]),
+	});
+	const receipts = {};
+	for (const rel of ["live", "gone"]) {
+		const r = await install(ctx, slug, rel);
+		V.expectStatus(`release ${rel} 安装 → 200`, r, 200);
+		receipts[rel] = r.json || {};
+	}
+
+	const RAW = (query = "") => H.req(ctx.base, PB.installs(slug) + query, { session: ctx.session });
+	const DETAIL = (rel, query = "") => H.req(ctx.base, PB.release(slug, rel) + query, { session: ctx.session });
+	const groupsOf = (res) =>
+		(Array.isArray(res.json?.installs) ? res.json.installs : [])
+			.slice()
+			.sort((a, b) => String(a.release).localeCompare(String(b.release)));
+	const hasUninstalledAt = (group) => Object.prototype.hasOwnProperty.call(group, "uninstalledAt");
+
+	const bothLive = await readInstalls(ctx, slug, "两个 release 都生效时");
+	H.eq("对照组：两个 release 各一组", bothLive.groups.map((g) => g.release).sort(), ["gone", "live"]);
+	H.eq("对照组：两个 release 都生效时 total === 2", bothLive.total, 2);
+	H.check(
+		"对照组：生效中的组**没有** uninstalledAt 键（缺省口径逐字不变）",
+		bothLive.groups.length === 2 && bothLive.groups.every((g) => !hasUninstalledAt(g)),
+		JSON.stringify(bothLive.groups.map((g) => Object.keys(g))),
+	);
+
+	V.expectStatus("卸载 release gone → 200", await uninstall(ctx, slug, "gone"), 200);
+
+	const afterUninstall = await readInstalls(ctx, slug, "卸载 gone 后的缺省");
+	H.eq("缺省清单不再含已卸载的 gone", afterUninstall.groups.map((g) => g.release), ["live"]);
+	H.eq("缺省清单 total 只数生效中（1，不是 2）", afterUninstall.total, 1);
+	H.check(
+		"缺省清单里剩下的 live 组仍没有 uninstalledAt 键",
+		!afterUninstall.groups.some(hasUninstalledAt),
+		JSON.stringify(afterUninstall.groups.map((g) => Object.keys(g))),
+	);
+
+	const beforeReads = dbFingerprint(ctx.dbPath);
+
+	const all = await RAW("?include=uninstalled");
+	V.expectStatus("include=uninstalled 的实例清单 → 200", all, 200);
+	const allGroups = groupsOf(all);
+	const goneGroup = allGroups.find((g) => g.release === "gone") || {};
+	const liveGroup = allGroups.find((g) => g.release === "live") || {};
+	H.eq("include=uninstalled 时已卸载的 gone 与生效中的 live 都在", allGroups.map((g) => g.release), ["gone", "live"]);
+	H.eq("include=uninstalled 时 total === 2", all.json?.total, 2);
+	H.check(
+		"已卸载的组带 uninstalledAt，且是能 Date.parse 的 RFC3339",
+		typeof goneGroup.uninstalledAt === "string" && !Number.isNaN(Date.parse(goneGroup.uninstalledAt)),
+		String(goneGroup.uninstalledAt),
+	);
+	H.eq("已卸载组的 lastInstallId 就是那一次安装的回执", goneGroup.lastInstallId, receipts.gone.install?.id);
+	H.check(
+		"只有已卸载的组才带 uninstalledAt：生效中的 live 组没有这个键",
+		!hasUninstalledAt(liveGroup),
+		JSON.stringify(Object.keys(liveGroup)),
+	);
+
+	V.expectReason(
+		"缺省口径下已卸载的详情 → 404 release_not_found",
+		await DETAIL("gone"),
+		404,
+		"release_not_found",
+	);
+
+	const goneDetail = await DETAIL("gone", "?include=uninstalled");
+	V.expectStatus("已卸载的详情带 include=uninstalled → 200", goneDetail, 200);
+	const doc = goneDetail.json || {};
+	H.check("已卸载详情带 objectsGone: true", doc.objectsGone === true, JSON.stringify(doc.objectsGone));
+	H.check(
+		"已卸载详情的 uninstalledAt 是非空字符串",
+		typeof doc.uninstalledAt === "string" && doc.uninstalledAt.length > 0,
+		String(doc.uninstalledAt),
+	);
+	const pins = Array.isArray(doc.pinned) ? doc.pinned : null;
+	H.check("已卸载详情的 pinned 是数组（安装时快照仍可读，不是 409）", pins !== null, JSON.stringify(doc.pinned));
+	const capPin = (pins || []).find((p) => p?.kind === "capability") || {};
+	H.eq("pinned 的能力项 name 是这一份 release 装出的能力", capPin.name, "gone-demo-review");
+	H.check("pinned 的能力项 version 是正整数", Number.isInteger(capPin.version) && capPin.version >= 1, String(capPin.version));
+	H.check(
+		"pinned 的能力项 digest 以 sha256: 开头",
+		typeof capPin.digest === "string" && capPin.digest.startsWith("sha256:"),
+		String(capPin.digest),
+	);
+	H.eq("已卸载详情的 objects.capabilities 强制为空", (doc.objects?.capabilities || []).length, 0);
+	H.eq("已卸载详情的 objects.sources 强制为空", (doc.objects?.sources || []).length, 0);
+	H.check(
+		"已卸载详情的 groups[].objects 也强制为空（对象已删，不得泄漏同名重装的对象）",
+		(Array.isArray(doc.groups) ? doc.groups : []).every(
+			(g) => (g.objects?.capabilities || []).length === 0 && (g.objects?.sources || []).length === 0,
+		),
+		JSON.stringify((doc.groups || []).map((g) => g.objects)),
+	);
+
+	const liveDefault = await DETAIL("live");
+	V.expectStatus("生效中 release 的缺省详情 → 200", liveDefault, 200);
+	const liveAll = await DETAIL("live", "?include=uninstalled");
+	V.expectStatus("生效中 release 带 include=uninstalled → 200", liveAll, 200);
+	H.eq(
+		"include=uninstalled 打在生效中 release 上与缺省响应逐字相同（UI 可以恒带）",
+		JSON.stringify(liveAll.json),
+		JSON.stringify(liveDefault.json),
+	);
+
+	V.expectReason("详情 include=nope → 400 value_invalid", await DETAIL("gone", "?include=nope"), 400, "value_invalid");
+	V.expectReason("清单 include=nope → 400 value_invalid", await RAW("?include=nope"), 400, "value_invalid");
+
+	const yamlPath = PB.releaseYAML(slug, "gone");
+	const installedYaml = await H.req(ctx.base, yamlPath + "?as=installed", { session: ctx.session });
+	V.expectStatus("已卸载的 as=installed 导出 → 200", installedYaml, 200);
+	H.check(
+		"已卸载的导出正文带 install: <那一次安装的回执 id>",
+		installedYaml.text.includes(`install: ${receipts.gone.install?.id}`),
+		installedYaml.text.slice(0, 300),
+	);
+	V.expectReason(
+		"已卸载的缺省导出 → 404 release_not_found",
+		await H.req(ctx.base, yamlPath, { session: ctx.session }),
+		404,
+		"release_not_found",
+	);
+	V.expectReason(
+		"已卸载的 as=current 导出 → 404 release_not_found",
+		await H.req(ctx.base, yamlPath + "?as=current", { session: ctx.session }),
+		404,
+		"release_not_found",
+	);
+
+	H.check(
+		"已卸载的组不参与生效中计数：缺省 total 只数生效中（1），含已卸载才 2",
+		afterUninstall.total === 1 && all.json?.total === 2,
+		`缺省 ${afterUninstall.total} / 含已卸载 ${all.json?.total}`,
+	);
+	H.eq("这一段的历史读都没改库（库指纹逐字节相同）", dbFingerprint(ctx.dbPath), beforeReads);
+
+	H.check(
+		"#553 安装历史：默认不含已卸载 / include=uninstalled 带 uninstalledAt / 详情 objectsGone+pinned / 生效中逐字不变",
+		afterUninstall.total === 1 &&
+			allGroups.length === 2 &&
+			typeof goneGroup.uninstalledAt === "string" &&
+			doc.objectsGone === true &&
+			Array.isArray(doc.pinned) &&
+			doc.pinned.length > 0 &&
+			JSON.stringify(liveAll.json) === JSON.stringify(liveDefault.json),
+		[
+			`缺省 total=${afterUninstall.total}`,
+			`含已卸载=${allGroups.length}`,
+			`uninstalledAt=${String(goneGroup.uninstalledAt)}`,
+			`objectsGone=${String(doc.objectsGone)}`,
+			`pinned=${Array.isArray(doc.pinned) ? doc.pinned.length : "null"}`,
+			`生效中逐字相同=${JSON.stringify(liveAll.json) === JSON.stringify(liveDefault.json)}`,
+		].join(" / "),
+	);
+}
+
 async function main() {
 	H.startTimer();
-	console.log("=== SUITE: playbook_release（#505 安装 release 身份 / #510 按 release 卸载 / #511 包版本历史 / #534 依赖锁 / #548 实例详情）===");
+	console.log("=== SUITE: playbook_release（#505 安装 release 身份 / #510 按 release 卸载 / #511 包版本历史 / #534 依赖锁 / #548 实例详情 / #553 安装历史）===");
 	const server = await H.startServer({ suiteName: SUITE, rpId: "localhost" });
 	try {
 		const seeded = H.seed(server.dbPath, "e2e");
@@ -1311,6 +1474,7 @@ async function main() {
 		await partReleaseYAML(ctx);
 		await partInstalledSnapshot(ctx);
 		await partReleaseDetail(ctx);
+		await partInstallHistory(ctx);
 		await partVersions(ctx);
 		await partRequires(ctx);
 	} finally {
