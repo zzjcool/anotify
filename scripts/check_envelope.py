@@ -28,7 +28,7 @@
       "看起来对、其实换了形状"。
   E7  cursor 与已退役键：`ListMeta.continue` 必须是字符串；`nextCursor` / `before` /
       `sinceId` / `remainingItemCount` 不得出现在**任何 schema 属性名或参数名**里
-      （v4 只有 `continue`）。
+      （v4 只有 `continue`；唯一例外是审计读端点的 `?before=` 时间游标，见 AUDIT_TIME_CURSOR_WHERE）。
   E8  CAS：所有 `resourceVersion`（含 `$ref` 到整数 schema 的）必须是字符串；
       CAS 资源的 DELETE（能力/源/包/命名空间/节点）必须声明必填 query 参数
       `resourceVersion`——DELETE 不带请求体，令牌只能走 query。路径项写在
@@ -123,8 +123,9 @@ ERROR_FAMILY_TARGET = {
     "Backpressure": "BackpressureError",
 }
 
-# E7：v4 已退役/未采纳的旧键（出现即说明有人按旧契约写 schema）。
+# E7：v4 已退役/未采纳的旧键（出现即说明有人按旧契约写 schema）；唯一例外是审计读端点的时间游标。
 RETIRED_KEYS = ("nextCursor", "before", "sinceId", "remainingItemCount")
+AUDIT_TIME_CURSOR_WHERE = re.compile(r"/audit\.(get|put|post|delete|patch|parameters)\b")
 
 # E8：哪些路径是「带 CAS 的资源」（DELETE 必须带 ?resourceVersion=）。用正则而不是列举 5 条路径：新增 CAS 资源时正则自动覆盖，不会漏。
 # playbooks 只收单资源 DELETE：`…/releases/{release}` 是动作端点（#510 契约 §1 明确不新增令牌，CAS 逐行执行）。
@@ -370,7 +371,7 @@ def check_documents(docs: dict[str, dict]) -> list[str]:
                     )
                 if node.get("nullable") is True:
                     errors.append(f"{where}: 数组不许 nullable —— 空集合必须是 []，不是 null（不变量 I9）")
-            # E7 也要看参数名：`?before=` / `?sinceId=` 是同一类旧契约残留。
+            # E7 也要看参数名：`?before=` / `?sinceId=` 是同一类旧契约残留（审计时间游标除外）。
             params = node.get("parameters")
             if isinstance(params, list):
                 for entry in params:
@@ -378,6 +379,8 @@ def check_documents(docs: dict[str, dict]) -> list[str]:
                     if not isinstance(resolved, dict):
                         continue
                     pname = resolved.get("name")
+                    if pname == "before" and AUDIT_TIME_CURSOR_WHERE.search(where):
+                        continue
                     if pname in RETIRED_KEYS:
                         errors.append(
                             f"{where}: 参数名 {pname!r} 是已退役的旧契约"

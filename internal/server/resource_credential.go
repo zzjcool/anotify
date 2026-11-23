@@ -30,6 +30,17 @@ type namespaceSecretListDoc struct {
 	Items []namespaceSecretDoc `json:"items"`
 }
 
+type secretAuditEntryDoc struct {
+	ID     string `json:"id"`
+	Action string `json:"action"`
+	Actor  string `json:"actor"`
+	At     string `json:"at"`
+}
+
+type secretAuditListDoc struct {
+	Items []secretAuditEntryDoc `json:"items"`
+}
+
 type namespaceSecretWrite struct {
 	Value *string `json:"value"`
 }
@@ -42,6 +53,7 @@ func (a *secretAPI) register(mux *http.ServeMux) {
 	const base = "/v1/namespaces/{ns}/secrets"
 	mux.Handle("GET "+base, noStore(a.d.session(http.HandlerFunc(a.list))))
 	mux.Handle("GET "+base+"/{name}", noStore(a.d.session(http.HandlerFunc(a.get))))
+	mux.Handle("GET "+base+"/{name}/audit", noStore(a.d.session(http.HandlerFunc(a.audit))))
 	mux.Handle("PUT "+base+"/{name}", noStore(a.d.session(http.HandlerFunc(a.put))))
 	mux.Handle("DELETE "+base+"/{name}", noStore(a.d.session(http.HandlerFunc(a.remove))))
 }
@@ -191,4 +203,46 @@ func (a *secretAPI) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *secretAPI) audit(w http.ResponseWriter, r *http.Request) {
+	nsID, err := a.d.authorizePathNamespace(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	name, err := secretNameFromPath(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if _, err := a.d.DB.GetNamespaceSecretMeta(r.Context(), nsID, name); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	limit, err := auditLimitQuery(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	before, err := auditBeforeQuery(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	rows, err := a.d.DB.ListNamespaceSecretAudit(r.Context(), nsID, name, before, limit)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	doc := secretAuditListDoc{Items: make([]secretAuditEntryDoc, 0, len(rows))}
+	for _, e := range rows {
+		doc.Items = append(doc.Items, secretAuditEntryDoc{
+			ID:     e.ID,
+			Action: e.Action,
+			Actor:  e.ActorID,
+			At:     rfc3339(e.CreatedAt),
+		})
+	}
+	writeJSON(w, http.StatusOK, doc)
 }

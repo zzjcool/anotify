@@ -475,6 +475,110 @@ paths:
         '404': {$ref: '#/components/responses/Status404'}
         '500': {$ref: '#/components/responses/Status500'}
 
+  /v1/namespaces/{namespace}/sources/{name}/audit:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: name
+        in: path
+        required: true
+        description: "源名（同命名空间内唯一；与共享的来源名校验器同口径）"
+        schema: {type: string}
+    get:
+      operationId: listSourceAudit
+      tags: [sources]
+      security: [{session: []}]
+      summary: "该源的最近操作（立即拉取，最新在前）"
+      description: |
+        非信封（与 `GET …/edges`、能力审计同类）：这是一份派生观察，不是可寻址资源。
+
+        `items` 按 `created_at DESC, id DESC`（最新在前），空为 `[]`（不是 `null`）。
+        `action` 闭集是 `source.polled_manually`；`actor` 空串 = 非会话主体（CLI/系统），
+        不做伪造；`at` 是 RFC3339（UTC）；`detail` 恒为对象（这一轮拉取的计数摘要，
+        不存响应正文）。
+
+        未知 `name` **或**「跨命名空间同名」一律 `404`：handler 先按 `(namespace, name)`
+        解析实体再读审计，所以这里不像能力审计那样回 `200 {"items":[]}` ——
+        两者是同一条 404，不泄露存在性。
+
+        `limit` 缺省 50、范围 1..200（越界 → 400，服务端不夹取）；非整数 → 400。
+        `before` 是 RFC3339 时间戳（就是上一条的 `at`），取**严格早于**它的一页；
+        精度 = 秒（同一秒内的记录不会重复返回，可能一并略过）。
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: "最近多少条（1..200，缺省 50）"
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+        - name: before
+          in: query
+          required: false
+          description: "RFC3339 时间戳：只回严格早于它的记录（精度 = 秒）"
+          schema: {type: string}
+      responses:
+        '200':
+          description: "审计列表"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SourceAuditList'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '403': {$ref: '#/components/responses/Status403'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/secrets/{name}/audit:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: name
+        in: path
+        required: true
+        description: "凭据名（与 `config.secretRef.name` 同一规则：字母数字与 `. _ -`，首字符字母数字，≤64 字节）"
+        schema: {type: string}
+    get:
+      operationId: listNamespaceSecretAudit
+      tags: [sources]
+      security: [{session: []}]
+      summary: "该凭据的最近操作（created / rotated / deleted，最新在前）"
+      description: |
+        非信封：派生观察，不是可寻址资源。
+
+        `items` 按 `created_at DESC, rowid DESC`（最新在前），空为 `[]`（不是 `null`）。
+        `action` 闭集是 `created` / `rotated` / `deleted`；`actor` 空串 = 非会话主体
+        （CLI/系统），不做伪造；`at` 是 RFC3339（UTC）。
+
+        审计**只有**名字、动作、actor 与时间：表里没有值列，端点也不补 ——
+        `value` 与 `detail` 都不在这个 DTO 里（凭据值只写不读）。
+
+        未知 `name` **或**「跨命名空间同名」一律 `404 secret_not_found`：handler 先按
+        `(namespace, name)` 解析实体再读审计，不像能力审计那样回 `200 {"items":[]}`
+        （不泄露存在性）。
+
+        `limit` 缺省 50、范围 1..200（越界 → 400，服务端不夹取）；非整数 → 400。
+        `before` 是 RFC3339 时间戳（就是上一条的 `at`），取**严格早于**它的一页；
+        精度 = 秒（同一秒内的记录不会重复返回，可能一并略过）。
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: "最近多少条（1..200，缺省 50）"
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+        - name: before
+          in: query
+          required: false
+          description: "RFC3339 时间戳：只回严格早于它的记录（精度 = 秒）"
+          schema: {type: string}
+      responses:
+        '200':
+          description: "审计列表"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NamespaceSecretAuditList'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '403': {$ref: '#/components/responses/Status403'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
   /v1/namespaces/{namespace}/edges:
     parameters:
       - $ref: '#/components/parameters/NamespacePath'
@@ -2831,6 +2935,59 @@ components:
         items:
           type: array
           items: {$ref: '#/components/schemas/CapabilityAuditEntry'}
+    SourceAuditEntry:
+      type: object
+      description: "该源的一次操作（append-only；没有删除/修改入口）"
+      required: [id, action, actor, at, detail]
+      properties:
+        id: {type: string}
+        action:
+          type: string
+          enum: [source.polled_manually]
+        actor:
+          type: string
+          description: "发起操作的用户 id；空串 = 非会话主体（CLI / 系统），不做伪造"
+        at:
+          type: string
+          description: "RFC3339（UTC）"
+        detail:
+          type: object
+          additionalProperties: true
+          description: |
+            这一轮拉取的计数摘要（`{ok, items, created, duplicates}`）；
+            响应正文不落审计（里面可能有业务数据）。
+    SourceAuditList:
+      type: object
+      description: "审计列表（非信封，与 CapabilityAuditList 同类）：`items` 最新在前，空为 `[]`"
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/SourceAuditEntry'}
+    NamespaceSecretAuditEntry:
+      type: object
+      description: "该凭据的一次操作（append-only；只有名字/动作/actor/时间，没有值）"
+      required: [id, action, actor, at]
+      properties:
+        id: {type: string}
+        action:
+          type: string
+          enum: [created, rotated, deleted]
+        actor:
+          type: string
+          description: "发起操作的用户 id；空串 = 非会话主体（CLI / 系统），不做伪造"
+        at:
+          type: string
+          description: "RFC3339（UTC）"
+    NamespaceSecretAuditList:
+      type: object
+      description: "审计列表（非信封，与 CapabilityAuditList 同类）：`items` 最新在前，空为 `[]`"
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/NamespaceSecretAuditEntry'}
+
     CapabilityEdge:
       type: object
       required: [from, to, kind]

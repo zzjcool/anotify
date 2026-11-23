@@ -45,7 +45,7 @@ func TestNamespaceSecretPutListGetRoundTrip(t *testing.T) {
 	if value, _ := db.GetNamespaceSecret(ctx, nsID, "gh-token"); value != "v2-SECRET" {
 		t.Fatalf("轮换后必须读回新值: %q", value)
 	}
-	audit, err := db.ListNamespaceSecretAudit(ctx, nsID, "gh-token", 10)
+	audit, err := db.ListNamespaceSecretAudit(ctx, nsID, "gh-token", 0, 10)
 	if err != nil {
 		t.Fatalf("读审计: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestNamespaceSecretUsageAndDeleteGuard(t *testing.T) {
 	if err := db.DeleteNamespaceSecret(ctx, nsID, "gh-token", "usr_actor"); !errors.Is(err, ErrNamespaceSecretNotFound) {
 		t.Fatalf("删不存在的必须是 not found: %v", err)
 	}
-	audit, err := db.ListNamespaceSecretAudit(ctx, nsID, "gh-token", 10)
+	audit, err := db.ListNamespaceSecretAudit(ctx, nsID, "gh-token", 0, 10)
 	if err != nil || len(audit) != 2 || audit[0].Action != NamespaceSecretDeleted {
 		t.Fatalf("删除也要留一条审计: %v %+v", err, audit)
 	}
@@ -173,7 +173,7 @@ func TestNamespaceSecretLegacySourcePathUnchanged(t *testing.T) {
 	if value, err := db.GetNamespaceSecret(ctx, nsID, "gh"); err != nil || value != "legacy-tok" {
 		t.Fatalf("老路径必须落同一个值: %q %v", value, err)
 	}
-	audit, err := db.ListNamespaceSecretAudit(ctx, nsID, "", 10)
+	audit, err := db.ListNamespaceSecretAudit(ctx, nsID, "", 0, 10)
 	if err != nil || len(audit) != 0 {
 		t.Fatalf("老路径不该写资源面审计（行为不变）: %v %+v", err, audit)
 	}

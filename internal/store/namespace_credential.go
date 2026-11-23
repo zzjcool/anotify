@@ -322,21 +322,25 @@ func appendNamespaceSecretAuditOn(ctx context.Context, ex queryExec, namespaceID
 	return nil
 }
 
-func (d *DB) ListNamespaceSecretAudit(ctx context.Context, namespaceID, name string, limit int) ([]NamespaceSecretAuditEntry, error) {
+func (d *DB) ListNamespaceSecretAudit(ctx context.Context, namespaceID, name string, beforeAt int64, limit int) ([]NamespaceSecretAuditEntry, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
 	if limit <= 0 {
-		limit = 50
+		limit = AuditDefaultLimit
 	}
-	if limit > 200 {
-		limit = 200
+	if limit > AuditMaxLimit {
+		limit = AuditMaxLimit
 	}
 	q := `SELECT id, name, action, actor_id, created_at FROM namespace_secret_audit WHERE namespace_id = ?`
 	args := []any{namespaceID}
 	if name != "" {
 		q += ` AND name = ?`
 		args = append(args, name)
+	}
+	if beforeAt != 0 {
+		q += ` AND created_at < ?`
+		args = append(args, beforeAt)
 	}
 	q += ` ORDER BY created_at DESC, rowid DESC LIMIT ?`
 	args = append(args, limit)

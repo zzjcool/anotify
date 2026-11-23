@@ -143,7 +143,7 @@ func (e *secretResEnv) createPollSource(name string, config map[string]any) *htt
 
 func (e *secretResEnv) auditRows(name string) []store.NamespaceSecretAuditEntry {
 	e.t.Helper()
-	rows, err := e.db.ListNamespaceSecretAudit(context.Background(), e.nsID, name, 50)
+	rows, err := e.db.ListNamespaceSecretAudit(context.Background(), e.nsID, name, 0, 50)
 	if err != nil {
 		e.t.Fatalf("read audit: %v", err)
 	}
