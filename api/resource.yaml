@@ -3221,6 +3221,23 @@ components:
           type: array
           items: {$ref: '#/components/schemas/PruneFact'}
 
+    SourcePollResult:
+      type: object
+      description: |
+        一轮「立即拉取」的可观测事实（**不是**资源信封）。
+        `items` 是 `config.envelope.items` 取到的条数；`created`/`duplicates` 按入库回执的
+        去重位分（同 `deliveryId` 命中窗口 → duplicates）。本轮失败不给这个文档：回
+        502 `poll_failed`（`message` 是错误原文），且游标不动。
+      required: [items, created, duplicates, durationMs, cursorAdvanced]
+      properties:
+        items: {type: integer, description: "envelope.items 取到的条数"}
+        created: {type: integer, description: "本轮新建的事件数"}
+        duplicates: {type: integer, description: "命中去重窗口（未新建）的事件数"}
+        durationMs: {type: integer, description: "整轮耗时（毫秒）"}
+        cursorAdvanced:
+          type: boolean
+          description: "这一轮是否推进了游标（304 Not Modified / 与旧游标相同 → false）"
+
     # -------------------------------------------------------------- playbook
     PlaybookSpec:
       type: object
@@ -4489,7 +4506,10 @@ components:
         `dependency_missing`（`spec.requires` 的能力没有可见版本 / 版本不够）、
         `dependency_locked`（能力被已生效的安装依赖着）、
         `no_snapshot`（该实例安装于未记录快照的版本：导出 `as=installed` 没有安装时快照可给，
-        `details.causes[0].field = "release"`，可改用 `as=current`）等
+        `details.causes[0].field = "release"`，可改用 `as=current`）、
+        `poll_in_progress`（该源已有一轮拉取在飞：手动与定时共用同一把锁，不排队）、
+        `not_poll_source`（`spec.kind` 不是 `poll`，没有可拉取的东西）、
+        `source_disabled`（源已停用：立即拉取是写入口，与 `fire` 同口径）等
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Status'}
@@ -4525,7 +4545,9 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/Status'}
     Status502:
-      description: "上游（节点）返回不可用响应（透传节点错误码）"
+      description: |
+        上游返回不可用响应（透传节点错误码），或 `poll_failed`（一轮拉取失败：
+        `message` 是错误原文，游标不前进、退避与失败计数照常记）
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Status'}

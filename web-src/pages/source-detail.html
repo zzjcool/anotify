@@ -377,6 +377,7 @@ function pollSection(m, secretName) { // 拉取区块：只对 kind: poll 出现
     pair(t("source_detail.poll_cursor", "游标"), cursorValue, { muted: !cursorRaw }),
   );
   sec.append(stKv);
+  if (m.enabled) sec.append(pollNowRow(m));
   const errFold = el("details", { class: "src-raw", id: "src-detail-poll-error" });
   errFold.append(txt("summary", null, t("sources.v4.last_error", "最近错误")));
   const errBody = el("div", { class: "src-raw-body" });
@@ -385,6 +386,53 @@ function pollSection(m, secretName) { // 拉取区块：只对 kind: poll 出现
   errFold.append(errBody);
   sec.append(errFold);
   return sec;
+}
+function pollNowRow(m) {
+  const box = el("div", { class: "sd-wrap" });
+  const bar = el("div", { class: "sd-actions" });
+  const label = () => t("source_detail.poll_now", "立即拉取");
+  const btn = el("button", { type: "button", class: "btn btn-ghost btn-sm", id: "src-detail-poll-now", text: label() });
+  const out = el("div", { id: "src-detail-poll-result", "aria-live": "polite" });
+  bar.append(btn);
+  box.append(bar, out);
+  const num = (v) => (typeof v === "number" && Number.isFinite(v) ? String(v) : "—");
+  const note = (text, raw) => {
+    const p = el("p", { class: "field-error sd-wrap" });
+    const body = text == null || text === "" ? "—" : String(text);
+    if (raw) p.append(rawText(body));
+    else p.textContent = body;
+    out.replaceChildren(p);
+  };
+  const counts = (r) => {
+    const dl = el("dl", { class: "sd-kv" });
+    const ms = num(r.durationMs);
+    dl.append(
+      pair(t("source_detail.poll_result_items", "取回条目"), num(r.items), {}),
+      pair(t("source_detail.poll_result_created", "新建"), num(r.created), {}),
+      pair(t("source_detail.poll_result_duplicates", "去重命中"), num(r.duplicates), {}),
+      pair(t("source_detail.poll_result_duration", "耗时"), ms === "—" ? ms : ms + " ms", {}),
+    );
+    out.replaceChildren(dl);
+  };
+  btn.addEventListener("click", async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = t("source_detail.poll_now_running", "拉取中…");
+    out.replaceChildren();
+    try {
+      const r = await api(nsPath("sources", m.name) + "/poll", { method: "POST" });
+      counts(r || {});
+      A.toast(t("source_detail.poll_now_done", "已拉取一轮"), "success");
+    } catch (err) {
+      if (err.status === 409 && err.reason === "poll_in_progress") note(t("source_detail.poll_now_busy", "正在轮询中，稍等"));
+      else if (err.reason === "poll_failed") note(err.message || statusLine(err), true);
+      else note(statusLine(err), true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label();
+    }
+  });
+  return box;
 }
 /* 载荷契约（payloadSchema）→ 字段表：名字 / 类型 / 必填 / 说明。
    没有 properties 时不编一张空表，只说「没有声明字段」。 */

@@ -14,14 +14,15 @@ import (
 
 // serverDeps 是 v4 HTTP 资源层共享的运行期依赖（冻结契约 D1）。
 //
-// 这里刻意只放「已由 v4 runtime 导出」的真实接缝：store（事实）/ route.Router（规划与
-// emit）/ source.Service（源触发与 ingress）/ ws.Hub（节点会话、派发、日志、部署）/
-// lease.Sweeper（租约与保留期巡检）。旧 v3 的 executor（中枢执行器）与 broker 包在
-// v4 已被删除，不得以 stub 恢复（331 卡 D0.2/D0.3）。
+// 这里刻意只放「已由 v4 runtime 导出」的真实接缝：store / route.Router / source.Service /
+// ws.Hub / lease.Sweeper。v3 的 executor 与 broker 包在 v4 已被删除，不得以 stub 恢复。
 type serverDeps struct {
 	DB      *store.DB
 	Router  *route.Router
 	Sources *source.Service
+	// Poller 是拉取型源的执行器（#555）：与后台排期是**同一个**实例（一把共享的 in-flight 锁、
+	// 一份拉取逻辑），所以手动触发不会与排期并发跑同一个源。
+	Poller  *source.Poller
 	Hub     *ws.Hub
 	Sweeper *lease.Sweeper
 	Log     *slog.Logger
