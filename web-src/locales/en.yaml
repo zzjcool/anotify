@@ -2418,8 +2418,11 @@ pb:
     release_group: "{release} · {n} groups"
     single_receipt: "Read full single receipt"
     no_installs: "No instances yet. The first install creates one."
+    no_installs_uninstalled_only: "Only uninstalled instances remain; turn on “Show uninstalled” to see them."
     view_yaml: "View YAML"
+    show_uninstalled: "Show uninstalled"
     release_active: "Active"
+    release_uninstalled: "Uninstalled · {at}"
     release_objects: "{c} capabilities / {s} sources"
     release_last_install: "installed {at}"
     yaml_title: "Instance YAML"
@@ -2442,6 +2445,7 @@ pb:
     delete_stale: 'Version is stale. Refresh to get the current version; a second delete still requires confirmation.'
     uninstall: "Uninstall instance"
     uninstall_confirm: 'Uninstall instance "{release}"? Capabilities and sources created by this install are removed; objects that belong to others are kept, and the install record stays readable.'
+    uninstall_row: "Uninstall"
     uninstalled_n: 'Uninstalled "{release}": removed {c} capabilities / {s} sources.'
     uninstall_kept_n: "Kept {n} objects that do not belong to it (details below)."
     uninstall_already: "This instance was already uninstalled; nothing changed now."
@@ -2689,6 +2693,12 @@ source_detail:
   poll_result_created: 'Created'
   poll_result_duplicates: 'Duplicates'
   poll_result_duration: 'Duration'
+  secret_name: 'Credential name'
+  secret_used_by: 'Referenced by'
+  secret_loading: 'Loading…'
+  secret_missing: 'Credential not found'
+  secret_only_self: 'Only this source references it'
+  secret_used_by_failed: 'Could not load the sources that reference it'
   hook_url: 'Hook URL'
   secret_set_yes: 'HMAC secret is set (write-only)'
   secret_set_no: 'No HMAC secret'
@@ -2778,11 +2788,14 @@ release:
   as_current: Current
   as_installed: At install
   as_no_snapshot: This install kept no snapshot, so only the version in effect now can be shown.
+  as_current_gone: "The instance is uninstalled, so there is no version in effect to show."
   uninstall: Uninstall this instance
   uninstall_confirm: 'Uninstall “{release}”: delete the capabilities and sources it installed; receipts are kept.'
   uninstalled: Uninstalled
-  gone_title: This instance was uninstalled or never existed
-  gone_hint: 'Its objects are gone; the package page shows the instances running now.'
+  uninstalled_notice: "This instance was uninstalled at {at}; its objects are gone, and what follows is the snapshot taken at install time."
+  objects_gone: 'Objects are gone (this instance was uninstalled at {at}). The “At install” view of YAML exports the snapshot from that time.'
+  gone_title: This instance does not exist
+  gone_hint: 'It was never installed, or its package has been deleted.'
   gone_back: Back to package
   no_target_badge: No instance
   missing_hint: 'Open it from the package page instance list, or add the package and instance names to the link.'

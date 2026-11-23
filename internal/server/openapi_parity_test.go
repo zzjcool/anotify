@@ -124,7 +124,7 @@ const (
 	// bareMountFloor 是 bareMountSpec() 的条目数。
 	bareMountFloor = 27
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底），历史见提交信息。
-	muxPatternCount = 133
+	muxPatternCount = 137
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 39
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数（历史区间见 git log）。
@@ -160,9 +160,9 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 	fatalIfProblems(t, "解析 $ref（含跨文件）", refIntegrityProblems(docs))
 
 	ops, _ := collectSpecOps(docs)
-	// 快照逐次只增（历次增量见 git log）：#555 的立即拉取是最近一条。
-	if len(ops) != 144 {
-		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 144（143 + #555 的立即拉取）", len(ops))
+	// 快照逐次只增（历次增量见 git log）：#554 的凭据 CRUD 四条 + #555 的立即拉取。
+	if len(ops) != 148 {
+		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 148（143 + 凭据 CRUD 四条 + 立即拉取）", len(ops))
 	}
 	// 至少一条来自 components.pathItems（agent.yaml 四条 + events/ingress 的共享 pathItem）。
 	fromPathItems := 0
@@ -3084,6 +3084,10 @@ func parityPairs() []parityPair {
 		{GoLabel: "namespaceConfigDoc", File: "resource.yaml", Schema: "NamespaceConfig", Sample: namespaceConfigDoc{}},
 		{GoLabel: "systemConfigDoc", File: "resource.yaml", Schema: "SystemConfig", Sample: systemConfigDoc{}},
 		{GoLabel: "retentionDoc", File: "resource.yaml", Schema: "Retention", Sample: retentionDoc{}},
+
+		{GoLabel: "namespaceSecretDoc", File: "resource.yaml", Schema: "NamespaceSecret", Sample: namespaceSecretDoc{}},
+		{GoLabel: "namespaceSecretListDoc", File: "resource.yaml", Schema: "NamespaceSecretList", Sample: namespaceSecretListDoc{}},
+		{GoLabel: "namespaceSecretWrite", File: "resource.yaml", Schema: "NamespaceSecretWrite", Sample: namespaceSecretWrite{}},
 
 		// ---- node ----
 		{GoLabel: "nodeSpec", File: "resource.yaml", Schema: "NodeSpec", Sample: nodeSpec{}},

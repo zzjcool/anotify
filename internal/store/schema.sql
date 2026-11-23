@@ -293,7 +293,6 @@ CREATE TABLE IF NOT EXISTS capability_switches (
     enabled      INTEGER NOT NULL DEFAULT 1,
     reason       TEXT NOT NULL DEFAULT '',
     updated_at   INTEGER NOT NULL,
-    -- users.id；空串 = 非会话主体（命令行/系统），不伪造 system 用户。
     updated_by   TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (namespace_id, name)
 );
@@ -755,7 +754,7 @@ ALTER TABLE sources ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sources ADD COLUMN skipped_overlaps INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sources ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 
--- 命名空间凭据（#532 的 secretRef 指向它）：值只写不读，写入口只有 poll 的 config.secret。
+-- 命名空间凭据（#532 的 secretRef 指向它）：值只写不读；写入口是 poll 的 config.secret 与 PUT …/secrets/{name}。
 CREATE TABLE IF NOT EXISTS namespace_secrets (
     namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
     name         TEXT NOT NULL,
@@ -795,7 +794,19 @@ CREATE TABLE IF NOT EXISTS playbook_install_pinned (
 CREATE INDEX IF NOT EXISTS idx_playbook_pinned_lookup
     ON playbook_install_pinned(namespace_id, ref_kind, name, version);
 
--- +migration 9 source_audit
+-- +migration 9 secret_audit
+CREATE TABLE IF NOT EXISTS namespace_secret_audit (
+    id           TEXT PRIMARY KEY,
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    action       TEXT NOT NULL CHECK (action IN ('created', 'rotated', 'deleted')),
+    -- users.id；空串 = 非会话主体（命令行/系统），不伪造 system 用户。
+    actor_id     TEXT NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_namespace_secret_audit_ns
+    ON namespace_secret_audit(namespace_id, name, created_at);
+-- +migration 10 source_audit
 CREATE TABLE IF NOT EXISTS source_audit (
     id           TEXT PRIMARY KEY,
     namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
