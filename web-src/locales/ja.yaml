@@ -2418,8 +2418,11 @@ pb:
     release_group: "{release} · {n} グループ"
     single_receipt: "完全な単一記録を読む"
     no_installs: "インスタンスはまだありません。最初のインストールで 1 つ作られます。"
+    no_installs_uninstalled_only: "アンインストール済みのインスタンスだけが残っています。「アンインストール済みを表示」をオンにすると確認できます。"
     view_yaml: "YAML を表示"
+    show_uninstalled: "アンインストール済みを表示"
     release_active: "稼働中"
+    release_uninstalled: "アンインストール済み · {at}"
     release_objects: "{c} ケイパビリティ / {s} ソース"
     release_last_install: "{at} にインストール"
     yaml_title: "インスタンス YAML"
@@ -2442,6 +2445,7 @@ pb:
     delete_stale: '版が古いです。再読み込みで最新を取得し、再削除時も確認が必要です。'
     uninstall: "アンインストール"
     uninstall_confirm: "インスタンス「{release}」をアンインストールしますか？このインストールが作成した能力とソースを削除します。他のインスタンスに属するものは保持され、インストール記録は引き続き参照できます。"
+    uninstall_row: "アンインストール"
     uninstalled_n: "「{release}」をアンインストールしました：能力 {c} 個 / ソース {s} 個を削除。"
     uninstall_kept_n: "このインスタンスに属さない {n} 個のオブジェクトを保持しました（明細は下）。"
     uninstall_already: "このインスタンスはすでにアンインストール済みです。今回は何も変わっていません。"
@@ -2770,11 +2774,14 @@ release:
   as_current: 現在有効
   as_installed: インストール時
   as_no_snapshot: このインストールにはスナップショットが残っていないため、現在有効なバージョンのみ表示します。
+  as_current_gone: "インスタンスはアンインストール済みのため、表示できる現在有効なバージョンはありません。"
   uninstall: このインスタンスを削除
   uninstall_confirm: 'インスタンス「{release}」を削除します：作成したケイパビリティとソースを削除し、結果は保持します。'
   uninstalled: 削除済み
-  gone_title: このインスタンスは削除済みか存在しません
-  gone_hint: '作成したオブジェクトは削除されました。パッケージのページで現在稼働中のインスタンスを確認できます。'
+  uninstalled_notice: "このインスタンスは {at} にアンインストールされ、オブジェクトは削除されました。以下はインストール時点のスナップショットです。"
+  objects_gone: "オブジェクトは削除されました（インスタンスは {at} にアンインストール済み）。YAML の「インストール時」で当時のスナップショットを書き出せます。"
+  gone_title: このインスタンスは存在しません
+  gone_hint: '一度もインストールされていないか、所属するパッケージが削除されています。'
   gone_back: パッケージに戻る
   no_target_badge: インスタンス未指定
   missing_hint: 'パッケージのインスタンス一覧から開くか、リンクにパッケージ名とインスタンス名を足してください。'

@@ -2418,8 +2418,11 @@ pb:
     release_group: "{release} · {n} grupos"
     single_receipt: "Leer recibo individual completo"
     no_installs: "Todavía no hay instancias. La primera instalación crea una."
+    no_installs_uninstalled_only: "Solo quedan instancias desinstaladas; activa «Mostrar desinstaladas» para verlas."
     view_yaml: "Ver YAML"
+    show_uninstalled: "Mostrar desinstaladas"
     release_active: "Activa"
+    release_uninstalled: "Desinstalada · {at}"
     release_objects: "{c} capacidades / {s} fuentes"
     release_last_install: "instalada {at}"
     yaml_title: "YAML de la instancia"
@@ -2442,6 +2445,7 @@ pb:
     delete_stale: 'La versión está desactualizada. Actualiza para obtener la actual; volver a eliminar requiere otra confirmación.'
     uninstall: "Desinstalar instancia"
     uninstall_confirm: "¿Desinstalar la instancia «{release}»? Se eliminan las capacidades y los orígenes que creó esta instalación; los objetos que pertenecen a otras se conservan y el registro de instalación sigue visible."
+    uninstall_row: "Desinstalar"
     uninstalled_n: "Se desinstaló «{release}»: {c} capacidades / {s} orígenes eliminados."
     uninstall_kept_n: "Se conservaron {n} objetos que no le pertenecen (detalle abajo)."
     uninstall_already: "Esta instancia ya estaba desinstalada; ahora no hubo cambios."
@@ -2770,11 +2774,14 @@ release:
   as_current: Vigente
   as_installed: Al instalar
   as_no_snapshot: Esta instalación no guardó una instantánea, así que solo se muestra la versión vigente.
+  as_current_gone: "La instancia está desinstalada, así que no hay una versión vigente que mostrar."
   uninstall: Desinstalar esta instancia
   uninstall_confirm: 'Desinstalar «{release}»: elimina las capacidades y fuentes que instaló; los recibos se conservan.'
   uninstalled: Desinstalada
-  gone_title: Esta instancia fue desinstalada o no existe
-  gone_hint: 'Sus objetos ya no están; la página del paquete muestra las instancias activas.'
+  uninstalled_notice: "Esta instancia se desinstaló el {at}; sus objetos ya no están y lo que sigue es la instantánea tomada al instalar."
+  objects_gone: "Los objetos ya no están (la instancia se desinstaló el {at}). La vista «Al instalar» de YAML exporta la instantánea de entonces."
+  gone_title: Esta instancia no existe
+  gone_hint: 'Nunca se instaló, o su paquete se ha eliminado.'
   gone_back: Volver al paquete
   no_target_badge: Sin instancia
   missing_hint: 'Ábralo desde la lista de instancias del paquete o añada el nombre del paquete y de la instancia al enlace.'

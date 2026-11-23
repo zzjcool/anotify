@@ -140,6 +140,11 @@
              release 详情页：一旦在这里重新展开对象，「包」和「一份实例」两层就又糊在一起了。
              折叠键是 (release, valuesDigest)：同一 release 用两套参数装过是两组，但列表按
              **release** 聚合，组数进行内（「N 组」），不拆成多行。 */}}
+        {{/* #553：已卸载的实例默认不进列表；开关只换 query，聚合与渲染仍按 release。 */}}
+        <div id="pb-installs-head" class="flex items-center gap-2">
+          <button id="pb-show-uninstalled" type="button" class="switch" role="switch" aria-checked="false" data-toggle="uninstalled" aria-label="{{t "pb.v4.show_uninstalled"}}"></button>
+          <span class="field-label">{{t "pb.v4.show_uninstalled"}}</span>
+        </div>
         <div id="pb-installs" aria-live="polite"></div>
         {{/* 动作结果（试装/安装/单次回执）是状态展示，不是第二个主操作：动作发生后
              才出现，首屏与「只看清单」的路径上一直 hidden。 */}}
@@ -564,17 +569,20 @@
       return "release.html?namespace=" + encodeURIComponent(getScope().namespace) +
         "&id=" + encodeURIComponent(name) + "&release=" + encodeURIComponent(release);
     }
+    let showUninstalled = false;
     function releaseRows(groups) {
       const byRelease = new Map();
       for (const group of groups) {
         const release = group.release || "";
         let row = byRelease.get(release);
         if (!row) {
-          row = { release, groups: 0, digest: group.valuesDigest || "", lastAt: "", caps: new Set(), sources: new Set() };
+          row = { release, groups: 0, digest: group.valuesDigest || "", lastAt: "", caps: new Set(), sources: new Set(), uninstalled: true, uninstalledAt: "" };
           byRelease.set(release, row);
         }
         row.groups += 1;
         if (group.lastAt && group.lastAt > row.lastAt) row.lastAt = group.lastAt;
+        if (group.uninstalledAt) { if (group.uninstalledAt > row.uninstalledAt) row.uninstalledAt = group.uninstalledAt; }
+        else row.uninstalled = false;
         for (const ref of group.capabilities || []) row.caps.add(String(ref).split("@")[0]);
         for (const ref of group.sources || []) row.sources.add(String(ref));
       }
@@ -589,6 +597,7 @@
     function releaseRow(row) {
       const item = el("div", "pb-group");
       item.dataset.release = row.release;
+      item.dataset.uninstalled = row.uninstalled ? "1" : "0";
       const head = el("div", "pb-row");
       const link = el("a", "field-label mono", row.release);
       link.href = releaseHref(row.release);
@@ -596,25 +605,57 @@
       const digest = el("span", "mono field-hint", shortDigest(row.digest));
       digest.title = row.digest;
       digest.dataset.digest = row.digest;
-      head.append(link, el("span", "badge badge-success", t("pb.v4.release_active")), digest,
+      head.append(link,
+        row.uninstalled
+          ? el("span", "badge badge-warn", t("pb.v4.release_uninstalled", { at: fmtTime(row.uninstalledAt) }))
+          : el("span", "badge badge-success", t("pb.v4.release_active")),
+        digest);
+      if (!row.uninstalled) head.append(
         el("span", "field-hint", t("pb.v4.release_objects", { c: String(row.caps.size), s: String(row.sources.size) })),
         el("span", "field-hint", t("pb.v4.release_last_install", { at: fmtTime(row.lastAt) })));
       if (row.groups > 1) head.append(el("span", "field-hint", t("pb.v4.group_count", { n: String(row.groups) })));
+      const yaml = el("a", "btn btn-ghost btn-sm", t("pb.v4.view_yaml"));
+      yaml.dataset.releaseYaml = "";
+      yaml.href = releaseHref(row.release) + "&yaml=" + (row.uninstalled ? "installed" : "current");
+      head.append(yaml);
+      if (!row.uninstalled) {
+        const uninstall = el("button", "btn btn-danger btn-sm", t("pb.v4.uninstall_row"));
+        uninstall.type = "button";
+        uninstall.dataset.releaseUninstall = row.release;
+        uninstall.addEventListener("click", () => uninstallRelease(row.release));
+        head.append(uninstall);
+      }
       item.append(head);
       return item;
+    }
+    async function uninstallRelease(release) {
+      if (!(await confirmDanger({ body: t("pb.v4.uninstall_confirm", { release }) }))) return;
+      try {
+        await api(path("/releases/" + encodeURIComponent(release)), { method: "DELETE" });
+        await installs();
+      } catch (error) { errorBar(error); }
+    }
+    async function hasUninstalledOnly() {
+      const data = await api(path("/installs?include=uninstalled"));
+      return Array.isArray(data.installs) && data.installs.length > 0;
     }
     async function installs() {
       $("pb-installs").textContent = t("pb.v4.loading");
       try {
-        const data = await api(path("/installs"));
+        const data = await api(path(showUninstalled ? "/installs?include=uninstalled" : "/installs"));
         if (!Array.isArray(data.installs) || typeof data.total !== "number") throw new Error(t("pb.v4.invalid_installs"));
         const rows = releaseRows(data.installs);
-        status.instances = t("pb.v4.status_instances", { n: String(rows.length) });
+        status.instances = t("pb.v4.status_instances", { n: String(rows.filter(row => !row.uninstalled).length) });
         renderStatus();
         const host = $("pb-installs");
         host.replaceChildren();
         for (const row of rows) host.append(releaseRow(row));
-        if (!rows.length) host.append(el("p", "field-hint", t("pb.v4.no_installs")));
+        if (!rows.length) {
+          const empty = el("p", "field-hint", t("pb.v4.no_installs"));
+          const uninstalledOnly = !showUninstalled && await hasUninstalledOnly(); // 0 行时分不清「从来没有」与「只剩已卸载」
+          if (uninstalledOnly) empty.textContent = t("pb.v4.no_installs_uninstalled_only");
+          host.append(empty);
+        }
       } catch (error) { $("pb-installs").replaceChildren(loadErrorNode(error, installs)); }
     }
     async function singleReceipt(id) {
@@ -770,6 +811,13 @@
     $("btn-render").addEventListener("click", () => action("render"));
     $("btn-dry-run").addEventListener("click", () => action("dry"));
     $("btn-install").addEventListener("click", () => action("install"));
+    $("pb-show-uninstalled").addEventListener("click", () => {
+      showUninstalled = !showUninstalled;
+      const toggle = $("pb-show-uninstalled");
+      toggle.setAttribute("aria-checked", showUninstalled ? "true" : "false");
+      toggle.classList.toggle("on", showUninstalled);
+      installs();
+    });
     $("btn-rescan").addEventListener("click", load);
     $("pb-install-open").addEventListener("click", openDrawer);
     $("pb-drawer-close").addEventListener("click", closeDrawer);

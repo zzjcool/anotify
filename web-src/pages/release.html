@@ -176,6 +176,10 @@
     function objects(group) {
       const host = $("rd-objects");
       host.replaceChildren();
+      if (detail.objectsGone) {
+        host.append(el("p", "field-hint", t("release.objects_gone", { at: fmtTime(detail.uninstalledAt) })));
+        return;
+      }
       const caps = group.objects.capabilities || [];
       const sources = group.objects.sources || [];
       if (!caps.length && !sources.length) {
@@ -290,14 +294,21 @@
       $("rd-badge").textContent = text;
       $("rd-badge").className = "badge " + cls;
     }
+    function uninstalledNotice() {
+      const existing = $("rd-notice");
+      if (existing) existing.remove();
+      const box = el("div", "rd-check");
+      box.id = "rd-notice";
+      box.dataset.uninstalledNotice = "";
+      box.append(el("p", "field-hint", t("release.uninstalled_notice", { at: fmtTime(detail.uninstalledAt) })));
+      $("rd-summary").before(box);
+    }
     async function uninstall() {
       if (!(await confirmDanger({ body: t("release.uninstall_confirm", { release }) }))) return;
       $("rd-uninstall").disabled = true;
       try {
         await api(path("/releases/" + encodeURIComponent(release)), { method: "DELETE" });
-        badge(t("release.uninstalled"), "badge-warn");
-        gone("release.gone_title", "release.gone_hint");
-        $("rd-summary").replaceChildren();
+        await load();
       } catch (error) {
         $("rd-uninstall").disabled = false;
         $("rd-load-state").replaceChildren(loadErrorNode(error));
@@ -354,6 +365,14 @@
       activateAs("current");
       loadYaml();
     }
+    function onlyInstalledAs() {
+      const tab = $("rd-as-current");
+      tab.disabled = true;
+      tab.setAttribute("aria-disabled", "true");
+      $("rd-as-note").textContent = t("release.as_current_gone");
+      $("rd-as-note").hidden = false;
+      activateAs("installed"); // 对象已删：只剩「安装时」这份快照可看
+    }
     async function loadYaml() {
       const group = current();
       if (!group) { yamlEmpty(); return; }
@@ -379,15 +398,23 @@
         yamlCode(text);
       } catch (error) { yamlFailed(String((error && error.message) || error)); }
     }
-    function openYaml() {
+    function openYaml(as) {
       openModal($("rd-yaml-drawer"));
       resetAs();
+      if (detail && detail.objectsGone) onlyInstalledAs();
+      else if (as === "installed") activateAs("installed");
       loadYaml();
+    }
+    function deepLinkYaml() {
+      const want = params.get("yaml");
+      if (want === "installed" || want === "current") openYaml(want);
     }
     async function load() {
       $("rd-summary").hidden = false;
       $("rd-load-state").textContent = t("release.loading");
       $("rd-summary").setAttribute("aria-busy", "true");
+      for (const id of ["rd-yaml", "rd-uninstall"]) $(id).disabled = false;
+      $("rd-uninstall").hidden = false;
       try {
         await ready();
         if (!name || !release) {
@@ -398,18 +425,22 @@
           return;
         }
         $("rd-back").href = scoped("playbook", "id", name);
-        detail = await api(path("/releases/" + encodeURIComponent(release)));
+        detail = await api(path("/releases/" + encodeURIComponent(release) + "?include=uninstalled"));
         if (!detail || !Array.isArray(detail.groups) || !detail.groups.length) throw new Error(t("release.invalid_detail"));
         $("rd-name").textContent = detail.playbook.name + " · " + detail.release;
         $("rd-identity").textContent = getScope().namespace + " / " + detail.playbook.name + "@v" +
           detail.playbook.version + " · " + t("release.release_word") + " " + detail.release;
-        badge(t("pb.v4.release_active"), "badge-success");
+        const uninstalledView = detail.objectsGone === true;
+        badge(uninstalledView ? t("release.uninstalled") : t("pb.v4.release_active"), uninstalledView ? "badge-warn" : "badge-success");
+        $("rd-uninstall").hidden = uninstalledView;
+        if (uninstalledView) uninstalledNotice(); // 只在已卸载视图出现，生效中实例的 DOM 不变
         $("rd-content").hidden = false;
         $("rd-load-state").replaceChildren();
         select(detail.groups[0].valuesDigest);
+        deepLinkYaml();
       } catch (error) {
         if (error.status === 404) {
-          badge(t("release.uninstalled"), "badge-warn");
+          badge(t("release.gone_title"), "badge-warn");
           gone("release.gone_title", "release.gone_hint");
           $("rd-load-state").replaceChildren();
           $("rd-summary").replaceChildren();
@@ -419,7 +450,7 @@
         $("rd-load-state").replaceChildren(loadErrorNode(error, load));
       } finally { $("rd-summary").removeAttribute("aria-busy"); }
     }
-    $("rd-yaml").addEventListener("click", openYaml);
+    $("rd-yaml").addEventListener("click", () => openYaml());
     for (const id of ["rd-as-current", "rd-as-installed"]) {
       $(id).addEventListener("click", event => {
         const tab = event.currentTarget;
