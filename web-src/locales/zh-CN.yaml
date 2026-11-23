@@ -2772,6 +2772,9 @@ release:
   yaml_title: 实例 YAML
   yaml_empty: 这一份实例没有对象可导出。
   yaml_failed: 导出失败
+  as_current: 当前生效
+  as_installed: 安装时
+  as_no_snapshot: 这一份安装没有留下快照，只能看当前生效的版本。
   uninstall: 卸载这个实例
   uninstall_confirm: '卸载实例「{release}」：删掉它装出的能力与源，回执保留。'
   uninstalled: 已卸载

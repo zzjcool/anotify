@@ -2767,6 +2767,9 @@ release:
   yaml_title: YAML de la instancia
   yaml_empty: Esta instancia no tiene objetos para exportar.
   yaml_failed: La exportación falló
+  as_current: Vigente
+  as_installed: Al instalar
+  as_no_snapshot: Esta instalación no guardó una instantánea, así que solo se muestra la versión vigente.
   uninstall: Desinstalar esta instancia
   uninstall_confirm: 'Desinstalar «{release}»: elimina las capacidades y fuentes que instaló; los recibos se conservan.'
   uninstalled: Desinstalada
