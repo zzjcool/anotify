@@ -99,7 +99,7 @@ CREATE INDEX IF NOT EXISTS idx_playbook_pinned_lookup
 | 真源 | `api/resource.yaml` | 该 operation 加 `as` + `409` + 重写 description；`PlaybookCreated.pinned`；新 component `PlaybookPinnedRef`；`Status409` prose 补 `no_snapshot` |
 | 一致性 | `internal/server/openapi_parity_test.go` | 登记 `playbook.PinnedRef` ↔ `PlaybookPinnedRef` 一对；`parityPairsFloor 216→217`、`specSchemaFloor 256→257` |
 | UI | `web-src/pages/release.html` + 四份 locale | 视图切换（§4） |
-| e2e | `scripts/e2e/suites/playbook_release.mjs` | 第 13 段 `partInstalledSnapshot`（55 条断言） |
+| e2e | `scripts/e2e/suites/playbook_release.mjs` | 第 13 段 `partInstalledSnapshot`（57 条断言） |
 
 关键实现点：pinned 的 `digest` 是**在事务内回读刚写入的版本行**得到的（`getCapabilityOn` → `.Digest`），不是另算一份 —— 所以「pinned 的 digest 与版本行一致」是构造出来的事实，不靠巧合。
 
@@ -111,7 +111,7 @@ CREATE INDEX IF NOT EXISTS idx_playbook_pinned_lookup
 | parity | `internal/server/openapi_parity_test.go`：DTO 双向字段集（`pinned` 两个方向都过）+ query 参数双向（`"as"` 字面量真在实现里） | `TestOpenAPIParity*` 全绿（含 `DTOFields` / `ResponsesAndParams` / `Mutations`） |
 | DTO | `playbook.Created.Pinned []PinnedRef` | `TestBuildReceiptKeepsCreatedPinned`（JSON 形状 + `skipped.pinned` 是 `[]`） |
 | 单测 | store 7 条 + playbook 1 条 + server 4 条（见 §5） | `go test ./internal/store/... ./internal/playbook/... ./internal/server/...` 全绿 |
-| e2e | `playbook_release.mjs` 第 13 段 55 条断言 | `[playbook_release] 454 通过 / 0 失败` |
+| e2e | `playbook_release.mjs` 第 13 段 57 条断言 | `[playbook_release] 456 通过 / 0 失败` |
 
 ## 4. UI
 
@@ -129,23 +129,23 @@ release 详情页的 YAML 抽屉里加一条二选一（复用既有 `.tabs` / `
 
 | # | 验收（issue 原文） | 命令 | 实测 |
 | --- | --- | --- | --- |
-| 1 | 装 `review@3` → 升级 → `as=installed` 是安装那一版、`as=current` 是新版 | `go test ./internal/server/ -run TestPlaybookReleaseYAMLInstalledSnapshot -v` | PASS（安装那一版 = `version: 1` + `echo ok`；默认 = `version: 2` + `echo v2`；两份正文不同）。issue 的例子写 v3/v4，判据同形：安装建出的是**当时那一版** |
+| 1 | 装 `review@3` → 升级 → `as=installed` 是安装那一版、`as=current` 是新版 | `go test ./internal/server/ -run TestPlaybookReleaseYAMLInstalledSnapshot -v`；e2e 同一形状 | PASS（单测：安装那一版 = `version: 1` + `echo ok`，默认 = `version: 2` + `echo v2`，两份正文不同。e2e 走的就是 issue 的字面形状：先把 `snap-review` 预置到 v2 → **安装建出 v3** → 再升 **v4**，`as=installed` = `version: 3` + `snap-v3`、默认 = `version: 4` + `snap-v4`） |
 | 2 | 装 → 卸载 → `as=installed` 仍 200（头注释含 installId）；`as=current` 404 | `go test ./internal/server/ -run TestPlaybookReleaseYAMLInstalledAfterUninstall -v` | PASS（`as=installed` 200 + `install: <id>` + 5 行头注释；默认与 `as=current` 都 404 `release_not_found`） |
 | 3 | 老回执（无 `pinned`）→ 409 `no_snapshot`，`field` 指到 release | `go test ./internal/server/ -run TestPlaybookReleaseYAMLNoSnapshot -v` | PASS（409 + `reason=no_snapshot` + `causes[0].field="release"`；同一 release 的默认视图仍 200） |
 | 4 | 老库升级后旧回执 `pinned: []`；新装 `pinned` 非空且 digest 与版本行一致 | `go test ./internal/store/ -run 'TestMigrationInstallPinnedTable\|TestInstallReceiptPinned\|TestPlaybookInstallPinnedRows\|TestInstallReceiptPinnedLegacyEmpty\|TestInstallReceiptPinnedSkipped' -v` | PASS（5 条全绿；索引表与回执逐项相等；旧回执 `[]` 且原文逐字不变；同参数重装的 `skipped.pinned` 与首次 `created.pinned` 逐项相同） |
-| 5 | e2e：升级 → 两视图版本号不同；卸载后 `as=installed` 仍可下载 | `./scripts/e2e/run_all.sh playbook_release` | `[playbook_release] 454 通过 / 0 失败`（新增 55 条；基线 399）。同一数字出现在 `make e2e-affected` 的全量矩阵里 |
+| 5 | e2e：升级 → 两视图版本号不同；卸载后 `as=installed` 仍可下载 | `./scripts/e2e/run_all.sh playbook_release` | `[playbook_release] 456 通过 / 0 失败`（新增 57 条；基线 399）。同一数字出现在 `make e2e-affected` 的全量矩阵里 |
 | 6 | 变异 ①/② 必红 | 见 §6 | 两条都真红（贴了 FAIL 原文） |
-| 7 | `make ci` exit 0；`make e2e-affected` 绿；known-env 空；注释密度不上调 | `timeout 1500 make ci` / `E2E_CONCURRENCY=1 timeout 2400 make e2e-affected` / `jq '.entries' scripts/e2e/known-env-failures.json` | `make ci` **exit 0**（`go test ./...` 全包 ok；契约/parity/fe/各项守卫全绿；注释密度 43297 = 基线 43297，75 个目录 0 不一致）；`make e2e-affected` **30/30 套件、3193 断言通过 / 0 失败**（642.1s）；known-env `entries: []` 未动 |
+| 7 | `make ci` exit 0；`make e2e-affected` 绿；known-env 空；注释密度不上调 | `timeout 1500 make ci` / `E2E_CONCURRENCY=1 timeout 2400 make e2e-affected` / `jq '.entries' scripts/e2e/known-env-failures.json` | `make ci` **exit 0**（`go test ./...` 全包 ok；契约/parity/fe/各项守卫全绿；注释密度 43297 = 基线 43297，75 个目录 0 不一致）；`make e2e-affected` **30/30 套件、3195 断言通过 / 0 失败**（642.6s）；known-env `entries: []` 未动 |
 
 ### 5.1 `make e2e-affected` 实测
 
 ```
 $ E2E_CONCURRENCY=1 timeout 2400 make e2e-affected
-  ✅ playbook_release   454通过/0失败  6.5s  mode=real
+  ✅ playbook_release   456通过/0失败  6.5s  mode=real
   ✅ frontend           46通过/0失败 188.6s  mode=real
   ...
-✅ E2E 全绿：30/30 个请求套件均达标（断言 3193 通过 / 0 失败，authority 清单覆盖 30 个）
-AFFECTED_EXIT=0        （总耗时 642.1s）
+✅ E2E 全绿：30/30 个请求套件均达标（断言 3195 通过 / 0 失败，authority 清单覆盖 30 个）
+AFFECTED_EXIT=0        （总耗时 642.6s）
 ```
 
 判定口径：改动面含 `api/**` + `internal/**` + `web-src/**` + `scripts/**`，affected 选择器按 fail-closed 规则选中**全部 30 个套件**（不是只挑 4 个）—— 这一条等价于一次全量矩阵。`E2E_CONCURRENCY=1` 是执行器文档化的覆盖项（默认 2）：默认并发下这次矩阵里有 4 个页面在 2.2s 的 `waitForFunction` 上超时（`admin` / `capabilities` / `capability` / `cli-auth`，与本期改动无关的四个页面），单跑 `i18n` 是 33 通过 / 0 失败 —— 属于负载导致的 false red，不是断言不符；降到 1 之后矩阵稳定全绿（§8 第 7 条记录全过程）。
