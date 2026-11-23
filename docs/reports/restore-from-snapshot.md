@@ -4,7 +4,7 @@
 
 > **历史快照**：本文件是当时的交付记录，不随代码演进；行为以代码、测试与 `api/` 五份真源为准。
 
-as_of: 2026-11-23 · area: `api` / `store` / `server` / `web` / `e2e` · 迁移块 `11 playbook_restore_audit`（新增，见 §1.3）
+as_of: 2026-11-23 · PR [#562](https://github.com/zzjcool/anotify/pull/562) · area: `api` / `store` / `server` / `web` / `e2e` · 迁移块 `11 playbook_restore_audit`（新增，见 §1.3）
 起点 `main@f7c0d1c9`（`#552` 回执 pinned、`#557` 安装历史、`#560` 审计读面已合入）
 
 ## 0. 结论
