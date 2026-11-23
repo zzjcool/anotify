@@ -51,6 +51,7 @@ func (a *playbookAPI) register(mux *http.ServeMux) {
 		{"POST " + base + "/{slug}/install", a.install},
 		{"GET " + base + "/{slug}/versions", a.listVersions},
 		{"DELETE " + base + "/{slug}/releases/{release}", a.uninstallRelease},
+		{"GET " + base + "/{slug}/releases/{release}", a.getRelease},
 		{"GET " + base + "/{slug}/releases/{release}/yaml", a.releaseYAML},
 		{"GET " + base + "/{slug}/installs", a.listInstalls},
 		{"GET " + base + "/{slug}/installs/{installId}", a.getInstall},

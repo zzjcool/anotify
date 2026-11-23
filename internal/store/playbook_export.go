@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/zzjcool/anotify/internal/playbook"
 )
@@ -23,6 +24,24 @@ type PlaybookReleaseExport struct {
 // GetPlaybookReleaseExport 按 (ns, slug, release) 读出全部回执（安装顺序）。
 // release 归一化与形状校验走 playbook.NormalizeRelease（与 install / uninstall 同口径）。
 func (d *DB) GetPlaybookReleaseExport(ctx context.Context, namespaceID, slug, release string) (*PlaybookReleaseExport, error) {
+	return d.playbookReleaseExport(ctx, namespaceID, slug, release, "")
+}
+
+// GetPlaybookReleaseExportGroup 只取一个参数组（valuesDigest）的回执。
+//
+// 同一 release 装过两套 values 时是**两份实例**（对象名字可能不同）；不带摘要的导出是两者的
+// 并集，按组导出则只给这一组装出的对象 —— 页面按分组展示时，YAML 必须与所看的那组同一份。
+func (d *DB) GetPlaybookReleaseExportGroup(ctx context.Context, namespaceID, slug, release, valuesDigest string) (*PlaybookReleaseExport, error) {
+	digest := strings.TrimSpace(valuesDigest)
+	if digest == "" {
+		// 空摘要 = 没指定分组，不是「摘要为空的那一组」：回落到全量导出（不带筛选时行为不变）。
+		return d.playbookReleaseExport(ctx, namespaceID, slug, release, "")
+	}
+	return d.playbookReleaseExport(ctx, namespaceID, slug, release, digest)
+}
+
+// playbookReleaseExport 是全量 / 按组导出的共读路径（valuesDigest 为空 = 不筛）。
+func (d *DB) playbookReleaseExport(ctx context.Context, namespaceID, slug, release, valuesDigest string) (*PlaybookReleaseExport, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
@@ -34,11 +53,14 @@ func (d *DB) GetPlaybookReleaseExport(ctx context.Context, namespaceID, slug, re
 	if err != nil {
 		return nil, err
 	}
-	rows, err := d.cachedQueryContext(ctx,
-		`SELECT receipt, release, uninstalled_at FROM playbook_installs
-		  WHERE namespace_id = ? AND playbook_id = ? AND release = ?
-		  ORDER BY created_at, rowid`,
-		namespaceID, row.ID, rel)
+	query := `SELECT receipt, release, uninstalled_at FROM playbook_installs
+		  WHERE namespace_id = ? AND playbook_id = ? AND release = ?`
+	args := []any{namespaceID, row.ID, rel}
+	if valuesDigest != "" {
+		query += ` AND values_digest = ?`
+		args = append(args, valuesDigest)
+	}
+	rows, err := d.cachedQueryContext(ctx, query+` ORDER BY created_at, rowid`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("playbook release export: list receipts: %w", err)
 	}

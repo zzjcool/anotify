@@ -31,7 +31,10 @@ func (a *playbookAPI) releaseYAML(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, errStatus(http.StatusBadRequest, reasonBadRequest, "playbook slug and release are required"))
 		return
 	}
-	exp, err := a.d.DB.GetPlaybookReleaseExport(r.Context(), ns, slug, release)
+	// `valuesDigest` 可选：把导出钉在某个参数组上（同一 release 装过两套 values 时，
+	// 不带筛选的导出是两组的并集，按组导出只给这一组装出的对象）。
+	digest := strings.TrimSpace(r.URL.Query().Get("valuesDigest"))
+	exp, err := a.d.DB.GetPlaybookReleaseExportGroup(r.Context(), ns, slug, release, digest)
 	if err != nil {
 		writePlaybookAPIError(w, err)
 		return
