@@ -92,6 +92,7 @@ func (a *sourceAPI) register(mux *http.ServeMux) {
 	mux.Handle("GET "+base+"/{name}", noStore(a.d.session(http.HandlerFunc(a.get))))
 	// `/yaml` 是同一行的**存储定义重建**（见 srcYAMLDocument 的四条边界）。
 	mux.Handle("GET "+base+"/{name}/yaml", noStore(a.d.session(http.HandlerFunc(a.yaml))))
+	mux.Handle("GET "+base+"/{name}/audit", noStore(a.d.session(http.HandlerFunc(a.audit))))
 	mux.Handle("PATCH "+base+"/{name}", noStore(a.d.session(http.HandlerFunc(a.patch))))
 	mux.Handle("DELETE "+base+"/{name}", noStore(a.d.session(http.HandlerFunc(a.remove))))
 	mux.Handle("POST "+base+"/{name}/fire", noStore(a.d.session(a.d.backpressure(http.HandlerFunc(a.fire)))))
@@ -456,6 +457,52 @@ func (a *sourceAPI) auditSourcePolled(r *http.Request, ns string, src *store.Sou
 	}); err != nil {
 		a.d.logger().Warn("source poll audit write failed", "source", src.Name, "err", err)
 	}
+}
+
+func (a *sourceAPI) audit(w http.ResponseWriter, r *http.Request) {
+	ns, err := a.d.authorizePathNamespace(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	src, err := a.d.DB.GetSourceByName(r.Context(), ns, srcPathName(r))
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	limit, err := auditLimitQuery(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	before, err := auditBeforeQuery(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	entries, err := a.d.DB.ListSourceAudit(r.Context(), ns, src.ID, before, limit)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	doc := sourceAuditListDoc{Items: make([]sourceAuditEntryDoc, 0, len(entries))}
+	for _, e := range entries {
+		if e == nil {
+			continue
+		}
+		detail := bytes.TrimSpace(e.Detail)
+		if len(detail) == 0 {
+			detail = []byte("{}")
+		}
+		doc.Items = append(doc.Items, sourceAuditEntryDoc{
+			ID:     e.ID,
+			Action: e.Action,
+			Actor:  e.ActorID,
+			At:     time.Unix(e.CreatedAt, 0).UTC().Format(time.RFC3339),
+			Detail: json.RawMessage(detail),
+		})
+	}
+	writeJSON(w, http.StatusOK, doc)
 }
 
 // previewSaved 处理 POST …/sources/{name}/dry-run：拿**已保存**的源试运行。
@@ -971,6 +1018,18 @@ type srcPollAuditDetail struct {
 	Items      int  `json:"items"`
 	Created    int  `json:"created"`
 	Duplicates int  `json:"duplicates"`
+}
+
+type sourceAuditEntryDoc struct {
+	ID     string          `json:"id"`
+	Action string          `json:"action"`
+	Actor  string          `json:"actor"`
+	At     string          `json:"at"`
+	Detail json.RawMessage `json:"detail"`
+}
+
+type sourceAuditListDoc struct {
+	Items []sourceAuditEntryDoc `json:"items"`
 }
 
 // srcReceiptTask 是回执里的一条任务（真实请求名 + 已解析版本；version 0 = 没有事实，省略）。

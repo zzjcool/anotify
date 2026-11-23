@@ -120,15 +120,15 @@ const maxRefDepth = 8
 // 删一个 schema，都必须同时改这里的数字，并在 PR 里写清为什么。
 const (
 	// parityPairsFloor 是 parityPairs() 的对数（历史区间见 git log）。
-	parityPairsFloor = 218
+	parityPairsFloor = 222
 	// bareMountFloor 是 bareMountSpec() 的条目数。
 	bareMountFloor = 27
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底），历史见提交信息。
-	muxPatternCount = 137
+	muxPatternCount = 139
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 39
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数（历史区间见 git log）。
-	specSchemaFloor = 258
+	specSchemaFloor = 262
 )
 
 // ---------- 测试入口 ----------
@@ -161,8 +161,8 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 
 	ops, _ := collectSpecOps(docs)
 	// 快照逐次只增（历次增量见 git log）：#554 的凭据 CRUD 四条 + #555 的立即拉取。
-	if len(ops) != 148 {
-		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 148（143 + 凭据 CRUD 四条 + 立即拉取）", len(ops))
+	if len(ops) != 150 {
+		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 150（143 + 凭据 CRUD 四条 + 立即拉取 + 审计两条）", len(ops))
 	}
 	// 至少一条来自 components.pathItems（agent.yaml 四条 + events/ingress 的共享 pathItem）。
 	fromPathItems := 0
@@ -3031,6 +3031,10 @@ func parityPairs() []parityPair {
 		{GoLabel: "capabilityTestWarning", File: "resource.yaml", Schema: "CapabilityTestWarning", Sample: capabilityTestWarning{}},
 		{GoLabel: "capabilityAuditEntryDoc", File: "resource.yaml", Schema: "CapabilityAuditEntry", Sample: capabilityAuditEntryDoc{}},
 		{GoLabel: "capabilityAuditListDoc", File: "resource.yaml", Schema: "CapabilityAuditList", Sample: capabilityAuditListDoc{}},
+		{GoLabel: "sourceAuditEntryDoc", File: "resource.yaml", Schema: "SourceAuditEntry", Sample: sourceAuditEntryDoc{}},
+		{GoLabel: "sourceAuditListDoc", File: "resource.yaml", Schema: "SourceAuditList", Sample: sourceAuditListDoc{}},
+		{GoLabel: "secretAuditEntryDoc", File: "resource.yaml", Schema: "NamespaceSecretAuditEntry", Sample: secretAuditEntryDoc{}},
+		{GoLabel: "secretAuditListDoc", File: "resource.yaml", Schema: "NamespaceSecretAuditList", Sample: secretAuditListDoc{}},
 		// status.observed：空对象是合法形状（无事实时 `{}`），所以顶层四个键都不在 required；
 		// 子形状全部 required（有事实时每个键都在）。
 		{GoLabel: "capabilityObserved", File: "resource.yaml", Schema: "CapabilityObserved", Sample: capabilityObserved{}},

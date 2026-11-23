@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+const (
+	AuditDefaultLimit = 50
+	AuditMaxLimit     = 200
+)
+
 // SourceAuditPolledManually 是「立即拉取一次」（#555）的审计动作。
 //
 // 为什么单开一张表：轮询的终局已经落在 sources 行的派生列上（游标 / 失败计数 / 错误），
@@ -81,4 +86,51 @@ func (d *DB) AppendSourceAudit(ctx context.Context, in SourceAuditInput) (*Sourc
 		return nil, fmt.Errorf("source audit: %w", err)
 	}
 	return entry, nil
+}
+
+func (d *DB) ListSourceAudit(ctx context.Context, namespaceID, sourceID string, beforeAt int64, limit int) ([]*SourceAuditEntry, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	if limit <= 0 {
+		limit = AuditDefaultLimit
+	}
+	if limit > AuditMaxLimit {
+		limit = AuditMaxLimit
+	}
+	q := `SELECT id, namespace_id, source_id, action, actor_id, detail, created_at
+		   FROM source_audit
+		  WHERE namespace_id = ? AND source_id = ?`
+	args := []any{namespaceID, sourceID}
+	if beforeAt != 0 {
+		q += ` AND created_at < ?`
+		args = append(args, beforeAt)
+	}
+	q += ` ORDER BY created_at DESC, id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := d.queryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list source audit: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []*SourceAuditEntry{}
+	for rows.Next() {
+		var (
+			e      SourceAuditEntry
+			detail string
+		)
+		if err := rows.Scan(&e.ID, &e.NamespaceID, &e.SourceID, &e.Action, &e.ActorID,
+			&detail, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan source audit: %w", err)
+		}
+		e.Detail = json.RawMessage(detail)
+		if len(e.Detail) == 0 {
+			e.Detail = json.RawMessage(`{}`)
+		}
+		out = append(out, &e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list source audit: %w", err)
+	}
+	return out, nil
 }

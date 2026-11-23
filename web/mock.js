@@ -4748,6 +4748,44 @@
 		});
 	});
 
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/sources\/([^/]+)\/audit$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findSource(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("源 ");
+		const raw = ctx.query.get("limit");
+		if (raw != null && raw !== "") {
+			const n = Number(raw);
+			if (!Number.isInteger(n) || n < 1 || n > 200) return badRequest("BadRequest", "limit 必须是 1..200 的整数");
+		}
+		const limit = Math.min(Number(raw) || 50, 200);
+		const items = [
+			{
+				id: "sraudit_mock_1",
+				action: "source.polled_manually",
+				actor: ME.username,
+				at: isoNow(),
+				detail: { ok: true, items: 3, created: 1, duplicates: 0 },
+			},
+		];
+		return json({ items: items.slice(0, limit) });
+	});
+
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/secrets\/([^/]+)\/audit$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const raw = ctx.query.get("limit");
+		if (raw != null && raw !== "") {
+			const n = Number(raw);
+			if (!Number.isInteger(n) || n < 1 || n > 200) return badRequest("BadRequest", "limit 必须是 1..200 的整数");
+		}
+		const limit = Math.min(Number(raw) || 50, 200);
+		const items = [{ id: "secrait_mock_1", action: "rotated", actor: ME.username, at: isoNow() }];
+		return json({ items: items.slice(0, limit) });
+	});
+
 	// 试运行：算出「会派发什么、会剪什么」，**不落库**（草稿也能先验一遍）。
 	on("POST", /^\/v1\/namespaces\/([^/]+)\/sources\/dry-run$/, (ctx) => {
 		const ns = decodeURIComponent(ctx.m[1]);
