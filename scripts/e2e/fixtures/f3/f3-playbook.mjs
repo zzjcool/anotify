@@ -437,34 +437,44 @@ export async function playbook(d,mode){
     const uninstalledDefault = await d.response(basePath + '/releases/blue');
     assert.equal(uninstalledDefault.status, 404,
       '#553 缺省口径的已卸载详情仍必须 404（只有 ?include=uninstalled 才 200）：' + JSON.stringify(uninstalledDefault.body));
+    const installsCallsBefore = (await calls()).filter(c => /\/installs(\?|$)/.test(c.url)).length; // #565：进页面零点击 —— 生效中与已卸载同时在列表里，且只为开关发过一次请求。
     await goto('playbook', 'namespace=default&id=project-chain');
-    await page.waitForFunction(() => document.querySelectorAll('#pb-installs [data-release]').length === 1);
-    assert.equal(await page.locator('#pb-installs [data-release="blue"]').count(), 0, '#553 开关默认关 ⇒ 已卸载的 blue 不占一行（默认不含已卸载）');
-    const uninstalledSwitch = page.locator('#pb-show-uninstalled');
-    assert.equal(await uninstalledSwitch.count(), 1, '#553 实例卡片头必须有「显示已卸载」开关（#pb-show-uninstalled）');
-    assert.equal(await uninstalledSwitch.getAttribute('aria-checked'), 'false', '#553 开关默认是关的（aria-checked=false）');
-    assert.equal(await uninstalledSwitch.getAttribute('role'), 'switch', '#553 开关是 switch 语义（读屏当开关播报），不是普通按钮');
-    await uninstalledSwitch.click();
-    await page.waitForFunction(() => document.querySelectorAll('#pb-installs [data-release="blue"]').length === 1);
-    assert.equal(await page.locator('#pb-installs [data-release]').count(), 2, '#553 打开开关后 blue+green 都占一行（共 2 行）');
-    assert.equal(await uninstalledSwitch.getAttribute('aria-checked'), 'true', '#553 打开后 aria-checked=true');
-    const blueRow = page.locator('#pb-installs [data-release="blue"]');
+    await page.waitForFunction(() => document.querySelectorAll('#pb-installs [data-release]').length === 2);
+    assert.equal(await page.locator('#pb-show-uninstalled').count(), 0, '#565 实例区不得再有「显示已卸载」开关');
+    assert.equal((await calls()).filter(c => /\/installs(\?|$)/.test(c.url)).length - installsCallsBefore, 1,
+      '#565 进页面只取一次 installs（含 include=uninstalled），不再为开关发第二次');
+    const blueRow = page.locator('#pb-installs [data-group="uninstalled"] [data-release="blue"]');
     const greenRow = page.locator('#pb-installs [data-release="green"]');
+    assert.equal(await blueRow.count(), 1, '#565 已卸载的 blue 默认就在列表里（一次点击都没有）');
+    assert.equal(await blueRow.isVisible(), true, '#565 主链路判据：已卸载行进页面即可见');
     assert.equal(await blueRow.getAttribute('data-uninstalled'), '1', '#553 已卸载行必须自报 data-uninstalled=1');
     assert.match(await blueRow.innerText(), /Uninstalled/, '#553 已卸载行的状态文案是 Uninstalled（英文站点）：' + await blueRow.innerText());
-    assert.equal(await blueRow.locator('[data-release-uninstall]').count(), 0, '#553 已卸载行**不得**渲染卸载按钮（否则点了就是个 404）');
+    assert.equal(await blueRow.locator('[data-release-uninstall]').count(), 0, '#565 已卸载行**不得**渲染卸载按钮（否则点了就是个 404）');
     assert.equal(await greenRow.getAttribute('data-uninstalled'), '0', '#553 生效中行 data-uninstalled=0');
     assert.equal(await greenRow.locator('[data-release-uninstall]').count(), 1, '#553 生效中行保留卸载按钮');
+    const copies = await page.evaluate(() => {
+      const dict = window.AnotifyI18n || {};
+      return Object.fromEntries(['pb.v4.uninstalled_group', 'pb.v4.expand_rest', 'pb.v4.no_active_installs', 'pb.v4.no_installs', 'pb.v4.release_uninstalled_at']
+        .map(key => [key, dict[key] || '']));
+    });
+    for (const [key, value] of Object.entries(copies)) assert.ok(value.length > 0, '#565 字典缺 ' + key + '（前端只能显示裸 key）');
+    assert.equal(await page.locator('#pb-installs [data-group="uninstalled"] h4').innerText(), copies['pb.v4.uninstalled_group'].replace('{n}', '1'),
+      '#565 分组标题写「已卸载 · N 个」');
+    const listOrder = await page.locator('#pb-installs > *').evaluateAll(nodes => nodes.map(node => node.dataset.group || node.dataset.release));
+    assert.deepEqual(listOrder, ['green', 'uninstalled'], '#565 生效中在上、已卸载分组在下：' + JSON.stringify(listOrder));
+    const blueUninstalledAt = (await req(basePath + '/installs?include=uninstalled')).installs.find(group => group.release === 'blue').uninstalledAt;
+    const blueText = await blueRow.innerText();
+    assert.ok(blueText.includes(await page.evaluate(iso => new Date(iso).toLocaleString(), blueUninstalledAt)),
+      '#565 已卸载行写的是这次卸载的时间：' + blueText + ' / ' + blueUninstalledAt);
+    assert.match(blueText, /0 capabilities \/ 0 sources/, '#565 已卸载行的对象数来自服务端折叠视图（软删行不再算「装出了什么」）：' + blueText);
+    assert.match(await blueRow.locator('[data-digest]').getAttribute('title'), /^sha256:[0-9a-f]{64}$/, '#565 已卸载行保留参数摘要');
     assert.equal(await blueRow.locator('[data-release-yaml]').count(), 1, '#553 每行都有「查看 YAML」入口（含已卸载行）');
     const blueYamlHref = await blueRow.locator('[data-release-yaml]').getAttribute('href');
     assert.ok(String(blueYamlHref).includes('yaml=installed'), '#553 已卸载行的 YAML 深链必须直接指到「安装时」视图：' + blueYamlHref);
-    await uninstalledSwitch.click();
-    await page.waitForFunction(() => document.querySelectorAll('#pb-installs [data-release]').length === 1);
-    assert.equal(await page.locator('#pb-installs [data-release="blue"]').count(), 0, '#553 关掉开关后已卸载的 blue 又从列表消失');
-    assert.equal(await uninstalledSwitch.getAttribute('aria-checked'), 'false', '#553 关掉后 aria-checked 回到 false');
-    await uninstalledSwitch.click();
-    await page.waitForFunction(() => document.querySelectorAll('#pb-installs [data-release="blue"]').length === 1);
-    await page.locator('#pb-installs [data-release="blue"] [data-release-yaml]').click();
+    const cardButtons = await page.locator('section:has(#pb-installs) button').count(); // #565：口径是「含 #pb-installs 的 section 里的 <button>」，改动前后同一选择器可对比（「查看 YAML」是 <a class="btn">，两轮都不计）。
+    assert.equal(cardButtons, 1, '#565 实例卡片 <button> 数不得比改动前增加：改动前 2（开关 1 + 生效中行卸载 1），现在 ' + cardButtons);
+    await shot('release-list-uninstalled-group');
+    await page.locator('#pb-installs [data-group="uninstalled"] [data-release="blue"] [data-release-yaml]').click();
     await page.waitForURL('**/release.html?**release=blue**');
     await page.locator('[data-uninstalled-notice]').waitFor();
     assert.equal(await page.locator('#rd-content').isVisible(), true, '#553 已卸载视图仍渲染内容区（不是把整页换成 gone 面板）');
@@ -480,25 +490,39 @@ export async function playbook(d,mode){
     await page.locator('#rd-yaml-close').click();
     await page.locator('#rd-yaml-drawer').waitFor({ state: 'hidden' });
     await shot('release-uninstalled-view');
+    await createPkg('hist-many'); // #565：6 个已卸载 → 先给 5 个 + 「展开其余 1 个」；展开是一次性动作。
+    for (const n of ['r1', 'r2', 'r3', 'r4', 'r5', 'r6']) {
+      await req('/v1/namespaces/default/playbooks/hist-many/install', { method: 'POST', body: JSON.stringify({ values: { project: n }, release: n }) });
+      await req('/v1/namespaces/default/playbooks/hist-many/releases/' + n, { method: 'DELETE' });
+    }
+    await goto('playbook', 'namespace=default&id=hist-many');
+    await page.waitForFunction(() => document.querySelectorAll('#pb-installs [data-release]').length === 5);
+    assert.equal(await page.locator('#pb-installs [data-group="uninstalled"] h4').innerText(), copies['pb.v4.uninstalled_group'].replace('{n}', '6'),
+      '#565 分组标题报的是总数（6），不是先摆出来的 5 行');
+    assert.equal(await page.locator('#pb-installs [data-release]').count(), 5, '#565 超过 5 个先渲染 5 行');
+    const expand = page.locator('#pb-installs [data-expand-uninstalled]');
+    assert.equal(await expand.count(), 1, '#565 需要「展开其余 N 个」');
+    assert.equal(await expand.innerText(), copies['pb.v4.expand_rest'].replace('{n}', '1'), '#565 展开按钮写清还剩几个');
+    assert.equal(await page.locator('#pb-instances-card button').count(), 1, '#565 0 生效中时卡片里只有「展开」一个按钮');
+    await expand.click();
+    await page.waitForFunction(() => document.querySelectorAll('#pb-installs [data-release]').length === 6);
+    assert.equal(await page.locator('#pb-installs [data-expand-uninstalled]').count(), 0, '#565 展开是一次性动作：按钮用完就消失');
+    assert.equal(await page.locator('#pb-instances-card button').count(), 0, '#565 展开后卡片里一个按钮都不剩');
+    await shot('uninstalled-group-expand');
     await goto('playbook', 'namespace=default&id=hist-only');
-    await page.waitForFunction(() => /uninstalled/i.test(document.querySelector('#pb-installs')?.innerText || ''));
-    assert.equal(await page.locator('#pb-installs [data-release]').count(), 0, '#553 只剩已卸载的包：默认视图一行都不渲染');
+    await page.waitForFunction(() => document.querySelectorAll('#pb-installs [data-release]').length === 1);
+    assert.equal(await page.locator('#pb-installs [data-group="uninstalled"] [data-release="hist-only"]').count(), 1,
+      '#565 只剩已卸载时也照样看得见（不再靠空态二选一）');
     const onlyUninstalledText = (await page.locator('#pb-installs').innerText()).trim();
-    const emptyCopies = await page.evaluate(() => ({
-      only: (window.AnotifyI18n && window.AnotifyI18n['pb.v4.no_installs_uninstalled_only']) || '',
-      none: (window.AnotifyI18n && window.AnotifyI18n['pb.v4.no_installs']) || '',
-    }));
-    assert.ok(emptyCopies.only.length > 0, '#553 字典必须有 pb.v4.no_installs_uninstalled_only（否则前端只能显示裸 key）');
-    assert.equal(onlyUninstalledText, emptyCopies.only, '#553 只剩已卸载时渲染「只有已卸载」那条，不是「还没有实例」：' + onlyUninstalledText);
-    assert.match(onlyUninstalledText, /uninstalled/i, '#553 这条文案要让人看出是「只剩已卸载」：' + onlyUninstalledText);
-    assert.ok(!onlyUninstalledText.includes('pb.v4.'), '#553 空态文案不得漏出裸 i18n key：' + onlyUninstalledText);
+    assert.ok(onlyUninstalledText.includes(copies['pb.v4.no_active_installs']), '#565 「只有已卸载」要写清当前没有生效中的：' + onlyUninstalledText);
+    assert.ok(!onlyUninstalledText.includes('pb.v4.'), '#565 文案不得漏出裸 i18n key：' + onlyUninstalledText);
     await shot('empty-state-uninstalled-only');
     await goto('playbook', 'namespace=default&id=hist-none');
     await page.waitForFunction(() => /No instances/i.test(document.querySelector('#pb-installs')?.innerText || ''));
     assert.equal(await page.locator('#pb-installs [data-release]').count(), 0, '#553 从没装过的包：一行都不渲染');
     const neverInstalledText = (await page.locator('#pb-installs').innerText()).trim();
-    assert.equal(neverInstalledText, emptyCopies.none, '#553 从没装过时渲染「还没有实例」文案（不变的那条）：' + neverInstalledText);
-    assert.notEqual(onlyUninstalledText, neverInstalledText, '#553 两种空态文案必须不同（只有已卸载 ≠ 从来没有实例）');
+    assert.equal(neverInstalledText, copies['pb.v4.no_installs'], '#553 从没装过时渲染「还没有实例」文案（不变的那条）：' + neverInstalledText);
+    assert.notEqual(copies['pb.v4.no_active_installs'], neverInstalledText, '#565 两种空态文案必须不同（只有已卸载 ≠ 从来没有实例）');
     const emptyEntry = 'apiVersion: anotify/v1\nkind: Playbook\nmetadata:\n  name: empty-pkg\nspec:\n  capabilities: []\n  sources: []\n';
     await req('/v1/namespaces/default/playbooks', { method: 'POST', body: JSON.stringify({ ...envelope({ 'playbook.yaml': emptyEntry }), metadata: { name: 'empty-pkg', namespace: 'default' } }) });
     await req('/v1/namespaces/default/playbooks/empty-pkg/install', { method: 'POST', body: JSON.stringify({ values: { project: 'a' } }) });
@@ -514,7 +538,7 @@ export async function playbook(d,mode){
     assert.equal((await calls()).filter(call => call.url.endsWith('/yaml')).length, yamlCallsBefore, '0 对象空态不发请求');
     await page.locator('#rd-yaml-close').click();
     await page.locator('#rd-yaml-drawer').waitFor({ state: 'hidden' });
-    check('#548 two-level IA: release list without objects, per-release detail objects/receipt, no crossing, direct URL, empty YAML; #553 uninstall → uninstalled view (notice/empty objects/hidden uninstall, YAML drawer on as=installed) + list switch two states + two distinct empty states');
+    check('#548 two-level IA: release list without objects, per-release detail objects/receipt, no crossing, direct URL, empty YAML; #553 uninstall → uninstalled view (notice/empty objects/hidden uninstall, YAML drawer on as=installed); #565 uninstalled group visible without any control (no switch, fewer buttons, one installs request), 5 + expand rest, two distinct empty states');
     await clean('release');
   }
   if (mode === 'missing') {
