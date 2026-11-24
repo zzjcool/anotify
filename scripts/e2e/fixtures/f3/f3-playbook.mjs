@@ -490,7 +490,7 @@ export async function playbook(d,mode){
     await page.locator('#rd-yaml-close').click();
     await page.locator('#rd-yaml-drawer').waitFor({ state: 'hidden' });
     await shot('release-uninstalled-view');
-    await createPkg('hist-many'); // #565：6 个已卸载 → 先给 5 个 + 「展开其余 1 个」；展开是一次性动作。
+    await createPkg('hist-many'); // #565：hist-many 预置六个已卸载 release —— 首屏只摆前缀，剩下的走「展开其余 N 个」（一次性动作）。
     for (const n of ['r1', 'r2', 'r3', 'r4', 'r5', 'r6']) {
       await req('/v1/namespaces/default/playbooks/hist-many/install', { method: 'POST', body: JSON.stringify({ values: { project: n }, release: n }) });
       await req('/v1/namespaces/default/playbooks/hist-many/releases/' + n, { method: 'DELETE' });
