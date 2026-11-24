@@ -814,9 +814,13 @@ export async function openDriver(id, options = {}) {
               : failure(400,'retained_rejection','Actual retained rejection sentinel'); // Resource/Key fixtures unchanged.
             else response=await raw(url,opts);
             call.httpStatus=response.status;
-            if((response.headers.get('Content-Type')||'').includes('json') || (target==='/v1/auth/me' && response.status===401)) {
+            call.contentType=response.headers.get('Content-Type')||'';
+            if(call.contentType.includes('json') || (target==='/v1/auth/me' && response.status===401)) {
               window.__f3TraceResponse?.(call,'parse-start');
-              call.result=await response.clone().json();call.response=call.result;
+              // 先读原始字节再解析：`bodyBytes` 让「200 但没有 body」和「200 且 body 缺字段」
+              // 在断言日志里分得开（#563 的现场正是这两种的歧义）。
+              const text=await response.clone().text();call.bodyBytes=text.length;
+              call.result=JSON.parse(text);call.response=call.result;
               window.__f3TraceResponse?.(call,'parsed');
               if(response.status>=400) {call.status=response.status;call.reason=call.result?.reason;call.details=call.result?.details;}
             }
@@ -868,7 +872,7 @@ export async function openDriver(id, options = {}) {
         else docs.push({...trace,snapshots:[trace.snapshot]});
       }
       // Reports never contain raw credentials, scripts, host values or receipt values.
-      report.requests.push(...rows.map(c=>({url:c.url,method:c.method,httpStatus:c.httpStatus,reason:c.reason,kind:c.result?.kind,itemCount:c.result?.items?.length,resourceVersion:c.body?.metadata?.resourceVersion,error:c.error})));
+      report.requests.push(...rows.map(c=>({url:c.url,method:c.method,httpStatus:c.httpStatus,contentType:c.contentType,bodyBytes:c.bodyBytes,reason:c.reason,kind:c.result?.kind,itemCount:c.result?.items?.length,resourceVersion:c.body?.metadata?.resourceVersion,error:c.error})));
       await page.evaluate(()=>{window.__f3Calls=[];});
     };
     const goto=async(file,query='namespace=default',lang=options.lang||'en')=>{

@@ -1000,25 +1000,29 @@ async function ux21(c) {
   return withDriver(c.id, { lang: "zh-CN", theme: "light" }, async (d, count) => {
     await d.archive();
     await d.page.goto(d.base + "/index.html?namespace=default&u=zheng", { waitUntil: "domcontentloaded" });
-    // 就绪条件必须是**真实事实**（#338 flake，全量第 1 轮复现 ["usr_mock_demo|demo","|"]）：
-    //   ① `#greeting` / `#sidebar-username` 的模板占位文本本身就非空（sidebar 默认 "…"），
-    //      旧的就绪条件等于什么都没等；
-    //   ② window.__f3Calls 里**在飞的请求**也占一行（只有 url/method，没有 result/httpStatus），
-    //      index 页有两处 /auth/me（layout 的 loadMe + 页面控制器的 loadMe），并发下读到
-    //      「A 已落定、B 还在飞」的中间态，身份集合里就多出一个空条目。
-    // 所以先等**所有 /auth/me 都落定**（在飞的请求不是 response，不参与身份比对），
-    // 再等同一个身份真的渲染进 DOM（不是模板占位），最后照旧断言。
-    const pendingOf = calls => calls.filter(x => x.httpStatus === undefined && x.error === undefined);
+    // 每条 /auth/me 的原始事实：驱动在 fetch 发起时就占一行，`httpStatus` 早于 body 解析落盘，
+    // 只有 `settled` 才同时代表两者（f3-driver 的 #483 注释）。旧判据只等 `httpStatus`，于是把
+    // 半条记录的空身份读成「另一份身份」（#338 → #563 同一个 flake）。
+    const factsOf = calls => calls.map((x, i) => ({
+      call: (i + 1) + "/" + calls.length, url: x.url, hs: x.httpStatus, contentType: x.contentType,
+      bodyBytes: x.bodyBytes, hasBody: x.result !== undefined, err: x.error, settled: x.settled === true,
+      id: x.result?.id, username: x.result?.username, displayName: x.result?.displayName,
+    }));
     const deadline = Date.now() + 9000;
     let meCalls = [];
     for (;;) {
       meCalls = (await d.calls()).filter(x => x.method === "GET" && /\/v1\/auth\/me$/.test(x.url));
-      if (meCalls.length >= 1 && pendingOf(meCalls).length === 0) break;
+      if (meCalls.length >= 1 && meCalls.every(x => x.settled === true)) break;
       if (Date.now() > deadline) break;
       await new Promise(r => setTimeout(r, 50));
     }
-    assert.deepEqual(pendingOf(meCalls).map(x => x.url), [], "#21 every recorded /auth/me call settled (in-flight is not a response), no blank identity: " + JSON.stringify(meCalls.map(x => ({ hs: x.httpStatus, err: x.error, keys: Object.keys(x).join(",") }))).slice(0, 300));
-    const me = meCalls[0]?.result || {};
+    const facts = factsOf(meCalls);
+    assert.ok(meCalls.length >= 1, "#21 the identity is backed by GET /auth/me: " + meCalls.length + " call(s)");
+    assert.deepEqual(facts.filter(f => !f.settled), [], "#21 every recorded /auth/me call settled (httpStatus + parsed body; a half record is not a response): " + JSON.stringify(facts));
+    assert.deepEqual(facts.filter(f => !f.id || !f.username), [], "#21 every /auth/me call carries the full identity (id + username): " + JSON.stringify(facts));
+    const diverging = facts.filter(f => f.id + "|" + f.username !== facts[0].id + "|" + facts[0].username);
+    assert.deepEqual(diverging, [], "#21 all " + facts.length + " recorded /auth/me responses agree on one identity: call(s) " + JSON.stringify(diverging) + " diverge from " + JSON.stringify(facts[0]));
+    const me = meCalls[0].result;
     assert.ok(me.displayName, "#21 the identity comes from the recorded /auth/me response: " + JSON.stringify(me).slice(0, 160));
     let names = { greeting: "", sidebar: "" };
     for (;;) {
@@ -1030,11 +1034,8 @@ async function ux21(c) {
     assert.ok(names.greeting.includes(me.displayName), "#21 greeting matches the /auth/me identity: " + JSON.stringify({ ...names, expect: me.displayName }));
     assert.ok(names.sidebar.includes(me.displayName), "#21 sidebar identity matches the same /auth/me response");
     assert.ok(!/zheng/.test(names.greeting) || me.displayName.includes("zheng"), "#21 the query-string fake user cannot replace the identity: " + names.greeting);
-    assert.ok(meCalls.length >= 1, "#21 the identity is backed by GET /auth/me: " + meCalls.length + " call(s)");
-    const identities = new Set(meCalls.map(x => (x.result?.id || "") + "|" + (x.result?.username || "")));
-    assert.equal(identities.size, 1, "#21 every /auth/me response is the same identity, no divergent/fake user: " + JSON.stringify([...identities]) + " " + JSON.stringify(meCalls.map(x => ({ hs: x.httpStatus, err: x.error, id: x.result?.id, user: x.result?.username, code: x.result?.code }))).slice(0, 300));
     await d.finish(); count.inc();
-    return ok(count.n, [{ page: "index", lang: "zh-CN", theme: "light", viewport: "desktop", attempted: true, ok: true, authMe: meCalls.length }]);
+    return ok(count.n, [{ page: "index", lang: "zh-CN", theme: "light", viewport: "desktop", attempted: true, ok: true, authMe: meCalls.length, identities: facts.map(f => f.id + "|" + f.username) }]);
   });
 }
 async function ux22(c) {
