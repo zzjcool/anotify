@@ -439,7 +439,7 @@ export async function playbook(d,mode){
       '#553 缺省口径的已卸载详情仍必须 404（只有 ?include=uninstalled 才 200）：' + JSON.stringify(uninstalledDefault.body));
     const installsCallsBefore = (await calls()).filter(c => /\/installs(\?|$)/.test(c.url)).length; // #565：进页面零点击 —— 生效中与已卸载同时在列表里，且只为开关发过一次请求。
     await goto('playbook', 'namespace=default&id=project-chain');
-    await page.waitForFunction(() => document.querySelectorAll('#pb-installs [data-release]').length === 2);
+    await page.locator('#pb-installs [data-release="green"]').waitFor();
     assert.equal(await page.locator('#pb-show-uninstalled').count(), 0, '#565 实例区不得再有「显示已卸载」开关');
     assert.equal((await calls()).filter(c => /\/installs(\?|$)/.test(c.url)).length - installsCallsBefore, 1,
       '#565 进页面只取一次 installs（含 include=uninstalled），不再为开关发第二次');
