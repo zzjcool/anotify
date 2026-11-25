@@ -228,16 +228,6 @@ jobs:
           done
           /usr/bin/google-chrome --version
 
-      # 没有 key 时 api_contract 的 VAPID 断言会被 `if (env)` 静默跳过 ⇒ 生成一对。
-      - name: VAPID 密钥（避免「没有 key 就静默少一条断言」）
-        run: |
-          set -euo pipefail
-          eval "$(go run ./scripts/genkeys.go | grep '^ANOTIFY_VAPID_')"
-          {
-            echo "ANOTIFY_VAPID_PUBLIC_KEY=$ANOTIFY_VAPID_PUBLIC_KEY"
-            echo "ANOTIFY_VAPID_PRIVATE_KEY=$ANOTIFY_VAPID_PRIVATE_KEY"
-          } >> "$GITHUB_ENV"
-
       - name: 跑本分片的 e2e 套件
         # 失败不直接判红：交给总判定按「已知环境性失败清单」裁决。
         continue-on-error: true
@@ -430,15 +420,6 @@ jobs:
           for bin in /usr/bin/google-chrome python3; do
             command -v "$bin" >/dev/null || { echo "❌ 缺少 $bin"; exit 1; }
           done
-
-      - name: VAPID 密钥
-        run: |
-          set -euo pipefail
-          eval "$(go run ./scripts/genkeys.go | grep '^ANOTIFY_VAPID_')"
-          {
-            echo "ANOTIFY_VAPID_PUBLIC_KEY=$ANOTIFY_VAPID_PUBLIC_KEY"
-            echo "ANOTIFY_VAPID_PRIVATE_KEY=$ANOTIFY_VAPID_PRIVATE_KEY"
-          } >> "$GITHUB_ENV"
 
       - name: 快门禁
         run: make ci

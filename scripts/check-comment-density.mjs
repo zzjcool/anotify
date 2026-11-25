@@ -28,12 +28,12 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const BASELINE = {
 	"schemaVersion": 2,
 	"measuredAt": "2026-11-25",
-	"commentLines": 42930,
-	"codeLines": 287373,
+	"commentLines": 42929,
+	"codeLines": 287399,
 	"files": 731,
 	"dirs": {
 		".": 86,
-		".github/workflows": 108,
+		".github/workflows": 107,
 		"api": 267,
 		"cmd/anode": 282,
 		"cmd/anode/internal/app": 61,
