@@ -1,7 +1,7 @@
 {
   "name": "anotify",
   "version": "0.1.0",
-  "description": "Agent 完成即通知平台——把通知自动推送到你的所有设备（iOS/Mac/PC/Android），Passkey 无密码，单二进制自托管。",
+  "description": "Agent 完成即通知平台——事件进中枢、能力链在节点上执行、全过程可查（事件/任务链/日志），Passkey 无密码，单二进制自托管。",
   "private": true,
   "license": "MIT",
   "scripts": {
@@ -9,8 +9,7 @@
     "tailwind": "node scripts/build-tailwind.mjs"
   },
   "dependencies": {
-    "playwright-core": "^1.62.1",
-    "web-push": "^3.6.7"
+    "playwright-core": "^1.62.1"
   },
   "devDependencies": {
     "tailwindcss": "^3.4.17"
