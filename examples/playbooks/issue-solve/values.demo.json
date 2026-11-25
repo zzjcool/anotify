@@ -1,7 +1,8 @@
 {
   "project": "anotify",
+  "repo": "zzjcool/anotify",
   "ghTokenFile": "",
-  "dispatchUrl": "http://localhost:9999/hook",
+  "dispatchUrl": "http://127.0.0.1:9999/hook",
   "notifyUrl": "",
   "branchPrefix": "pi-subagent/"
 }

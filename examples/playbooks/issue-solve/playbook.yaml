@@ -28,12 +28,19 @@ spec:
   values:
     type: object
     additionalProperties: false
-    required: [project, dispatchUrl]
+    required: [project, repo, dispatchUrl]
     properties:
       project:
         type: string
         pattern: '^[a-z0-9][a-z0-9-]{0,20}$'
         description: 前缀 slug，会拼进能力名与源名（例如 anotify）
+      repo:
+        type: string
+        # owner/name；只允许 GitHub 会出现的字符，避免把空白或 URL 填进来
+        pattern: '^[A-Za-z0-9][A-Za-z0-9.-]*/[A-Za-z0-9][A-Za-z0-9._-]*$'
+        description: |
+          要处理的仓库（owner/name）。**装包时填一次**，之后每次触发只给 issue 号 ——
+          一个安装 = 一个仓库的收单线。要换仓库就再装一次（换 project 或换 release）。
       ghTokenFile:
         type: string
         default: ''

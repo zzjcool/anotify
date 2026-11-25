@@ -17,11 +17,8 @@ spec:
     token: ''
     payloadSchema:
       type: object
-      required: [repo, issue]
+      required: [issue]
       properties:
-        repo:
-          type: string
-          description: owner/name，例如 zzjcool/anotify
         issue:
           type: integer
           minimum: 1
@@ -30,12 +27,11 @@ spec:
           maxLength: 500
           description: 可选。触发人写的一句话（会进工单，便于执行体理解意图）
     sample:
-      repo: zzjcool/anotify
       issue: 649
       note: 生成产物只写不删，删掉的页面还在线上
   targets:
     - capability: '{{values.project}}-issue-claim'
       params:
-        repo: $(payload.repo)
+        repo: '{{values.repo}}'
         issue: $(payload.issue)
         note: $(payload.note)
