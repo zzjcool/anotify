@@ -745,10 +745,11 @@ server.backpressure.stuck`），信号回落自动复位且**重新具备**拒�
 - 页面**不得**直接读 `window.AnotifyGraphs` —— `scripts/check-graph-access.mjs`
   （挂在 `make sitegen` 上）会拦：@guard scripts/check-graph-access.mjs#no-direct-graph-lib
   / #missing-expect-graphics。
-- 回归用例写在 `scripts/v4-frontend.test.mjs`（TRACE-STARTUP / SOURCE-STARTUP），但它**尚未接线**：
-  `make ci` 里不跑，只能手工 `node --test scripts/v4-frontend.test.mjs`；它已经带一批基线红
-  （不是全绿）——判据是「失败集合与 base 逐条相同」，清单见 `docs/history/UI-EPIC-369/CONTRACT.md`
-  的基线小节。别把它当门禁（这条此前写成「回归测试是…」，误导过人）。
+- 回归用例写在 `scripts/v4-frontend.test.mjs`（TRACE-STARTUP / SOURCE-STARTUP / 命名空间 CAS-ABA），
+  已接进 `make ci`（`make test-frontend-v4`，全绿）。发现红就修（或改成断言语义），
+  别把基线红加回来 —— 它上一次「未接线 + 带基线红」的代价是
+  从一批基线红烂到更多，还长出静默假绿（`getElementById` 自动造节点让「不存在」断言恒真、
+  探针盯着页面已不再调用的函数、假 DOM 缺 `lastChild` 把渲染异常吞成空列表）。
 
 **教训**：「defer 一定在页面用到它之前跑完」是伪命题；只靠注释论证的时序假设，
 迟早会在页面重构成 await 续体后失效。要么用结构保证（解析期挂门闩），要么用门禁拦住。

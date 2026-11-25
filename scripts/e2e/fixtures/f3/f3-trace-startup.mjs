@@ -4,10 +4,9 @@
 // 不改生产文件、不复用旧 run。三个 case 各自 openDriver（独立 context/attempt）：
 //
 //   1. trace-startup-delayed-graphs
-//      故意把 /graphs.js 的响应延迟 900ms（defer 脚本因此晚于 Trace 响应执行），
-//      Trace API 仍由 mock 快速应答。原码会在图库还没赋值时读
+//      把 /graphs.js 延迟 900ms（defer 因此晚于 Trace 响应），Trace API 由 mock 快速应答。原码会在图库未赋值时读
 //      window.AnotifyGraphs.taskChain → 真实现场 final-28bbef29 的同一 TypeError；
-//      修复后 7 Task rows + 真实图 DOM + canonical node 点击成功。
+//      修复后 7 Task rows + 真实图 DOM + 能力节点点击落到规范化任务。
 //   2. trace-startup-missing-graphs
 //      /graphs.js 真实失败（route.abort）→ 必须显示真实可见 error（trace.nolib）+
 //      原重试按钮、0 假 rows；随后真实加载回该脚本（addScriptTag 真 <script src>），
@@ -59,6 +58,7 @@ async function scene(d) {
       readyState: document.readyState,
       rows: document.querySelectorAll('#trace-tasks [data-task]').length,
       graphNodes: document.querySelectorAll('#trace-graph [data-node-id]').length,
+      nodeIds: [...document.querySelectorAll('#trace-graph [data-node-id]')].map(n => n.getAttribute('data-node-id')),
       // flograph 把容器本身加上 .flograph（trace 页容器就是 #trace-graph 的 body）。
       graphMounted: !!document.getElementById('trace-graph')?.classList.contains('flograph'),
       busy: document.getElementById('trace-content')?.getAttribute('aria-busy') || null,
@@ -74,8 +74,8 @@ async function scene(d) {
       loadAtMs: first('load')?.atMs ?? null,
       taskChainAtMs: first('taskChain:input')?.atMs ?? null,
       taskChainInput: first('taskChain:input')?.inputTypes ?? null,
-      caught: first('loadErrorNode:input')
-        ? { name: first('loadErrorNode:input').error?.name, message: first('loadErrorNode:input').error?.message, atMs: first('loadErrorNode:input').atMs }
+      caught: first('errorFacts:input')
+        ? { name: first('errorFacts:input').error?.name, message: first('errorFacts:input').error?.message, atMs: first('errorFacts:input').atMs }
         : null,
     };
   });
@@ -128,7 +128,9 @@ async function delayedGraphs(d) {
   assert.equal(delayed, 1, 'graphs.js was really delayed exactly once');
   assert.equal(observed.rows, 7, 'seven Task rows; observed error=' + observed.error);
   assert.ok(observed.graphMounted, 'real graph DOM mounted');
-  assert.ok(observed.graphNodes >= 7, 'real graph nodes rendered: ' + observed.graphNodes);
+  assert.ok(observed.graphNodes >= 2, 'real graph nodes rendered: ' + observed.graphNodes);
+  assert.ok(observed.nodeIds.includes('__trigger__'), 'base graph carries the trigger node: ' + observed.nodeIds);
+  assert.equal(observed.nodeIds.some(id => String(id).startsWith('tsk_')), false, 'base graph nodes are capability ids: ' + observed.nodeIds);
   assert.equal(observed.error, '', 'no visible error');
   assert.equal(observed.busy, null, 'busy cleared after render');
   assert.equal(observed.response?.httpStatus, 200);
@@ -143,12 +145,13 @@ async function delayedGraphs(d) {
     'first render happened after the deferred graph library (DOMContentLoaded); taskChainAtMs=' + observed.taskChainAtMs + ' dclAtMs=' + observed.dclAtMs,
   );
   assert.equal(observed.taskChainInput?.tasks, 'array');
-  // canonical node 真实点击 → 任务深链
-  await d.page.click('#trace-graph [data-node-id="tsk_mock_1"]');
-  await d.page.waitForURL(/\/message\.html\?namespace=default&id=tsk_mock_1$/, { timeout: 4500 });
+  // 能力节点真实点击 → 规范化任务深链
+  const capNode = observed.nodeIds.find(id => id !== '__trigger__');
+  await d.page.click('#trace-graph [data-node-id="' + capNode + '"]');
+  await d.page.waitForURL(/\/message\.html\?namespace=default&id=tsk_mock_\d+$/, { timeout: 4500 });
   const href = new URL(d.page.url());
   assert.equal(href.pathname, '/message.html');
-  assert.equal(href.searchParams.get('id'), 'tsk_mock_1');
+  assert.match(href.searchParams.get('id'), /^tsk_mock_\d+$/, 'capability node hands back the canonical task id');
   await d.finish();
   return { delayedMs: DELAYED_GRAPHS_MS, observed, clicked: href.pathname + href.search };
 }
@@ -181,13 +184,15 @@ async function missingGraphs(d) {
   const healed = await d.page.evaluate((previous) => ({
     rows: document.querySelectorAll('#trace-tasks [data-task]').length,
     graphNodes: document.querySelectorAll('#trace-graph [data-node-id]').length,
+    nodeIds: [...document.querySelectorAll('#trace-graph [data-node-id]')].map(n => n.getAttribute('data-node-id')),
     error: (document.getElementById('trace-error')?.textContent || '').trim(),
     traceCalls: (window.__f3Calls || []).filter((c) => /\/traces\//.test(c.url)).length,
     previous,
   }), before);
   console.log('TRACE-STARTUP SCENE healed-graphs ' + JSON.stringify(healed));
   assert.equal(healed.traceCalls, before + 1, 'the real retry click issues a fresh Trace GET');
-  assert.ok(healed.graphNodes >= 7, 'retry draws the real graph: ' + healed.graphNodes);
+  assert.ok(healed.graphNodes >= 2, 'retry draws the real graph: ' + healed.graphNodes);
+  assert.ok(healed.nodeIds.includes('__trigger__'), 'base graph carries the trigger node after retry');
   assert.equal(healed.error, '', 'error cleared after a successful retry');
   // 注入的 graphs.js 失败是本 case 唯一的 page error（requestfailed + 浏览器 console 各一条，
   // 都是同一份真实网络失败）；不冒充干净页面，如实记录。
@@ -204,7 +209,8 @@ async function loadedPage(d) {
   const observed = await scene(d);
   console.log('TRACE-STARTUP SCENE loaded-page ' + JSON.stringify(observed));
   assert.equal(observed.rows, 7);
-  assert.ok(observed.graphMounted && observed.graphNodes >= 7, 'real graph in the normal path');
+  assert.ok(observed.graphMounted && observed.graphNodes >= 2, 'real graph in the normal path');
+  assert.ok(observed.nodeIds.includes('__trigger__'), 'normal path carries the trigger node');
   assert.equal(observed.error, '');
   assert.equal(observed.response?.taskCount, 7);
   await d.finish();

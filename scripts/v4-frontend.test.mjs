@@ -21,6 +21,7 @@ import assert from "node:assert/strict";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PARTIALS_SRC = readFileSync(path.join(ROOT, "web/partials.js"), "utf8");
 const YAMLDOC_SRC = readFileSync(path.join(ROOT, "web/yamldoc.js"), "utf8");
+const VARS_SRC = readFileSync(path.join(ROOT, "web/vars-table.js"), "utf8");
 const MOCK_SRC = readFileSync(path.join(ROOT, "web/mock.js"), "utf8");
 const GRAPHS_SRC = readFileSync(path.join(ROOT, "web/graphs.js"), "utf8");
 const TRACEVIEW_SRC = readFileSync(path.join(ROOT, "web/traceview.js"), "utf8");
@@ -103,6 +104,9 @@ function fakeNode(tag = "div") {
 		}),
 		get firstChild() {
 			return children[0] || null;
+		},
+		get lastChild() {
+			return children[children.length - 1] || null;
 		},
 	};
 	return node;
@@ -245,6 +249,7 @@ function loadAnotify(opts = {}) {
 	vm.runInContext("globalThis.window = globalThis; globalThis.self = globalThis;", ctx);
 	vm.runInContext(PARTIALS_SRC, ctx, { filename: "web/partials.js" });
 	vm.runInContext(YAMLDOC_SRC, ctx, { filename: "web/yamldoc.js" });
+	vm.runInContext(VARS_SRC, ctx, { filename: "web/vars-table.js" });
 
 	return {
 		A: base.sandbox.Anotify,
@@ -267,6 +272,7 @@ function loadMock(opts = {}) {
 	vm.runInContext("globalThis.window = globalThis; globalThis.self = globalThis;", ctx);
 	vm.runInContext(PARTIALS_SRC, ctx, { filename: "web/partials.js" });
 	vm.runInContext(YAMLDOC_SRC, ctx, { filename: "web/yamldoc.js" });
+	vm.runInContext(VARS_SRC, ctx, { filename: "web/vars-table.js" });
 	vm.runInContext(opts.mockSrc || MOCK_SRC, ctx, { filename: "web/mock.js" });
 	// 图库（可选）：sourceTopology / taskOf 是纯函数，能在没有布局的情况下断言
 	if (opts.graphs) {
@@ -1204,7 +1210,7 @@ test("model.playbook：valuesSchema/status.unapplied/items/sources/files", () =>
 const RECEIPT = {
 	apiVersion: "anotify/v1",
 	kind: "InstallReceipt",
-	playbook: { name: "delivery", version: "1.2.0" },
+	playbook: { name: "delivery", version: "1.2.0", filesDigest: "sha256:pb" },
 	source: "inline",
 	install: { id: "inst-1", at: "2024-01-01T00:00:00Z", dryRun: false },
 	namespace: "default",
@@ -1236,7 +1242,9 @@ test("model.receipt：12 格字段齐全，created/skipped 是对象，其余数
 	const { A } = loadAnotify();
 	const m = plain(A.model.receipt(RECEIPT));
 
-	assert.deepEqual(m.playbook, { name: "delivery", version: "1.2.0" });
+	assert.deepEqual(m.playbook, { name: "delivery", version: "1.2.0", filesDigest: "sha256:pb" });
+	assert.deepEqual(plain(A.model.receipt({ ...RECEIPT, playbook: { name: "x", version: 1 } }).playbook),
+		{ name: "x", version: 1, filesDigest: null }, "缺文件指纹时补 null，而不是丢键");
 	assert.equal(m.source, "inline", "顶层 source（安装来源）要保留");
 	assert.equal(m.namespace, "default");
 	assert.equal(m.install.id, "inst-1");
@@ -3381,6 +3389,14 @@ function b2Find(node, predicate, out = []) {
   for (const child of node?.children || []) b2Find(child, predicate, out);
   return out;
 }
+function assertBaseGraph(spec, label) {
+  assert.ok(spec && Array.isArray(spec.nodes), label + ': graph mounted');
+  const ids = spec.nodes.map(n => String(n.id));
+  assert.ok(ids.includes('__trigger__'), label + ': 底图必须带触发器节点 — ' + JSON.stringify(ids));
+  assert.equal(ids.some(id => id.startsWith('tsk_')), false, label + ': 底图模式节点 id 不得是任务 id — ' + JSON.stringify(ids));
+  assert.ok(ids.length >= 2, label + ': 至少触发器 + 一个能力 — ' + JSON.stringify(ids));
+  return ids;
+}
 
 test("F2b2 events controller: actual filter/page/refresh/scope clicks reset opaque cursor and dedup UID", async () => {
   const run = await b2Page('events', '?namespace=default');
@@ -3443,7 +3459,7 @@ test("F2b2 message controller: diagnostics mask env, actual previous logs/emissi
 test("F2b2 trace/index controllers: actual namespace Trace graph and task deep links, stats only", async () => {
   const trace = await b2Page('trace', '?namespace=default&traceUID=trace_mock_t1');
   assert.equal(trace.calls.filter(c => c.url.includes('/traces/')).length, 1);
-  assert.ok(trace.get('trace-graph')._mountSpec.nodes.length >= 7);
+  const traceIds = assertBaseGraph(trace.get('trace-graph')._mountSpec, 'trace');
   assert.equal(trace.get('trace-tasks').children.length, 7, 'three attempts still one logical task');
   assert.match(b2Text(trace.get('trace-pruned')), /param_schema/);
   const links = b2Find(trace.get('trace-tasks'), n => n.tagName === 'A');
@@ -3451,10 +3467,11 @@ test("F2b2 trace/index controllers: actual namespace Trace graph and task deep l
   const index = await b2Page('index', '?namespace=default');
   assert.equal(index.get('kpi-total').textContent, '4');
   // V4-D7：设备 / 送达率两张 KPI 卡已删，首页不再有这两个 id。
-  assert.equal(index.get('kpi-devices'), null);
-  assert.equal(index.get('kpi-rate'), null);
+  // get() 会按需造节点，查注册表才知道它到底在不在。
+  assert.equal(index.nodes.has('kpi-devices'), false);
+  assert.equal(index.nodes.has('kpi-rate'), false);
   assert.equal(index.calls.some(c => /^\/v1\/tasks/.test(c.url)), false);
-  assert.ok(index.get('flow-host')._mountSpec.nodes.length >= 7);
+  assertBaseGraph(index.get('flow-host')._mountSpec, 'index flow');
 });
 
 /* ------------------------------------------------------------------ *
@@ -3547,7 +3564,7 @@ function traceStartup(options = {}) {
 test("TRACE-STARTUP barrier: first render waits for the deferred graph library instead of reading taskChain too early", async () => {
   const run = traceStartup({ readyState: 'loading' });
   await run.settle();
-  // 解析期已发出 Trace 请求并拿到 7 tasks —— 真实现场的竞态窗口已经建立。
+  // 解析期 Trace GET 已返回 7 tasks：真实现场的竞态窗口已建立。
   assert.equal(run.traceCalls(), 1, 'trace GET already returned while the deferred graph library is still pending');
   assert.equal(run.get('trace-tasks').children.length, 0, 'no section may be rendered before the deferred graph library ran');
   assert.equal(run.get('trace-content').getAttribute('aria-busy'), 'true', 'load stays busy while the startup barrier waits');
@@ -3564,10 +3581,10 @@ test("TRACE-STARTUP barrier: first render waits for the deferred graph library i
   assert.equal(run.traceCalls(), 1, 'the barrier is not another Trace request');
   assert.equal(run.get('trace-tasks').children.length, 7, 'three attempts still one logical task');
   const spec = run.get('trace-graph')._mountSpec;
-  assert.ok(spec && spec.nodes.length >= 7, 'the real graphs.js taskChain spec is mounted');
+  assertBaseGraph(spec, 'the real graphs.js taskChain spec is mounted');
   assert.equal(b2Text(run.get('trace-error')), '', 'no error after the dependency arrived');
-  spec.onNodeClick({ id: 'tsk_mock_1' });
-  assert.equal(run.sandbox.location.href, 'message.html?namespace=default&id=tsk_mock_1', 'canonical task node link still navigates');
+  spec.onNodeClick({ id: spec.nodes.map(n => n.id).find(id => id !== '__trigger__') });
+  assert.match(String(run.sandbox.location.href), /^message\.html\?namespace=default&id=tsk_mock_\d+$/, 'canonical task node link still navigates');
 });
 
 test("TRACE-STARTUP failure: missing graph library is a visible real error with no fake rows, and the original retry recovers once the script is available", async () => {
@@ -3587,7 +3604,7 @@ test("TRACE-STARTUP failure: missing graph library is a visible real error with 
   await run.settle();
   assert.equal(run.traceCalls(), 2, 'retry really issues a fresh Trace GET');
   assert.equal(run.get('trace-tasks').children.length, 7);
-  assert.ok(run.get('trace-graph')._mountSpec.nodes.length >= 7, 'retry draws the real taskChain graph');
+  assertBaseGraph(run.get('trace-graph')._mountSpec, 'retry draws the real taskChain graph');
   assert.equal(b2Text(run.get('trace-error')), '', 'error clears after a successful retry');
   // interactive 不天然保证 defer 完成：既不能错过事件、也不能挂死。
   const interactive = traceStartup({ readyState: 'interactive' });
@@ -3607,7 +3624,7 @@ test("TRACE-STARTUP loaded path: already interactive/complete documents render w
     await run.settle();
     assert.equal(run.domReady.length, 0, readyState + ': the startup barrier must not register a DOMContentLoaded listener');
     assert.equal(run.get('trace-tasks').children.length, 7, readyState + ': normal loaded page renders immediately');
-    assert.ok(run.get('trace-graph')._mountSpec.nodes.length >= 7, readyState + ': real graph spec mounted');
+    assertBaseGraph(run.get('trace-graph')._mountSpec, readyState + ': real graph spec mounted');
     assert.equal(b2Text(run.get('trace-error')), '', readyState + ': no error on the normal path');
     assert.equal(run.traceCalls(), 1);
   }
@@ -3695,7 +3712,7 @@ test("F2b2 controllers: offline/error/empty are distinct, never automatic mock f
   assert.equal(traceFailure.get('trace-content').children.length, 0);
   assert.ok(traceFailure.get('trace-error').children.length);
   const missing = await b2Page('message', '?namespace=prod&id=tsk_mock_2');
-  assert.match(b2Text(missing.get('msg-error')), /message.v4.not_found/);
+  assert.match(b2Text(missing.get('msg-error')), /不属于此命名空间/);
 });
 
 test("F2b2 final index: event read failure is graph error, actual Source root, no invented execution trends", async () => {
@@ -4166,7 +4183,9 @@ test("F2c2: retained login AUTH1 identity.error rejection and admin delivery fac
 test("F2c2: real Node controllers consume apiList.items, bootstrap config, preserve CAS drafts and namespace context", async () => {
  const list = await b2Page('nodes', '?namespace=default', ({ sandbox }) => { sandbox.location.origin = 'https://controller.example'; });
  assert.equal(b2Find(list.get('nodes-list'), n => !!n?.dataset?.node).length, 5, 'actual NodeList GET must render all rows');
- assert.equal(list.get('namespace-save').disabled, false, 'actual NamespaceList items must bootstrap the plain config wrapper');
+ // #436：配置编辑器已迁到 namespace.html。
+ assert.equal(list.nodes.has('namespace-save'), false);
+ assert.equal(list.calls.some(c => /\/namespaces\/[^/]+\/config$/.test(c.url)), false, '节点页不再读命名空间配置');
  list.get('reg-name').value = 'controller-new-node'; await list.get('reg-submit').onclick(); await list.settle();
  assert.ok(list.get('reg-token').textContent); assert.ok(list.get('reg-yaml').textContent.includes('wss://controller.example'));
  list.get('reg-close').onclick(); assert.equal(list.get('reg-token').textContent, '');
@@ -4177,12 +4196,17 @@ test("F2c2: real Node controllers consume apiList.items, bootstrap config, prese
  assert.ok(detail.calls.some(c => c.url === '/v1/nodes/anode-1?namespace=default'));
  assert.ok(b2Text(detail.get('node-tasks')).includes('tsk_mock_'), 'actual TaskList items must be consumed');
  // 唯一写入口 = YAML：没有表单写路径（#node-config-save 不存在），保存只发 PUT …/yaml。
- assert.equal(detail.get('node-config-save'), null, '表单写入口必须已删除');
- const yamlDoc = ['apiVersion: anotify/v1', 'kind: Node', 'metadata:', '  name: anode-1', 'spec:', '  vars:', '    SOURCE_ROOT: /ui-default'].join('\n') + '\n';
+ assert.equal(detail.nodes.has('node-config-save'), false, '表单写入口必须已删除');
+ // 用页面加载到的原文（含 CAS 令牌）原样保存：凭空拼最小文档会被 resource_version_required 拒。
+ const loaded = detail.get('node-yaml-text').textContent;
+ assert.match(loaded, /resourceVersion:/, '页面必须先把带 CAS 令牌的原文交给编辑区');
+ const yamlDoc = loaded + '';
  detail.get('node-yaml-input').value = yamlDoc;
  await detail.get('node-yaml-save').onclick(); await detail.settle();
- const writes = detail.calls.filter(c => c.method !== 'GET');
- assert.ok(writes.some(c => c.url === '/v1/nodes/anode-1/yaml' && JSON.parse(c.body).yaml === yamlDoc), '保存必须把整份 YAML 发到 /yaml');
+ const writes = detail.calls.filter(c => c.opts && c.opts.method !== 'GET');
+ const put = writes.filter(c => c.opts.method === 'PUT' && c.url === '/v1/nodes/anode-1/yaml');
+ assert.ok(put.length, '保存必须 PUT 到 /yaml');
+ assert.equal(JSON.parse(put.at(-1).opts.body).yaml, yamlDoc, '保存必须把整份 YAML 原样发出去');
  assert.ok(!writes.some(c => c.url === '/v1/nodes/anode-1/config'), '页面不得再写 /config');
  assert.equal(detail.Mock.state.nodes[0].facts.instances[0].busy, true, 'terminal Task does not clear occupied slot');
 });
@@ -4298,17 +4322,24 @@ test("R1 scope rule: URL namespace wins at entry (mount/ensureScope), in-page sw
   assert.equal(JSON.parse(entry.store.get('anotify.scope')).namespace, 'team-a');
 });
 
-test("R1 graph clicks: task-name nodes navigate to the canonical Task name; baseGraph capability ids hand back name", async () => {
+test("R1 graph clicks: baseGraph 页面的节点 id 是能力名，点击落到该能力的规范化 Task；无底图时才用任务 id", async () => {
   const trace = await b2Page('trace', '?namespace=default&traceUID=trace_mock_t1');
   const traceSpec = trace.get('trace-graph')._mountSpec;
   assert.equal(typeof traceSpec.onNodeClick, 'function');
-  // 无底图：真实注册的节点是任务名（tsk_mock_2）
-  traceSpec.onNodeClick({ id: 'tsk_mock_3' });
-  assert.equal(trace.sandbox.location.href, 'message.html?namespace=default&id=tsk_mock_3');
+  assertBaseGraph(traceSpec, 'trace page');
+  const taskIds = b2Find(trace.get('trace-tasks'), n => n.tagName === 'A')
+    .map(a => String(a.getAttribute('href')).split('id=')[1]);
+  assert.ok(taskIds.length >= 7, 'trace 页仍列出全部逻辑任务');
+  const capId = traceSpec.nodes.map(n => String(n.id)).find(id => id !== '__trigger__');
+  traceSpec.onNodeClick({ id: capId });
+  const href = String(trace.sandbox.location.href);
+  assert.match(href, /^message\.html\?namespace=default&id=tsk_mock_\d+$/, '底图节点点击必须落到规范化任务：' + href);
+  assert.ok(taskIds.includes(href.split('id=')[1]), '点到的任务必须真实存在于这条 trace：' + href);
 
   const index = await b2Page('index', '?namespace=default');
-  index.get('flow-host')._mountSpec.onNodeClick({ id: 'tsk_mock_2' });
-  assert.equal(index.sandbox.location.href, 'message.html?namespace=default&id=tsk_mock_2');
+  const indexIds = assertBaseGraph(index.get('flow-host')._mountSpec, 'index flow');
+  index.get('flow-host')._mountSpec.onNodeClick({ id: indexIds.find(id => id !== '__trigger__') });
+  assert.match(String(index.sandbox.location.href), /^message\.html\?namespace=default&id=tsk_mock_/, '首页底图节点同样落到任务详情');
 
   // 有底图：节点 id 是能力名；回调必须交出规范化 Task（name），不是不存在的 id
   const { sandbox, req } = loadMock({ graphs: true });
@@ -4330,6 +4361,16 @@ test("R1 graph clicks: task-name nodes navigate to the canonical Task name; base
   assert.equal(clicks.length, 1);
   assert.ok(clicks[0].name && clicks[0].name.startsWith('tsk_mock_'), 'callback carries the canonical task name');
   assert.equal('id' in clicks[0], false, 'no invented id fallback');
+
+  // 无底图（没有源拓扑）：节点 id 退回任务名，回调直接拿到该任务。
+  const plainHost = fakeNode();
+  const plainClicks = [];
+  G.taskChain(plainHost, { tasks: traceRes.body.tasks, sourceLabel: 'deploy-hook',
+    t: (k, d) => d || k, onNodeClick: task => plainClicks.push(task) });
+  assert.equal(plainHost._mountSpec.nodes.map(n => n.id).includes('tsk_mock_3'), true, '无底图时节点 id 是任务名');
+  plainHost._mountSpec.onNodeClick({ id: 'tsk_mock_3' });
+  assert.equal(plainClicks.length, 1);
+  assert.equal(plainClicks[0].name, 'tsk_mock_3', '直接点任务 id 也交出同一个任务');
   host._mountSpec.onNodeClick({ id: 'ghost-node' });
   assert.equal(clicks.length, 1, 'unknown nodes never fabricate a task');
 });
@@ -4478,79 +4519,66 @@ test("R1 writeOnly masking: integer/boolean/object/array leaves stay secret in r
   }
 });
 
-test("R1 nodes namespace config: captured ns+generation discards reversed stale success/error; save binds loaded ns/RV; refresh failure stays visible", async () => {
-  const run = await b2Page('nodes', '?namespace=default', ({ sandbox, Mock }) => {
+test("R1 namespace config: 保存把 CAS 令牌绑在已加载的 RV 上、写 /yaml、不跨命名空间；刷新失败与 saved 同时可见", async () => {
+  /* #436/#476：编辑器在 namespace.html(?name=)，/config 只剩 GET，写入口是 PUT …/yaml。 */
+  const run = await b2Page('namespace', '?name=default', ({ sandbox, Mock }) => {
     Mock.state.nsConfig.default.rv = 'shared-config-rv';
     Mock.state.nsConfig.prod.rv = 'shared-config-rv';
     const original = sandbox.fetch;
-    const holds = [];
     let failDefaultRead = false;
     sandbox.fetch = (url, opts = {}) => {
       const u = String(url);
-      if (u === '/v1/namespaces/prod/config' && !opts.method) return new Promise(resolve => holds.push(resolve));
       if (failDefaultRead && u === '/v1/namespaces/default/config' && !opts.method) {
         failDefaultRead = false;
         return original('/v1/namespaces/default/missing-endpoint'); // 真实 501 Status：读失败
       }
       return original(url, opts);
     };
-    sandbox.r1 = { holds, original, failDefaultRead: () => { failDefaultRead = true; } };
+    sandbox.r1 = { failDefaultRead: () => { failDefaultRead = true; } };
   });
+  assert.equal(typeof run.get('namespace-save').onclick, 'function', 'namespace 页必须真的接上配置编辑器（防止页面再搬走时静默变绿）');
   const vars = () => JSON.parse(run.get('namespace-vars').value);
   assert.deepEqual(vars(), plain(run.Mock.state.nsVars.default));
-  const pick = run.get('config-namespace');
-
-  // A(prod) 挂起 → B(default) 先回 → A 后回（反序）：A 的响应属于过期请求
-  pick.value = 'prod'; await pick.onchange(); await run.settle();
-  pick.value = 'default'; await pick.onchange(); await run.settle();
-  const prodResponse = await run.sandbox.r1.original('/v1/namespaces/prod/config');
-  run.sandbox.r1.holds.shift()(prodResponse); await run.settle();
-  assert.deepEqual(vars(), plain(run.Mock.state.nsVars.default), 'late prod success must not paint the default editor');
   assert.match(run.get('namespace-revisions').textContent, /resourceVersion=shared-config-rv/);
 
-  // 保存：路径/CAS 都绑“已加载的” namespace，而不是全局 scope/当前选择
   run.get('namespace-vars').value = JSON.stringify({ ONLY_DEFAULT: 'saved-in-default' });
   await run.get('namespace-save').onclick(); await run.settle();
   const put = run.calls.filter(c => c.opts && c.opts.method === 'PUT').at(-1);
-  assert.equal(put.url, '/v1/namespaces/default/config');
-  const putBody = JSON.parse(put.opts.body);
-  assert.equal(putBody.metadata.resourceVersion, 'shared-config-rv', 'save CASes the loaded namespace RV');
-  assert.deepEqual(putBody.vars, { ONLY_DEFAULT: 'saved-in-default' });
+  assert.ok(put, '保存必须发一次 PUT');
+  assert.equal(put.url, '/v1/namespaces/default/yaml', '唯一写入口是 /yaml');
+  const yaml = JSON.parse(put.opts.body).yaml;
+  assert.match(yaml, /resourceVersion:\s*"?shared-config-rv"?/, 'CAS 用的是加载时拿到的 RV');
+  assert.match(yaml, /ONLY_DEFAULT: saved-in-default/, '草稿写进了整份文档');
   assert.deepEqual(plain(run.Mock.state.nsVars.default), { ONLY_DEFAULT: 'saved-in-default' });
   assert.deepEqual(plain(run.Mock.state.nsVars.prod), { NOTIFY_URL: 'https://hooks.example/notify/prod', SLACK_CHANNEL: '#prod' },
     'prod config must never receive the default draft');
+  assert.match(b2Text(run.get('namespace-state')), /nodes\.v4\.saved/, '保存成功要报出来');
 
-  // 反序的“过期错误”同样不许落进界面
-  pick.value = 'prod'; await pick.onchange(); await run.settle();
-  pick.value = 'default'; await pick.onchange(); await run.settle();
-  run.sandbox.r1.holds.shift()(await run.sandbox.r1.original('/v1/namespaces/default/missing-endpoint')); await run.settle();
-  assert.equal(b2Text(run.get('namespace-state')).includes('nodes.v4.error'), false, 'stale error must not paint');
-  assert.deepEqual(vars(), { ONLY_DEFAULT: 'saved-in-default' });
-
-  // 保存成功但刷新读失败：必须保留“已保存 + 刷新失败”，不能只报 saved
   run.sandbox.r1.failDefaultRead();
+  run.get('namespace-vars').value = JSON.stringify({ ONLY_DEFAULT: 'second-save' });
   await run.get('namespace-save').onclick(); await run.settle();
   const state = b2Text(run.get('namespace-state'));
   assert.match(state, /nodes\.v4\.saved/, 'the save itself is still reported');
   assert.match(state, /nodes\.v4\.error/, 'the failed refresh stays visible');
-  assert.equal(run.calls.some(c => c.opts && c.opts.method === 'PUT' && c.url === '/v1/namespaces/prod/config'), false, 'no namespace write ever crosses scopes');
+  assert.equal(run.calls.some(c => c.opts && c.opts.method === 'PUT' && c.url === '/v1/namespaces/prod/yaml'), false, 'no namespace write ever crosses scopes');
 });
 
-test("R1 sources template copy: copyText(button, () => token) really writes the expression", async () => {
-  const run = await b2Page('sources', '?namespace=default', ({ sandbox }) => {
-    sandbox.r1clip = [];
-    sandbox.navigator.clipboard.writeText = async text => { sandbox.r1clip.push(text); };
-  });
-  await run.get('btn-new').onclick(); await run.settle();
-  run.get('f-sample').value = JSON.stringify({ repo: 'acme/api' });
-  run.get('f-kind').value = 'webhook';
-  await run.get('f-kind').onchange(); await run.settle();
-  const tokens = b2Find(run.get('avail-vars-body'), n => n.tagName === 'BUTTON');
-  const token = tokens.find(n => n.textContent === '$(payload.repo)');
-  assert.ok(token, 'suggestion buttons must be rendered');
-  await token.onclick();
-  assert.deepEqual(run.sandbox.r1clip, ['$(payload.repo)'], 'the clipboard receives the variable expression, not null');
-  assert.notEqual(token.textContent, '$(payload.repo)', 'button shows the copied confirmation');
+test("R1 sources template copy: copyText(button, () => expr) 写进剪贴板的是表达式本身，不是 null", async () => {
+  /* 编辑器抽成外部 source-editor.js（b2Page 只跑内联脚本）：这里钉共用的 A.copyText 契约。 */
+  const { A, sandbox } = loadMock();
+  const clips = [];
+  sandbox.navigator.clipboard.writeText = async text => { clips.push(text); };
+  const btn = fakeNode('button');
+  btn.textContent = '$(payload.repo)';
+  let calls = 0;
+  A.copyText(btn, () => { calls++; return '$(payload.repo)'; });
+  await new Promise(setImmediate);
+  assert.equal(calls, 1, 'getText 回调必须被调用一次');
+  assert.deepEqual(clips, ['$(payload.repo)'], '剪贴板收到的是表达式本身');
+  assert.notEqual(btn.textContent, '$(payload.repo)', '按钮显示复制成功（文案随 i18n，只钉「换掉了」）');
+  assert.equal(typeof A.copyText(fakeNode('button'), () => undefined), 'undefined');
+  await new Promise(setImmediate);
+  assert.equal(clips.at(-1), undefined, '回调返回 undefined 也照实写入，不静默改成字符串 null');
 });
 
 test("R1 A1 artifacts: valid logical path + malformed hash stays display-only (no link, no artifact request)", async () => {
@@ -4754,14 +4782,17 @@ test('R1 A2c source detail: 原始 YAML 折叠块默认收起、展开才取，�
 });
 
 
-// R1b: genuine registered regressions for deferred writes and exact display provenance.
+// R1b: deferred-write regressions（#436/#476：编辑器在 namespace.html，写入口 PUT …/yaml，「ABA」用 reload）。
+const NS_PAGE = ['namespace', '?name=default'];
+const nsReload = async run => { await run.get('namespace-reload').onclick(); await run.settle(); };
+
 for (const [journey, outcome] of [['ABA', 'success'], ['ABA', '409'], ['ABA', 'error'], ['sameNS', 'success'], ['sameNS', '409']]) {
-  test(`R1b nodes deferred actual PUT: ${journey} ${outcome} preserves newer draft/CAS/state/finally`, async () => {
-    const run = await b2Page('nodes', '?namespace=default', ({ sandbox, Mock }) => {
+  test(`R1b namespace deferred actual PUT: ${journey} ${outcome} preserves newer draft/CAS/state/finally`, async () => {
+    const run = await b2Page(...NS_PAGE, ({ sandbox, Mock }) => {
       const original = sandbox.fetch;
       const held = [];
       sandbox.fetch = async (url, opts = {}) => {
-        if (String(url) === '/v1/namespaces/default/config' && opts.method === 'PUT') {
+        if (String(url) === '/v1/namespaces/default/yaml' && opts.method === 'PUT') {
           if (outcome === '409') Mock.state.nsConfig.default.rv = 'concurrent-rv';
           const response = await original(url, opts); // execute the real PUT before deferring its response
           return new Promise(resolve => held.push({ resolve, response }));
@@ -4770,15 +4801,13 @@ for (const [journey, outcome] of [['ABA', 'success'], ['ABA', '409'], ['ABA', 'e
       };
       sandbox.r1bHeld = held;
     });
+    assert.equal(typeof run.get('namespace-save').onclick, 'function', 'namespace 页必须真的接上配置编辑器');
     const edit = async text => { run.get('namespace-vars').value = text; await run.get('namespace-vars').fire('input'); };
     const loadedRV = /resourceVersion=([^ ]+)/.exec(run.get('namespace-revisions').textContent)[1];
     await edit('{"OLD_SAVE":"old-submission"}');
     const saving = run.get('namespace-save').onclick(); await run.settle();
     assert.equal(run.sandbox.r1bHeld.length, 1, 'actual PUT is now held');
-    if (journey === 'ABA') {
-      run.get('config-namespace').value = 'prod'; await run.get('config-namespace').onchange(); await run.settle();
-      run.get('config-namespace').value = 'default'; await run.get('config-namespace').onchange(); await run.settle();
-    }
+    if (journey === 'ABA') await nsReload(run); // 新一代加载：旧提交不得触达新编辑器
     await edit('{"NEW_DRAFT":"must-survive-old-response"}');
     const before = { draft: run.get('namespace-vars').value, revisions: run.get('namespace-revisions').textContent,
       state: b2Text(run.get('namespace-state')), disabled: run.get('namespace-save').disabled, calls: run.calls.length };
@@ -4792,16 +4821,17 @@ for (const [journey, outcome] of [['ABA', 'success'], ['ABA', '409'], ['ABA', 'e
     assert.equal(run.calls.length, before.calls, 'stale completion cannot refresh or auto-save');
     const puts = run.calls.filter(c => c.opts?.method === 'PUT');
     assert.equal(puts.length, 1);
-    assert.equal(puts[0].url, '/v1/namespaces/default/config');
-    assert.equal(JSON.parse(puts[0].opts.body).metadata.resourceVersion, loadedRV);
-    assert.deepEqual(JSON.parse(puts[0].opts.body).vars, { OLD_SAVE: 'old-submission' });
+    assert.equal(puts[0].url, '/v1/namespaces/default/yaml');
+    const yaml = JSON.parse(puts[0].opts.body).yaml;
+    assert.match(yaml, new RegExp('resourceVersion:\\s*"?' + loadedRV + '"?'), 'save CASes the loaded namespace RV');
+    assert.match(yaml, /OLD_SAVE: old-submission/);
     if (outcome !== '409') assert.deepEqual(plain(run.Mock.state.nsVars.default), { OLD_SAVE: 'old-submission' });
     assert.equal('NEW_DRAFT' in run.Mock.state.nsVars.default, false);
   });
 }
 for (const outcome of ['success', 'error']) {
-  test(`R1b nodes duplicate sameNS GET reverse ${outcome} detects load generation`, async () => {
-    const run = await b2Page('nodes', '?namespace=default');
+  test(`R1b namespace duplicate sameNS GET reverse ${outcome} detects load generation`, async () => {
+    const run = await b2Page(...NS_PAGE);
     const original = run.sandbox.fetch;
     const held = [];
     run.sandbox.fetch = (url, opts = {}) => String(url) === '/v1/namespaces/default/config' && !opts.method
@@ -4964,18 +4994,19 @@ test('R1b sources LIST real fire receipt opens Trace exact returned ID in same n
 });
 
 for (const stage of ['sameNS edit ABA', 'refresh GET']) {
-  test(`R1b nodes edit epoch during ${stage} isolates old submission even with equal draft text`, async () => {
-    const run = await b2Page('nodes', '?namespace=default');
+  test(`R1b namespace edit epoch during ${stage} isolates old submission even with equal draft text`, async () => {
+    const run = await b2Page(...NS_PAGE);
     const original = run.sandbox.fetch;
     const held = [];
     let wrote = false;
     run.sandbox.fetch = async (url, opts = {}) => {
       const response = await original(url, opts);
-      if (String(url) === '/v1/namespaces/default/config') {
-        if (opts.method === 'PUT') {
-          wrote = true;
-          if (stage === 'sameNS edit ABA') return new Promise(resolve => held.push({ response, resolve }));
-        } else if (wrote) return new Promise(resolve => held.push({ response, resolve }));
+      const u = String(url);
+      if (u === '/v1/namespaces/default/yaml' && opts.method === 'PUT') {
+        wrote = true;
+        if (stage === 'sameNS edit ABA') return new Promise(resolve => held.push({ response, resolve }));
+      } else if (u === '/v1/namespaces/default/config' && wrote && !opts.method) {
+        return new Promise(resolve => held.push({ response, resolve }));
       }
       return response;
     };
@@ -5630,7 +5661,6 @@ test('F3b2b aggregate rejects wrong authority/epoch/cwd/attempt, duplicate cells
   assert.throws(() => validate({ ...meta, cwd: '/tmp' }, result, exit, expected), undefined, 'wrong cwd cannot pass');
 });
 
-// AUTH1/DEV1: retained identity/device wire is NOT the resource Status domain.
 const L1D_USER = { id: 'usr_mock_demo', username: 'demo', displayName: 'demo', role: 'admin', disabled: false, createdAt: 123 };
 test('L1D AUTH1 cookie-only exact canonical six-field me and anonymous text/plain error', async () => {
   const { sandbox, req } = loadMock();
@@ -6040,12 +6070,11 @@ test('E1b immutable exactly-once attempt validator: UNIT fake records never brow
   for(const change of [{ok:false},{checks:0},{report:{errors:['501 network failure']}}])assert.throws(()=>e1bEpoch.validateAttempt(id,{...result,...change},exit,id));
   assert.throws(()=>e1bEpoch.validateAttempt(id,result,null,id));
 });
-test('E1b all 38 ACTUAL frontend registered IDs exactly once: UNIT records, not browser PASS', async () => {
+test('E1b all 46 ACTUAL frontend registered IDs exactly once: UNIT records, not browser PASS', async () => {
   const {CASES}=await import('./e2e/fixtures/f3/f3-cases.mjs');
-  // 注：这个字面量**已经陈旧**（本文件是未接线单测，带已知基线红）：#435 之前实际注册
-  // 就是 39，本批新增 node-deployments 后是 40。未在本批修正 —— 修正它等于顺手改“已知
-  // 红台账”，需要连同 docs/lint-guards.md 的账一起改。
-  assert.equal(CASES.length,38); // #376/#384 playbook-missing +1；yaml-create +1；#424 observe-index-all 再 +1
+  // 条数 = f3-cases 的直呼项 + 四组循环展开；顺带钉「没有重复注册」（这个数漂过）。
+  assert.equal(CASES.length,46);
+  assert.equal(new Set(CASES.map(x=>x.id)).size,46,'注册 ID 不得重复');
   const attempts=CASES.map(({id},i)=>({suite:'frontend',id,runId:'UNIT-all38',attemptId:'a'+i,cwd:ROOT,mode:'explicit-mock',authority:'explicit-mock',sourceHash:'unitSHA',sourceCodeSHA:'unitCode',fullSourceArtifactSHA:'unitSHA',artifactEpoch:'unitSHA'}));
   const exits=attempts.map(x=>({...x,exitCode:0,signal:null,timedOut:false}));
   const registered=CASES.map(x=>x.id),manifest={registered,attempts};
@@ -6262,6 +6291,8 @@ test('FINALR1 m2 actual frontend aggregate retains completed nonzero red without
     evidenceDirectory: () => '/UNIT', readEnrollments: async () => [meta],
     readFile: async file => JSON.stringify(file.endsWith('case.json') ? evidence : exit),
     writeFile: async (file, text) => { aggregate = JSON.parse(text); }, path,
+    // 切片外的 import 与 stepJudgement 在这里补齐，否则 ReferenceError 会顶替真正的断言。
+    INCOMPLETE: 'incomplete', TIMEOUT: 'timeout', readRetryRecord: async () => null, stepJudgement: () => '',
     H: { bad: (id, message) => failures.push({ id, message }), ok: () => assert.fail('red cannot pass') } });
   const start = source.includes('function validateCompletion(') ? source.indexOf('function validateCompletion(') : source.indexOf('async function aggregate(');
   const fn = vm.runInContext(source.slice(start, source.indexOf('\nH.startTimer();', start)) + '\naggregate', ctx);
@@ -6489,7 +6520,7 @@ for (const synthetic of [true, false]) {
     assert.ok(response.parsedAtMs <= response.returnAtMs);
     assert.ok(response.returnAtMs <= doc.snapshot.atMs);
     if (synthetic) {
-      const caught = doc.events.find(e => e.event === 'loadErrorNode:input');
+      const caught = doc.events.find(e => e.event === 'errorFacts:input');
       assert.equal(caught.error.name, 'TypeError');
       assert.equal(caught.error.message, 'safeSyntheticRenderError');
       assert.ok(caught.error.stack.some(s => s.includes('taskChain')));
@@ -6506,7 +6537,7 @@ for (const synthetic of [true, false]) {
       assert.match(next.snapshot.actualDocumentURL, /\/index\.html\?namespace=default$/);
       assert.equal(next.snapshot.taskRows, 0, 'Do not copy the old Trace body into index evidence');
     }
-    console.log('TRACE ARCHIVE SAVED ' + JSON.stringify({ reportPath: saved.reportPath, documentId: doc.documentId, snapshot: doc.snapshot, response: { actualURL: response.actualURL, namespace: response.namespace, uid: response.uid, httpStatus: response.httpStatus, kind: response.response.kind, taskIDs: response.response.tasks.items.map(t => t.metadata.name), parseStartedAtMs: response.parseStartedAtMs, parsedAtMs: response.parsedAtMs, returnAtMs: response.returnAtMs }, caught: doc.events.filter(e => e.event === 'loadErrorNode:input') }));
+    console.log('TRACE ARCHIVE SAVED ' + JSON.stringify({ reportPath: saved.reportPath, documentId: doc.documentId, snapshot: doc.snapshot, response: { actualURL: response.actualURL, namespace: response.namespace, uid: response.uid, httpStatus: response.httpStatus, kind: response.response.kind, taskIDs: response.response.tasks.items.map(t => t.metadata.name), parseStartedAtMs: response.parseStartedAtMs, parsedAtMs: response.parsedAtMs, returnAtMs: response.returnAtMs }, caught: doc.events.filter(e => e.event === 'errorFacts:input') }));
   });
 }
 
@@ -6532,7 +6563,8 @@ test('TRACE-ARCHIVE: observer preserves original return Promise, this, arguments
   const args = [{ kind: 'Task' }, { tasks: [] }];
   let receiver, received;
   const graphs = { taskChain(...values) { receiver = this; received = values; return promise; } };
-  const A = { model: { task() { throw originalError; } }, loadErrorNode() { return promise; }, readScope() { return { namespace: 'default' }; } };
+  // trace 页的错误分级入口是 A.errorFacts（#378），loadErrorNode 早已不再被它调用。
+  const A = { model: { task() { throw originalError; } }, errorFacts() { return promise; }, readScope() { return { namespace: 'default' }; } };
   const doc = { readyState: 'complete', documentElement: { lang: 'es' }, querySelector: () => null, querySelectorAll: () => [], getElementById: () => null, addEventListener() {} };
   const win = { Anotify: A, AnotifyGraphs: graphs, addEventListener() {} };
   const context = vm.createContext({ window: win, document: doc, navigator: { language: 'es' }, location: new URL('http://fixture/es/trace.html?namespace=default'), URL, URLSearchParams, performance: { timeOrigin: 123, now: () => 7 }, MutationObserver: class { observe() {} } });
@@ -6541,10 +6573,10 @@ test('TRACE-ARCHIVE: observer preserves original return Promise, this, arguments
   assert.equal(receiver, graphs);
   assert.deepEqual(received, args);
   assert.throws(() => A.model.task(args[0]), e => e === originalError);
-  assert.equal(A.loadErrorNode(originalError), promise);
+  assert.equal(A.errorFacts(originalError), promise);
   const scene = win.__f3TraceSnapshot();
   assert.ok(scene.events.some(e => e.event === 'task:throw-before-cleanup'));
-  assert.ok(scene.events.some(e => e.event === 'loadErrorNode:input'));
+  assert.ok(scene.events.some(e => e.event === 'errorFacts:input'));
 });
 
 /* ------------------------------------------------------------------ *

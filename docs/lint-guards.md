@@ -97,7 +97,7 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 收益就在这一条：**被引用方改规则码/删文件时，注解会立刻红，而不是安静地变成谎**。
 棘轮基线写在脚本常量里（`CLAIM_UNBACKED_BASELINE` / `COUNT_UNMARKED_BASELINE`，带实测日期与命令），只许降。
 
-**未接线的既有工具**（本批只登记，不改行为）：`scripts/ui-audit-mobile.mjs`（需站点+浏览器，属合并前手工门禁）、`scripts/v4-frontend.test.mjs`（179 个 `test()`，相对 main 基线红 11 条 —— **带基线红的门禁不许进 CI**，否则重演「恒红即无门禁」）。`scripts/check-contrast.mjs` 已接进 `make fe`。
+**未接线的既有工具**（本批只登记，不改行为）：`scripts/ui-audit-mobile.mjs`（需站点+浏览器，属合并前手工门禁）。`scripts/v4-frontend.test.mjs` 已于 2026-11-25 清零并接进 `make ci`（`make test-frontend-v4`，全绿）—— 它曾以「未接线 + 基线红」状态继续腐烂，还长出静默假绿，是「带基线红的门禁不许进 CI」这条规则的反面教材。`scripts/check-contrast.mjs` 已接进 `make fe`。
 
 ### 1.3 L11 判据的三个易踩点（#476）
 

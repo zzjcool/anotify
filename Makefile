@@ -167,6 +167,13 @@ test-frontend: ## 前端单测（node:test）：消息流字段映射（#456）+
 	@# #476：表格的行聚合 / 「缺但被要求」判据（含变异自证）。
 	node --test scripts/vars-table.test.mjs
 
+# 页面控制器的回归面（2026-11-25 清零基线红后接进 ci）。
+# 跑真实页面内联脚本（vm + 记录型 DOM + 真 mock）：命名空间 CAS/ABA、链路图底图语义、
+# node YAML 写入口、错误分级、注册表唯一性。go 单测与静态检查都看不见这些面；
+# 未接线期间它烂过一轮，还长出三处静默假绿（自动造节点让「不存在」断言恒真）。
+test-frontend-v4: ## 前端页面控制器单测（scripts/v4-frontend.test.mjs）
+	node --test scripts/v4-frontend.test.mjs
+
 # GitHub 上那条 `GitGuardian Security Checks` 是**服务端 App**：推上去之后才扫 PR diff。
 # 本地这一道才是推之前的防线；它同时也盯「被跟踪的 .env / *.pem / *.key」。
 check-secrets: ## 秘密守卫：私钥块 / 供应商密钥形状 / 本仓令牌形状 / 被跟踪的 .env 文件
@@ -366,6 +373,7 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	$(MAKE) check-affected-map
 	@# 前端单测（#456）：管理后台「全局消息」三列真的从事件字段读值（变异自证同在此）。
 	$(MAKE) test-frontend
+	$(MAKE) test-frontend-v4
 	$(MAKE) check-secrets
 	go build ./...
 	@# 节点 CLI 的可发现面（#334）：手册/安装脚本里的子命令与 flag 必须能在真 anode 里找到，
