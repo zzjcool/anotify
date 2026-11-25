@@ -1,18 +1,3 @@
-# issue-solve · 手动触发一个 issue 的处理流程（入口清单）
-#
-# 这个包**不做执行**，只做判断与交接。它回答的问题是：
-#
-#   这个 issue 现在能不能动手？该动手的活交给谁？
-#
-#   手动触发（POST /v1/hooks/<token>，{"repo": "...", "issue": 649}）
-#     → claim（capabilities/claim.yaml）
-#          ├─ 已关闭 / 是 PR / 已有 open PR / 已有同名分支 → skip（留证据，不动手）
-#          ├─ 命中需要人裁决（label 或正文关键词）      → gate（把问题摆出来，等人回答）
-#          └─ 可以动手                                  → dispatch（下单给执行体）
-#
-# 为什么用手动触发而不是接 GitHub 原生 webhook：触发的人本来就知道要做哪个 issue，
-# 手动一次就把"谁能触发"（会话身份）与"幂等"（人看得见状态）两个问题一起解决了。
-# 见仓库外的本地预案（`~/agents/plans/issue-webhook-pipeline.md`）：11 步流程 + 失败模式表 + 停车位。
 apiVersion: anotify/v1
 kind: Playbook
 
@@ -36,34 +21,25 @@ spec:
         description: 前缀 slug，会拼进能力名与源名（例如 anotify）
       repo:
         type: string
-        # owner/name；只允许 GitHub 会出现的字符，避免把空白或 URL 填进来
         pattern: '^[A-Za-z0-9][A-Za-z0-9.-]*/[A-Za-z0-9][A-Za-z0-9._-]*$'
-        description: |
-          要处理的仓库（owner/name）。**装包时填一次**，之后每次触发只给 issue 号 ——
-          一个安装 = 一个仓库的收单线。要换仓库就再装一次（换 project 或换 release）。
+        description: 要处理的仓库（owner/name）。装包时填一次，之后每次触发只给 issue 号
       ghTokenFile:
         type: string
         default: ''
-        description: |
-          可选。可读的 token 文件路径（**不是 token 本身**）：文件里的值作为
-          `authorization: Bearer …` 头发给 GitHub。留空则走匿名 API（公开仓库够用，
-          但有速率限制：核心 60/小时、搜索 10/分钟）。
+        description: 可读的 token 文件路径（不是 token 本身）；留空走匿名 API（有速率限制）
       dispatchUrl:
         type: string
         pattern: '^https://|^http://(localhost|127\.0\.0\.1)(:[0-9]+)?'
-        description: |
-          执行体的入口。dispatch 能力会把工单 POST 到这里（JSON）。
-          本地演练可以填 http://localhost:9999/hook 用一个假接收器看载荷。
+        description: 执行体入口，dispatch 会把工单 POST 到这里
       notifyUrl:
         type: string
         default: ''
-        description: 可选。gate 分支（需要人裁决）时把问题 POST 到这里；留空则只落证据文件。
+        description: 可选。gate（需人裁决）时把问题 POST 到这里；留空只落证据文件
       branchPrefix:
         type: string
         default: pi-subagent/
-        description: 判定"已有同名分支"时用的分支名前缀（与你们的派发约定一致）。
+        description: 判"已有疑似分支"时用的分支名前缀
 
-  # 相对包根的路径（不是内联文档）。包内每个 .yaml 都必须被这里列到，否则创建被拒。
   capabilities:
     - capabilities/claim.yaml
     - capabilities/dispatch.yaml

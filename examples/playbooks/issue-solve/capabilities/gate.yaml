@@ -1,10 +1,3 @@
-# 需要人裁决的分支：把"要回答什么"写清楚，然后停住。
-#
-# 停住的意思是：**不动手**。等人在 issue 上回答之后，再手动触发一次
-# （第二次进来时 claim 会看到新的事实，例如已有 PR 或 label 变了）。
-#
-# 为什么要单独一个能力而不是"问一嘴然后继续"：我们踩过的翻车都发生在
-# "它自作聪明替人选了口径"。所以 here：问题落盘 + 可选通知，然后结束。
 apiVersion: anotify/v1
 kind: Capability
 
@@ -26,7 +19,7 @@ spec:
   requires:
     commands: [curl, printf]
   lifecycle:
-    idempotent: true          # 只是写证据 + 发一条通知，重复一次无害
+    idempotent: true
     timeoutSec: 45
   run:
     entrypoint: run.sh
@@ -69,5 +62,3 @@ spec:
                 -X POST -H 'content-type: application/json' --data-binary @- "${notify_url}" || echo 000)
           echo "gate: 通知 HTTP ${code}"
         fi
-    env:
-      NOTIFY_URL_PLACEHOLDER: '{{values.notifyUrl}}'

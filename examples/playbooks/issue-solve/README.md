@@ -79,6 +79,15 @@ curl -fsS -X POST "$HOOK_URL" -H 'content-type: application/json' \
    节点自己，本地演练填 `127.0.0.1` 会被 400 拒。已放宽到也允许 `127.0.0.1`。
 3. **`repo` 曾经要从载荷传**：现在挪到安装参数——一个安装一条收单线，触发时只说 issue 号。
 
+## 为什么包里的 YAML 一条注释都没有
+
+注释密度棘轮是**全仓双向冻结**的（总量不许长，新增注释行必须由别处删掉来付账）。
+一个能力的最小成本是 1 行注释（`#!/bin/sh` 必须打头），所以本包把解释全放在这份 README 与
+各处的 `description:` 字段里 —— 它们是文档面，不占注释预算。
+
+同批在 `pr-triage-notify/playbook.yaml` 删掉了 3 行与本文重复的注释来付这 3 行 shebang 的账，
+基线随之收紧（`examples/playbooks/pr-triage-notify: 15 → 12`）。
+
 ## 已知边界（写在这里，而不是等踩了再说）
 
 1. **匿名 API 有速率限制**：不配 `ghTokenFile` 时核心 60/小时、搜索 10/分钟。批量用请配 token 文件。

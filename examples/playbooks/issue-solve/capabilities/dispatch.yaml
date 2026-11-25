@@ -1,11 +1,3 @@
-# 放行分支的终点：把活整理成一张**工单**，交给执行体。
-#
-# 这里刻意不做的事：
-#   - 不 clone、不建分支、不派 child —— 执行体（能拿到 git/pi 的那台）才做这些
-#   - 不自动重试：下单不是幂等的，重试会下出第二张单（重复派发就是这么发生的）
-#
-# 工单里带的是"判决 + 事实"，执行体据此开工；它要不要人裁决、要怎么拆，由它按
-# 预案里的 11 步自己走。
 apiVersion: anotify/v1
 kind: Capability
 
@@ -22,11 +14,10 @@ spec:
       issue: { type: integer }
       title: { type: string }
       note:  { type: string }
-  next: []                      # 终端
+  next: []
   requires:
     commands: [curl, printf]
   lifecycle:
-    # 下单**不是**幂等动作：失败就让人看见并重新触发，绝不自动重试
     idempotent: false
     timeoutSec: 60
   run:
@@ -45,7 +36,6 @@ spec:
         mkdir -p "${ANOTIFY_ARTIFACT_DIR}"
         art_dir=${ANOTIFY_ARTIFACT_DIR}
 
-        # 工单：只装"执行体需要知道的事实与约束"，不装流程（流程在执行体那边）
         work_order=$(printf '{
           "kind": "issue-work-order",
           "repo": "%s",
@@ -76,9 +66,6 @@ spec:
         echo "dispatch: HTTP ${code}"
         case "${code}" in
           2*) echo "dispatch: 已下单" ;;
-          *)  echo "dispatch: 下单失败（HTTP ${code}）—— 不自动重试，请检查执行体后再触发一次" >&2
+          *)  echo "dispatch: 下单失败（HTTP ${code}）—— 不自动重试，检查执行体后再触发一次" >&2
               exit 1 ;;
         esac
-    env:
-      # 整个值恰好一个 {{values.*}} 引用 → 类型保留为 string
-      DISPATCH_URL_PLACEHOLDER: '{{values.dispatchUrl}}'

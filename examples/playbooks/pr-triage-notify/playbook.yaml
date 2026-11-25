@@ -1,8 +1,5 @@
 # pr-triage-notify · 一个可安装的 playbook 示例（入口清单）
-#
-# 这个文件只回答两件事：这次安装要哪些参数（spec.values），以及包由哪些文件组成
-# （spec.capabilities / spec.sources）。它自己不渲染 —— 包名与路径都不参与模板。
-#
+# 这个文件只回答两件事：这次安装要哪些参数（spec.values）、包由哪些文件组成；它自己不渲染。
 #   事件进来（sources/push.yaml，webhook）
 #     → 判定（capabilities/triage.yaml，按 changedLines 分流）
 #       → 高危：page（capabilities/page.yaml，POST 到你的告警端点）
