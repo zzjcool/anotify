@@ -6,6 +6,12 @@ export GOTOOLCHAIN := auto
 
 PORT ?= 8080
 
+# sitegen 的语言表（第一个是默认语言，输出到根；其余进 /{lang}/）。
+# fe-clean 要用同一份语言表推语言目录，所以它只在这里写一次。
+LANGS ?= zh-CN,en,ja,es
+comma := ,
+LANG_DIRS := $(filter-out zh-CN,$(subst $(comma), ,$(LANGS)))
+
 # 构建版本元数据（契约 §1）：注入 server/devseed 的 internal/version，以及节点
 # 二进制 anode 的 main.version / main.commit（两处变量不同源，必须由同一份构建事实注入）。
 #
@@ -39,13 +45,13 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-comment-density check-guard-selftest check-annotations check-doc-links check-doc-endpoints check-examples check-secrets check-config-writes check-yaml-doc check-affected-map check-e2e-lock hooks lint-go tools test-affected e2e-affected plan-affected test-frontend
+.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-comment-density check-guard-selftest check-annotations check-doc-links check-doc-endpoints check-examples check-secrets check-config-writes check-yaml-doc check-affected-map check-e2e-lock hooks lint-go tools test-affected e2e-affected plan-affected test-frontend fe-clean
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
 sitegen: check-classes check-tailwind check-graph-access ## 构建期静态站点生成：web-src/（layouts+pages+locales）→ web/*.html + i18n js
-	go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en,ja,es $(if $(VERSION),-version '$(VERSION)',)
+	go run ./cmd/sitegen -src web-src -out web -langs $(LANGS) $(if $(VERSION),-version '$(VERSION)',)
 
 check-classes: ## 前端死类守卫：校验 web-src 里每个 class 都落在设计系统 / Tailwind 工具类内（防自造未定义类）
 	node scripts/check-classes.mjs
@@ -107,7 +113,7 @@ check-ui-copy: ## 文案检查：用户可见文案（locale 值 + 页面文本�
 check-contrast: ## 对比度守卫：tokens.css 双主题 48 对 WCAG 复算（#370/#371 打回点）
 	node scripts/check-contrast.mjs
 
-check-dist-fresh: ## dist 新鲜度：dist 必须与 web-src/api/web 的源指纹一致（陈旧就判红，不自动重建）
+check-dist-fresh: ## dist 新鲜度与洁净度：源指纹必须一致，且不许有「源已不存在」的残留（陈旧/残留就判红，不自动重建）
 	node scripts/dist-stamp.mjs --self-test
 	node scripts/dist-stamp.mjs --check
 
@@ -166,6 +172,8 @@ test-frontend: ## 前端单测（node:test）：消息流字段映射（#456）+
 	node --test scripts/yamldoc.test.mjs
 	@# #476：表格的行聚合 / 「缺但被要求」判据（含变异自证）。
 	node --test scripts/vars-table.test.mjs
+	@# #649：指纹脚本的真磁盘 prune —— 残留消失、其它阶段产物保留、写盘集与 dist-stamp 的期望集相等。
+	node --test scripts/hash.test.mjs
 
 # 页面控制器的回归面（2026-11-25 清零基线红后接进 ci）。
 # 跑真实页面内联脚本（vm + 记录型 DOM + 真 mock）：命名空间 CAS/ABA、链路图底图语义、
@@ -203,6 +211,14 @@ fe: check-classes check-wire-fields check-config-writes check-css check-i18n-key
 	node scripts/dist-stamp.mjs --write
 
 dist: fe ## 同 fe（生成 embed 产物）
+
+# 生成物不是一次性的：web/*.html 与 internal/server/dist/ 都是 gitignore 的产物，
+# 只写不删就会留下「源已删、产物还在」的死页面，再被 go:embed 编进二进制（#649）。
+# 日常自愈是 fe 里的 prune（只删本轮没产出的文件）；fe-clean 是整份重置的显式入口
+# （换分支 / 改 -langs 之后本地与源对不上，或想从零核对时用）。
+fe-clean: ## 清掉前端生成物（web/*.html + 语言目录 + i18n js + dist），下次 make fe 从零重建
+	rm -rf web/*.html $(addprefix web/,$(LANG_DIRS)) web/i18n.*.js internal/server/dist
+	@echo "✅ 已清掉前端生成物（web-src/ 与 web/ 里手写的源文件不受影响）"
 
 # 默认 go build / go run 不嵌入 dist（开发期 ANOTIFY_STATIC 即可编译）。
 # 生产单二进制加 -tags embeddist，且依赖本目标先跑的 fe。
@@ -348,6 +364,8 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	$(MAKE) check-agents
 	$(MAKE) lint-go
 	$(MAKE) fe
+	@# dist 里出现「源已不存在」的残留就判红（#649：删掉的页面被 embed 后继续 200）
+	$(MAKE) check-dist-fresh
 	@# 守卫自测 + 测试纪律棘轮（docs/lint-guards.md）：毫秒级，放在最便宜的位置，
 	@# 让"检查本身坏了"和"测试纪律倒退"在 PR 里第一批就红。
 	$(MAKE) check-guard-selftest

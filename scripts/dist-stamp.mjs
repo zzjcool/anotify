@@ -22,18 +22,20 @@
  *      生成物清单只有 .gitignore 一份，用 git ls-files -co --exclude-standard 取源文件。
  *   e. 二进制文件照常参与 sha256（web/fonts 与 web/assets 是运行时依赖，跳过等于留洞）；
  *      超过上限的大文件跳过，两者都把计数打印出来（不静默跳过）。
- *   f. 阈值与规则码都是常量，--self-test 逐条覆盖；改判据必须先改自测。
+ *   f. dist 里出现「源已不存在、本轮也不会产出」的文件 ⇒ DIST_ORPHAN 并点名（#649：
+ *      删掉的页面正是这么被 go:embed 编进二进制、继续对外 200 的）；缺本轮该产出的
+ *      文件 ⇒ DIST_INCOMPLETE。期望集由 scripts/hash.mjs 的 expectedDistPaths 给出。
+ *   g. 阈值与规则码都是常量，--self-test 逐条覆盖；改判据必须先改自测。
  *
  * 用法
  *   node scripts/dist-stamp.mjs --write      # make fe 末尾调用（重建后落 stamp）
  *   node scripts/dist-stamp.mjs --check      # make check-dist-fresh / scripts/e2e/run_all.sh 前置
  *   node scripts/dist-stamp.mjs --self-test  # 内存 fixture 红/绿自证
- *   退出码：0 一致 / 1 陈旧、缺失或输入面为空 / 2 用法或环境问题
+ *   退出码：0 一致 / 1 陈旧、脏、缺失或输入面为空 / 2 用法或环境问题
  *   来历：docs/lint-guards.md §1 的 L8 / §2 backlog #3（dist 新鲜度检查）
  *
- * 为什么陈旧要硬失败、不自动重建：自动 make fe 会让「你忘了重建」这条缝隙重新变成
- * 静默（重建后永远绿），也把 e2e 的启动时间翻倍。硬失败把「忘了」换成一次带文件名的
- * 显式报错，代价只有一次 make fe。
+ * 为什么陈旧要硬失败、不自动重建：自动 make fe 会让「你忘了重建」这条缝隙重新变成静默
+ * （重建后永远绿），也把 e2e 的启动时间翻倍；硬失败把它换成一次带文件名的显式报错。
  */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -43,6 +45,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { runsAsMain } from "./lib/direct-run.mjs";
+import { expectedDistPaths, MANIFEST_NAME, OWNED_BY_OTHER_STAGES } from "./hash.mjs";
 
 export const STAMP_NAME = ".source-stamp";
 export const STAMP_VERSION = 1;
@@ -51,13 +54,14 @@ export const MAX_DIGEST_BYTES = 4 * 1024 * 1024;
 /** 判定「二进制」只看开头这么多字节里有没有 NUL。 */
 const BINARY_SNIFF = 8192;
 
-// 规则码：判据红的时候按码分类，便于 --self-test 断言「红的是哪一类」，也便于将来
-// 别处用 @guard scripts/dist-stamp.mjs#<码> 引用（码名改动会立刻暴露引用方）。
+// 规则码：便于 --self-test 断言红的是哪一类，也便于用 @guard scripts/dist-stamp.mjs#<码> 引用。
 export const DIST_STALE = "DIST_STALE";
 export const DIST_STAMP_MISSING = "DIST_STAMP_MISSING";
 export const DIST_STAMP_INCONSISTENT = "DIST_STAMP_INCONSISTENT";
 export const DIST_SURFACE_EMPTY = "DIST_SURFACE_EMPTY";
 export const DIST_LEAK_PRODUCT = "DIST_LEAK_PRODUCT";
+export const DIST_ORPHAN = "DIST_ORPHAN";
+export const DIST_INCOMPLETE = "DIST_INCOMPLETE";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIST_REL = "internal/server/dist";
@@ -66,9 +70,8 @@ const DIST_DIR = path.join(ROOT, ...DIST_REL.split("/"));
 /**
  * 输入面：dist 里每一个字节都是由这些文件派生出来的。
  *
- * 反过来读更清楚 —— dist 由 `make fe` 两步产出：sitegen（web-src/ + api/ → web/*.html）
- * 与 scripts/hash.mjs（web/ → dist/）。所以**凡是这两步读的、且不由它们生成的文件**
- * 都属于输入面；由它们生成的东西（web/*.html、web/{en,es,ja}、web/i18n.*.js）不是。
+ * 输入面 = `make fe` 两步读的**源**文件（sitegen：web-src/ + api/；hash.mjs：web/）。
+ * 由它们生成的东西（web/*.html、web/{en,es,ja}、web/i18n.*.js）不是输入面。
  */
 export const SURFACES = Object.freeze([
 	{
@@ -142,17 +145,39 @@ export function diffDigests(prev, next) {
 	return out;
 }
 
+/** dist 里应当有什么：actual 是实际路径，expected 来自 scripts/hash.mjs 的 expectedDistPaths。 */
+export function compareDistShape({ actual, expected }) {
+	const want = new Set(expected.files);
+	const have = new Set(actual);
+	return {
+		orphans: actual.filter((rel) => !want.has(rel)).sort(),
+		// .source-stamp 不在 missing 面：它是本脚本即将写的文件，缺它就是 DIST_STAMP_MISSING 那条判据的事。
+		missing: expected.files.filter((rel) => !have.has(rel) && !OWNED_BY_OTHER_STAGES.has(rel)).sort(),
+		unresolved: [...expected.unresolved].sort(),
+	};
+}
+
 /**
- * judge：纯函数判据。prev 是读回来的 stamp（null = 缺失 / { invalid } = 不可用），
- * next 是本次重算的 { digests, counts }，emptySurfaces 是解析为空的输入面 id 列表。
- * 判据顺序是有意的：先证「真的查了东西」，再证「stamp 存在且自洽」，最后才比对内容。
+ * judge：纯函数。prev = 读回来的 stamp（null 缺失 / { invalid } 不可用），next = 本次重算的
+ * { digests, counts }，emptySurfaces = 解析为空的输入面，dist = { actual, expected|null, manifestError }。
+ * 顺序有语义：先证「真的查了东西」，再证 dist 没有跨轮残留，再证 stamp 自洽，最后比内容。
  */
-export function judge({ prev, next, emptySurfaces = [] }) {
+export function judge({ prev, next, emptySurfaces = [], dist = null }) {
 	const total = Object.keys(next.digests).length;
 	const stamp = stampOf(next.digests);
 	const base = { counts: next.counts, changes: [], stamp, total };
 	if (total === 0 || emptySurfaces.length) {
 		return { ...base, ok: false, kind: DIST_SURFACE_EMPTY, emptySurfaces };
+	}
+	if (dist && dist.actual.length) {
+		if (!dist.expected) {
+			return { ...base, ok: false, kind: DIST_INCOMPLETE, detail: `manifest.json ${dist.manifestError}` };
+		}
+		const shape = compareDistShape(dist);
+		const shapeBase = { ...base, shape };
+		if (shape.orphans.length) return { ...shapeBase, ok: false, kind: DIST_ORPHAN };
+		if (shape.unresolved.length) return { ...shapeBase, ok: false, kind: DIST_INCOMPLETE, unresolved: shape.unresolved };
+		if (shape.missing.length) return { ...shapeBase, ok: false, kind: DIST_INCOMPLETE, missing: shape.missing };
 	}
 	if (prev === null || prev === undefined) return { ...base, ok: false, kind: DIST_STAMP_MISSING };
 	if (prev.invalid) return { ...base, ok: false, kind: DIST_STAMP_INCONSISTENT, detail: prev.invalid };
@@ -201,6 +226,24 @@ export function formatVerdict(res) {
 			lines.push(`   空的分路：${res.emptySurfaces.join(" / ")}`);
 		}
 		lines.push("   检查 SURFACES 常量，以及是否在仓库根目录（脚本按自身位置定位根目录）里跑");
+		return lines;
+	}
+	if (res.kind === DIST_ORPHAN) {
+		lines.push(`❌ ${DIST_REL} 里有「源已不存在、本轮也不会产出」的残留（它们会被 go:embed 编进二进制）：`);
+		for (const rel of res.shape.orphans.slice(0, MAX_CHANGES_SHOWN)) lines.push(`     - ${rel}`);
+		if (res.shape.orphans.length > MAX_CHANGES_SHOWN) {
+			lines.push(`     … 还有 ${res.shape.orphans.length - MAX_CHANGES_SHOWN} 条，略`);
+		}
+		lines.push("   为什么不该在：dist 是 web/ 的指纹产物，上面这些路径在 web/ 与 manifest.json 里都找不到来源");
+		lines.push("   修法：make fe      # 重新生成；hash.mjs 只删本轮没产出的文件，并逐个打印");
+		return lines;
+	}
+	if (res.kind === DIST_INCOMPLETE) {
+		lines.push("❌ dist 不完整：缺少本轮该产出的文件（或 manifest.json 读不出来）");
+		for (const rel of res.missing || []) lines.push(`     - 缺 ${rel}`);
+		for (const rel of res.unresolved || []) lines.push(`     - ${rel} 在 manifest.json 里没有指纹条目`);
+		if (res.detail) lines.push(`   manifest.json ${res.detail}`);
+		lines.push("   修法：make fe      # 重建 web/ → internal/server/dist/ 并刷新 stamp");
 		return lines;
 	}
 	if (res.kind === DIST_STAMP_MISSING) {
@@ -340,8 +383,8 @@ async function writeStamp({ digests, counts }) {
 	const payload = {
 		version: STAMP_VERSION,
 		tool: "scripts/dist-stamp.mjs",
-		// 产物目录本身被 gitignore，所以这份 stamp 也是构建副产物、不入库；
-		// 它跟着 dist 一起被 make fe 重建（hash.mjs 会先清空 dist，本文件在之后写入）。
+		// 产物目录被 gitignore，这份 stamp 也是构建副产物；它由 make fe 末尾写入
+		// （hash.mjs 只 prune，不碰其它阶段的产物）。
 		surfaces: SURFACES.map((s) => ({ id: s.id, note: s.note })),
 		counts: {
 			total: Object.keys(digests).length,
@@ -387,16 +430,37 @@ async function readStampFile() {
 // CLI
 // ---------------------------------------------------------------------------
 
+/** dist 的实际文件清单（相对 dist）与「应当有什么」的期望集（源目录 + manifest.json 推出来）。 */
+async function loadDistState() {
+	const actual = (await walkDir(DIST_REL)).map((rel) => rel.slice(DIST_REL.length + 1)).sort();
+	const srcRels = (await walkDir("web")).map((rel) => rel.slice("web/".length));
+	let manifest = null;
+	let manifestError = "";
+	try {
+		const parsed = JSON.parse(await fs.readFile(path.join(DIST_DIR, MANIFEST_NAME), "utf8"));
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) manifest = parsed;
+		else manifestError = "内容不是对象";
+	} catch (e) {
+		manifestError = e.code === "ENOENT" ? "不存在（dist 不是 hash.mjs 产出的）" : `读不出：${e.message}`;
+	}
+	return {
+		actual,
+		manifestError,
+		expected: manifest ? expectedDistPaths({ srcRels, manifest }) : null,
+	};
+}
+
 async function main(mode) {
 	const { rels, emptySurfaces } = await loadSurface();
 	const inputs = await readInputs(rels);
 	const { digests, counts } = digestSurface(inputs);
+	const dist = await loadDistState();
 
 	if (mode === "write") {
-		const res = judge({ prev: null, next: { digests, counts }, emptySurfaces });
-		if (res.kind === DIST_SURFACE_EMPTY) {
+		const res = judge({ prev: null, next: { digests, counts }, emptySurfaces, dist });
+		if (res.kind !== "OK" && res.kind !== DIST_STAMP_MISSING) {
 			for (const line of formatVerdict(res)) console.error(line);
-			console.error("❌ 拒绝写入空 stamp（会把「什么都没查」记成绿）");
+			console.error("❌ 拒绝写入 stamp：dist 不是这一轮源的干净产物（先把上一行说的问题修掉）");
 			return 1;
 		}
 		const payload = await writeStamp({ digests, counts });
@@ -407,7 +471,7 @@ async function main(mode) {
 	}
 
 	const prev = await readStampFile();
-	const res = judge({ prev, next: { digests, counts }, emptySurfaces });
+	const res = judge({ prev, next: { digests, counts }, emptySurfaces, dist });
 	const lines = formatVerdict(res);
 	const emit = res.ok ? console.log : console.error;
 	for (const line of lines) emit(line);
@@ -570,6 +634,79 @@ export function selfTest() {
 		const next = nextOf(fixtureFiles());
 		const res = judge({ prev: { invalid: "不是合法 JSON" }, next });
 		return res.kind === DIST_STAMP_INCONSISTENT && formatVerdict(res).join("\n").includes("make fe");
+	});
+
+	check("red: dist 里有源已不存在的残留 ⇒ 判红并点名该文件", () => {
+		const next = nextOf(fixtureFiles());
+		const dist = {
+			actual: ["index.html", "manifest.json", STAMP_NAME, "sw.js"],
+			expected: { files: ["index.html", "manifest.json", STAMP_NAME].sort(), unresolved: [] },
+		};
+		const res = judge({ prev: prevOf(next), next, dist });
+		const text = formatVerdict(res).join("\n");
+		return res.ok === false && res.kind === DIST_ORPHAN && text.includes("sw.js") && text.includes("make fe");
+	});
+
+	check("green: 指纹资源 / .source-stamp / manifest.webmanifest 都是产出 ⇒ 不误伤", () => {
+		const next = nextOf(fixtureFiles());
+		const files = [
+			"assets/app.1a2b3c4d.css",
+			"index.html",
+			"manifest.json",
+			"manifest.webmanifest",
+			STAMP_NAME,
+		].sort();
+		const res = judge({ prev: prevOf(next), next, dist: { actual: files, expected: { files, unresolved: [] } } });
+		return res.ok === true && formatVerdict(res).join("\n").includes("✅");
+	});
+
+	check("red: dist 缺本轮该产出的文件 ⇒ 判红并点名（截断的 dist）", () => {
+		const next = nextOf(fixtureFiles());
+		const files = ["manifest.json", STAMP_NAME, "index.html"];
+		const res = judge({
+			prev: prevOf(next),
+			next,
+			dist: { actual: ["manifest.json", STAMP_NAME], expected: { files, unresolved: [] } },
+		});
+		const text = formatVerdict(res).join("\n");
+		return res.kind === DIST_INCOMPLETE && text.includes("缺 index.html");
+	});
+
+	check("red: manifest.json 读不出 ⇒ 判红（期望集无法确立）", () => {
+		const next = nextOf(fixtureFiles());
+		const res = judge({
+			prev: prevOf(next),
+			next,
+			dist: { actual: ["index.html"], expected: null, manifestError: "不存在（dist 不是 hash.mjs 产出的）" },
+		});
+		const text = formatVerdict(res).join("\n");
+		return res.kind === DIST_INCOMPLETE && text.includes("manifest.json");
+	});
+
+	check("green: expectedDistPaths 把源映射成指纹名 + dev-only 不进 dist", () => {
+		const { files, unresolved } = expectedDistPaths({
+			srcRels: ["index.html", "ui.css", "mock.js", "manifest.webmanifest", "fonts/x.woff2"],
+			manifest: { "ui.css": "ui.aaaaaaaa.css", "fonts/x.woff2": "fonts/x.bbbbbbbb.woff2" },
+		});
+		return (
+			files.includes("ui.aaaaaaaa.css") &&
+			files.includes("index.html") &&
+			files.includes("manifest.webmanifest") &&
+			files.includes(STAMP_NAME) &&
+			!files.includes("mock.js") &&
+			unresolved.length === 0
+		);
+	});
+
+	check("red: 该指纹的源在 manifest 里没条目 ⇒ unresolved（dist 不完整）", () => {
+		const { unresolved } = expectedDistPaths({ srcRels: ["ui.css"], manifest: {} });
+		const next = nextOf(fixtureFiles());
+		const res = judge({
+			prev: prevOf(next),
+			next,
+			dist: { actual: ["manifest.json", STAMP_NAME], expected: { files: ["manifest.json", STAMP_NAME], unresolved } },
+		});
+		return unresolved.includes("ui.css") && res.kind === DIST_INCOMPLETE && res.unresolved.includes("ui.css");
 	});
 
 	check("red: 产物自身混进输入面 ⇒ 点名（stamp 自我指涉）", () => {
