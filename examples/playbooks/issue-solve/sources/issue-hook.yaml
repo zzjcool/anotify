@@ -25,6 +25,8 @@ spec:
         note:
           type: string
           maxLength: 500
+          # 默认空串：**只给 issue 号**是最常见的触发方式，不能因为没写 note 就被剪枝
+          default: ''
           description: 可选。触发人写的一句话（会进工单，便于执行体理解意图）
     sample:
       issue: 649
