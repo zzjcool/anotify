@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict'; // 源详情页链路图（#652）：① 图上有源 + 3 个能力 + 3 条边（源→claim，claim→dispatch/gate）；② 图库缺失只留一行说明、其余区块照常
+import assert from 'node:assert/strict'; // 源详情页链路图（#652）：① 图上有源 + 三个能力 + 三条边（源→claim，claim→dispatch/gate）；② 图库缺失只留一行说明、其余区块照常
 
 const NS = '/v1/namespaces/default'; // 夹具全部走真实 API（mock 权威下由 MockApi 承接），不写库、不伪造
 const SOURCE = 'graph-chain';
@@ -10,7 +10,7 @@ const CHAIN = [
 	['graph-claim', ['graph-dispatch', 'graph-gate']],
 ];
 const WANT_NODES = ['__source__', 'graph-claim', 'graph-dispatch', 'graph-gate']; // 源节点由渲染层的触发器节点承担
-const WANT_EDGES = ['__source__→graph-claim', 'graph-claim→graph-dispatch', 'graph-claim→graph-gate']; // 拓扑：1 条入口 + 2 条下游
+const WANT_EDGES = ['__source__→graph-claim', 'graph-claim→graph-dispatch', 'graph-claim→graph-gate']; // 拓扑：一条入口边 + 两条下游边
 
 async function ensureCapability(d, name, next) {
 	const body = {
