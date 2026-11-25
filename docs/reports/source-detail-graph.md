@@ -70,8 +70,8 @@ pageerror 断言），断言：图上 0 个节点、宿主文字恰为 `sources.
 
 | 变异 | 做法 | 结果 | 现场 |
 | --- | --- | --- | --- |
-| ① 删掉图的渲染调用 | `void drawGraph(...)` → `void 0` | **红** | `图必须真画出来（4 节点），实际 {"dom":[],"spec":null,"mounted":false,"text":""}` |
-| ② 把 targets 解析成空 | `graphs.js` 的 `targetsOf()` → `return []` | **红** | `{"dom":["__source__"],"spec":{"nodes":["__source__"],"edges":[]},"mounted":true}` —— 只剩源节点，边 0 条 |
+| ① 删掉图的渲染调用 | `void drawGraph(...)` → `void 0` | **红** | `图必须真画出来（4 节点），实际 {"waited":12017,"dom":[],"spec":null,"mounted":false,"text":""}` |
+| ② 把 targets 解析成空 | `graphs.js` 的 `targetsOf()` → `return []` | **红** | `{"waited":12020,"dom":["__source__"],"spec":{"nodes":["__source__"],"edges":[]},"mounted":true}` —— 只剩源节点，边 0 条 |
 
 两条都在改完后 `make fe` + 重跑同一 case 得到；改回后同一 case 恢复两条 PASS。
 

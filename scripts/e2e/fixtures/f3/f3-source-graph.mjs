@@ -36,18 +36,22 @@ async function ensureSource(d) {
 	return created;
 }
 
-const readGraph = (page) => // 三样事实：DOM 节点（用户看得见的）、host._graphSpec（拓扑到底连成什么形状）、宿主是否真挂了图
-	page.evaluate((sel) => {
+const readGraph = (page, want) => // 三样事实：DOM 节点（用户看得见的）、host._graphSpec（拓扑到底连成什么形状）、宿主是否真挂了图
+	page.evaluate(async ([sel, target, budget]) => { // 图是异步挂的（await graphLib + 拓扑取数）：有界地等节点数到位，到点把实测值交回去由断言说清差在哪（不吞异常）
+		const count = () => document.querySelectorAll(sel + ' [data-node-id]').length;
+		const started = Date.now();
+		while (count() !== target && Date.now() - started < budget) await new Promise((r) => setTimeout(r, 50));
 		const host = document.querySelector(sel);
-		if (!host) return null;
+		if (!host) return { waited: Date.now() - started, dom: [], spec: null, mounted: false, text: '' };
 		const spec = host._graphSpec;
 		return {
+			waited: Date.now() - started,
 			dom: [...host.querySelectorAll('[data-node-id]')].map((n) => n.getAttribute('data-node-id')),
 			spec: spec ? { nodes: spec.nodes.map((n) => n.id), edges: spec.edges.map((e) => e.from + '→' + e.to) } : null,
 			mounted: host.classList.contains('flograph'),
 			text: (host.textContent || '').trim().slice(0, 200),
 		};
-	}, HOST);
+	}, [HOST, want, 12000]);
 
 export async function sourceDetailGraph(d) {
 	const { page, goto, check } = d;
@@ -57,10 +61,8 @@ export async function sourceDetailGraph(d) {
 
 	await goto('source-detail', 'namespace=default&name=' + SOURCE, 'zh-CN');
 	await page.waitForFunction((name) => document.querySelector('#src-detail')?.getAttribute('data-source') === name, SOURCE, { timeout: 20000 });
-	await page.waitForFunction(([sel, want]) => document.querySelectorAll(sel + ' [data-node-id]').length === want, [HOST, WANT_NODES.length], { timeout: 20000 }).catch(() => null); // 图是异步挂的（await graphLib + 拓扑取数）：等节点数落到 4，不睡固定延时；等不到不在这里抛，留下面那条带实测节点数的断言
-	const drawn = await readGraph(page);
-	assert.equal(await page.locator(HOST + ' [data-node-id]').count(), WANT_NODES.length, '图必须真画出来（4 节点），实际 ' + JSON.stringify(drawn));
-	assert.ok(drawn, '源详情页必须有链路图宿主 ' + HOST);
+	const drawn = await readGraph(page, WANT_NODES.length);
+	assert.equal(drawn.dom.length, WANT_NODES.length, '图必须真画出来（' + WANT_NODES.length + ' 节点），实际 ' + JSON.stringify(drawn));
 	assert.equal(drawn.mounted, true, '宿主上必须真的挂了图（.flograph），实际 ' + JSON.stringify(drawn.text));
 	assert.deepEqual(drawn.dom.slice().sort(), WANT_NODES.slice().sort(), '图上必须是源 + 三个能力，实际 ' + drawn.dom.join(','));
 	assert.ok(drawn.spec, 'host._graphSpec 必须存在（图的拓扑事实）');
