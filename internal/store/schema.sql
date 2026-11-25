@@ -81,26 +81,6 @@ CREATE TABLE IF NOT EXISTS api_keys (
 
 CREATE INDEX IF NOT EXISTS idx_apikeys_user ON api_keys(user_id);
 
--- 接收设备（Web Push 订阅）——属于用户，不属于命名空间。
-CREATE TABLE IF NOT EXISTS devices (
-    id             TEXT PRIMARY KEY,
-    user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name           TEXT NOT NULL DEFAULT '',
-    platform       TEXT NOT NULL DEFAULT '',
-    enabled        INTEGER NOT NULL DEFAULT 1,
-    event_scope    TEXT NOT NULL DEFAULT 'final',
-    tags           TEXT NOT NULL DEFAULT '[]',
-    endpoint       TEXT NOT NULL UNIQUE,
-    p256dh         TEXT NOT NULL,
-    auth           TEXT NOT NULL,
-    user_agent     TEXT NOT NULL DEFAULT '',
-    created_at     INTEGER NOT NULL,
-    last_active    INTEGER,
-    last_delivered INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
-
 -- CLI 设备授权会话（device authorization flow）。
 CREATE TABLE IF NOT EXISTS cli_auth_sessions (
     id               TEXT PRIMARY KEY,

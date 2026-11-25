@@ -86,7 +86,7 @@ func TestStatsEmptyAndWorkspace(t *testing.T) {
 		}
 	}
 
-	ws, err := db.MessageStats(ctx, ns, user.ID, store.Now()-86400)
+	ws, err := db.MessageStats(ctx, ns, store.Now()-86400)
 	if err != nil {
 		t.Fatalf("message stats: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestStatsEmptyAndWorkspace(t *testing.T) {
 	node := newNode(t, db, "node-a", 1)
 	finishedTask(t, db, ns, c, node, "trace-done", store.Now()-1)
 
-	ws, err = db.MessageStats(ctx, ns, user.ID, store.Now()-86400)
+	ws, err = db.MessageStats(ctx, ns, store.Now()-86400)
 	if err != nil {
 		t.Fatalf("message stats after: %v", err)
 	}

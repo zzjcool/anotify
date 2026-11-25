@@ -59,16 +59,6 @@ func seedStatsAllTasks(t *testing.T, db *DB, nsID string, cap *CapabilityVersion
 	}
 }
 
-// seedStatsAllDevice 落一条设备行（enabled=1/0 两种都要有，才能证明只数启用的）。
-func seedStatsAllDevice(t *testing.T, db *DB, userID string, enabled int) {
-	t.Helper()
-	mustExec(t, db,
-		`INSERT INTO devices (id,user_id,name,platform,enabled,endpoint,p256dh,auth,created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?)`,
-		NewDeviceID(), userID, fmt.Sprintf("dev-%d", enabled), "ios", enabled,
-		"https://push.example/"+NewDeviceID(), "p256dh", "auth", Now())
-}
-
 // mergeDayCountsTest 是**测试侧独立**实现的按 day 求和（不调用生产 mergeDaily）：
 // 用生产实现去验证生产实现等于自己证明自己。
 func mergeDayCountsTest(groups ...[]DayCount) []DayCount {
@@ -93,7 +83,7 @@ func mergeDayCountsTest(groups ...[]DayCount) []DayCount {
 func TestMessageStatsAllSumsPerNamespace(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	nsA, userID := newTestNS(t, db)
+	nsA, _ := newTestNS(t, db)
 	nsB, capB := statsAllExtraNS(t, db, "stats-all-b")
 	capA := statsTestCapability(t, db, nsA)
 
@@ -114,18 +104,14 @@ func TestMessageStatsAllSumsPerNamespace(t *testing.T) {
 	seedStatsAllTasks(t, db, nsA, capA, TaskSucceeded, TaskFailed, TaskPending)
 	seedStatsAllTasks(t, db, nsB, capB, TaskSucceeded, TaskCancelled, TaskRunning)
 
-	// 设备：启用 1 台 + 停用 1 台（用户维度，只算一次）。
-	seedStatsAllDevice(t, db, userID, 1)
-	seedStatsAllDevice(t, db, userID, 0)
-
 	now := today.Add(2 * time.Hour)
 	sinceSec := yesterday.Unix() // 热力图窗口从昨天 00:00 起
 
-	singleA, err := db.messageStats(ctx, nsA, userID, sinceSec, now)
+	singleA, err := db.messageStats(ctx, nsA, sinceSec, now)
 	if err != nil {
 		t.Fatalf("messageStats(A): %v", err)
 	}
-	singleB, err := db.messageStats(ctx, nsB, userID, sinceSec, now)
+	singleB, err := db.messageStats(ctx, nsB, sinceSec, now)
 	if err != nil {
 		t.Fatalf("messageStats(B): %v", err)
 	}
@@ -134,7 +120,7 @@ func TestMessageStatsAllSumsPerNamespace(t *testing.T) {
 		t.Fatalf("夹具失效：单 ns 结果必须非零，得到 A=%+v B=%+v", *singleA, *singleB)
 	}
 
-	all, err := db.messageStatsAll(ctx, []string{nsA, nsB}, userID, sinceSec, now)
+	all, err := db.messageStatsAll(ctx, []string{nsA, nsB}, sinceSec, now)
 	if err != nil {
 		t.Fatalf("messageStatsAll: %v", err)
 	}
@@ -152,15 +138,6 @@ func TestMessageStatsAllSumsPerNamespace(t *testing.T) {
 		}
 	}
 
-	// 设备是**用户维度**：两个单 ns 视图都是 1，汇总后仍是 1（不是 2）。
-	if singleA.DeviceCount != 1 || singleB.DeviceCount != 1 {
-		t.Fatalf("夹具失效：单 ns 的 deviceCount 都应为 1，得到 A=%d B=%d",
-			singleA.DeviceCount, singleB.DeviceCount)
-	}
-	if all.DeviceCount != 1 {
-		t.Fatalf("MessageStatsAll.DeviceCount = %d, want 1（用户维度，不随 ns 数量翻倍）", all.DeviceCount)
-	}
-
 	// daily：逐 day 合并 == 两个单 ns 结果的按 day 之和（同日不重复计）。
 	wantDaily := mergeDayCountsTest(singleA.Daily, singleB.Daily)
 	if !slices.Equal(all.Daily, wantDaily) {
@@ -168,7 +145,7 @@ func TestMessageStatsAllSumsPerNamespace(t *testing.T) {
 	}
 
 	// 顺序无关：ns 列表的顺序不能改变任何一列（Daily 恒升序）。
-	rev, err := db.messageStatsAll(ctx, []string{nsB, nsA}, userID, sinceSec, now)
+	rev, err := db.messageStatsAll(ctx, []string{nsB, nsA}, sinceSec, now)
 	if err != nil {
 		t.Fatalf("messageStatsAll(倒序): %v", err)
 	}
@@ -186,11 +163,11 @@ func TestMessageStatsAllSumsPerNamespace(t *testing.T) {
 func TestMessageStatsAllEmptyListIsZeroNotError(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	_, userID := newTestNS(t, db) // 该用户没有任何设备
+	_, _ = newTestNS(t, db)
 	now := localDay(tzFixtureLocations()[0], 12, 0, 0)
 
 	for _, ids := range [][]string{nil, {}} {
-		s, err := db.messageStatsAll(ctx, ids, userID, 0, now)
+		s, err := db.messageStatsAll(ctx, ids, 0, now)
 		if err != nil {
 			t.Fatalf("空 nsID 列表不该报错（ids=%#v）: %v", ids, err)
 		}
@@ -200,17 +177,13 @@ func TestMessageStatsAllEmptyListIsZeroNotError(t *testing.T) {
 		if s.Total != 0 || s.Today != 0 || s.Delivered != 0 || s.DeliveryTotal != 0 {
 			t.Fatalf("空集合必须是全零，得到 %+v", *s)
 		}
-		// deviceCount 是用户维度、不参与 ns 求和：夹具用户没有设备 → 0。
-		if s.DeviceCount != 0 {
-			t.Fatalf("空集合的 deviceCount = %d, want 0（夹具用户没有设备）", s.DeviceCount)
-		}
 		if s.Daily == nil || len(s.Daily) != 0 {
 			t.Fatalf("空集合的 daily 必须是非 nil 空切片（wire 上是 []），得到 %#v", s.Daily)
 		}
 	}
 
 	// 公开入口（真实时钟）同样不把空集合当错误。
-	if _, err := db.MessageStatsAll(ctx, []string{}, userID, 0); err != nil {
+	if _, err := db.MessageStatsAll(ctx, []string{}, 0); err != nil {
 		t.Fatalf("MessageStatsAll(空列表) err = %v, want nil", err)
 	}
 }
@@ -220,7 +193,7 @@ func TestMessageStatsAllEmptyListIsZeroNotError(t *testing.T) {
 func TestMessageStatsAllDailyMergesSameDayAscending(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	nsA, userID := newTestNS(t, db)
+	nsA, _ := newTestNS(t, db)
 	nsB, _ := statsAllExtraNS(t, db, "stats-all-daily-b")
 
 	// UTC+5:30：半小时偏移的时区，`Unix() - Hour()*3600` 这类日界写法会在它上面算错。
@@ -236,7 +209,7 @@ func TestMessageStatsAllDailyMergesSameDayAscending(t *testing.T) {
 	insertEventAt(t, db, nsB, today.Add(10*time.Hour))
 	insertEventAt(t, db, nsB, today.Add(11*time.Hour))
 
-	s, err := db.messageStatsAll(ctx, []string{nsA, nsB}, userID, d1.Unix(), today.Add(23*time.Hour))
+	s, err := db.messageStatsAll(ctx, []string{nsA, nsB}, d1.Unix(), today.Add(23*time.Hour))
 	if err != nil {
 		t.Fatalf("messageStatsAll: %v", err)
 	}
@@ -266,7 +239,7 @@ func TestMessageStatsAllDailyMergesSameDayAscending(t *testing.T) {
 func TestMessageStatsAllRejectsAllNamespacesElement(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	nsA, userID := newTestNS(t, db)
+	nsA, _ := newTestNS(t, db)
 	now := localDay(tzFixtureLocations()[0], 12, 0, 0)
 
 	for _, ids := range [][]string{
@@ -275,7 +248,7 @@ func TestMessageStatsAllRejectsAllNamespacesElement(t *testing.T) {
 		{nsA, AllNamespaces}, // 坏元素在合法元素之后也必须当场拒绝（不能半聚合）
 		{nsA, ""},
 	} {
-		if _, err := db.messageStatsAll(ctx, ids, userID, 0, now); !errors.Is(err, ErrNamespaceRequired) {
+		if _, err := db.messageStatsAll(ctx, ids, 0, now); !errors.Is(err, ErrNamespaceRequired) {
 			t.Fatalf("messageStatsAll(%#v) err = %v, want ErrNamespaceRequired", ids, err)
 		}
 	}
@@ -293,18 +266,17 @@ func TestMessageStatsAllRejectsAllNamespacesElement(t *testing.T) {
 // `SCAN events USING INDEX …`（索引全扫）都算退化。
 func TestMessageStatsAggregateQueryPlans(t *testing.T) {
 	db := newTestDB(t)
-	nsID, userID := newTestNS(t, db)
+	nsID, _ := newTestNS(t, db)
 	insertEventAt(t, db, nsID, localDay(tzFixtureLocations()[0], 9, 0, 0))
 
 	now := localDay(tzFixtureLocations()[0], 12, 0, 0)
 	plans := map[string][]string{
-		"total":   explainQueryPlan(t, db, statsTotalSQL, nsID),
-		"today":   explainQueryPlan(t, db, statsTodaySQL, nsID, startOfLocalDayUnix(now)),
-		"tasks":   explainQueryPlan(t, db, statsTasksSQL, TaskSucceeded, nsID, TaskSucceeded, TaskFailed, TaskCancelled, TaskAbandoned),
-		"devices": explainQueryPlan(t, db, statsDevicesSQL, userID),
-		"daily":   explainQueryPlan(t, db, statsDailySQL, 0, nsID, 0),
+		"total": explainQueryPlan(t, db, statsTotalSQL, nsID),
+		"today": explainQueryPlan(t, db, statsTodaySQL, nsID, startOfLocalDayUnix(now)),
+		"tasks": explainQueryPlan(t, db, statsTasksSQL, TaskSucceeded, nsID, TaskSucceeded, TaskFailed, TaskCancelled, TaskAbandoned),
+		"daily": explainQueryPlan(t, db, statsDailySQL, 0, nsID, 0),
 	}
-	for _, name := range []string{"total", "today", "tasks", "devices", "daily"} {
+	for _, name := range []string{"total", "today", "tasks", "daily"} {
 		t.Logf("%s 计划：%s", name, strings.Join(plans[name], " / "))
 	}
 
@@ -429,14 +401,14 @@ func seedStatsBenchTasks(tb testing.TB, db *DB, nsID string, n int) {
 //
 // 跑法：go test ./internal/store/ -run '^$' -bench 'BenchmarkMessageStats' -benchtime 1x
 func BenchmarkMessageStatsAll(b *testing.B) {
-	db, nsIDs, userID := statsAllBenchDB(b, 40000)
+	db, nsIDs, _ := statsAllBenchDB(b, 40000)
 	ctx := context.Background()
 	now := time.Now()
 	sinceSec := now.AddDate(0, 0, -371).Unix()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := db.messageStatsAll(ctx, nsIDs, userID, sinceSec, now); err != nil {
+		if _, err := db.messageStatsAll(ctx, nsIDs, sinceSec, now); err != nil {
 			b.Fatalf("messageStatsAll: %v", err)
 		}
 	}
@@ -445,14 +417,14 @@ func BenchmarkMessageStatsAll(b *testing.B) {
 // BenchmarkMessageStatsSingle 是对照组：同一个夹具上只算一个 ns（40k events），
 // 用来证明「全部命名空间」的成本是 3 次逐 ns 查询，不是额外的 N² 或全表扫。
 func BenchmarkMessageStatsSingle(b *testing.B) {
-	db, nsIDs, userID := statsAllBenchDB(b, 40000)
+	db, nsIDs, _ := statsAllBenchDB(b, 40000)
 	ctx := context.Background()
 	now := time.Now()
 	sinceSec := now.AddDate(0, 0, -371).Unix()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := db.messageStats(ctx, nsIDs[0], userID, sinceSec, now); err != nil {
+		if _, err := db.messageStats(ctx, nsIDs[0], sinceSec, now); err != nil {
 			b.Fatalf("messageStats: %v", err)
 		}
 	}

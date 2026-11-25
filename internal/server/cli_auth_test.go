@@ -238,9 +238,10 @@ func TestCliAuthApproveSubset(t *testing.T) {
 	env := newCliAuthTestEnv(t)
 	created := createSessionHelper(t, env)
 
-	// 超集 → 400
+	// 超集 → 400。推送域退役后只剩 notify:send，用退役的 devices:read
+	// 表示「申请集合之外的 scope」——退役 scope 不得从 cli-auth 复活。
 	rr := doReq(t, env, "POST", "/v1/cli-auth/sessions/"+created.sessionID+"/approve",
-		map[string]any{"scopes": []string{"notify:send", "notify:receive"}}, true)
+		map[string]any{"scopes": []string{"notify:send", "devices:read"}}, true)
 	if rr.Code != 400 {
 		t.Errorf("超集应 400, got %d body=%s", rr.Code, rr.Body.String())
 	}

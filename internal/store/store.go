@@ -170,6 +170,13 @@ func (d *DB) MaintainStats(ctx context.Context) ([]string, error) {
 	return maintainStatsOn(ctx, d.DB, statsTriggerMaintenance)
 }
 
+// scanner 是 *sql.Row 与 *sql.Rows 的公共读取面（只用到 Scan）。
+//
+// 拆成接口是为了让单行查询与多行遍历共用同一个 scanXxx 函数，避免两处字段顺序漂移。
+type scanner interface {
+	Scan(dest ...any) error
+}
+
 // statsQueryer 是 dbMaintainStatsOnce / MaintainStats 共用的最小接口：
 // Open 阶段还没有 *DB（它由本函数末尾构造），只能把手上的 *sql.DB 传进来。
 type statsQueryer interface {

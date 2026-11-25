@@ -130,14 +130,6 @@ func TestRetainedStatsAllNamespacesAggregates(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		env.seedEvent(nsC.ID, "trace_all_c", "github", "push", `{"n":4}`, "", base+10+int64(i))
 	}
-	// 设备是用户维度：插 1 台 enabled → 聚合视图的 deviceCount 必须仍是 1（不是 ×3）。
-	if _, err := env.db.Exec(
-		`INSERT INTO devices (id,user_id,name,platform,enabled,endpoint,p256dh,auth,created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?)`,
-		store.NewDeviceID(), taskResUserID, "all-ns-dev", "ios", 1,
-		"https://push.example/allns", "p256dh", "auth", store.Now()); err != nil {
-		t.Fatalf("seed device: %v", err)
-	}
 
 	doc := trWant(t, retainedDo(t, mux, "/v1/stats?namespace=*"), http.StatusOK)
 	if got := trNumber(t, doc, "total"); got != 6 {
@@ -145,9 +137,6 @@ func TestRetainedStatsAllNamespacesAggregates(t *testing.T) {
 	}
 	if got := trNumber(t, doc, "today"); got != 6 {
 		t.Fatalf("stats?namespace=* today = %v, want 6（同上，日界口径一致）", got)
-	}
-	if got := trNumber(t, doc, "deviceCount"); got != 1 {
-		t.Fatalf("stats?namespace=* deviceCount = %v, want 1（用户维度，不随 ns 数量翻倍）", got)
 	}
 	// daily 必须是数组（热力图数据；null 会被前端当成「未连接」），且各行 count 之和 == total。
 	daily := trArray(t, doc, "daily")

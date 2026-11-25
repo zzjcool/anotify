@@ -1812,13 +1812,6 @@ var orderByKnownGaps = []orderByKnownGap{
 		Fix: "两条都补唯一列：ORDER BY created_at DESC, id DESC",
 	},
 	{
-		File:   "devices.go",
-		Clause: "order by created_at asc",
-		Risk: "ListDevices（devices.go:33）与 ListEnabledDevices（devices.go:55，投递候选集）：同秒注册的设备并列，" +
-			"设备列表与推送候选顺序不确定（候选顺序会体现在实际投递顺序上）",
-		Fix: "两条都补唯一列：ORDER BY created_at ASC, id ASC",
-	},
-	{
 		File:   "deployment.go",
 		Clause: "order by d.node_id",
 		Risk: "按能力列部署（deployment.go:279）：deployments 的唯一键是 (node_id, capability_id, digest)，" +

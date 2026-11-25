@@ -170,16 +170,15 @@ paths:
       operationId: getStats
       tags: [aggregates]
       security: [{session: []}]
-      summary: 工作台统计（事件数 / 任务数 / 设备数 / 近 371 天日桶；`?namespace=*` 跨 ns 汇总）
+      summary: 工作台统计（事件数 / 任务数 / 近 371 天日桶；`?namespace=*` 跨 ns 汇总）
       description: |
         形状沿用 v3（`store.Stats`，§8.4「请求/响应形状本轮不改，只统一错误体」）：
-        `total` / `today` / `delivered` / `deliveryTotal` / `deviceCount` / `daily[]`。
+        `total` / `today` / `delivered` / `deliveryTotal` / `daily[]`。
 
           - `total`：事件总数（含剪枝留痕）。
           - `today`：今日事件数，日界取**服务端进程本地时区**的 00:00。
           - `delivered` / `deliveryTotal`：终态任务里成功数 / 终态任务数
             （终态 = succeeded|failed|cancelled|abandoned；pending/running 不计）。
-          - `deviceCount`：调用方**自己**的已启用推送设备数（设备按用户维度，不按 ns）。
           - `daily[]`：近 371 天（≈53 周）的每日事件数热力图数据，`day` 是本地时区
             `YYYY-MM-DD`；无数据时是 `[]`（不是 `null`）。
 
@@ -190,7 +189,7 @@ paths:
             过授权（与 `/v1/orphans` 同一收口，不是「登录即全量」），再逐 ns 求和：
             `total`/`today`/`delivered`/`deliveryTotal` 是事实条数之和（跨 ns 求和
             不造出不存在的数字），`daily[]` 按 day **合并成一行**（不同 ns 的同一天
-            不重复计），`deviceCount` 仍是用户维度、不参与求和。
+            不重复计）。
           - 缺 `namespace` → **400**（绝不隐式全量：忘传参数不能静默变成全集群读数）；
             不存在的 ns → 404。
       parameters:
@@ -524,8 +523,8 @@ components:
       description: |
         工作台统计（形状沿用 v3 `store.Stats`，§8.4 §"请求/响应形状本轮不改"）。
         每个计数都是「该命名空间口径的条数」；`?namespace=*` 时是**所有命名空间求和**
-        （每个计数仍各自相加，唯一的例外是 `deviceCount`：设备按用户维度，跨 ns 不重复计）。
-      required: [total, today, delivered, deliveryTotal, deviceCount, daily]
+        （每个计数各自相加）。
+      required: [total, today, delivered, deliveryTotal, daily]
       properties:
         total:
           type: integer
@@ -539,9 +538,6 @@ components:
         deliveryTotal:
           type: integer
           description: 终态任务数（succeeded|failed|cancelled|abandoned；pending/running 不计）
-        deviceCount:
-          type: integer
-          description: 调用方自己的已启用推送设备数（用户维度，不是 ns 维度）
         daily:
           type: array
           description: 近 371 天（≈53 周）的每日事件数；无数据时 `[]`

@@ -9,7 +9,7 @@ import (
 //
 // 语义：未设 / 空 → 30；"0" → 0（永久保留）；负数 → 0；非法 → 30；正常 → 原值。
 //
-// 只断言新增的两个字段：FromEnv 会读一堆别的 env（VAPID / 限流 / 缓存 TTL），
+// 只断言新增的两个字段：FromEnv 会读一堆别的 env（限流 / 缓存 TTL），
 // 那些的默认值不是本任务的验收面，混进来只会让这条测试在别人改默认值时无辜变红。
 func TestEventRetentionDaysEnvParsing(t *testing.T) {
 	cases := []struct {

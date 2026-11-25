@@ -230,7 +230,7 @@ func TestAPIKeyCacheHoldsNoPlaintext(t *testing.T) {
 	db := openKeyTestDB(t)
 	km := NewKeyManager(db)
 	uid := mustUser(t, db, "no-plaintext")
-	plaintext, rec := mustKey(t, km, uid, []string{ScopeNotifySend, ScopeNotifyReceive})
+	plaintext, rec := mustKey(t, km, uid, []string{ScopeNotifySend})
 
 	if _, _, err := km.ValidateKey(plaintext); err != nil {
 		t.Fatalf("校验应成功: %v", err)
@@ -344,7 +344,7 @@ func TestAPIKeyCacheConcurrentHits(t *testing.T) {
 	db := openKeyTestDB(t)
 	km := NewKeyManager(db) // 默认 TTL 60s：整个测试期间条目都在有效期内
 	uid := mustUser(t, db, "concurrent-hits")
-	plaintext, _ := mustKey(t, km, uid, []string{ScopeNotifySend, ScopeNotifyReceive})
+	plaintext, _ := mustKey(t, km, uid, []string{ScopeNotifySend})
 	// 暖缓存：只在这里跑一次 argon2。
 	if _, _, err := km.ValidateKey(plaintext); err != nil {
 		t.Fatalf("暖缓存校验失败: %v", err)
@@ -365,13 +365,13 @@ func TestAPIKeyCacheConcurrentHits(t *testing.T) {
 					return
 				}
 				// 断言完整内容而不只是长度：污染型 bug（返回内部切片）
-				// 会让 len 仍然为 2，只有值校验才能抓住。
-				if got != uid || len(scopes) != 2 ||
-					!HasScope(scopes, ScopeNotifySend) || !HasScope(scopes, ScopeNotifyReceive) {
+				// 会让 len 仍然对得上，只有值校验才能抓住。
+				if got != uid || len(scopes) != 1 ||
+					!HasScope(scopes, ScopeNotifySend) {
 					errCh <- fmt.Errorf("goroutine %d 第 %d 次结果不一致: uid=%q scopes=%v", g, i, got, scopes)
 					return
 				}
-				// 污染自己的副本，下一次调用必须仍然是干净的两项。
+				// 污染自己的副本，下一次调用必须仍然是干净的。
 				scopes[0] = "polluted:scope"
 			}
 		}(g)

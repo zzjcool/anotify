@@ -56,7 +56,6 @@ func TestDispatchBudgetEnvParsing(t *testing.T) {
 // TestValidateRejectsBadDispatchBudgets 非法预算 ⇒ 启动即失败（不静默用默认）。
 func TestValidateRejectsBadDispatchBudgets(t *testing.T) {
 	base := Config{
-		VAPIDPublic: "pub", VAPIDPriv: "priv",
 		MaxHops: defaultMaxHops, TraceTaskBudget: defaultTraceTaskBudget,
 	}
 	if err := base.Validate(); err != nil {
@@ -76,7 +75,6 @@ func TestValidateRejectsBadDispatchBudgets(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(tc.key, tc.raw)
 			cfg := FromEnv()
-			cfg.VAPIDPublic, cfg.VAPIDPriv = "pub", "priv" // VAPID 不是本用例的关注点
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatalf("%s=%q 被接受了：非法预算必须让启动失败", tc.key, tc.raw)

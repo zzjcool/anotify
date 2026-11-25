@@ -5,7 +5,7 @@
 //
 //	go run ./cmd/devseed -db ./anotify.db -username demo
 //
-// 输出：SEND_KEY / RECV_KEY / SESSION（可直接作为 Cookie 注入做 Web Push E2E）
+// 输出：SEND_KEY / SESSION（可直接作为 Cookie 注入做 E2E）
 //
 // 加 -demo 时额外播种一份 v4 示例数据（见 demo.go）：
 //
@@ -96,10 +96,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	recvPlain, _, err := km.CreateKey(uid, "dev-recv", []string{"notify:receive"})
-	if err != nil {
-		log.Fatal(err)
-	}
 
 	sm := auth.NewSessionManager(db, 0, false)
 	sess, err := sm.Create(uid, "devseed · CLI")
@@ -109,7 +105,6 @@ func main() {
 
 	fmt.Printf("UID=%s\n", uid)
 	fmt.Printf("SEND_KEY=%s\n", sendPlain)
-	fmt.Printf("RECV_KEY=%s\n", recvPlain)
 	fmt.Printf("SESSION=%s\n", sess.ID)
 	if u, err := db.GetUserByID(uid); err == nil {
 		fmt.Printf("ROLE=%s\n", u.Role)

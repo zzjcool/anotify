@@ -120,15 +120,15 @@ const maxRefDepth = 8
 // 删一个 schema，都必须同时改这里的数字，并在 PR 里写清为什么。
 const (
 	// parityPairsFloor 是 parityPairs() 的对数（历史区间见 git log）。
-	parityPairsFloor = 225
+	parityPairsFloor = 224
 	// bareMountFloor 是 bareMountSpec() 的条目数。
-	bareMountFloor = 27
+	bareMountFloor = 24
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底），历史见提交信息。
-	muxPatternCount = 140
+	muxPatternCount = 137
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
-	bareOpFloor = 39
+	bareOpFloor = 34
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数（历史区间见 git log）。
-	specSchemaFloor = 265
+	specSchemaFloor = 264
 )
 
 // ---------- 测试入口 ----------
@@ -161,8 +161,8 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 
 	ops, _ := collectSpecOps(docs)
 	// 快照逐次只增（历次增量见 git log）：#554 的凭据 CRUD 四条 + #555 的立即拉取 + #561 的按快照重装。
-	if len(ops) != 151 {
-		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 151（143 + 凭据 CRUD 四条 + 立即拉取 + 审计两条 + 按快照重装）", len(ops))
+	if len(ops) != 146 {
+		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 146（143 + 凭据 CRUD 四条 + 立即拉取 + 审计两条 + 按快照重装 − 推送域退役五条）", len(ops))
 	}
 	// 至少一条来自 components.pathItems（agent.yaml 四条 + events/ingress 的共享 pathItem）。
 	fromPathItems := 0
@@ -483,16 +483,16 @@ func TestOpenAPIParityMutations(t *testing.T) {
 		table := bareMountSpec()
 		appended := false
 		for i := range table {
-			if table[i].Pattern == "/v1/devices" {
+			if table[i].Pattern == "/v1/keys" {
 				table[i].Ops = append(table[i].Ops, bareOp{
-					Method: "PUT", Path: "/v1/devices/{ghost}",
-					Dispatch: "case http.MethodPut:", Literal: `strings.TrimPrefix(r.URL.Path, "/v1/devices")`,
+					Method: "PUT", Path: "/v1/keys/{ghost}",
+					Dispatch: "case http.MethodPut:", Literal: `strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/keys"), "/")`,
 				})
 				appended = true
 			}
 		}
 		if !appended {
-			t.Fatalf("变异失败：裸挂载表里没有 /v1/devices")
+			t.Fatalf("变异失败：裸挂载表里没有 /v1/keys")
 		}
 		problems := bareMountProblems(patterns, baseOps, table)
 		requireProblem(t, "裸挂载反向多写", problems, "在五份 spec 里找不到")
@@ -504,7 +504,7 @@ func TestOpenAPIParityMutations(t *testing.T) {
 		for i := range table {
 			for j := range table[i].Ops {
 				op := &table[i].Ops[j]
-				if op.Method == "PATCH" && op.Path == "/v1/devices/{id}" {
+				if op.Method == "POST" && op.Path == "/v1/keys/{id}/revoke" {
 					// 真实回归就是这一种：`case http.MethodPatch:` 被改成别的 method。
 					op.Dispatch = `case http.MethodPut:`
 					mutated = true
@@ -512,7 +512,7 @@ func TestOpenAPIParityMutations(t *testing.T) {
 			}
 		}
 		if !mutated {
-			t.Fatalf("变异失败：裸挂载表里没有 PATCH /v1/devices/{id}")
+			t.Fatalf("变异失败：裸挂载表里没有 POST /v1/keys/{id}/revoke")
 		}
 		problems := bareMountProblems(patterns, baseOps, table)
 		requireProblem(t, "method token 不一致", problems, "Dispatch 指向 PUT")
@@ -2283,29 +2283,6 @@ func bareMountSpec() []bareMountEntry {
 			},
 		},
 		{
-			Pattern:     "/v1/vapid-public-key",
-			HandlerFile: "mux.go",
-			Ops: []bareOp{
-				{"GET", "/v1/vapid-public-key", "", "内联闭包没有 method 分派：任何方法都回同一个公钥 JSON", `"/v1/vapid-public-key"`},
-			},
-		},
-		{
-			Pattern:     "/v1/devices",
-			HandlerFile: "handlers.go",
-			Ops: []bareOp{
-				{"GET", "/v1/devices", `case http.MethodGet:`, "", `strings.TrimPrefix(r.URL.Path, "/v1/devices")`},
-				{"POST", "/v1/devices", `case http.MethodPost:`, "", `strings.TrimPrefix(r.URL.Path, "/v1/devices")`},
-			},
-		},
-		{
-			Pattern:     "/v1/devices/",
-			HandlerFile: "handlers.go",
-			Ops: []bareOp{
-				{"PATCH", "/v1/devices/{id}", `case http.MethodPatch:`, "", `h.patch(w, r, rest)`},
-				{"DELETE", "/v1/devices/{id}", `case http.MethodDelete:`, "", `h.remove(w, r, rest)`},
-			},
-		},
-		{
 			Pattern:     "/v1/keys",
 			HandlerFile: "handlers.go",
 			Ops: []bareOp{
@@ -3135,13 +3112,6 @@ func parityPairs() []parityPair {
 		// ---- auth.yaml：身份 / 设备 / Key / 会话 / 管理后台（F1 的核心缺口）----
 		// 具名类型的直接 reflect；handler 里就地定义的形状走 Wire（读产品源码，不抄一份）。
 		{GoLabel: "store.User", File: "auth.yaml", Schema: "User", Sample: store.User{}},
-		{GoLabel: "store.Device", File: "auth.yaml", Schema: "Device", Sample: store.Device{}},
-		{GoLabel: "deviceUpsertReq", File: "auth.yaml", Schema: "DeviceUpsertRequest", Sample: deviceUpsertReq{}},
-		{GoLabel: "devicePatchReq", File: "auth.yaml", Schema: "DevicePatchRequest", Sample: devicePatchReq{}},
-		{GoLabel: "devicesHandler.upsert", File: "auth.yaml", Schema: "DeviceResult",
-			Wire: &goWire{File: "handlers.go", Func: "devicesHandler.upsert", Kind: "response", Select: -1}},
-		{GoLabel: "devicesHandler.list", File: "auth.yaml", Schema: "DeviceList",
-			Wire: &goWire{File: "handlers.go", Func: "devicesHandler.list", Kind: "response", Select: -1}},
 		{GoLabel: "keyPublic", File: "auth.yaml", Schema: "APIKey", Sample: keyPublic{}},
 		{GoLabel: "keyCreateReq", File: "auth.yaml", Schema: "APIKeyCreateRequest", Sample: keyCreateReq{}},
 		{GoLabel: "keysHandler.create", File: "auth.yaml", Schema: "APIKeyCreateResult",
@@ -3181,8 +3151,6 @@ func parityPairs() []parityPair {
 			Wire: &goWire{File: "auth_handlers.go", Func: "authHandler.recoveryStatus", Kind: "response", Select: -1}},
 		{GoLabel: "authHandler.logout", File: "auth.yaml", Schema: "OkResult",
 			Wire: &goWire{File: "auth_handlers.go", Func: "authHandler.logout", Kind: "response", Select: -1}},
-		{GoLabel: "NewApp(vapid)", File: "auth.yaml", Schema: "VAPIDPublicKey",
-			Wire: &goWire{File: "mux.go", Func: "NewApp", Kind: "response", Select: -1}},
 		{GoLabel: "adminUserOut", File: "auth.yaml", Schema: "AdminUser", Sample: adminUserOut{}},
 		{GoLabel: "adminHandler.patchUser", File: "auth.yaml", Schema: "AdminUserPatchRequest",
 			Wire: &goWire{File: "admin_handlers.go", Func: "adminHandler.patchUser", Kind: "request", Select: -1}},

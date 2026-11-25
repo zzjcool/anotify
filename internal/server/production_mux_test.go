@@ -137,10 +137,19 @@ func TestProductionMuxBootsAndServesRetainedDomains(t *testing.T) {
 		t.Fatalf("/health body = %s, want {\"ok\":true,...}", rr.Body.String())
 	}
 
-	// ② 匿名端点：VAPID 公钥可读（前端订阅用），但没有任何「默认放开」的会话域。
-	if rr := appDo(t, app, http.MethodGet, "/v1/vapid-public-key", nil); rr.Code != http.StatusOK {
-		t.Fatalf("GET /v1/vapid-public-key = %d, want 200（body=%s）", rr.Code, rr.Body.String())
+	// ② 推送域已退役：VAPID 公钥与设备订阅端点必须不再由 API 提供
+	// （测试装配没有静态资源，未注册路径会落到 static 兜底，所以判据是
+	// 「不是 200、正文也不是那两个端点的 JSON」，而不是硬编码某个状态码）。
+	for path, marker := range map[string]string{
+		"/v1/vapid-public-key": "publicKey",
+		"/v1/devices":          `"devices"`,
+	} {
+		rr := appDo(t, app, http.MethodGet, path, nil)
+		if rr.Code == http.StatusOK || strings.Contains(rr.Body.String(), marker) {
+			t.Fatalf("退役端点 GET %s = %d body=%s，应已不存在", path, rr.Code, rr.Body.String())
+		}
 	}
+	// 没有任何「默认放开」的会话域。
 	for _, path := range []string{"/v1/auth/me", "/v1/namespaces", "/v1/nodes", "/v1/stats?namespace=default"} {
 		if rr := appDo(t, app, http.MethodGet, path, nil); rr.Code != http.StatusUnauthorized {
 			t.Fatalf("匿名 GET %s = %d, want 401", path, rr.Code)
@@ -182,7 +191,6 @@ func TestProductionMuxBootsAndServesRetainedDomains(t *testing.T) {
 		{"/v1/system/config", ""},
 		{"/v1/stats?namespace=default", ""},
 		{"/v1/orphans?namespace=default", ""},
-		{"/v1/devices", ""},
 		{"/v1/keys", ""},
 		{"/v1/admin/users", ""},
 		{"/v1/capability-templates", ""},

@@ -96,7 +96,7 @@ func BenchmarkVerifyKey(b *testing.B) {
 
 // BenchmarkScopeLabel 度量 scope 推断标签的成本（签发 Key 时调用）。
 func BenchmarkScopeLabel(b *testing.B) {
-	scopes := []string{ScopeNotifySend, ScopeNotifyReceive}
+	scopes := []string{ScopeNotifySend}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

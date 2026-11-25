@@ -2471,7 +2471,7 @@ components:
     AuthError:
       type: object
       description: |
-        身份域（auth / admin / devices / keys / passkey-enroll / cli-auth）的**唯一**
+        身份域（auth / admin / keys / passkey-enroll / cli-auth）的**唯一**
         错误体：`{"error": "<人话或机器码>"}`。它**不是** Status 信封。
         两种产生点形状相同、`Content-Type` 不同：
         - 中间件（`internal/auth/*`）用 `http.Error` → `text/plain` 且正文带换行；

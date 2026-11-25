@@ -14,9 +14,7 @@ import (
 
 // API Key scopes。
 const (
-	ScopeNotifySend    = "notify:send"
-	ScopeNotifyReceive = "notify:receive"
-	ScopeDevicesRead   = "devices:read"
+	ScopeNotifySend = "notify:send"
 )
 
 // ErrUnauthorized 表示 Key 缺失/无效。

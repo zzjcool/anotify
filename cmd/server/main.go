@@ -2,7 +2,7 @@
 //
 // 路径分离：
 //
-//	/v1/*     动态 API（no-store），含 /v1/notify、/v1/auth/*、/v1/devices、/v1/keys、/v1/stream
+//	/v1/*     动态 API（no-store），含 /v1/auth/*、/v1/keys、/v1/namespaces/*、/v1/node/stream
 //	/*        静态资源（CDN 缓存分级：哈希文件 immutable，入口短缓存+ETag）
 //
 // 命令行面只有三个：不带参数起服务（配置全部来自环境变量）、`--version`、`-h`。
@@ -58,10 +58,11 @@ func main() {
 	logging.Init(cfg.LogLevel, cfg.LogFormat)
 
 	if err := cfg.Validate(); err != nil {
-		slog.Warn("VAPID 未配置，Web Push 不可用（其余可运行）",
-			"event", "push.vapid.missing",
+		slog.Error("配置非法，拒绝启动",
+			"event", "config.invalid",
 			"error", err.Error(),
 		)
+		os.Exit(1)
 	}
 
 	mux := server.NewMux(cfg)
@@ -73,7 +74,6 @@ func main() {
 		"cdn_prefix", cfg.CDNPrefix,
 		"log_level", cfg.LogLevel,
 		"log_format", cfg.LogFormat,
-		"vapid_configured", cfg.VAPIDPublic != "",
 		"version", version.String(),
 	)
 	if err := http.ListenAndServe(cfg.Addr, mux); err != nil {

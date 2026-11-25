@@ -80,7 +80,7 @@ func newNodeCapabilityContentHandler(db *store.DB, log *slog.Logger) *nodeCapabi
 //
 // 为什么两条都放在本文件而不是 mux.go：mux.go 只要出现 405 分支，OpenAPI parity 的
 // 「裸挂载 handler 有 405 分支 ⇒ spec 必须声明 405」判据就会把 mux.go 里的**其它**裸挂载
-// （`/v1/vapid-public-key`：任何方法都回同一个公钥 JSON）一起判红。把这条端点的注册整体
+// （`/v1/admin`：任何方法都回端点清单 JSON）一起判红。把这条端点的注册整体
 // 收在自己的文件里，判据仍指向真实源码，且不会波及无关端点。
 func registerNodeCapabilityContent(mux *http.ServeMux, db *store.DB, log *slog.Logger) {
 	mux.Handle("GET /v1/node/capabilities/{digest}", noStore(newNodeCapabilityContentHandler(db, log)))

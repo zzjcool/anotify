@@ -103,7 +103,7 @@ func newEventIngressFixture(t *testing.T) *eventIngressFixture {
 			return userID, []string{authn.ScopeNotifySend}, nil
 		case "ant_read_only":
 			// 有 key 但没有 notify:send：403 而不是 401（换 key 与加 scope 是两件事）。
-			return userID, []string{authn.ScopeNotifyReceive}, nil
+			return userID, []string{}, nil
 		}
 		return "", nil, authn.ErrForbidden
 	})

@@ -4,8 +4,8 @@ info:
   version: "4.0.0"
   description: |
     Anotify v4 身份域（exact-five 之一；清单类文档已删，本文件的 operation 集合即权威）。
-    覆盖 58 个 operation：Passkey / 密码 / 恢复码三套登录模型、会话、API Key、Web Push 设备、
-    VAPID 公钥、CLI 设备授权（`curl | sh` 登录）、Passkey 设备补建、管理后台，以及唯一不在
+    覆盖 53 个 operation：Passkey / 密码 / 恢复码三套登录模型、会话、API Key、
+    CLI 设备授权（`curl | sh` 登录）、Passkey 设备补建、管理后台，以及唯一不在
     `/v1` 下的 `/agent-login.sh`。
 
     鉴权方案：`session`（Cookie `anotify_session`）/ `consoleKey`（`Authorization: Bearer ant_...`）/
@@ -18,7 +18,7 @@ info:
     （`oneOf` 两形状）。所有组件定义都在 `./resource.yaml`。
 
     约定：所有 JSON 字段 camelCase；空列表返回 `[]` 而不是 `null`；时间字段是 unix 秒（int64）。
-    405 只在「由 handler 自己分派方法」的路径上声明（`/v1/auth/*`、`/v1/devices*`、`/v1/keys`、
+    405 只在「由 handler 自己分派方法」的路径上声明（`/v1/auth/*`、`/v1/keys`、
     `/v1/admin/*` 里显式判方法的端点）；由 Go 1.22 ServeMux 方法模式拒绝的 405 是裸文本，未建模。
 servers:
   - url: /
@@ -27,8 +27,6 @@ tags:
     description: 身份与凭据：Passkey / 密码 / 恢复码登录、会话、当前用户
   - name: keys
     description: API Key 的签发、列表、吊销与自检
-  - name: devices
-    description: Web Push 订阅设备与 VAPID 公钥
   - name: cli-auth
     description: CLI 设备授权（一次性短码 + 轮询领 Key）与登录脚本分发
   - name: passkey-enroll
@@ -567,135 +565,6 @@ paths:
         "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   # ======================================================================================
-  # 21–25 · VAPID 公钥与 Web Push 订阅设备
-  # ======================================================================================
-
-  /v1/vapid-public-key:
-    get:
-      tags: [devices]
-      summary: 返回 VAPID 公钥（前端订阅用）
-      description: |
-        匿名可读（前端在订阅推送时拿它当 `applicationServerKey`）。单一事实源是启动时装载的
-        VAPID 配置：**未配置时返回空串**（不是 `404`）——推送未启用是合法部署形态，前端据此
-        隐藏推送开关。v4 中枢不再构造 Sender：「谁发推送」由节点的能力进程负责。
-      operationId: getVAPIDPublicKey
-      security: []
-      responses:
-        "200":
-          description: VAPID 公钥（未配置时 `publicKey` 为空串）
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/VAPIDPublicKey" }
-
-  /v1/devices:
-    get:
-      tags: [devices]
-      summary: 列出接收设备
-      description: |
-        当前用户全部设备（**不限** `enabled`，含被 `DELETE` 软禁用的）。空时为 `[]`。
-        `endpoint` / `p256dh` / `auth` 是推送凭据，只回给设备属主。
-      operationId: listDevices
-      security: [{ session: [] }]
-      responses:
-        "200":
-          description: 设备列表
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/DeviceList" }
-        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
-        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
-
-    post:
-      tags: [devices]
-      summary: 注册 / 刷新推送订阅（幂等 upsert）
-      description: |
-        前端拿到 PushSubscription 后上报。`endpoint` + `keys.p256dh` + `keys.auth` 三者缺一即
-        `400`（「订阅数据不完整」）。`platform` 缺省 `other`，`tags` 缺省 `[]`。
-
-        语义是 **upsert（订阅刷新）**：同一个 endpoint 只更新密钥，**不**改配置——改名/开关/事件
-        范围/标签请走 `PATCH /v1/devices/{id}`（`UpsertDevice` 与 `UpdateDevice` 是两条路径，
-        混用会丢配置）。
-      operationId: upsertDevice
-      security: [{ session: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/DeviceUpsertRequest" }
-      responses:
-        "200":
-          description: 已保存（回显落库后的设备行）
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/DeviceResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
-        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
-        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
-
-  /v1/devices/{id}:
-    patch:
-      tags: [devices]
-      summary: 更新设备配置（重命名 / 开关 / 事件范围 / 标签）
-      description: |
-        `{id}` 是「剩余多段」：handler 把 `/v1/devices` 之后的整段路径当一个 id
-        （`TrimPrefix` 后不做段切分），因此带斜杠的 id 也落在这里。
-
-        未提供的字段保持原值（`name` / `enabled` / `eventScope` 是指针语义，`tags` 为 `nil`
-        表示不改）。`eventScope` 只接受 `final|all`，其余 `400`。设备不属于当前用户 → `404`。
-
-        用 `UpdateDevice`（按 id 全字段更新配置），不是订阅刷新。
-      operationId: patchDevice
-      security: [{ session: [] }]
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema: { type: string }
-          description: 设备 id（实现上是 `/v1/devices/` 之后的剩余多段路径）
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/DevicePatchRequest" }
-      responses:
-        "200":
-          description: 已更新（回显落库后的设备行）
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/DeviceResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
-        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
-        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
-        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
-
-    delete:
-      tags: [devices]
-      summary: 解绑设备（置 enabled=false，保留记录以便审计）
-      description: |
-        软删除：`DisableDevice` 按 id 置 `enabled=0`，**不**物理删除行（保留投递审计）。
-        幂等：id 不存在也是 `200`。「设备不存在」不是错误，所以没有 `404`。
-      operationId: deleteDevice
-      security: [{ session: [] }]
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema: { type: string }
-          description: 设备 id（实现上是 `/v1/devices/` 之后的剩余多段路径）
-      responses:
-        "200":
-          description: 已禁用
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/OkResult" }
-        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
-        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
-
-  # ======================================================================================
   # 26–29 · API Key
   # ======================================================================================
 
@@ -730,7 +599,7 @@ paths:
       tags: [keys]
       summary: 新建 API Key（仅此处返回一次明文）
       description: |
-        `scopes` 至少一个且必须属于冻结集合：`notify:send` / `notify:receive` / `devices:read`。
+        `scopes` 至少一个且必须属于冻结集合：`notify:send`。
         空列表或未知 scope → `400`（文案指明「至少选择一个 scope」或「未知 scope」）。
 
         响应的 `key` 是**明文**（`ant_<label>_<随机串>`），**仅此一次**返回，库里只存 argon2id
@@ -1398,7 +1267,7 @@ paths:
       summary: 用户列表（含各用户实体计数，超管）
       description: |
         按 `createdAt` 升序；同一秒内按**注册顺序**（插入序）——首注册用户排最前，便于识别超管来源。
-        每个用户附 `deviceCount` / `keyCount` / `sessionCount`（不存在的用户也不会有这三项之外的假字段）。
+        每个用户附 `keyCount` / `sessionCount`（不存在的用户也不会有这三项之外的假字段）。
         非 `GET` 方法由 handler 自己回 `405`。
 
         分页：`limit` 缺省 50（`<=0` 按 50，`>500` 钳到 500），`continue` 是不透明游标；
@@ -1886,99 +1755,6 @@ components:
         unusedCount: { type: integer, description: 未使用恢复码数量（不含明文） }
         hasCodes: { type: boolean, description: '`unusedCount > 0` 的便捷布尔' }
 
-    # ---------- VAPID / 设备 ----------
-    VAPIDPublicKey:
-      type: object
-      required: [publicKey]
-      properties:
-        publicKey:
-          type: string
-          description: VAPID 公钥（base64url）；**空串 = 本部署未配置推送**
-
-    Device:
-      type: object
-      description: Web Push 订阅设备（`devices` 表一行）。
-      required: [id, userId, name, platform, enabled, eventScope, tags, endpoint, p256dh, auth, userAgent, createdAt]
-      properties:
-        id: { type: string }
-        userId: { type: string }
-        name: { type: string }
-        platform:
-          type: string
-          description: 平台标签（`ios` / `mac` / `win` / `android` / `other`；上报缺省为 `other`）
-        enabled:
-          type: boolean
-          description: '`DELETE /v1/devices/{id}` 是软禁用（置 false，保留行以便审计）'
-        eventScope:
-          type: string
-          enum: [final, all]
-          description: 推送范围；新建恒为 `final`
-        tags:
-          type: array
-          items: { type: string }
-          description: 设备标签（路由用），空为 `[]`
-        endpoint: { type: string, description: Push 端点 URL }
-        p256dh: { type: string, description: 订阅公钥（base64url） }
-        auth: { type: string, description: 订阅 auth secret（base64url） }
-        userAgent: { type: string }
-        createdAt: { type: integer, format: int64 }
-        lastActive:
-          type: integer
-          format: int64
-          description: 最近活跃时刻；**缺省**表示从未
-        lastDelivered:
-          type: integer
-          format: int64
-          description: 最近一次投递成功时刻；**缺省**表示从未
-
-    DeviceUpsertRequest:
-      type: object
-      description: 上报 PushSubscription（订阅刷新，只更新密钥）。
-      required: [endpoint, keys]
-      properties:
-        name: { type: string }
-        platform: { type: string, description: '`ios` / `mac` / `win` / `android` / `other`（缺省 `other`）' }
-        tags:
-          type: array
-          items: { type: string }
-        endpoint: { type: string }
-        keys:
-          type: object
-          required: [p256dh, auth]
-          properties:
-            p256dh: { type: string }
-            auth: { type: string }
-        userAgent: { type: string }
-
-    DevicePatchRequest:
-      type: object
-      description: 只改提供的字段（`name` / `enabled` / `eventScope` 是「缺省 = 不改」语义）。
-      properties:
-        name: { type: string }
-        enabled: { type: boolean }
-        eventScope: { type: string, enum: [final, all], description: 其它值 → `400` }
-        tags:
-          type: array
-          items: { type: string }
-          description: 缺省不改；给 `[]` 表示清空
-
-    DeviceResult:
-      type: object
-      required: [ok, device]
-      properties:
-        ok: { type: boolean }
-        device: { $ref: "#/components/schemas/Device" }
-
-    DeviceList:
-      type: object
-      required: [devices, count]
-      properties:
-        devices:
-          type: array
-          items: { $ref: "#/components/schemas/Device" }
-          description: 空时是 `[]`
-        count: { type: integer }
-
     # ---------- API Key ----------
     APIKey:
       type: object
@@ -1993,7 +1769,7 @@ components:
         scopes:
           type: array
           items: { type: string }
-          description: '`notify:send` / `notify:receive` / `devices:read`'
+          description: '`notify:send`'
         enabled: { type: boolean, description: 吊销后为 false }
         createdAt: { type: integer, format: int64 }
         lastUsedAt:
@@ -2024,7 +1800,7 @@ components:
           minItems: 1
           items:
             type: string
-            enum: [notify:send, notify:receive, devices:read]
+            enum: [notify:send]
           description: 至少一个；未知 scope 或空列表 → `400`
 
     APIKeyCreateResult:
@@ -2062,7 +1838,7 @@ components:
           minItems: 1
           items:
             type: string
-            enum: [notify:send, notify:receive, devices:read]
+            enum: [notify:send]
           description: 请求的 scope 列表（非空、全部合法）
 
     CLIAuthSessionCreated:
@@ -2130,7 +1906,7 @@ components:
           minItems: 1
           items:
             type: string
-            enum: [notify:send, notify:receive, devices:read]
+            enum: [notify:send]
           description: 授予的 scope（应 ⊆ 请求的 scopes；空或未知 → `400`）
 
     CLIAuthStatusResult:
@@ -2256,14 +2032,12 @@ components:
     AdminSystemStats:
       type: object
       description: 管理后台系统总览统计（`messageCount` / `daily` 的口径都是**事件**数）。
-      required: [userCount, adminCount, messageCount, todayMessages, deviceCount, enabledDevices, keyCount, sessionCount, deliveredCount, deliveryTotal, daily, topUsers]
+      required: [userCount, adminCount, messageCount, todayMessages, keyCount, sessionCount, deliveredCount, deliveryTotal, daily, topUsers]
       properties:
         userCount: { type: integer }
         adminCount: { type: integer, description: 角色为 `admin` 的用户数 }
         messageCount: { type: integer, description: 全站事件总数（字段名保留，语义是事件） }
         todayMessages: { type: integer, description: 今日（服务端本地时区）事件数 }
-        deviceCount: { type: integer }
-        enabledDevices: { type: integer }
         keyCount: { type: integer }
         sessionCount: { type: integer, description: 未过期会话数 }
         deliveredCount: { type: integer, description: 已送达投递数（sent/delivered/acked） }
@@ -2287,12 +2061,11 @@ components:
     AdminUserMetric:
       type: object
       description: Top 活跃用户指标（活跃度 = 会话 `last_seen` 的最大值）。
-      required: [userId, username, displayName, deviceCount, lastSeenAt]
+      required: [userId, username, displayName, lastSeenAt]
       properties:
         userId: { type: string }
         username: { type: string }
         displayName: { type: string }
-        deviceCount: { type: integer }
         lastSeenAt:
           type: integer
           format: int64
@@ -2301,7 +2074,7 @@ components:
     AdminUser:
       type: object
       description: 管理后台用户视图（安全公开视图 + 各实体计数）。
-      required: [id, username, displayName, role, disabled, createdAt, deviceCount, keyCount, sessionCount]
+      required: [id, username, displayName, role, disabled, createdAt, keyCount, sessionCount]
       properties:
         id: { type: string }
         username: { type: string }
@@ -2309,7 +2082,6 @@ components:
         role: { type: string, enum: [admin, member] }
         disabled: { type: boolean }
         createdAt: { type: integer, format: int64 }
-        deviceCount: { type: integer }
         keyCount: { type: integer }
         sessionCount: { type: integer }
 

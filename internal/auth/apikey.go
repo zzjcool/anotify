@@ -24,11 +24,8 @@ const (
 	argonSaltLen = 16
 )
 
-// 支持的 scope。
 const (
-	ScopeNotifySend    = "notify:send"
-	ScopeNotifyReceive = "notify:receive"
-	ScopeDevicesRead   = "devices:read"
+	ScopeNotifySend = "notify:send"
 )
 
 // keyRandomLen 是 Key 随机部分的原始字节数。
@@ -90,23 +87,16 @@ func scopeLabel(scopes []string) string {
 		}
 		return false
 	}
-	send, recv := has(ScopeNotifySend), has(ScopeNotifyReceive)
-	switch {
-	case send && recv:
-		return "full"
-	case send:
+	if has(ScopeNotifySend) {
 		return "send"
-	case recv:
-		return "recv"
-	default:
-		return "key"
 	}
+	return "key"
 }
 
 // validScope 判断是否为已知合法 scope。
 func validScope(s string) bool {
 	switch s {
-	case ScopeNotifySend, ScopeNotifyReceive, ScopeDevicesRead:
+	case ScopeNotifySend:
 		return true
 	default:
 		return false

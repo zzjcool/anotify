@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"fmt"
 	"testing"
 )
 
@@ -138,16 +137,7 @@ func TestListUsersWithStats(t *testing.T) {
 		t.Fatalf("register bob: %v", err)
 	}
 
-	// alice：2 台设备 + 1 个会话；bob：什么都没有 → 计数必须各自对得上
-	for i := 0; i < 2; i++ {
-		if err := db.UpsertDevice(ctx, &Device{
-			ID: NewDeviceID(), UserID: u1.ID, Name: "dev", Enabled: true, EventScope: "all",
-			Endpoint: fmt.Sprintf("https://push.example.com/alice/%d", i),
-			P256dh:   "p", Auth: "a",
-		}); err != nil {
-			t.Fatalf("upsert device %d: %v", i, err)
-		}
-	}
+	// alice：1 个会话；bob：什么都没有 → 计数必须各自对得上
 	now := Now()
 	if err := db.CreateSession(&Session{
 		ID: NewSessionID(), UserID: u1.ID, CreatedAt: now, ExpiresAt: now + 3600, LastSeen: now,
@@ -168,10 +158,6 @@ func TestListUsersWithStats(t *testing.T) {
 	}
 	if users[0].Role != RoleAdmin {
 		t.Errorf("alice role 应为 admin, got %q", users[0].Role)
-	}
-	if users[0].DeviceCount != 2 || users[1].DeviceCount != 0 {
-		t.Errorf("deviceCount 应为 alice=2 bob=0, got alice=%d bob=%d",
-			users[0].DeviceCount, users[1].DeviceCount)
 	}
 	if users[0].SessionCount != 1 || users[1].SessionCount != 0 {
 		t.Errorf("sessionCount 应为 alice=1 bob=0, got alice=%d bob=%d",
