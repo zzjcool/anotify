@@ -1098,7 +1098,7 @@
     const NS = (qs.get("namespace") || "").trim() || "*";
     const ALL = NS === "*";
     // 旧推送深链 index.html?msg=<taskId>：首页不再有任务弹层，直接转任务详情页。
-    // （sw.js 的推送载荷早已是 message.html?id=，这里只是不让历史通知点成空页。）
+    // （历史推送通知的落点曾是 message.html?id=；推送域退役后这里只是不让老链接点成空页。）
     (function redirectLegacyMsg() {
       const legacyMsg = qs.get("msg");
       if (!legacyMsg) return;

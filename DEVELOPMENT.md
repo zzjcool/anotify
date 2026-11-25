@@ -118,7 +118,7 @@ docker info  # 确认 daemon 在跑
   - `pages/*.html`：每页 `{{define "content"}}` / `{{define "title"}}` / 可选 `style`/`script`/`fonts-extra`。首行 `<!-- layout: login -->` 指定非默认布局
   - `locales/{zh-CN,en}.yaml`：i18n 翻译（嵌套 YAML，扁平化为 `page.key`）
 - **生成产物（勿手改，已 gitignore）**：`web/*.html`（zh 根路径）、`web/en/*.html`、`web/i18n.{lang}.js`
-- **静态资源（保持跟踪）**：`web/ui.css` `tokens.css` `tailwind.css` `partials.js` `fonts/` `assets/` `sw.js` `manifest.webmanifest`
+- **静态资源（保持跟踪）**：`web/ui.css` `tokens.css` `tailwind.css` `partials.js` `fonts/` `assets/` `manifest.webmanifest`
 
 ### Tailwind（构建期 CSS，不用 Play CDN）
 
@@ -380,14 +380,14 @@ INPUT 链，ufw 的 `DEFAULT_INPUT_POLICY=DROP` 拦不到它。所以那个测�
 
 - JS/CSS/字体/图片加内容哈希（`app.a1b2c3.js`）→ CDN 可 immutable 长缓存
 - HTML 引用改写为哈希文件名
-- `sw.js` / `manifest.webmanifest` 不指纹（路径必须固定）
+- `manifest.webmanifest` 不指纹（路径必须固定）
 - **CSS 内 url() 引用也会改写**（fonts.css 引用的 .woff2）
 - 生成 `manifest.json`（原始名 → 哈希名映射）
 
 缓存分级（`internal/server/static.go` classify）：
 
 - 哈希文件 → `Cache-Control: public, max-age=31536000, immutable`
-- index.html / sw.js → `public, max-age=60`
+- index.html / manifest → `public, max-age=60`
 - `/v1/*` → `no-store`
 
 ### 改前端后必须重新指纹 + 重建
@@ -683,7 +683,7 @@ Go nil slice 序列化成 `null`，前端 `Array.isArray(null)` 为 false → �
 
 ### 改了 web/ 源码后跑 make e2e 用的是旧产物（run_all.sh 脏检测）
 
-`scripts/e2e/run_all.sh` 只在 `internal/server/dist` 不存在或 `web/partials.js` 缺失时才跑 `make fe`，否则直接用现有 dist 编译二进制。改了 `web/`（partials.js/sw.js/tokens.css 等）或 `web-src/`（layouts/pages/locales，sitegen 会重新渲染进 `web/*.html` + i18n JS）后直接 `make e2e`，跑的是陈旧 embed，表现为“改的逻辑像没生效、新断言莫名挂、旧行为还在”。修复：跑门禁前先 `rm -rf internal/server/dist`（让 run_all.sh 强制重建），或先 `make fe` 再 `make e2e`。验证产物链路是否新：`grep -c <新特征字符串> internal/server/dist/*` 应 >0。**教训**：改任何会被 embed 的前端源后，跑门禁前必须确认 dist 产物是新的，别信 run_all.sh 的“已存在就跳过”；这是源→指纹→embed 三段链路里最易断的一环。
+`scripts/e2e/run_all.sh` 只在 `internal/server/dist` 不存在或 `web/partials.js` 缺失时才跑 `make fe`，否则直接用现有 dist 编译二进制。改了 `web/`（partials.js/tokens.css 等）或 `web-src/`（layouts/pages/locales，sitegen 会重新渲染进 `web/*.html` + i18n JS）后直接 `make e2e`，跑的是陈旧 embed，表现为“改的逻辑像没生效、新断言莫名挂、旧行为还在”。修复：跑门禁前先 `rm -rf internal/server/dist`（让 run_all.sh 强制重建），或先 `make fe` 再 `make e2e`。验证产物链路是否新：`grep -c <新特征字符串> internal/server/dist/*` 应 >0。**教训**：改任何会被 embed 的前端源后，跑门禁前必须确认 dist 产物是新的，别信 run_all.sh 的“已存在就跳过”；这是源→指纹→embed 三段链路里最易断的一环。
 
 ### `auto_vacuum=0`：删了不等于变小，且「开保留期」不等于「跟得上写入」
 

@@ -68,7 +68,6 @@ common:
     playbooks: "Playbooks"
     nodes: Nodos
     namespaces: Espacios de nombres
-    receivers: Destinatarios
     keys: API Keys
     api: Docs API
     account: Cuenta
@@ -185,7 +184,6 @@ index:
     all_time: Histórico
     today: Eventos de hoy
     today_sub: Recibidos hoy
-    rate_na: Sin receptores — tasa de entrega no disponible
     trend_live: En vivo
     running: En curso
     running_sub: "Todas las tareas del espacio"
@@ -565,7 +563,7 @@ keys:
 security:
   title: Seguridad y acceso
   subtitle: Passkey · Contraseña · Sesiones · Códigos de recuperación
-  intro: 'Gestiona todo sobre quién eres: credenciales Passkey, contraseña, sesiones de acceso y códigos de recuperación. Son independientes de a dónde van las notificaciones (dispositivos receptores).'
+  intro: 'Gestiona todo sobre quién eres: credenciales Passkey, contraseña, sesiones de acceso y códigos de recuperación. Es un eje distinto de a dónde van los eventos (capacidades y fuentes).'
   add_passkey: Añadir Passkey
   passkey:
     title: Credenciales Passkey
@@ -671,7 +669,7 @@ security:
     revoke_failed: 'Error al revocar: {msg}'
 docs:
   title: Documentación de integración
-  subtitle: Reportes de Agent · Web Push · WebSocket
+  subtitle: Reportes de Agent · eventos · cadenas de tareas
   toc_heading: En esta página
   table:
     method: Método
@@ -713,7 +711,6 @@ docs:
       passkey-enroll: Registro de passkeys
       cli-auth: Autorización CLI
       admin: Administración
-      devices: Web Push
       resource: "Recursos"
       agent: "Protocolo del nodo"
       ingress: "Entrada"
@@ -788,7 +785,7 @@ docs:
       title: API Key (Bearer)
       li1: · Para reportes del Agent / conexiones long-poll del receptor
       li2: '· Header: <code class="doc-code">Authorization: Bearer ant_…</code>'
-      li3: '· scope: <code class="doc-code">notify:send</code> reportar · <code class="doc-code">notify:receive</code> recibir · <code class="doc-code">devices:read</code> solo lectura'
+      li3: '· scope: <code class="doc-code">notify:send</code> (entrada de eventos <code class="doc-code">POST /v1/namespaces/{ns}/events</code>)'
       li4: · El servidor solo guarda un hash argon2id; el texto plano se muestra una vez al crear
     passkey:
       title: Cookie de sesión
@@ -823,30 +820,6 @@ docs:
     resp400_comment: // 401 · Key ausente o inválida (403 si scope insuficiente)
     rules:
       title: Reglas de entrega (enrutamiento por tags + filtrado por nivel)
-  ws:
-    channel2: Segundo canal de recepción
-    intro: Además del push del navegador, cualquier dispositivo / plugin puede usar una Key con permiso <code class="doc-code">notify:receive</code> para establecer una conexión WebSocket long-poll y recibir en tiempo real. Ideal para widgets de escritorio, daemons CLI, puentes de domótica. Funciona junto al push del navegador.
-    connect:
-      title: Establecer conexión
-      comment: '# requiere permiso notify:receive'
-      comment2: '# opcional, para reanudar tras reconectar'
-    s2c:
-      title: Servidor → Cliente
-      comment1: // primer frame tras conectar
-      comment2: // nueva notificación recibida
-      title_val: Despliegue completado
-      body_val: Desplegado a prod
-      tag_val: trabajo
-      comment3: // fin de replay / heartbeat / error
-    c2s:
-      title: Cliente → Servidor
-      comment1: // suscribir / cancelar tags (vacío = todos)
-      comment2: // confirmar procesado (at-least-once)
-      comment3: // heartbeat (cada heartbeat_sec; 2 perdidos = desconectar)
-      comment4: // tras reconectar, usar frame resume (reemplaza header Last-Event-Id)
-    reconnect:
-      title: Reconectar y reanudar
-      desc: Al reconectar, envíe el header <code class="doc-code">Last-Event-Id</code> (o un primer frame <code class="doc-code">resume</code>). El servidor reenvía las notificaciones no confirmadas de las últimas 24h (ventana de replay), luego entra al stream en vivo. Si supera la ventana de retención, devuelve error <code class="doc-code">resume_expired</code>; el cliente debe obtener el historial completo.
   v4:
     five_specs: 'Lista de endpoints: agrupada por recurso, con método y ruta.'
     missing: "Lista de endpoints no disponible"

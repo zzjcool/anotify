@@ -28,9 +28,9 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const BASELINE = {
 	"schemaVersion": 2,
 	"measuredAt": "2026-11-25",
-	"commentLines": 42952,
-	"codeLines": 287562,
-	"files": 732,
+	"commentLines": 42930,
+	"codeLines": 287373,
+	"files": 731,
 	"dirs": {
 		".": 86,
 		".github/workflows": 108,
@@ -72,7 +72,7 @@ export const BASELINE = {
 		"internal/resultspool": 184,
 		"internal/route": 299,
 		"internal/schema": 73,
-		"internal/server": 7754,
+		"internal/server": 7753,
 		"internal/server/testdata": 2,
 		"internal/sitegen": 471,
 		"internal/sitegen/testdata/specs": 40,
@@ -84,7 +84,7 @@ export const BASELINE = {
 		"internal/version": 48,
 		"internal/ws": 668,
 		"internal/yamldoc": 262,
-		"scripts": 3579,
+		"scripts": 3565,
 		"scripts/demo": 16,
 		"scripts/e2e": 632,
 		"scripts/e2e/fixtures": 0,
@@ -100,7 +100,7 @@ export const BASELINE = {
 		"scripts/perf/c": 800,
 		"scripts/perf/loadgen": 31,
 		"scripts/testdata/fakebroker": 24,
-		"web": 4657,
+		"web": 4650,
 		"web-src": 3,
 		"web-src/layouts": 98,
 		"web-src/locales": 49,
@@ -164,8 +164,8 @@ export const BASELINE = {
 	},
 	"docs": {
 		"contracts": {
-			"files": 16,
-			"lines": 2967
+			"files": 15,
+			"lines": 2720
 		}
 	},
 	"rootPlans": {

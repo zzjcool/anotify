@@ -68,7 +68,6 @@ common:
     playbooks: "预案"
     nodes: 节点
     namespaces: 命名空间
-    receivers: 通知接收
     keys: API Keys
     api: API 文档
     account: 账户
@@ -185,7 +184,6 @@ index:
     all_time: 累计
     today: 今日事件
     today_sub: 今天收到
-    rate_na: 暂无接收设备，送达率不可用
     trend_live: 实时
     running: 进行中
     running_sub: "当前命名空间所有任务"
@@ -236,7 +234,7 @@ index:
   quickstart:
     cta: 接入新 Agent
     title: 接入你的 Agent
-    subtitle: 让 Agent 在任务完成时自动通知你
+    subtitle: Agent 上报 · 事件流 · 任务链
     recommended: 推荐方式
     copy: 复制
     cmd_install: pi install npm:pi-anotify
@@ -490,7 +488,7 @@ login:
     need_username_short: 先给自己起个用户名。
 keys:
   title: API Keys
-  subtitle: Agent 用它上报通知
+  subtitle: Agent 上报 · 事件流 · 任务链
   desc_prefix: Agent 携带 Key 调用
   desc_suffix: 上报通知。
   desc_tip: Key 仅在创建时完整展示一次，服务端只存哈希——请立即妥善保存（见下方「Key 的安全实践」）。
@@ -565,7 +563,7 @@ keys:
 security:
   title: 安全与登录
   subtitle: Passkey · 密码 · 会话 · 恢复码
-  intro: 这里管理「你是谁」的一切：Passkey 凭证、密码、登录会话、恢复码。它们与「通知发到哪」（接收设备）是两条独立的轴。
+  intro: 这里管理「你是谁」的一切：Passkey 凭证、密码、登录会话、恢复码。它与「事件发给谁」（能力与源）是两条独立的轴。
   add_passkey: 添加 Passkey
   passkey:
     title: Passkey 凭证
@@ -671,7 +669,7 @@ security:
     revoke_failed: 吊销失败：{msg}
 docs:
   title: 接入文档
-  subtitle: Agent 上报 · Web Push · WebSocket
+  subtitle: Agent 上报 · 事件流 · 任务链
   toc_heading: 本页目录
   table:
     method: 方法
@@ -713,7 +711,6 @@ docs:
       passkey-enroll: Passkey 注册
       cli-auth: CLI 授权
       admin: 管理后台
-      devices: Web Push
       resource: "资源"
       agent: "节点协议"
       ingress: "事件入口"
@@ -788,7 +785,7 @@ docs:
       title: API Key（Bearer）
       li1: · 用于 Agent 上报 / 接收端长连接
       li2: '· Header：<code class="doc-code">Authorization: Bearer ant_…</code>'
-      li3: · scope：<code class="doc-code">notify:send</code> 上报 · <code class="doc-code">notify:receive</code> 接收 · <code class="doc-code">devices:read</code> 只读
+      li3: '· scope：<code class="doc-code">notify:send</code>（事件入口 <code class="doc-code">POST /v1/namespaces/{ns}/events</code>）'
       li4: · 服务端只存 argon2id 哈希，明文仅创建时展示一次
     passkey:
       title: 会话 Cookie
@@ -823,30 +820,6 @@ docs:
     resp400_comment: // 401 · Key 缺失或无效（scope 不足时 403）
     rules:
       title: 投递规则（标签路由 + 级别过滤）
-  ws:
-    channel2: 第二条接收通道
-    intro: 除浏览器推送外，任意设备 / 插件可用 <code class="doc-code">notify:receive</code> 权限的 Key 建立 WebSocket 长连接实时接收。适合做桌面插件、CLI 守护进程、智能家居桥接，与浏览器推送并行。
-    connect:
-      title: 建立连接
-      comment: '# 需 notify:receive 权限'
-      comment2: '# 可选，断线续传'
-    s2c:
-      title: 服务端 → 客户端
-      comment1: // 连接成功后第一条
-      comment2: // 收到新通知
-      title_val: 部署完成
-      body_val: 已发布到 prod
-      tag_val: 工作
-      comment3: // 断线补漏结束 / 心跳 / 错误
-    c2s:
-      title: 客户端 → 服务端
-      comment1: // 订阅 / 退订标签（空 = 全订阅）
-      comment2: // 确认已处理（at-least-once）
-      comment3: // 心跳（每 heartbeat_sec 一次，2 次未收则断连）
-      comment4: // 断线重连后用 resume 帧续传（替代 Last-Event-Id 头）
-    reconnect:
-      title: 重连与续传
-      desc: 断线后重连时携带 <code class="doc-code">Last-Event-Id</code> 头（或首帧发 <code class="doc-code">resume</code>），服务端会重放该位置之后 24h 内未确认的通知（回放窗口），随后进入实时流。超出保留窗口则返回 <code class="doc-code">resume_expired</code> 错误，客户端应拉取全量历史。
   v4:
     five_specs: '端点清单：按资源分组，列出方法与路径。'
     missing: "端点清单暂不可用"

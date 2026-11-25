@@ -22,14 +22,14 @@ type cacheClass int
 
 const (
 	cacheImmutable cacheClass = iota // 哈希指纹资源：immutable 1 年
-	cacheEntry                       // 入口 HTML / sw.js / manifest：短缓存 + ETag（过期后 304 空体）
+	cacheEntry                       // 入口 HTML / manifest：短缓存 + ETag（过期后 304 空体）
 	cacheNoStore                     // 动态 API：no-store
 )
 
 // 静态资源的 Cache-Control 值（契约 §3.2）。
 const (
 	cacheControlImmutable = "public, max-age=31536000, immutable"
-	// cacheControlEntry 是入口类（HTML / sw.js / manifest）的值。
+	// cacheControlEntry 是入口类（HTML / manifest）的值。
 	//
 	// 为什么是 max-age=60 而不是 no-cache：#232 的病根是"没有校验器"（所以每次导航
 	// 都全量重传 48KB），不是"max-age 太长"。补上强 ETag 之后两种取值都不再传正文：
@@ -66,14 +66,12 @@ const (
 
 // entryProductNames 是"文件名固定、内容会变"的入口类产物（#233 显式名单）。
 //
-// 三个名字正是 scripts/hash.mjs 的 NO_FINGERPRINT（不指纹即路径固定）：
-//   - sw.js：Service Worker 的注册路径必须是 /sw.js
+// 两个名字正是 scripts/hash.mjs 的 NO_FINGERPRINT（不指纹即路径固定）：
 //   - manifest.json：指纹脚本自身产出的 原名→哈希名 映射表
 //   - manifest.webmanifest：PWA 清单，被 HTML 固定引用（图标 src 在构建期改写）
 //
 // 它们必须每次校验（no-cache + ETag），不能 immutable。
 var entryProductNames = map[string]struct{}{
-	"sw.js":                {},
 	"manifest.json":        {},
 	"manifest.webmanifest": {},
 }

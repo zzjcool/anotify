@@ -59,6 +59,7 @@
 | `README.md` / `README.en.md` | 产品首段重写（不再承诺推送到设备），架构图去掉 Web Push，快速开始去掉密钥生成步骤与 VAPID，API 表与环境变量表删推送行，文件结构删 `push/` |
 | `DEVELOPMENT.md` | 项目定位、技术栈表、架构图、目录树、密钥生成命令、两条推送专属陷阱（VAPID mailto 前缀、PATCH /v1/devices）删除 |
 | `IOS_TESTING.md` | 删除（整篇是 iOS 真机推送验证清单） |
+| `docs/contracts/receiver-capability-design.md` | 删除（推送域的设计草案，依据代码已全删且从未生效） |
 | `E2E_TESTING.md` | 删「桌面推送」行与「唯一人工环节」（不再有人工环节） |
 | `docs/dev-docker.md` | 第 7 节从「功能开关」改写为「推送域已退役」 |
 | `docs/lint-guards.md` | ORDER BY 清单删 `devices.go` |

@@ -72,7 +72,7 @@ echo " Anotify E2E 全量测试"
 echo "=========================================="
 
 # 1. 前置：dist 缺失就重建（embed 依赖，gitignore 产物）；手动删过 web/ 时先恢复
-#    git 追踪的源文件（partials.js/sw.js/tokens.css 等，sitegen 不生成它们）。
+#    git 追踪的源文件（partials.js/tokens.css 等，sitegen 不生成它们）。
 NEED_FE=0
 if [ ! -d "internal/server/dist" ] || [ -z "$(ls -A internal/server/dist 2>/dev/null)" ]; then
 	NEED_FE=1

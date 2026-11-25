@@ -68,7 +68,6 @@ common:
     playbooks: "Playbooks"
     nodes: Nodes
     namespaces: Namespaces
-    receivers: Receivers
     keys: API Keys
     api: API Docs
     account: Account
@@ -185,7 +184,6 @@ index:
     all_time: All time
     today: Events today
     today_sub: Received today
-    rate_na: No receivers yet — delivery rate unavailable
     trend_live: Live
     running: In progress
     running_sub: "All tasks in this namespace"
@@ -490,7 +488,7 @@ login:
     need_username_short: Please pick a username first.
 keys:
   title: API Keys
-  subtitle: Agents use them to report notifications
+  subtitle: Agent reporting · events · task chains
   desc_prefix: Agents carry a Key to call
   desc_suffix: to report notifications.
   desc_tip: The Key is shown in full only once at creation; the server stores only a hash — save it immediately (see "Key security practices" below).
@@ -565,7 +563,7 @@ keys:
 security:
   title: Security & Login
   subtitle: Passkey · Password · Sessions · Recovery codes
-  intro: 'Manage everything about who you are: Passkey credentials, password, login sessions, and recovery codes. These are separate from where notifications go (receiving devices).'
+  intro: 'Everything about who you are: Passkeys, password, sessions, recovery codes. It is a different axis from where events go (capabilities and sources).'
   add_passkey: Add Passkey
   passkey:
     title: Passkey credentials
@@ -671,7 +669,7 @@ security:
     revoke_failed: 'Revoke failed: {msg}'
 docs:
   title: Integration Docs
-  subtitle: Agent reporting · Web Push · WebSocket
+  subtitle: Agent reporting · events · task chains
   toc_heading: On this page
   table:
     method: Method
@@ -713,7 +711,6 @@ docs:
       passkey-enroll: Passkey enrollment
       cli-auth: CLI auth
       admin: Admin
-      devices: Web Push
       resource: "Resources"
       agent: "Node protocol"
       ingress: "Ingress"
@@ -788,7 +785,7 @@ docs:
       title: API Key (Bearer)
       li1: · For Agent reporting / receiver long-poll connections
       li2: '· Header: <code class="doc-code">Authorization: Bearer ant_…</code>'
-      li3: '· scope: <code class="doc-code">notify:send</code> report · <code class="doc-code">notify:receive</code> receive · <code class="doc-code">devices:read</code> read-only'
+      li3: '· scope: <code class="doc-code">notify:send</code> (event ingress <code class="doc-code">POST /v1/namespaces/{ns}/events</code>)'
       li4: · Server stores only an argon2id hash; plaintext is shown once at creation
     passkey:
       title: Session Cookie
@@ -823,30 +820,6 @@ docs:
     resp400_comment: // 401 · Key missing or invalid (403 if scope insufficient)
     rules:
       title: Delivery rules (tag routing + level filtering)
-  ws:
-    channel2: Second receive channel
-    intro: Besides browser push, any device / plugin can use a <code class="doc-code">notify:receive</code> Key to establish a WebSocket long-poll for real-time receiving. Great for desktop widgets, CLI daemons, smart-home bridges. Runs alongside browser push.
-    connect:
-      title: Establishing a connection
-      comment: '# requires notify:receive scope'
-      comment2: '# optional, for resume after reconnect'
-    s2c:
-      title: Server → Client
-      comment1: // first frame after connection
-      comment2: // new notification received
-      title_val: Deploy done
-      body_val: Deployed to prod
-      tag_val: work
-      comment3: // replay end / heartbeat / error
-    c2s:
-      title: Client → Server
-      comment1: // subscribe / unsubscribe tags (empty = all)
-      comment2: // acknowledge processed (at-least-once)
-      comment3: // heartbeat (every heartbeat_sec; 2 missed = disconnect)
-      comment4: // after reconnect, use resume frame (replaces Last-Event-Id header)
-    reconnect:
-      title: Reconnect and resume
-      desc: On reconnect, send the <code class="doc-code">Last-Event-Id</code> header (or a <code class="doc-code">resume</code> first frame). The server replays unacknowledged notifications from the last 24h (replay window), then enters the live stream. Beyond the retention window it returns a <code class="doc-code">resume_expired</code> error; the client should fetch full history.
   v4:
     five_specs: 'Endpoint list: grouped by resource, with method and path.'
     missing: "Endpoint list unavailable"
