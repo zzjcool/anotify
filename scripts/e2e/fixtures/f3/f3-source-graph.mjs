@@ -57,8 +57,9 @@ export async function sourceDetailGraph(d) {
 
 	await goto('source-detail', 'namespace=default&name=' + SOURCE, 'zh-CN');
 	await page.waitForFunction((name) => document.querySelector('#src-detail')?.getAttribute('data-source') === name, SOURCE, { timeout: 20000 });
-	await page.waitForFunction(([sel, want]) => document.querySelectorAll(sel + ' [data-node-id]').length === want, [HOST, WANT_NODES.length], { timeout: 20000 }); // 图是异步挂的（await graphLib + 拓扑取数）：等节点数落到 4，不睡固定延时
+	await page.waitForFunction(([sel, want]) => document.querySelectorAll(sel + ' [data-node-id]').length === want, [HOST, WANT_NODES.length], { timeout: 20000 }).catch(() => null); // 图是异步挂的（await graphLib + 拓扑取数）：等节点数落到 4，不睡固定延时；等不到不在这里抛，留下面那条带实测节点数的断言
 	const drawn = await readGraph(page);
+	assert.equal(await page.locator(HOST + ' [data-node-id]').count(), WANT_NODES.length, '图必须真画出来（4 节点），实际 ' + JSON.stringify(drawn));
 	assert.ok(drawn, '源详情页必须有链路图宿主 ' + HOST);
 	assert.equal(drawn.mounted, true, '宿主上必须真的挂了图（.flograph），实际 ' + JSON.stringify(drawn.text));
 	assert.deepEqual(drawn.dom.slice().sort(), WANT_NODES.slice().sort(), '图上必须是源 + 三个能力，实际 ' + drawn.dom.join(','));
