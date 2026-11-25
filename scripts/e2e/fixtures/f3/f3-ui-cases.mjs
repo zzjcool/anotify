@@ -936,7 +936,7 @@ async function ux19(c) {
     await d.page.waitForFunction(() => { const m = document.getElementById("page-main"); return !!m && /无权|Forbidden|not an admin|无权限/.test(m.innerText || ""); }, null, { timeout: 10000 }).catch(() => {});
     const state = await d.page.evaluate(() => {
       const main = document.getElementById("page-main");
-      return { text: (main?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 200), back: !!main?.querySelector('a[href="index.html"]'), kpi: !!document.getElementById("kpi-devices"), role: window.Anotify?.me?.role || null };
+      return { text: (main?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 200), back: !!main?.querySelector('a[href="index.html"]'), kpi: !!document.getElementById("kpi-messages"), role: window.Anotify?.me?.role || null };
     });
     assert.match(state.text, /无权|Forbidden|not an admin|无权限/, "#19 member sees the explicit forbidden page: " + state.text);
     assert.equal(state.back, true, "#19 forbidden page links back to the overview");

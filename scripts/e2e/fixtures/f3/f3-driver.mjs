@@ -792,7 +792,6 @@ export async function openDriver(id, options = {}) {
             if (id==='node-namespace-system') MockApi.state.systemConfig.retention={resultTtlSec:3600,eventTtlSec:7000,taskTtlSec:9000};
           }
           MockApi.latency(0);
-          value.pushUIEnabled=true;
         }
         const raw = window.fetch;
         window.fetch = async (url,opts={}) => {
