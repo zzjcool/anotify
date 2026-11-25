@@ -5,7 +5,7 @@ as_of: 2026-11-16 · area: store · 门禁: `go test ./internal/store/... -count
 ## 1. 边界
 
 - **负责**：SQLite 访问（事实的唯一落地）、`schema.sql` + 迁移、ID 铸造、keyset 分页、统计/保留期查询。
-- **不负责**：HTTP/WS/装配（`internal/server`、`internal/ws`）、执行（`cmd/anode`）、推送（`internal/push`）。
+- **不负责**：HTTP/WS/装配（`internal/server`、`internal/ws`）、执行（`cmd/anode`）。
 - **依赖白名单**：只允许 import 叶子纯逻辑包 —— `protocol` / `artifact` / `sourcespec` / `playbook` /
   `route` / `source`。**不得** import `server` / `ws` / `lease` / `auth` / `api`
   （分层倒挂 + import 循环）。

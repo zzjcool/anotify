@@ -6,7 +6,7 @@ as_of: 2026-11-16 · area: server · 门禁: `go test ./internal/server/... -cou
 
 - **负责**：HTTP 路由装配（`mux.go`）、中间件（会话/限流/背压/访问日志）、静态资源与 CDN 缓存分级、
   embed 产物、资源域 handler（`resource_*.go`）、产物上传下载端点。
-- **不负责**：业务规则（`store` / `route` / `source`）、执行（`cmd/anode`）、推送（`push`）。
+- **不负责**：业务规则（`store` / `route` / `source`）、执行（`cmd/anode`）。
 - 判据：**server 只做投影** —— 从 store 拿事实，按 `api/` 五份 spec 投影成信封，
   不自己发明状态、不在读路径上写库（GC 等后台写者是例外，且必须能被 `WaitBackground` 收尾）。
 
