@@ -7,6 +7,11 @@ node_modules
 *.db-shm
 anotify
 dist
+# embed 产物：gitignore 的构建副产物，镜像里由 fe 阶段重新生成（Dockerfile 的 COPY --from）。
+# 放进构建上下文会很危险：build 阶段的 `COPY . .` 会把宿主机的 dist 带进来，而随后的
+# `COPY --from=fe` 只覆盖同名文件、**不删**多出来的旧产物 —— 删掉的页面会随
+# `//go:embed all:dist` 一起进二进制，对外仍然 200（#649 在 dev 上就是这么发生的）。
+internal/server/dist
 .env.local
 vapid.json
 subscriptions.json
