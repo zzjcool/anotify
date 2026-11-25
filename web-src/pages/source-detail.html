@@ -1,14 +1,17 @@
 {{define "title"}}{{t "source_detail.title"}}{{end}}
-
+{{define "graph-libs"}}
+<script defer src="/flograph.js"></script>
+<script defer src="/graphs.js"></script>
+{{end}}
 {{define "style"}}
 <style>
 /* 源只读详情页（source-detail.html?namespace=<ns>&name=<source>）专有样式。
    颜色一律走 tokens.css 的变量，不硬编码色值；共享组件（.card/.btn/.badge/
    .code-block/.copy-btn/.mono/.skeleton）来自 ui.css。区块名 [data-sec] 由本页脚本填。 */
 #page-main > .page{grid-template-columns:minmax(0,1fr)}
+.source-graph{min-height:320px;width:100%;min-width:0} /* 只定尺寸；外观（条/丝带/图例/滚动）全归 flograph */
 .sd-wrap{overflow-wrap:anywhere;min-width:0}
 .sd-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
-/* 加载骨架 / 空态 / 错误态宿主 */
 .sd-loading{padding:24px;color:var(--muted)}
 .sd-skel{display:grid;gap:8px;max-width:520px;margin-bottom:8px}
 .sd-skel .skeleton{height:12px;border-radius:var(--r-sm)}
@@ -90,10 +93,9 @@
       </div>
     </div>
 
-    <!-- 加载 / 空态 / 错误态宿主：内容就绪后清空并隐藏 -->
     <div id="src-detail-state" class="sd-loading" aria-live="polite">{{t "sources.v4.loading"}}</div>
 
-    <!-- 四块内容（[data-sec] 由脚本填）+ 原始 YAML 折叠块 -->
+    <!-- 内容块（[data-sec] 由脚本填）+ 原始 YAML 折叠块 -->
     <div id="src-detail-body" class="card card-pad sd-body hidden"></div>
   </div>
 </div>
@@ -128,6 +130,7 @@
  * 失败不伪造数据：错误态交给 loadErrorNode，近期回执没有行时如实说明「还没有事件」。
  */
 const A = window.Anotify;
+A.expectGraphics(); // 解析期声明本页会画图：取库只准走 A.graphLib()（它等 defer 图库执行完，直接探库全局会误判）
 const t = (k, d) => A.t(k, d);
 const {
   el, nsApi, api, apiList, nsPath, model, itemsOf, loadErrorNode, copyText, sourceKindLabel, readScope, saveScope, ready,
@@ -228,7 +231,6 @@ function codeBlock(title, body) {
   box.append(head, pre);
   return box;
 }
-/* 空态：图标 + 标题 + 说明 + 返回列表。 */
 const EMPTY_ICON =
   '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
 function emptyState(title, desc) {
@@ -774,6 +776,29 @@ async function loadRecent(name) {
   }
 }
 
+/* ============================ 链路图 ============================ */
+/* 取数与降级都在 A.loadSourceTopology（源页/链路页/首页一份），这里只把图放进去；图库是 defer
+   加载的而取数可能先到 —— 只准 await A.graphLib()；两种降级都共用 locale 已有的 sources.flow.nolib。 */
+async function drawGraph(name, res, host) {
+  const nolib = () => host.replaceChildren(txt("p", "field-hint", t("sources.flow.nolib")));
+  try {
+    const G = await A.graphLib(t("sources.flow.nolib"));
+    const topology = await A.loadSourceTopology(name, { sources: [res] });
+    if (!topology) return nolib();
+    G.capabilityFlow(host, {
+      src: { name, kind: model.source(res).kind },
+      topology,
+      t,
+      showFullscreen: true,
+      onNodeClick: (n) => {
+        if (!n.unknown) location.href = withNs(linkNs(CUR_RES), "capability.html", { name: n.id });
+      },
+    });
+  } catch (err) {
+    nolib();
+  }
+}
+
 /* ============================ 详情渲染 ============================ */
 function render(res) {
   const m = model.source(res);
@@ -876,6 +901,13 @@ function render(res) {
     tSec.append(row);
   }
   body.append(tSec);
+
+  const gSec = section(t("sources.v4.graph", "下游配置图"), "graph"); // 拓扑：源 → targets 能力 → 下游 next 展开
+  const gHost = el("div", { class: "source-graph" });
+  gHost.id = "src-detail-graph";
+  gSec.append(gHost, txt("p", "field-hint", t("sources.v4.graph_hint", "图只展示能力引用，不代表执行状态。")));
+  body.append(gSec);
+  void drawGraph(m.name, res, gHost);
 
   /* ---------- 近期回执：既有 events 端点的 source 过滤 ---------- */
   const rSec = section(t("source_detail.recent", "近期回执"), "recent");
