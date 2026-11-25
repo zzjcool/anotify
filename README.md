@@ -185,12 +185,21 @@ make ci                  # 与 CI 相同：gofmt + 前端 embed 产物 + vet + b
 make test                # Go 单元测试（独立于 e2e；默认不嵌入 dist）
 make e2e                 # 全量端到端测试（~57s，并行，968 断言）
 make e2e-one S=auth_flow # 只跑某个套件
+make fe-clean            # 清掉 web/*.html 与 internal/server/dist（下次 make fe 从零重建）
 make integration         # 集成测试（健康/缓存分级/鉴权矩阵）
 node scripts/ws_test.mjs # WS 接收端（需 SEND_KEY）
 go run ./cmd/devseed     # 播种测试用户 + Key + 会话
 ```
 
 > e2e 体系详见 `E2E_TESTING.md`（17 套件、并行执行器、结构化 JSON 结果）。
+
+### 删掉/改名页面之后
+
+`web/` 与 `internal/server/dist/` 都是 gitignore 的生成物，但**不能再靠手工清理**：
+
+- `make fe` 会 prune 掉 `web/*.html` 与 `dist/` 里「本轮没有产出」的文件，并逐个打印删了什么；
+- `make check-dist-fresh` 会点名 `dist/` 里任何「源已不存在」的残留并判红（不静默删除）；
+- 要整份重置就 `make fe-clean`，然后 `make fe`。
 
 ## API（/v1）
 

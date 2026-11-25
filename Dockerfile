@@ -28,6 +28,7 @@ RUN go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en
 FROM node:22-alpine AS fe
 WORKDIR /app
 COPY scripts/hash.mjs ./scripts/hash.mjs
+COPY scripts/lib/direct-run.mjs ./scripts/lib/direct-run.mjs
 COPY --from=sitegen /app/web ./web
 RUN node scripts/hash.mjs web internal/server/dist
 
