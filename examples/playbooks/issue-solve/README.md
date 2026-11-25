@@ -24,7 +24,6 @@ POST /v1/hooks/<token>  {"payload":{"issue":649}}
 | `values.repo`（`owner/name`） | **安装时** | 一条收单线服务一个仓库；换仓库就再装一次 |
 | `values.dispatchUrl` | 安装时 | 工单往哪送（执行体入口） |
 | `payload.issue` | **每次触发** | 这才是手动触发要说的事：今天做哪个 |
-| `payload.note` | 可选 | 触发人的一句话意图，会进工单 |
 
 ## 装
 
@@ -43,8 +42,10 @@ curl -fsS -X POST "$HOOK_URL" -H 'content-type: application/json' \
   --data-binary '{"payload":{"issue":649,"note":"生成产物只写不删"}}'
 ```
 
-（实测踩出来的：直接投 `{"issue":649}` 会被剪枝成 `event_schema: 载荷缺 issue`，
-因为服务端读的是 `payload` 这一层。）
+（实测踩出来的两条：① 直接投 `{"issue":649}` 会被剪枝成 `event_schema: 载荷缺 issue` ——
+服务端读的是 `payload` 这一层；② 载荷里放一个**可选**字段并在 `targets` 里映射它会出问题：
+`$(payload.note)` 求不出值，整条投递被剪枝成 `param_missing: 需要 note`。
+所以映射的每个字段都必须**必填**，可选字段别进映射。）
 
 ## 为什么用手动触发而不是 GitHub webhook
 
