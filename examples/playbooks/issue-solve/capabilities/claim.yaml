@@ -90,10 +90,12 @@ spec:
         title=$(sed -n 's/.*"title": *"\([^"]*\)".*/\1/p' "${art_dir}/issue.json" | head -1 | tr -d '\n' | sed 's/\\/\\\\/g; s/"/\\"/g')
 
         # ---- 2. 是否已经有人在处理 ----
-        # 2a. 已有一条 open PR 提到这个 issue（"#N"）
+        # 2a. 已有一条 open PR **声称**关掉这个 issue。
+        # 只认关闭关键字（fixes/closes/resolves #N），不认"顺带提到" —— 提到 #N 的 PR
+        # 满地都是（讨论、引用、依赖），把它们当成"已经在处理"会误拦掉真正该做的活。
         code=$(get "${api}/repos/${repo}/pulls?state=open&per_page=100" "${art_dir}/pulls.json")
-        if [ "${code}" = "200" ] && grep -q "#${issue}\b" "${art_dir}/pulls.json"; then
-          verdict skip "open_pr_exists" "已有 open PR 提到 #${issue}"
+        if [ "${code}" = "200" ] && grep -Eqi "(close[sd]?|fix(e[sd])?|resolve[sd]?)[a-z ]*#${issue}([^0-9]|$)" "${art_dir}/pulls.json"; then
+          verdict skip "open_pr_exists" "已有 open PR 声称关闭 #${issue}"
           exit 0
         fi
 

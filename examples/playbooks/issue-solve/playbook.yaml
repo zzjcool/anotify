@@ -43,7 +43,7 @@ spec:
           但有速率限制：核心 60/小时、搜索 10/分钟）。
       dispatchUrl:
         type: string
-        pattern: '^https://|^http://localhost'
+        pattern: '^https://|^http://(localhost|127\.0\.0\.1)(:[0-9]+)?'
         description: |
           执行体的入口。dispatch 能力会把工单 POST 到这里（JSON）。
           本地演练可以填 http://localhost:9999/hook 用一个假接收器看载荷。
