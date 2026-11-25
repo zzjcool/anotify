@@ -183,13 +183,8 @@ index:
   kpi:
     total: イベント総数
     all_time: 累計
-    rate: 配信率
     today: 今日のイベント
     today_sub: 今日の受信数
-    devices: 受信デバイス
-    devices_enabled: 有効
-    devices_sub: '{n} 台 · エンドツーエンド暗号化'
-    devices_sub2: プッシュ購読 + WebSocket
     rate_na: 受信デバイスがまだないため、配信率は表示できません
     trend_live: ライブ
     running: 実行中
@@ -198,7 +193,6 @@ index:
     failed: 異常タスク
     failed_sub: "この名前空間の全タスク"
     failed_sub_all: すべてのネームスペースの全タスク
-    devices_sub_all: デバイスはユーザー単位で、ネームスペースによって変わりません
   aggregate:
     unsupported: この指標はまだネームスペースをまたいで集計できません
   heatmap:
@@ -494,118 +488,6 @@ login:
     login_success_short: ログイン成功、ワークスペースに移動中…
     signup_success_short: 登録成功！ワークスペースに移動中…
     need_username_short: まずユーザー名を決めてください。
-receivers:
-  back_home: '概要に戻る'
-  docs_link: "連携手順を見る"
-  unavailable: 'プッシュ通知は未公開です。公開後にここへ受信デバイスが表示されます。'
-  title: 通知先
-  channel:
-    push: プッシュ購読
-    ws: WebSocket 接続
-  push:
-    title: ブラウザプッシュ購読
-    subtitle_prefix: システム Push サービス（APNs / FCM）で配信。
-    subtitle_highlight: ブラウザを閉じていても受信
-    subtitle_suffix: ''
-    add_device: このデバイスを追加
-  ws:
-    title: 長接続受信 · プラグインと任意デバイスのために
-    desc: notify:receive 権限の API Key を持つ任意のデバイス / プラグインが WebSocket 長接続を確立し、サーバーからリアルタイムに通知を受信。 デスクトップウィジェット、CLI デーモン、スマートホームブリッジなどに最適。 ブラウザプッシュと並行して動作します。
-    connection_method: 接続方法
-    copy: コピー
-    active_title: アクティブな接続
-    active_subtitle: 現在確立している WebSocket 接続
-    online: ' 件オンライン'
-    empty_hint: バックエンド接続後、ここにリアルタイム接続が表示されます （接続名 / Key プレフィックス / 稼働時間 / タグ / 最新メッセージ）。
-  tags:
-    title: タグルーティング · どのデバイスがどの通知を受け取るか
-    desc: 通知報告時に deviceTags を付与します。「タグの積集合がある」または 「タグなし（全受信）」のデバイスのみが受信します。通知にタグなし = すべての有効なデバイスへブロードキャスト、デバイスにタグなし = すべてを受信。
-  pair:
-    title: このデバイスを追加
-    subtitle: 購読後、このブラウザがプッシュ通知を受信します
-    device_name: デバイス名
-    device_placeholder: 例：メインスマホ / オフィスの Mac
-    submit: 権限を要求して購読
-    hint: ブラウザが通知権限を要求します。iOS ではまず本サイトを「ホーム画面に追加」し、スタンドアロンアプリとして開く必要があります。
-    unsupported: この環境は Web Push に対応していません。iOS はホーム画面に追加してから開いてください。
-    requesting_perm: 通知権限を要求中…
-    perm_denied: 通知権限が付与されませんでした（{perm}）。ブラウザ設定で許可して再試行してください。
-    registering_sw: Service Worker を登録中…
-    getting_vapid: VAPID 公開鍵を取得中…
-    no_backend: バックエンド未接続 — VAPID 鍵を取得できません。サーバーが起動しているか確認して再試行してください。
-    empty_vapid: VAPID 公開鍵が空です
-    subscribing: プッシュを購読中…
-    reporting: 購読を報告中…
-    success: 購読成功！このデバイスはプッシュ通知を受信します。
-    failed: 購読に失敗：{msg}
-  scope:
-    all: 全ライフサイクル
-    final: 最終結果のみ
-  local:
-    enabled: この端末は通知が有効です
-    disabled: この端末は通知が無効です
-    receiving: 受信中
-    not_receiving: 受信不可
-    unsupported: このブラウザは Web Push に対応していません（iOS はホーム画面に追加が必要です）。
-    subscribed: このブラウザ（{browser}）はプッシュ通知を購読中で、通知を受信できます。
-    permission_denied: 通知権限が拒否されました — ブラウザの設定で再度許可してください。
-    not_subscribed: このブラウザ（{browser}）はプッシュ通知を購読していません — この端末は通知を受信できません。
-    turn_off: 通知をオフにする
-    turn_on: 通知をオンにする
-    view_settings: 有効化の方法を見る
-    perm_denied_toast: 通知権限が拒否されています（denied）。ブラウザの設定でこのサイトを許可してから再試行してください。
-  troubleshoot:
-    title: デバイス別チェックリスト
-    local_check: ローカル確認
-    perm_granted: 通知権限：許可済み ✓
-    perm_denied: 通知権限：拒否 ✗（ブラウザ設定でリセットして再購読してください）
-    perm_default: 通知権限：未設定（「このデバイスを追加」を押した際に要求します）
-    expand: 受信できない？これらを確認 →
-  empty: まだ受信デバイスがありません。右上の「このデバイスを追加」で始めましょう。
-  device:
-    switch_aria: 受信スイッチ
-    tags: タグ
-    add_tag: + タグ
-    this_device: この端末
-    receiving: 受信中
-    paused: 一時停止
-    last_delivered: 最終配信 {time}
-    level: 通知レベル
-    rename: 名前変更
-    unbind: 解除
-  prompt:
-    tag: タグを追加（例：スマホ / 仕事 / アラート）
-    rename: デバイス名
-  confirm:
-    unbind: 「{name}」を解除しますか？通知を受信できなくなります。
-  toast:
-    saved: 保存しました
-    save_failed: 保存に失敗：{msg}
-    unbound: 解除しました
-    unbind_failed: 解除に失敗：{msg}
-    local_off: この端末の通知をオフにしました
-    added: デバイスを追加しました
-  checklist:
-    ios_1: ホーム画面のアイコンから開く必要があります（standalone）。通常の Safari タブは通知に対応していません
-    ios_2: iOS 設定 → 通知 → Safari/PWA → 通知を許可
-    ios_3: 購読後に受信できない：集中モードをオフにし、サイトの通知権限が「許可」か確認
-    mac_1: macOS システム設定 → 通知 → 該当ブラウザ（例：Google Chrome）→ 通知を許可
-    mac_2: ブラウザのアドレスバーの鍵アイコン → 通知 → 「許可」に設定（デフォルト/ブロック以外）
-    mac_3: プッシュにはブラウザプロセスの実行と当サイトのタブが開いている必要があります。ブラウザを閉じるとリアルタイムプッシュは受信できません
-    mac_4: フォアグラウンドタブはプッシュをサイレント処理することがあります — バックグラウンドに切り替えるか最小化してテスト
-    win_1: Windows 設定 → システム → 通知 → ブラウザの通知がオンか確認
-    win_2: ブラウザのアドレスバーの鍵アイコン → 通知 → 「許可」に設定
-    win_3: 集中アシスト（おやすみモード）がオンだと通知がサイレントになります
-    android_1: Android 設定 → アプリ → ブラウザ → 通知 → 許可
-    android_2: WeChat の内蔵ブラウザや一部の中国製ブラウザは Web Push に対応していません。Chrome をご使用ください
-    other_1: ブラウザの通知権限が「許可」か確認（アドレスバーの鍵アイコン）
-    other_2: ブラウザプロセスが実行中か確認
-  subtitle: デバイスごとに通知受信を制御
-  refresh: '更新'
-  unavailableTitle: 'プッシュ通知は未公開です'
-  emptyTitle: '受信デバイスがまだありません'
-  emptyDesc: 'このデバイスを追加すると、確認した通知を受け取れます。'
-  wsEmptyTitle: '接続はまだありません'
 keys:
   title: API Keys
   subtitle: Agent が通知報告に使用する Key
@@ -645,10 +527,6 @@ keys:
     scope_label: スコープ（複数選択可、最小権限）
     scope_send_label: 送信
     scope_send_desc: Agent / CI が POST 通知に使用。プレフィックス ant_live_
-    scope_receive_label: 受信
-    scope_receive_desc: プラグイン / デバイスが WebSocket 接続を確立するために使用。プレフィックス ant_recv_
-    scope_read_label: デバイス参照
-    scope_read_desc: スクリプト点検用の読み取り専用デバイス一覧
     scope_hint: 最小権限：送信と受信は分離され、Key 漏洩時の影響は片側のみ。
     cancel: キャンセル
     generate: Key を生成
@@ -661,8 +539,6 @@ keys:
     done: 保存しました
   scope:
     send: 送信
-    receive: 受信
-    read: デバイス参照
   unnamed: 名前なし
   unnamed_key: 名前なし Key
   summary: '{total} 個の Key · {active} 有効'
@@ -806,7 +682,6 @@ docs:
     agent: Agent 連携
     api: API 概要
     auth: 認証方法
-    webpush: Web Push 購読
     stream: WebSocket 受信
     events: POST /v1/namespaces/{namespace}/events
     node: ノードプロトコル
@@ -901,16 +776,11 @@ docs:
       notify: Agent による通知上報（中核）
       tasks: 'タスク一覧（イベントストリーム）'
       notifications: 通知履歴一覧
-      devices_list: デバイス一覧
-      devices_sub: デバイス購読（登録）
-      devices_update: デバイス更新（オンオフ / フィルタ / タグ）
-      devices_delete: デバイス解除
       node_stream: ノード WebSocket プロトコル
       stream: WebSocket ロングポール受信
       keys_list: API Key 一覧
       keys_create: API Key 新規作成
       passkey: Passkey 登録 / ログイン
-      vapid: VAPID 公開鍵（購読用）
   auth:
     title: 認証方法
     intro: 2 種類の認証情報があり、呼び出し元に応じて使い分けます。<b class="doc-em">最小権限</b>：上報と受信は分離されており、Key が漏洩しても片方だけの影響で済みます。
@@ -953,30 +823,6 @@ docs:
     resp400_comment: // 401 · Key がないまたは無効（scope 不足時は 403）
     rules:
       title: 配信ルール（タグルーティング + レベルフィルタ）
-  webpush:
-    off_note: "モバイルプッシュ（Web Push）は未公開です：公開されるとここに購読手順が表示されます。イベント自体は記録され、「イベントストリーム」ページで確認できます。"
-    title: Web Push 購読（ブラウザ受信）
-    intro: ブラウザは Service Worker + PushManager で購読し、バックエンドは VAPID 署名でプッシュします。<b class="doc-em">ページを閉じていても受信できます</b>。iOS は「ホーム画面に追加」してスタンドアローンモードで実行する必要があります（iOS 16.4+）。
-    step1: <b class="doc-em">① VAPID 公開鍵を取得</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
-    step2: <b class="doc-em">② Service Worker を登録</b> · <code class="doc-code">navigator.serviceWorker.register('/sw.js')</code>
-    step3: <b class="doc-em">③ 権限を要求して購読</b> · <code class="doc-code">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
-    step4: <b class="doc-em">④ 購読を上報</b> · endpoint + keys を <code class="doc-code">POST /v1/devices</code> で送信
-    code:
-      title: フロントエンド購読 · コアコード
-      comment1: // 1. SW 登録 + VAPID 公開鍵を取得
-      comment2: // 2. 購読（通知権限の許可が必要）
-      comment3: // 3. バックエンドに報告（セッション Cookie 認証）
-      comment_p256dh: // { p256dh, auth }
-      comment_platform: // ios|mac|win|android|other
-    ios:
-      title: ⚠️ iOS の前提条件
-      desc: 「ホーム画面に追加」してスタンドアローンモードで実行する必要があります。そうしないと Safari は Notification / Push API を提供しません。
-    android:
-      title: ✅ Android はもっと簡単
-      desc: Chrome/Edge は通常のタブから購読でき、FCM 経由です。ホーム画面に追加する必要はありません。
-    e2e:
-      title: 🔒 エンドツーエンド暗号化
-      desc: ペイロードは購読の p256dh/auth 鍵で暗号化され、プッシュサービスは内容を読めません。
   ws:
     channel2: 2 つ目の受信チャネル
     intro: ブラウザプッシュに加え、任意のデバイス / プラグインが <code class="doc-code">notify:receive</code> 権限の Key で WebSocket ロングポールを確立し、リアルタイム受信できます。デスクトップウィジェット、CLI デーモン、スマートホームブリッジに最適。ブラウザプッシュと並行稼働します。
@@ -1177,9 +1023,6 @@ admin:
     active: 7日間 {n} アクティブ
     messages: メッセージ総数
     today: 今日 {n}
-    devices: デバイス
-    enabled: '{n} 有効'
-    keys: '{n} Keys'
     delivery_rate: 配信成功率
   tab:
     users: ユーザー
@@ -1190,7 +1033,6 @@ admin:
     role: ロール
     status: 状態
     messages: メッセージ
-    devices: デバイス
     keys: Keys
     created: 登録日時
     actions: 操作
@@ -1216,7 +1058,6 @@ admin:
     empty: アクティブセッションなし
   top:
     messages: メッセージ
-    devices: '{n} デバイス'
   confirm:
     title: 確認
     cancel: キャンセル
@@ -2572,9 +2413,6 @@ uxaudit:
       resolved_yes: 'targets 解決済み'
       resolved_no: 'targets 未解決'
       hook_url: 'フック URL'
-    receivers:
-      to_ws: 'WebSocket 長接続を見る'
-      docs: 'API ドキュメントを見る'
     admin:
       role_admin: 'スーパー管理者'
       role_member: 'メンバー'

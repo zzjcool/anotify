@@ -14,7 +14,7 @@
          颜色全部走 web/tokens.css 的 token，不出现硬编码色值。 */
 
       /* ---------- KPI 栅格 ----------
-         窄屏 2 列、≥1024 四列（等价于原来的 grid-cols-2 lg:grid-cols-4）。 */
+         窄屏 2 列、≥1024 三列（推送域退役后只剩三张卡，见 V4-D7）。 */
       .ad-kpi {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -22,7 +22,7 @@
       }
       @media (min-width: 1024px) {
         .ad-kpi {
-          grid-template-columns: repeat(4, minmax(0, 1fr));
+          grid-template-columns: repeat(3, minmax(0, 1fr));
         }
       }
       .ad-stat-head {
@@ -223,8 +223,8 @@
     </div>
 
     <!-- ===== 系统总览 KPI =====
-         四个 `#kpi-*` 的 textContent 由页内脚本覆写（e2e 断言它已渲染且不是「–」），
-         `#kpi-*-sub` 是同一张卡的次要口径。四个数都是「全部署」口径（不随命名空间
+         三个 `#kpi-*` 的 textContent 由页内脚本覆写（e2e 断言它已渲染且不是「–」），
+         `#kpi-*-sub` 是同一张卡的次要口径。三个数都是「全部署」口径（不随命名空间
          切换），和顶栏的 scope 徽标一致。 -->
     <section class="ad-kpi" aria-busy="true">
       <div class="card stat card-pad">
@@ -268,28 +268,6 @@
         <div class="stat-label">{{t "admin.kpi.messages"}}</div>
         <div class="stat-value" id="kpi-messages">–</div>
         <div class="stat-foot"><span id="kpi-messages-sub">—</span></div>
-      </div>
-
-      <div class="card stat card-pad">
-        <div class="ad-stat-head">
-          <span class="stat-icon stat-icon-warn" aria-hidden="true">
-            <svg
-              class="h-4 w-4"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <rect x="7" y="2" width="10" height="20" rx="2" />
-              <path d="M11 18h2" />
-            </svg>
-          </span>
-        </div>
-        <div class="stat-label">{{t "admin.kpi.devices"}}</div>
-        <div class="stat-value" id="kpi-devices">–</div>
-        <div class="stat-foot"><span id="kpi-devices-sub">—</span></div>
       </div>
 
       <div class="card stat card-pad">
@@ -371,9 +349,6 @@
                 <th>{{t "admin.users.role"}}</th>
                 <th>{{t "admin.users.status"}}</th>
                 <th class="ad-num">{{t "admin.users.messages"}}</th>
-                <th class="ad-num" data-col-priority="2">
-                  {{t "admin.users.devices"}}
-                </th>
                 <th class="ad-num" data-col-priority="2">
                   {{t "admin.users.keys"}}
                 </th>
@@ -742,13 +717,6 @@
           "kpi-messages-sub",
           t("admin.kpi.today", "今日 {n}").replace("{n}", s.todayMessages),
         );
-        setText("kpi-devices", fmtNum(s.deviceCount));
-        setText(
-          "kpi-devices-sub",
-          t("admin.kpi.enabled", "{n} 启用").replace("{n}", s.enabledDevices) +
-            " · " +
-            t("admin.kpi.keys", "{n} Keys").replace("{n}", s.keyCount),
-        );
         const rate =
           s.deliveryTotal > 0
             ? Math.round((s.deliveredCount / s.deliveryTotal) * 100)
@@ -774,13 +742,6 @@
                   "div",
                   { class: "list-main" },
                   el("span", { class: "list-title", text: name }),
-                  el("span", {
-                    class: "ad-cell-meta",
-                    text: t("admin.top.devices", "{n} 设备").replace(
-                      "{n}",
-                      u.deviceCount,
-                    ),
-                  }),
                 ),
                 el(
                   "div",
@@ -915,13 +876,6 @@
           "data-label": t("admin.users.messages", "消息"),
           text: fmtNum(u.messageCount),
         }),
-        secondary(
-          el("td", {
-            class: "ad-num",
-            "data-label": t("admin.users.devices", "设备"),
-            text: fmtNum(u.deviceCount),
-          }),
-        ),
         secondary(
           el("td", {
             class: "ad-num",

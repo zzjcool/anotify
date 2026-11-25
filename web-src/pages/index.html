@@ -625,9 +625,7 @@
     </section>
 
     <!-- ===== KPI 四卡 =====
-         `#kpi-*` 这些 id 全部由页内 JS 覆写 textContent，别改 id。
-         送达率 / 接收设备是「手机推送」口径：推送未开放时整块不显示
-         （web/partials.js 的 PUSH_UI_ENABLED → JS 给 [data-push-tile] 加 hidden）。 -->
+         `#kpi-*` 这些 id 全部由页内 JS 覆写 textContent，别改 id。 -->
     <section class="anim-stagger grid grid-cols-2 gap-4 lg:grid-cols-4">
       <!-- 任务总数 -->
       <div class="card stat card-pad">
@@ -659,36 +657,6 @@
         ></div>
       </div>
 
-      <!-- 送达率（手机推送口径，推送未开放时整块隐藏） -->
-      <div class="min-w-0" data-push-tile>
-        <div class="card stat card-pad h-full">
-          <div class="flex items-start justify-between gap-2">
-            <span class="stat-icon stat-icon-neutral" aria-hidden="true">
-              <svg
-                class="h-4 w-4"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path d="M22 2 11 13" />
-                <path d="M22 2 15 22l-4-9-9-4Z" />
-              </svg>
-            </span>
-          </div>
-          <div class="stat-label">{{t "index.kpi.rate"}}</div>
-          <div class="stat-value" id="kpi-rate">–</div>
-          <div class="stat-foot" id="kpi-rate-sub"><span>—</span></div>
-          <div
-          class="stat-spark"
-          role="img"
-          aria-label="{{t "ui.kpi.spark"}}"
-        ></div>
-        </div>
-      </div>
-
       <!-- 今日任务 -->
       <div class="card stat card-pad">
         <div class="flex items-start justify-between gap-2">
@@ -718,44 +686,7 @@
         ></div>
       </div>
 
-      <!-- 接收设备（手机推送口径，推送未开放时整块隐藏） -->
-      <div class="min-w-0" data-push-tile>
-        <div class="card stat card-pad h-full">
-          <div class="flex items-start justify-between gap-2">
-            <span class="stat-icon stat-icon-neutral" aria-hidden="true">
-              <svg
-                class="h-4 w-4"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <rect x="7" y="2" width="10" height="20" rx="2" />
-                <path d="M11 18h2" />
-              </svg>
-            </span>
-            <span class="badge badge-neutral"
-              >{{t "index.kpi.devices_enabled"}}</span
-            >
-          </div>
-          <div class="stat-label">{{t "index.kpi.devices"}}</div>
-          <div class="stat-value" id="kpi-devices">–</div>
-          <div class="stat-foot" id="kpi-devices-sub"><span>—</span></div>
-          <div
-          class="stat-spark"
-          role="img"
-          aria-label="{{t "ui.kpi.spark"}}"
-        ></div>
-        </div>
-      </div>
-
-      <!-- ===== 非推送口径的两张卡（PUSH_UI_ENABLED=false 时补满四格）=====
-           数据与上面两张卡同源（显式 namespace 的统计），不新增 API。
-           推送开放时由 JS 给 [data-nonpush-tile] 加 hidden，网格剩下的
-           正好是上面两张推送卡 —— 两种开关状态下都是 4 张真卡，没有空格。 -->
-      <div class="min-w-0" data-nonpush-tile>
+      <div class="min-w-0">
         <div class="card stat card-pad h-full">
           <div class="flex items-start justify-between gap-2">
             <span class="stat-icon stat-icon-warn" aria-hidden="true">
@@ -788,7 +719,7 @@
       </div>
 
       <!-- 失败 KPI = 去事件流的入口（`#kpi-failed` 这几个 id 由页内 JS 覆写，别改）。 -->
-      <div class="min-w-0" data-nonpush-tile>
+      <div class="min-w-0">
         <a
           id="kpi-failed-link"
           href="events.html?status=failed"
@@ -1176,23 +1107,6 @@
     // 占位；load() 里用 /v1/auth/me 覆盖，避免硬编码名字与侧栏不一致（#21）
     let username = qs.get("u") || "";
 
-    // 手机推送未开放 → 首页不显示「接收设备」这块 KPI（与 receivers.html 保持一致）。
-    //
-    // [data-push-tile] 挂在外层 wrapper 上而不是 .card 上：卡片的组件类会设
-    // display（grid/flex），而 `.hidden`（Tailwind，先于 ui.css 加载）与它在
-    // 同一优先级上打不过后加载的 ui.css —— 挂在没设 display 的 wrapper 上，
-    // 「整块隐藏」才是确定的。
-    if (!window.Anotify.pushUIEnabled) {
-      document.querySelectorAll("[data-push-tile]").forEach((el) => {
-        el.classList.add("hidden");
-      });
-    } else {
-      /* 推送开放时反过来：非推送口径的两张卡让位给推送卡，
-       * 保证 KPI 网格永远是 4 张**可见的真卡**（不是 4 格里 2 格空）。 */
-      document.querySelectorAll("[data-nonpush-tile]").forEach((el) => {
-        el.classList.add("hidden");
-      });
-    }
 
     mountLayout({
       active: "overview",
@@ -1245,7 +1159,7 @@
     }
 
     /* 两张执行状态卡的口径必须是**真实 Task 事实**，不是 stats 的臆造字段：
-     * GET /v1/stats 只给 total/today/delivered/deliveryTotal/deviceCount/daily
+     * GET /v1/stats 只给 total/today/delivered/deliveryTotal/daily
      * （api/events.yaml · getStats），v4 里没有 pending/running/failed —— 读它们
      * 得到的是 undefined，跟着 `.toLocaleString()` 就把整页炸掉。所以这两个数从
      * 真实 TaskList 数相位：pending+running = 在途，failed = 失败。取不到就返回
@@ -1679,18 +1593,11 @@
       bumpStat(node);
     }
 
-    /* 三张卡的**副行**（口径说明）：单 ns 与全部模式说的不是同一件事。
-     *   · 设备：用户维度，不随 ns 变（全部模式下必须写明，否则读起来像跨 ns 求和）
+    /* 两张执行状态卡的**副行**（口径说明）：单 ns 与全部模式说的不是同一件事。
      *   · 在途 / 失败：全部模式 = Σ 各 ns 的所有任务；有 ns 没给相位口径时
      *     明说「该口径暂不支持跨命名空间统计」（绝不写 0 冒充）
      * 错误态也照样画：它们是**文案**不是数字，范围说错比不说更糟。 */
     function paintKpiSubs() {
-      const devicesSub = document.getElementById("kpi-devices-sub");
-      if (devicesSub) {
-        devicesSub.textContent = ALL
-          ? t("index.kpi.devices_sub_all")
-          : t("index.kpi.devices_sub2", "推送订阅 + 长连接");
-      }
       const unsupported =
         ALL && !!TASK_COUNTS && TASK_COUNTS.unsupported === true;
       const runningSub = document.getElementById("kpi-running-sub");
@@ -1723,9 +1630,7 @@
       if (loadError) {
         for (const id of [
           "kpi-total",
-          "kpi-rate",
           "kpi-today",
-          "kpi-devices",
           "kpi-running",
           "kpi-failed",
         ]) {
@@ -1740,24 +1645,15 @@
         }
         return;
       }
-      // /v1/stats 的 total/today/daily 统计的是**事件**；送达率仍是终态任务口径。
-      let total, rate, today, devices;
+      // /v1/stats 的 total/today/daily 统计的是**事件**。
+      let total, today;
       if (STATS) {
         total = STATS.total ?? 0;
         today = STATS.today ?? 0;
-        devices = STATS.deviceCount ?? 0;
-        const dt = STATS.deliveryTotal ?? 0;
-        // 0 设备或尚无投递样本时不展示误导性 100%（#23）
-        rate =
-          devices > 0 && dt > 0
-            ? Math.round(((STATS.delivered ?? 0) / dt) * 1000) / 10
-            : null;
       } else {
         // 统计失败时 KPI 已在上面的 loadError 分支统一显示 –，这里只兜底避免 NaN
         total = 0;
         today = 0;
-        devices = 0;
-        rate = null;
       }
       setStatValue(
         document.getElementById("kpi-total"),
@@ -1784,26 +1680,7 @@
             (up ? "↑ " : down ? "↓ " : "") + Math.abs(delta).toLocaleString();
         }
       }
-      // Use textContent to avoid innerHTML (% is a separate span)
-      const rateEl = document.getElementById("kpi-rate");
-      if (rate == null) {
-        rateEl.replaceChildren(document.createTextNode("–"));
-      } else {
-        rateEl.replaceChildren(
-          document.createTextNode(rate),
-          el("span", { class: "text-2xl card-sub", text: "%" }),
-        );
-      }
-      bumpStat(rateEl);
-      document.getElementById("kpi-rate-sub").textContent =
-        devices > 0
-          ? t("index.kpi.devices_sub", "{n} 台设备 · 端到端加密").replace(
-              "{n}",
-              devices,
-            )
-          : t("index.kpi.rate_na", "暂无接收设备，送达率不可用");
       setStatValue(document.getElementById("kpi-today"), today);
-      setStatValue(document.getElementById("kpi-devices"), devices || "0");
 
       /* 两张执行状态卡：
        *   单 ns = 数这个 ns 里真实 Task 的相位（loadTaskCounts，500 截断 + N+）；

@@ -183,13 +183,8 @@ index:
   kpi:
     total: Total events
     all_time: All time
-    rate: Delivery rate
     today: Events today
     today_sub: Received today
-    devices: Receiving devices
-    devices_enabled: Enabled
-    devices_sub: '{n} devices · end-to-end encrypted'
-    devices_sub2: Push subscriptions + WebSocket
     rate_na: No receivers yet — delivery rate unavailable
     trend_live: Live
     running: In progress
@@ -198,7 +193,6 @@ index:
     failed: Failed tasks
     failed_sub: "All tasks in this namespace"
     failed_sub_all: All tasks across every namespace
-    devices_sub_all: Devices belong to your user, not to a namespace, so they don't change when you switch
   aggregate:
     unsupported: This figure can't be summed across namespaces yet
   heatmap:
@@ -494,118 +488,6 @@ login:
     login_success_short: Signed in — entering workspace…
     signup_success_short: Account created — entering workspace…
     need_username_short: Please pick a username first.
-receivers:
-  back_home: 'Back to overview'
-  docs_link: "Integration docs"
-  unavailable: 'Push notifications are not available yet. Your receiving devices will show up here once released.'
-  title: Receivers
-  channel:
-    push: Push subscriptions
-    ws: WebSocket connections
-  push:
-    title: Browser push subscriptions
-    subtitle_prefix: 'Delivered via system Push services (APNs / FCM). '
-    subtitle_highlight: Receives even when the browser is closed.
-    subtitle_suffix: ''
-    add_device: Add this device
-  ws:
-    title: Long-poll receiving · for plugins and any device
-    desc: Any device / plugin with a notify:receive API Key can establish a WebSocket long-poll for real-time push. Great for desktop widgets, CLI daemons, smart-home bridges. Runs alongside browser push.
-    connection_method: Connection
-    copy: Copy
-    active_title: Active connections
-    active_subtitle: Currently established WebSocket connections
-    online: ' online'
-    empty_hint: Once the backend is connected, live connections will appear here (name / Key prefix / uptime / tags / last message).
-  tags:
-    title: Tag routing · which device gets which notification
-    desc: Include deviceTags when reporting. Only devices with overlapping tags (or no tags = catch-all) will receive it. No tags on the notification = broadcast to all enabled devices; no tags on a device = receives everything.
-  pair:
-    title: Add this device
-    subtitle: After subscribing, this browser will receive push notifications
-    device_name: Device name
-    device_placeholder: e.g. Primary phone / Office Mac
-    submit: Request permission and subscribe
-    hint: The browser will ask for notification permission. iOS requires adding this site to the Home Screen first, then opening it as a standalone app.
-    unsupported: This environment doesn't support Web Push. On iOS, add this site to the Home Screen first.
-    requesting_perm: Requesting notification permission…
-    perm_denied: Notification permission not granted ({perm}). Please allow in browser settings and retry.
-    registering_sw: Registering Service Worker…
-    getting_vapid: Getting VAPID public key…
-    no_backend: Backend not connected — can't get the VAPID key. Make sure the server is running, then retry.
-    empty_vapid: VAPID public key is empty
-    subscribing: Subscribing to push…
-    reporting: Reporting subscription…
-    success: Subscribed! This device will receive push notifications.
-    failed: 'Subscription failed: {msg}'
-  scope:
-    all: Full lifecycle
-    final: Final results only
-  local:
-    enabled: Notifications enabled on this device
-    disabled: Notifications not enabled on this device
-    receiving: Receiving
-    not_receiving: Not receiving
-    unsupported: This browser doesn't support Web Push (iOS requires Add to Home Screen first).
-    subscribed: This browser ({browser}) is subscribed to push and can receive notifications.
-    permission_denied: Notification permission was denied — please re-enable in browser settings.
-    not_subscribed: This browser ({browser}) hasn't subscribed to push — this device won't receive notifications.
-    turn_off: Turn off notifications
-    turn_on: Turn on notifications
-    view_settings: How to enable
-    perm_denied_toast: Notification permission is denied. Allow this site in your browser settings, then try again.
-  troubleshoot:
-    title: Device checklist
-    local_check: Local check
-    perm_granted: 'Notification permission: Granted ✓'
-    perm_denied: 'Notification permission: Denied ✗ (reset in browser settings and re-subscribe)'
-    perm_default: 'Notification permission: Not asked (requested when you click "Add this device")'
-    expand: Not receiving? Check these →
-  empty: No receiving devices yet. Click "Add this device" in the top right to start.
-  device:
-    switch_aria: Receive toggle
-    tags: Tags
-    add_tag: + Tag
-    this_device: This device
-    receiving: Receiving
-    paused: Paused
-    last_delivered: Last delivered {time}
-    level: Notification level
-    rename: Rename
-    unbind: Unbind
-  prompt:
-    tag: Add a tag (e.g. phone / work / alert)
-    rename: Device name
-  confirm:
-    unbind: Unbind "{name}"? It will no longer receive notifications.
-  toast:
-    saved: Saved
-    save_failed: 'Save failed: {msg}'
-    unbound: Unbound
-    unbind_failed: 'Unbind failed: {msg}'
-    local_off: Local notifications turned off
-    added: Device added
-  checklist:
-    ios_1: Must open from the Home Screen icon (standalone mode) — regular Safari tabs don't support notifications
-    ios_2: iOS Settings → Notifications → Safari/PWA → Allow Notifications
-    ios_3: 'Not receiving after subscribing: turn off Focus/DND, confirm site notification permission is "Allow"'
-    mac_1: macOS System Settings → Notifications → find your browser (e.g. Google Chrome) → Allow
-    mac_2: Browser address bar lock icon → Notifications → set to "Allow" (not default/block)
-    mac_3: Push requires the browser process running with this site's tab open; closing the browser stops real-time push
-    mac_4: Foreground tabs may silently handle push — switch to background or minimize to test
-    win_1: Windows Settings → System → Notifications → confirm browser has notifications enabled
-    win_2: Browser address bar lock icon → Notifications → set to "Allow"
-    win_3: Focus Assist (Do Not Disturb) silences notifications when on
-    android_1: Android Settings → Apps → Browser → Notifications → Allow
-    android_2: WeChat's built-in browser and some Chinese browsers don't support Web Push — use Chrome
-    other_1: Confirm browser notification permission is "Allow" (address bar lock icon)
-    other_2: Confirm the browser process is running
-  subtitle: Control notifications per device
-  refresh: 'Refresh'
-  unavailableTitle: 'Push is not available yet'
-  emptyTitle: 'No receiving devices yet'
-  emptyDesc: 'Add this device and it will receive the notifications you confirm.'
-  wsEmptyTitle: 'No live connections yet'
 keys:
   title: API Keys
   subtitle: Agents use them to report notifications
@@ -645,10 +527,6 @@ keys:
     scope_label: Scopes (multi-select, least-privilege)
     scope_send_label: Send
     scope_send_desc: For Agents / CI to POST notifications. Prefix ant_live_
-    scope_receive_label: Receive
-    scope_receive_desc: For plugins / devices to establish WebSocket connections. Prefix ant_recv_
-    scope_read_label: Device read
-    scope_read_desc: Read-only device listing for script inspection
     scope_hint: 'Least privilege: send and receive are separate, so a leaked Key only affects one side.'
     cancel: Cancel
     generate: Generate Key
@@ -661,8 +539,6 @@ keys:
     done: I've saved it
   scope:
     send: Send
-    receive: Receive
-    read: Device read
   unnamed: Unnamed
   unnamed_key: Unnamed Key
   summary: '{total} Keys · {active} active'
@@ -806,7 +682,6 @@ docs:
     agent: Connect Agent
     api: API overview
     auth: Authentication
-    webpush: Web Push subscription
     stream: WebSocket receiving
     events: POST /v1/namespaces/{namespace}/events
     node: Node protocol
@@ -901,16 +776,11 @@ docs:
       notify: Agent reports a notification (core)
       tasks: 'Task list (event stream)'
       notifications: Notification history list
-      devices_list: Device list
-      devices_sub: Subscribe (register) a device
-      devices_update: Update device (toggle / filter / tags)
-      devices_delete: Unbind device
       node_stream: Node WebSocket protocol
       stream: WebSocket long-poll receiving
       keys_list: API Key list
       keys_create: Create API Key
       passkey: Passkey register / login
-      vapid: VAPID public key (for subscription)
   auth:
     title: Authentication
     intro: 'Two credential types, for two kinds of callers. <b class="doc-em">Least privilege</b>: send and receive are separate, so a leaked Key only affects one side.'
@@ -953,30 +823,6 @@ docs:
     resp400_comment: // 401 · Key missing or invalid (403 if scope insufficient)
     rules:
       title: Delivery rules (tag routing + level filtering)
-  webpush:
-    off_note: "Mobile push (Web Push) is not available yet; the subscription steps will appear here once it is. Events are still recorded — see the Events page."
-    title: Web Push subscription (browser receiving)
-    intro: The browser subscribes via Service Worker + PushManager; the backend pushes with a VAPID signature. <b class="doc-em">Receives even when the page is closed.</b> iOS requires "Add to Home Screen" and standalone mode (iOS 16.4+).
-    step1: <b class="doc-em">① Get VAPID public key</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
-    step2: <b class="doc-em">② Register Service Worker</b> · <code class="doc-code">navigator.serviceWorker.register('/sw.js')</code>
-    step3: <b class="doc-em">③ Request permission and subscribe</b> · <code class="doc-code">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
-    step4: <b class="doc-em">④ Report subscription</b> · send endpoint + keys via <code class="doc-code">POST /v1/devices</code>
-    code:
-      title: Frontend subscription · core code
-      comment1: // 1. Register SW + get VAPID public key
-      comment2: // 2. Subscribe (requires notification permission)
-      comment3: // 3. Report to backend (session Cookie auth)
-      comment_p256dh: // { p256dh, auth }
-      comment_platform: // ios|mac|win|android|other
-    ios:
-      title: ⚠️ iOS prerequisite
-      desc: Must "Add to Home Screen" and run in standalone mode, otherwise Safari does not provide Notification / Push API.
-    android:
-      title: ✅ Android is easier
-      desc: Chrome/Edge can subscribe from a normal tab via FCM — no need to add to Home Screen.
-    e2e:
-      title: 🔒 End-to-end encrypted
-      desc: Payload encrypted with the subscription's p256dh/auth keys; the push service cannot read the content.
   ws:
     channel2: Second receive channel
     intro: Besides browser push, any device / plugin can use a <code class="doc-code">notify:receive</code> Key to establish a WebSocket long-poll for real-time receiving. Great for desktop widgets, CLI daemons, smart-home bridges. Runs alongside browser push.
@@ -1177,9 +1023,6 @@ admin:
     active: '{n} active (7d)'
     messages: Total messages
     today: Today {n}
-    devices: Devices
-    enabled: '{n} enabled'
-    keys: '{n} keys'
     delivery_rate: Delivery rate
   tab:
     users: Users
@@ -1190,7 +1033,6 @@ admin:
     role: Role
     status: Status
     messages: Msgs
-    devices: Devices
     keys: Keys
     created: Created
     actions: Actions
@@ -1216,7 +1058,6 @@ admin:
     empty: No active sessions
   top:
     messages: messages
-    devices: '{n} devices'
   confirm:
     title: Confirm
     cancel: Cancel
@@ -2572,9 +2413,6 @@ uxaudit:
       resolved_yes: 'targets resolved'
       resolved_no: 'targets unresolved'
       hook_url: 'Hook URL'
-    receivers:
-      to_ws: 'See the WebSocket channel'
-      docs: 'Read the API docs'
     admin:
       role_admin: 'Super admin'
       role_member: 'Member'

@@ -183,13 +183,8 @@ index:
   kpi:
     total: Eventos totales
     all_time: Histórico
-    rate: Tasa de entrega
     today: Eventos de hoy
     today_sub: Recibidos hoy
-    devices: Dispositivos receptores
-    devices_enabled: Activos
-    devices_sub: '{n} dispositivos · cifrado de extremo a extremo'
-    devices_sub2: Suscripciones push + WebSocket
     rate_na: Sin receptores — tasa de entrega no disponible
     trend_live: En vivo
     running: En curso
@@ -198,7 +193,6 @@ index:
     failed: Tareas con error
     failed_sub: "Todas las tareas del espacio"
     failed_sub_all: Todas las tareas de todos los espacios
-    devices_sub_all: Los dispositivos son por usuario y no cambian al cambiar de espacio de nombres
   aggregate:
     unsupported: Esta métrica aún no se puede agregar entre espacios de nombres
   heatmap:
@@ -494,118 +488,6 @@ login:
     login_success_short: Sesión iniciada — entrando al workspace…
     signup_success_short: ¡Cuenta creada! — entrando al workspace…
     need_username_short: Por favor elige un usuario primero.
-receivers:
-  back_home: 'Volver al resumen'
-  docs_link: "Guía de integración"
-  unavailable: 'Las notificaciones push aún no están disponibles. Tus dispositivos aparecerán aquí cuando se publiquen.'
-  title: Destinatarios
-  channel:
-    push: Suscripciones push
-    ws: Conexiones WebSocket
-  push:
-    title: Suscripciones push del navegador
-    subtitle_prefix: 'Entregado vía servicios Push del sistema (APNs / FCM). '
-    subtitle_highlight: Recibe aunque el navegador esté cerrado.
-    subtitle_suffix: ''
-    add_device: Añadir este dispositivo
-  ws:
-    title: Recepción por conexión larga · para plugins y cualquier dispositivo
-    desc: Cualquier dispositivo / plugin con una API Key de permiso notify:receive puede abrir una conexión WebSocket larga para push en tiempo real. Ideal para widgets de escritorio, daemons CLI, puentes de domótica. Funciona junto al push del navegador.
-    connection_method: Conexión
-    copy: Copiar
-    active_title: Conexiones activas
-    active_subtitle: Conexiones WebSocket establecidas actualmente
-    online: ' en línea'
-    empty_hint: Al conectar el backend, aparecerán aquí las conexiones en vivo (nombre / prefijo de Key / tiempo activo / etiquetas / último mensaje).
-  tags:
-    title: Enrutado por etiquetas · qué dispositivo recibe qué notificación
-    desc: Incluye deviceTags al reportar. Solo los dispositivos con etiquetas en común (o sin etiquetas = receptores totales) la recibirán. Sin etiqueta en la notificación = difusión a todos los dispositivos activos; sin etiqueta en el dispositivo = recibe todo.
-  pair:
-    title: Añadir este dispositivo
-    subtitle: Tras suscribirse, este navegador recibirá notificaciones push
-    device_name: Nombre del dispositivo
-    device_placeholder: ej. Móvil principal / Mac de la oficina
-    submit: Solicitar permiso y suscribir
-    hint: El navegador pedirá permiso de notificaciones. iOS requiere añadir este sitio a la pantalla de inicio primero y luego abrirlo como app independiente.
-    unsupported: Este entorno no soporta Web Push. En iOS, añade este sitio a la pantalla de inicio primero.
-    requesting_perm: Solicitando permiso de notificaciones…
-    perm_denied: Permiso de notificaciones no concedido ({perm}). Permite en la configuración del navegador y reintenta.
-    registering_sw: Registrando Service Worker…
-    getting_vapid: Obteniendo clave pública VAPID…
-    no_backend: Backend no conectado — no se puede obtener la clave VAPID. Comprueba que el servidor esté activo y vuelve a intentarlo.
-    empty_vapid: La clave pública VAPID está vacía
-    subscribing: Suscribiendo a push…
-    reporting: Reportando suscripción…
-    success: ¡Suscrito! Este dispositivo recibirá notificaciones push.
-    failed: 'Error de suscripción: {msg}'
-  scope:
-    all: Ciclo de vida completo
-    final: Solo resultados finales
-  local:
-    enabled: Notificaciones activadas en este dispositivo
-    disabled: Notificaciones no activadas en este dispositivo
-    receiving: Recibiendo
-    not_receiving: No recibe
-    unsupported: Este navegador no soporta Web Push (iOS requiere añadir a la pantalla de inicio).
-    subscribed: Este navegador ({browser}) está suscrito a push y puede recibir notificaciones.
-    permission_denied: El permiso de notificaciones fue denegado — vuelve a permitirlo en la configuración del navegador.
-    not_subscribed: Este navegador ({browser}) no se ha suscrito a push — este dispositivo no recibirá notificaciones.
-    turn_off: Desactivar notificaciones
-    turn_on: Activar notificaciones
-    view_settings: Cómo activarlas
-    perm_denied_toast: El permiso de notificaciones está denegado. Permite este sitio en la configuración del navegador e inténtalo de nuevo.
-  troubleshoot:
-    title: Lista de verificación por dispositivo
-    local_check: Verificación local
-    perm_granted: 'Permiso de notificaciones: Concedido ✓'
-    perm_denied: 'Permiso de notificaciones: Denegado ✗ (reinicia en la configuración y vuelve a suscribirte)'
-    perm_default: 'Permiso de notificaciones: Sin solicitar (se pide al hacer clic en "Añadir dispositivo")'
-    expand: ¿No recibes? Revisa esto →
-  empty: Aún no hay dispositivos receptores. Haz clic en "Añadir dispositivo" arriba a la derecha para empezar.
-  device:
-    switch_aria: Interruptor de recepción
-    tags: Etiquetas
-    add_tag: + Etiqueta
-    this_device: Este dispositivo
-    receiving: Recibiendo
-    paused: Pausado
-    last_delivered: Última entrega {time}
-    level: Nivel de notificación
-    rename: Renombrar
-    unbind: Desvincular
-  prompt:
-    tag: 'Añadir etiqueta (ej: móvil / trabajo / alerta)'
-    rename: Nombre del dispositivo
-  confirm:
-    unbind: ¿Desvincular "{name}"? Ya no recibirá notificaciones.
-  toast:
-    saved: Guardado
-    save_failed: 'Error al guardar: {msg}'
-    unbound: Desvinculado
-    unbind_failed: 'Error al desvincular: {msg}'
-    local_off: Notificaciones locales desactivadas
-    added: Dispositivo añadido
-  checklist:
-    ios_1: Debe abrirse desde el icono de la pantalla de inicio (standalone) — las pestañas normales de Safari no soportan notificaciones
-    ios_2: Ajustes de iOS → Notificaciones → Safari/PWA → Permitir notificaciones
-    ios_3: 'No recibe tras suscribirse: desactiva el modo No Molestar, confirma que el permiso del sitio sea «Permitir»'
-    mac_1: Ajustes del sistema macOS → Notificaciones → busca tu navegador (ej. Google Chrome) → Permitir
-    mac_2: Icono de candado en la barra del navegador → Notificaciones → «Permitir» (no por defecto/bloquear)
-    mac_3: Push requiere el proceso del navegador activo con la pestaña de este sitio abierta; cerrar el navegador detiene el push en tiempo real
-    mac_4: Las pestañas en primer plano pueden procesar push silenciosamente — cambia a segundo plano o minimiza para probar
-    win_1: Ajustes de Windows → Sistema → Notificaciones → confirma que el navegador tiene notificaciones activadas
-    win_2: Icono de candado en la barra del navegador → Notificaciones → «Permitir»
-    win_3: El Asistente de concentración (No Molestar) silencia las notificaciones cuando está activo
-    android_1: Ajustes de Android → Aplicaciones → Navegador → Notificaciones → Permitir
-    android_2: El navegador integrado de WeChat y algunos navegadores chinos no soportan Web Push — usa Chrome
-    other_1: Confirma que el permiso de notificaciones del navegador sea «Permitir» (icono de candado en la barra)
-    other_2: Confirma que el proceso del navegador está activo
-  subtitle: Controla notificaciones por dispositivo
-  refresh: 'Actualizar'
-  unavailableTitle: 'Las notificaciones push aún no están disponibles'
-  emptyTitle: 'Aún no hay dispositivos de recepción'
-  emptyDesc: 'Añade este dispositivo y recibirá las notificaciones que confirmes.'
-  wsEmptyTitle: 'Aún no hay conexiones activas'
 keys:
   title: API Keys
   subtitle: Los agentes las usan para reportar notificaciones
@@ -645,10 +527,6 @@ keys:
     scope_label: Permisos (selección múltiple, mínimo privilegio)
     scope_send_label: Enviar
     scope_send_desc: Para que Agents / CI hagan POST de notificaciones. Prefijo ant_live_
-    scope_receive_label: Recibir
-    scope_receive_desc: Para que plugins / dispositivos abran conexiones WebSocket. Prefijo ant_recv_
-    scope_read_label: Leer dispositivos
-    scope_read_desc: Listado de solo lectura para inspección con scripts
     scope_hint: 'Mínimo privilegio: enviar y recibir van separados, así una Key filtrada solo compromete un lado.'
     cancel: Cancelar
     generate: Generar Key
@@ -661,8 +539,6 @@ keys:
     done: La he guardado
   scope:
     send: Enviar
-    receive: Recibir
-    read: Lectura de dispositivos
   unnamed: Sin nombre
   unnamed_key: Key sin nombre
   summary: '{total} Keys · {active} activos'
@@ -806,7 +682,6 @@ docs:
     agent: Conectar Agent
     api: Resumen de API
     auth: Autenticación
-    webpush: Suscripción Web Push
     stream: Recepción WebSocket
     events: POST /v1/namespaces/{namespace}/events
     node: Protocolo de nodo
@@ -901,16 +776,11 @@ docs:
       notify: El Agent reporta una notificación (núcleo)
       tasks: 'Lista de tareas (flujo de eventos)'
       notifications: Lista del historial de notificaciones
-      devices_list: Lista de dispositivos
-      devices_sub: Suscribir (registrar) un dispositivo
-      devices_update: Actualizar dispositivo (interruptor / filtro / tags)
-      devices_delete: Desvincular dispositivo
       node_stream: Protocolo WebSocket de nodo
       stream: Recepción por WebSocket long-poll
       keys_list: Lista de API Keys
       keys_create: Crear API Key
       passkey: Registro / login con Passkey
-      vapid: Clave pública VAPID (para suscripción)
   auth:
     title: Autenticación
     intro: 'Dos tipos de credenciales, para dos tipos de llamadores. <b class="doc-em">Mínimo privilegio</b>: envío y recepción están separados, por lo que una Key filtrada solo afecta a un lado.'
@@ -953,30 +823,6 @@ docs:
     resp400_comment: // 401 · Key ausente o inválida (403 si scope insuficiente)
     rules:
       title: Reglas de entrega (enrutamiento por tags + filtrado por nivel)
-  webpush:
-    off_note: "Las notificaciones push móviles (Web Push) aún no están disponibles; los pasos de suscripción aparecerán aquí cuando lo estén. Los eventos se registran igualmente: consulta la página de eventos."
-    title: Suscripción Web Push (recepción en navegador)
-    intro: El navegador se suscribe vía Service Worker + PushManager; el backend envía con firma VAPID. <b class="doc-em">Se recibe incluso con la página cerrada.</b> iOS requiere "Añadir a pantalla de inicio" y modo standalone (iOS 16.4+).
-    step1: <b class="doc-em">① Obtener clave pública VAPID</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
-    step2: <b class="doc-em">② Registrar Service Worker</b> · <code class="doc-code">navigator.serviceWorker.register('/sw.js')</code>
-    step3: <b class="doc-em">③ Solicitar permiso y suscribir</b> · <code class="doc-code">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
-    step4: <b class="doc-em">④ Reportar suscripción</b> · enviar endpoint + keys vía <code class="doc-code">POST /v1/devices</code>
-    code:
-      title: Suscripción frontend · código central
-      comment1: // 1. Registrar SW + obtener clave pública VAPID
-      comment2: // 2. Suscribir (requiere permiso de notificaciones)
-      comment3: // 3. Reportar al backend (auth por Cookie de sesión)
-      comment_p256dh: // { p256dh, auth }
-      comment_platform: // ios|mac|win|android|other
-    ios:
-      title: ⚠️ Requisito de iOS
-      desc: Debe "Añadir a pantalla de inicio" y ejecutar en modo standalone, de lo contrario Safari no proporciona Notification / Push API.
-    android:
-      title: ✅ Android es más fácil
-      desc: Chrome/Edge puede suscribirse desde una pestaña normal vía FCM; no necesita añadir a pantalla de inicio.
-    e2e:
-      title: 🔒 Cifrado de extremo a extremo
-      desc: El payload se cifra con las claves p256dh/auth de la suscripción; el servicio de push no puede leer el contenido.
   ws:
     channel2: Segundo canal de recepción
     intro: Además del push del navegador, cualquier dispositivo / plugin puede usar una Key con permiso <code class="doc-code">notify:receive</code> para establecer una conexión WebSocket long-poll y recibir en tiempo real. Ideal para widgets de escritorio, daemons CLI, puentes de domótica. Funciona junto al push del navegador.
@@ -1177,9 +1023,6 @@ admin:
     active: '{n} activos (7d)'
     messages: Mensajes totales
     today: Hoy {n}
-    devices: Dispositivos
-    enabled: '{n} habilitados'
-    keys: '{n} keys'
     delivery_rate: Tasa de entrega
   tab:
     users: Usuarios
@@ -1190,7 +1033,6 @@ admin:
     role: Rol
     status: Estado
     messages: Msgs
-    devices: Dispositivos
     keys: Keys
     created: Creado
     actions: Acciones
@@ -1216,7 +1058,6 @@ admin:
     empty: Sin sesiones activas
   top:
     messages: mensajes
-    devices: '{n} dispositivos'
   confirm:
     title: Confirmar
     cancel: Cancelar
@@ -2572,9 +2413,6 @@ uxaudit:
       resolved_yes: 'targets resueltos'
       resolved_no: 'targets sin resolver'
       hook_url: 'URL del hook'
-    receivers:
-      to_ws: 'Ver el canal WebSocket'
-      docs: 'Ver la documentación de la API'
     admin:
       role_admin: 'Superadmin'
       role_member: 'Miembro'

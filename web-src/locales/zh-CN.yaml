@@ -183,13 +183,8 @@ index:
   kpi:
     total: 事件总数
     all_time: 累计
-    rate: 送达率
     today: 今日事件
     today_sub: 今天收到
-    devices: 接收设备
-    devices_enabled: 已启用
-    devices_sub: '{n} 台设备 · 端到端加密'
-    devices_sub2: 推送订阅 + 长连接
     rate_na: 暂无接收设备，送达率不可用
     trend_live: 实时
     running: 进行中
@@ -198,7 +193,6 @@ index:
     failed: 异常任务
     failed_sub: "当前命名空间所有任务"
     failed_sub_all: 全部命名空间的所有任务
-    devices_sub_all: 设备按用户维度，不随命名空间变化
   aggregate:
     unsupported: 该口径暂不支持跨命名空间统计
   heatmap:
@@ -494,118 +488,6 @@ login:
     login_success_short: 登录成功，正在进入工作台…
     signup_success_short: 注册成功！正在进入工作台…
     need_username_short: 先给自己起个用户名。
-receivers:
-  back_home: '返回总览'
-  docs_link: "接入文档"
-  unavailable: '手机推送暂未开放，上线后这里会显示你的接收设备。'
-  title: 通知接收
-  channel:
-    push: 推送订阅
-    ws: WebSocket 长连接
-  push:
-    title: 浏览器推送订阅
-    subtitle_prefix: 通过系统 Push 服务（APNs / FCM）送达，
-    subtitle_highlight: 浏览器关闭也能收到
-    subtitle_suffix: ''
-    add_device: 添加此设备
-  ws:
-    title: 长连接接收 · 为插件与任意设备而生
-    desc: 任何设备 / 插件用 notify:receive 权限的 API Key 建立 WebSocket 长连接，服务端实时推送通知。适合做桌面插件、 CLI 守护进程、智能家居桥接等。与浏览器推送并行存在。
-    connection_method: 连接方式
-    copy: 复制
-    active_title: 活跃连接
-    active_subtitle: 当前建立的 WebSocket 长连接
-    online: 个在线
-    empty_hint: 后端接入后，这里会显示实时长连接（连接名 / Key 前缀 / 在线时长 / 标签 / 最近消息）。
-  tags:
-    title: 标签路由 · 决定「哪台设备收哪类通知」
-    desc: 上报通知时带上 deviceTags，只有「标签有交集」或 「无标签（全收）」的设备会收到。通知不带标签 = 广播到所有 已启用设备；设备不带标签 = 接收一切。
-  pair:
-    title: 添加此设备
-    subtitle: 订阅后，这台设备的浏览器将接收推送
-    device_name: 设备名称
-    device_placeholder: 如：主力手机 / 办公室 Mac
-    submit: 请求权限并订阅推送
-    hint: 浏览器会弹出通知权限请求。iOS 需要先把本站「添加到主屏幕」，再以独立 App 方式打开。
-    unsupported: 当前环境不支持 Web Push。iOS 请先把本站「添加到主屏幕」再打开。
-    requesting_perm: 正在请求通知权限…
-    perm_denied: 通知权限未授予（{perm}）。请在浏览器设置里允许后重试。
-    registering_sw: 正在注册 Service Worker…
-    getting_vapid: 正在获取 VAPID 公钥…
-    no_backend: 后端未连接，无法获取 VAPID 公钥。请确认服务端已启动后重试。
-    empty_vapid: VAPID 公钥为空
-    subscribing: 正在订阅推送…
-    reporting: 正在上报订阅…
-    success: 订阅成功！这台设备将收到推送。
-    failed: 订阅失败：{msg}
-  scope:
-    all: 接收全流程
-    final: 只收最终结果
-  local:
-    enabled: 本机已开启通知
-    disabled: 本机未开启通知
-    receiving: 收得到
-    not_receiving: 收不到
-    unsupported: 当前浏览器不支持 Web Push（iOS 需先添加到主屏幕）。
-    subscribed: 当前浏览器（{browser}）已订阅推送，这台设备能收到通知。
-    permission_denied: 通知权限已被拒绝——请在浏览器设置里重新允许。
-    not_subscribed: 当前浏览器（{browser}）还没开推送订阅——这台设备收不到通知。
-    turn_off: 关闭本机通知
-    turn_on: 开启本机通知
-    view_settings: 查看如何开启
-    perm_denied_toast: 通知权限未授予（denied）。请在浏览器设置里允许本站通知后重试。
-  troubleshoot:
-    title: 按设备检查清单
-    local_check: 本机检测
-    perm_granted: 通知权限：已授权 ✓
-    perm_denied: 通知权限：被拒绝 ✗（请在浏览器设置里重置后重新订阅）
-    perm_default: 通知权限：未授权（点「添加此设备」时申请）
-    expand: 收不到通知？检查这些 →
-  empty: 还没有接收设备，点右上角「添加此设备」开始。
-  device:
-    switch_aria: 接收开关
-    tags: 标签
-    add_tag: + 标签
-    this_device: 本机
-    receiving: 接收中
-    paused: 已暂停
-    last_delivered: 最近送达 {time}
-    level: 通知级别
-    rename: 重命名
-    unbind: 解绑
-  prompt:
-    tag: 添加标签（如：手机 / 工作 / 告警）
-    rename: 设备名称
-  confirm:
-    unbind: 确定解绑「{name}」吗？它将不再接收通知。
-  toast:
-    saved: 已保存
-    save_failed: 保存失败：{msg}
-    unbound: 已解绑
-    unbind_failed: 解绑失败：{msg}
-    local_off: 本机通知已关闭
-    added: 已添加设备
-  checklist:
-    ios_1: 必须从「主屏幕图标」打开（standalone），普通 Safari 标签页不支持通知
-    ios_2: iOS 设置 → 通知 → Safari/PWA → 允许通知
-    ios_3: 订阅后未收到：关闭勿扰模式，确认站点通知权限为「允许」
-    mac_1: macOS 系统设置 → 通知 → 找到对应浏览器（如 Google Chrome）→ 允许通知
-    mac_2: 浏览器地址栏锁图标 → 通知 → 设为「允许」（不是默认/阻止）
-    mac_3: 推送需浏览器进程运行且标签页打开本站；关掉浏览器则收不到实时推送
-    mac_4: 前台标签页可能静默处理推送——切到后台或最小化再测
-    win_1: Windows 设置 → 系统 → 通知 → 确认浏览器已开通知
-    win_2: 浏览器地址栏锁图标 → 通知 → 设为「允许」
-    win_3: 焦点助手（勿扰）开启时会静默通知
-    android_1: Android 设置 → 应用 → 浏览器 → 通知 → 允许
-    android_2: 微信内置浏览器/部分国产浏览器不支持 Web Push，请用 Chrome
-    other_1: 确认浏览器通知权限为「允许」（地址栏锁图标）
-    other_2: 确认浏览器进程在运行
-  subtitle: 按设备控制通知接收
-  refresh: '刷新'
-  unavailableTitle: '推送暂未开放'
-  emptyTitle: '还没有接收设备'
-  emptyDesc: '添加这台设备后，它就能接收你确认的通知。'
-  wsEmptyTitle: '还没有长连接'
 keys:
   title: API Keys
   subtitle: Agent 用它上报通知
@@ -645,10 +527,6 @@ keys:
     scope_label: 权限范围（可多选，最小化原则）
     scope_send_label: 上报
     scope_send_desc: Agent / CI 用来 POST 通知。前缀 ant_live_
-    scope_receive_label: 接收
-    scope_receive_desc: 插件 / 设备用来建立 WebSocket 长连接接收。前缀 ant_recv_
-    scope_read_label: 设备查询
-    scope_read_desc: 只读查看设备列表，用于脚本巡检
     scope_hint: 权限最小化：上报与接收分开，泄露一个 Key 不会波及另一头。
     cancel: 取消
     generate: 生成 Key
@@ -661,8 +539,6 @@ keys:
     done: 我已保存
   scope:
     send: 上报
-    receive: 接收
-    read: 设备查询
   unnamed: 未命名
   unnamed_key: 未命名 Key
   summary: '{total} 个 Key · {active} 启用'
@@ -806,7 +682,6 @@ docs:
     agent: 接入 Agent
     api: API 概览
     auth: 认证方式
-    webpush: Web Push 订阅
     stream: WebSocket 接收
     events: POST /v1/namespaces/{namespace}/events
     node: 节点协议
@@ -901,16 +776,11 @@ docs:
       notify: Agent 上报通知（核心）
       tasks: '任务列表（事件流）'
       notifications: 通知历史列表
-      devices_list: 设备列表
-      devices_sub: 订阅（注册）设备
-      devices_update: 更新设备（开关/过滤/标签）
-      devices_delete: 解绑设备
       node_stream: 节点 WebSocket 协议
       stream: WebSocket 长连接接收
       keys_list: API Key 列表
       keys_create: 新建 API Key
       passkey: Passkey 注册 / 登录
-      vapid: VAPID 公钥（订阅用）
   auth:
     title: 认证方式
     intro: 两种凭证，对应两类调用方。<b class="doc-em">权限最小化</b>：上报与接收分开，泄露一个 Key 不会波及另一头。
@@ -953,30 +823,6 @@ docs:
     resp400_comment: // 401 · Key 缺失或无效（scope 不足时 403）
     rules:
       title: 投递规则（标签路由 + 级别过滤）
-  webpush:
-    off_note: "手机推送（Web Push）暂未开放：开放后这里会出现订阅步骤。事件仍会正常产生，可在「事件流」页查看。"
-    title: Web Push 订阅（浏览器接收）
-    intro: 浏览器端通过 Service Worker + PushManager 订阅，后端用 VAPID 签名推送。<b class="doc-em">即使页面关闭也能收到</b>。iOS 需先「添加到主屏幕」以 standalone 运行（iOS 16.4+）。
-    step1: <b class="doc-em">① 取 VAPID 公钥</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
-    step2: <b class="doc-em">② 注册 Service Worker</b> · <code class="doc-code">navigator.serviceWorker.register('/sw.js')</code>
-    step3: <b class="doc-em">③ 请求权限并订阅</b> · <code class="doc-code">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
-    step4: <b class="doc-em">④ 上报订阅</b> · 把 endpoint + keys <code class="doc-code">POST /v1/devices</code>
-    code:
-      title: 前端订阅 · 核心代码
-      comment1: // 1. 注册 SW + 取 VAPID 公钥
-      comment2: // 2. 订阅（需用户已授权通知权限）
-      comment3: // 3. 上报后端（会话 Cookie 鉴权）
-      comment_p256dh: // { p256dh, auth }
-      comment_platform: // ios|mac|win|android|other
-    ios:
-      title: ⚠️ iOS 前提
-      desc: 必须先「添加到主屏幕」standalone 运行，否则 Safari 不提供 Notification / Push API。
-    android:
-      title: ✅ Android 更省事
-      desc: Chrome/Edge 普通标签页即可订阅，走 FCM，无需添加到主屏幕。
-    e2e:
-      title: 🔒 端到端加密
-      desc: 载荷用订阅的 p256dh/auth 密钥加密，推送服务无法读取内容。
   ws:
     channel2: 第二条接收通道
     intro: 除浏览器推送外，任意设备 / 插件可用 <code class="doc-code">notify:receive</code> 权限的 Key 建立 WebSocket 长连接实时接收。适合做桌面插件、CLI 守护进程、智能家居桥接，与浏览器推送并行。
@@ -1177,9 +1023,6 @@ admin:
     active: '{n} 7天活跃'
     messages: 消息总数
     today: 今日 {n}
-    devices: 接收设备
-    enabled: '{n} 启用'
-    keys: '{n} Keys'
     delivery_rate: 投递成功率
   tab:
     users: 用户管理
@@ -1190,7 +1033,6 @@ admin:
     role: 角色
     status: 状态
     messages: 消息
-    devices: 设备
     keys: Keys
     created: 注册时间
     actions: 操作
@@ -1216,7 +1058,6 @@ admin:
     empty: 暂无活跃会话
   top:
     messages: 消息
-    devices: '{n} 设备'
   confirm:
     title: 确认操作
     cancel: 取消
@@ -2576,9 +2417,6 @@ uxaudit:
       resolved_yes: 'targets 已解析'
       resolved_no: 'targets 未解析'
       hook_url: 'Hook URL'
-    receivers:
-      to_ws: '查看 WebSocket 长连接'
-      docs: '查看接口文档'
     admin:
       role_admin: '超管'
       role_member: '成员'

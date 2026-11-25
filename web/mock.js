@@ -148,7 +148,6 @@
 		prunes: [],
 		taskLogs: [],
 		keys: [],
-		devices: [],
 		// passkey 设备注册会话（保留域；F2c 的 passkey-enroll 页消费）
 		passkeyEnroll: [],
 		auth: { passwordHash: mockDigest("mock-only-password"), passwordUpdatedAt: now() - 86400, loggedOut: typeof sessionStorage !== "undefined" && sessionStorage.getItem("anotify.mock.loggedOut") === "1" },
@@ -2190,7 +2189,6 @@
 			// No device delivery facts in this preview, never count terminal tasks as push success.
 			delivered: 0,
 			deliveryTotal: 0,
-			deviceCount: (state.devices || []).filter((d) => d.enabled !== false).length,
 			totalEvents: evs.length,
 			succeeded: byPhase("succeeded"),
 			failed: byPhase("failed"),
@@ -3019,10 +3017,6 @@
 		if (typeof sessionStorage !== "undefined") sessionStorage.setItem("anotify.mock.loggedOut", "1");
 		const res = authResponse({ ok: true }); res.headers.set("Set-Cookie", sessionCookie(true)); return res;
 	});
-	on("GET", /^\/v1\/vapid-public-key$/, () =>
-		json({ publicKey: "BMockPublicKeyForPreviewOnly_NotARealVapidKey" }),
-	);
-
 	// ===== 命名空间（cluster，读 + 建）=====
 	//
 	// 读要 `NamespaceList` 信封（`ensureScope` 靠 items[].metadata.name 选默认范围），
@@ -5152,22 +5146,6 @@
 		return json({ deleted: ctx.m[1] });
 	});
 
-	// ===== 设备（推送订阅，保留域）=====
-	on("GET", /^\/v1\/devices$/, () => json({ devices: clone(state.devices) }));
-	on("PATCH", /^\/v1\/devices\/([^/]+)$/, ctx => {
-		if (!hasSession()) return anonymous();
-		const device = state.devices.find(d => d.id === decodeURIComponent(ctx.m[1]) && d.userId === ME.id);
-		if (!device) return identityError(404, "Device not found");
-		const patch = ctx.body;
-		if (!pbObject(patch) || Object.keys(patch).some(k => !["enabled", "name", "eventScope", "tags"].includes(k)) ||
-			(patch.enabled != null && typeof patch.enabled !== "boolean") ||
-			(patch.name != null && typeof patch.name !== "string") ||
-			(patch.eventScope != null && typeof patch.eventScope !== "string") ||
-			(patch.tags != null && (!Array.isArray(patch.tags) || patch.tags.some(t => typeof t !== "string")))) return identityError(400, "Invalid device update");
-		for (const key of ["enabled", "name", "eventScope", "tags"]) if (patch[key] != null) device[key] = clone(patch[key]);
-		return json({ ok: true, device: clone(device) });
-	});
-
 	// ===== 安全 / passkey / 会话（保留域）=====
 	on("GET", /^\/v1\/auth\/passkeys$/, () => json({ passkeys: [] }));
 	on("GET", /^\/v1\/auth\/password$/, () => json({ hasPassword: !!state.auth.passwordHash, updatedAt: state.auth.passwordUpdatedAt }));
@@ -5216,7 +5194,6 @@
 			tasks: state.tasks.length,
 			userCount: 3, adminCount: 1, activeUserCount: 3, disabledUsers: 0,
 			messageCount: 0, todayMessages: 0,
-			deviceCount: state.devices.length, enabledDevices: state.devices.filter(d => d.enabled).length,
 			keyCount: state.keys.length, deliveredCount: 0, deliveryTotal: 0, topUsers: [],
 		}),
 	);
