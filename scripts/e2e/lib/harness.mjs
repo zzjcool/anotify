@@ -737,8 +737,6 @@ export async function startServer({
 				ANOTIFY_STATIC: "",
 				ANOTIFY_RP_ID: rpId || "localhost",
 				ANOTIFY_RP_ORIGIN: origin,
-				ANOTIFY_VAPID_PUBLIC_KEY: process.env.ANOTIFY_VAPID_PUBLIC_KEY || "",
-				ANOTIFY_VAPID_PRIVATE_KEY: process.env.ANOTIFY_VAPID_PRIVATE_KEY || "",
 				// 服务端会在 /health 里回显它（见 Config.BootID / issue #215）
 				ANOTIFY_BOOT_ID: expectBoot,
 			},
@@ -862,23 +860,8 @@ export function seed(dbPath, username = "e2e", opts = {}) {
 	return {
 		uid: get("UID"),
 		sendKey: get("SEND_KEY"),
-		recvKey: get("RECV_KEY"),
 		session,
 	};
 }
 
 // ---------- 常用构造 ----------
-export function makeDevice(over = {}) {
-	return Object.assign(
-		{
-			name: "测试设备",
-			platform: "mac",
-			tags: [],
-			endpoint:
-				"https://push.example.com/" + Math.random().toString(36).slice(2),
-			keys: { p256dh: "BPxTest", auth: "authTest" },
-			userAgent: "e2e-test",
-		},
-		over,
-	);
-}

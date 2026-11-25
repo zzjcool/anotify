@@ -38,7 +38,6 @@ export const NO_E2E_IMPACT = [
 	{ glob: "scripts/check_*.py", why: "静态检查脚本本身（python 版）" },
 	{ glob: "scripts/*.test.mjs", why: "node 单测；不被任何 e2e 套件执行" },
 	{ glob: "scripts/ws_test.mjs", why: "独立的 WS 手工验证脚本，不在 e2e 注册表里" },
-	{ glob: "scripts/push_e2e.mjs", why: "推送手工验证脚本，不在 e2e 注册表里" },
 	{ glob: "scripts/ui-audit-mobile.mjs", why: "手机端取数脚本，产物不进 e2e 断言" },
 	{ glob: "scripts/integration.sh", why: "对着已启动服务的集成脚本，与 e2e 编排无关" },
 	{ glob: "scripts/mock.sh", why: "本地 mock 服务启动脚本，e2e 不用它" },
@@ -103,7 +102,7 @@ export const SUITE_SURFACES = {
 	},
 	security: {
 		why: "三类主体互不串用 + 跨 ns 隔离 + 限流背压",
-		paths: ["internal/auth/**", "internal/authn/**", "internal/push/**"],
+		paths: ["internal/auth/**", "internal/authn/**"],
 	},
 	edge_cases: {
 		why: "边界/并发/编码/尺寸/CAS/分页",
@@ -181,7 +180,7 @@ export const SUITE_SURFACES = {
 		// 除 #19–#23 自己的页面外，这里还保守地收进了 f3-ui-cases 模块图里出现的页面
 		// （capability/message/node/nodes/trace）：ux 用例与矩阵用例共用同一个 fixture 模块，
 		// 少登记一次就是一次漏跑，多登记一次只是多跑。
-		pages: ["index", "admin", "receivers", "security", "login", "capability", "message", "node", "nodes", "trace"],
+		pages: ["index", "admin", "security", "login", "capability", "message", "node", "nodes", "trace"],
 	},
 	cli_auth: {
 		why: "CLI 设备授权全链路（cli-auth 页 + login 页）",

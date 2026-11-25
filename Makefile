@@ -411,7 +411,7 @@ bench-report: ## 运行基准并输出到 bench.txt（留存对比基线）
 	go test ./... -run=NONE -bench=. -benchmem -benchtime=1s > bench.txt 2>&1
 	@echo "基准结果已写入 bench.txt"
 
-run: build ## 本地运行（需先设置 ANOTIFY_VAPID_* 环境变量）
+run: build ## 本地运行
 	./anotify
 
 # dev 的真实入口只有三个（v4）：cmd/server（中枢）、cmd/devseed（播种/示例链路）、
@@ -515,10 +515,8 @@ docker-anode: ## 构建节点侧 Docker 镜像（anode 单二进制）
 	  --build-arg VERSION=$(VERSION_LABEL) \
 	  --build-arg GIT_SHA=$(GIT_SHA) .
 
-docker-run: ## 运行 Docker 容器（需传入 VAPID 环境变量）
+docker-run: ## 运行 Docker 容器
 	docker run --rm -p $(PORT):8080 \
-	  -e ANOTIFY_VAPID_PUBLIC_KEY=$$ANOTIFY_VAPID_PUBLIC_KEY \
-	  -e ANOTIFY_VAPID_PRIVATE_KEY=$$ANOTIFY_VAPID_PRIVATE_KEY \
 	  -e ANOTIFY_RP_ID=$$ANOTIFY_RP_ID \
 	  -e ANOTIFY_RP_ORIGIN=$$ANOTIFY_RP_ORIGIN \
 	  anotify
@@ -557,20 +555,10 @@ DEV_PROFILE := $(if $(TUNNEL),--profile tunnel,)
 # 都要把它一起拉起来。不这么做的话「重建完公网 1033」这个坑会反复踩。
 DEV_PROFILE_KEEP := $(if $(TUNNEL),--profile tunnel,$(shell docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx anotify-dev-tunnel && echo --profile tunnel))
 
-dev-env: ## 生成 .env.dev（真实 VAPID 密钥；已存在则不动）
+dev-env: ## 生成 .env.dev（已存在则不动）
 	@if [ -f .env.dev ]; then echo ".env.dev 已存在，跳过（要重建请先删除）"; else \
 	  cp .env.dev.example .env.dev && \
-	  $(MAKE) --no-print-directory _dev-env-keys && \
 	  echo "✅ .env.dev 已生成"; fi
-
-_dev-env-keys:
-	@tmp=$$(mktemp) && GOPROXY=$${GOPROXY:-direct} GOSUMDB=sum.golang.org GOTOOLCHAIN=auto \
-	  go run ./scripts/genkeys.go > $$tmp && \
-	  pub=$$(grep '^ANOTIFY_VAPID_PUBLIC_KEY=' $$tmp | cut -d= -f2-) && \
-	  priv=$$(grep '^ANOTIFY_VAPID_PRIVATE_KEY=' $$tmp | cut -d= -f2-) && \
-	  sed -i "s|^ANOTIFY_VAPID_PUBLIC_KEY=.*|ANOTIFY_VAPID_PUBLIC_KEY=$$pub|" .env.dev && \
-	  sed -i "s|^ANOTIFY_VAPID_PRIVATE_KEY=.*|ANOTIFY_VAPID_PRIVATE_KEY=$$priv|" .env.dev && \
-	  rm -f $$tmp && echo "  VAPID 密钥已写入 .env.dev"
 
 dev-up: dev-env ## 构建并启动开发环境（TUNNEL=1 同时起 Cloudflare 隧道）
 	$(DEV_COMPOSE) $(DEV_PROFILE) up -d --build
@@ -671,9 +659,6 @@ tunnel: ## Cloudflare 命名隧道（固定域名 dev.openaaas.org）
 
 tunnel-url: ## 读取隧道公网地址（固定 dev.openaaas.org）
 	@echo https://dev.openaaas.org
-
-keys: ## 生成 VAPID 密钥对
-	go run ./scripts/genkeys.go
 
 clean: ## 清理构建产物
 	rm -rf dist anotify $(ANODE_OUT) server agent sitegen internal/server/dist

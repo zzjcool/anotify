@@ -2,12 +2,16 @@
 
 [中文](README.md) | **[English](README.en.md)**
 
-Push notifications to all your devices (iOS / Mac / PC / Android) automatically
-when an Agent finishes a task. Passkey passwordless login (or an optional
-password), no polling, single binary — easy to self-host.
+When an Agent finishes a task it reports one event; the hub runs the chain you
+defined on your nodes (analysis, evidence capture, alert scripts, …) and the whole
+run stays inspectable in the console: event → task chain → logs.
+Passkey passwordless login (or an optional password), single binary — easy to self-host.
 
-> This repository evolved from a prototype (iOS Web Push proof-of-concept) into
-> a full implementation. The only authority for behaviour is **code + tests +
+> This repository evolved from a prototype into a full implementation.
+> **The Web Push delivery domain has been retired entirely** (decision V4-D7, see
+> [`docs/contracts/v4/CONTRACT.md`](docs/contracts/v4/CONTRACT.md)) — we no longer push
+> notifications to phones; "notification" now means the event stream and task chain,
+> and where it goes is decided by your own capability scripts. The only authority for behaviour is **code + tests +
 > `docs/contracts/`**; start at [`docs/README.md`](docs/README.md).
 
 ## 📚 Documentation
@@ -18,17 +22,16 @@ password), no polling, single binary — easy to self-host.
 | **[AGENTS.md](AGENTS.md)** | Sub-agents | Conventions, specs, pitfalls |
 | **[docs/README.md](docs/README.md)** | Everyone | Doc index: what is authoritative, what is a snapshot, how to change behaviour |
 | **[E2E_TESTING.md](E2E_TESTING.md)** | Developers | End-to-end test system (`make e2e` gate) |
-| **[IOS_TESTING.md](IOS_TESTING.md)** | QA | iOS real-device push checklist (only manual step) |
 | **[examples/playbooks/](examples/playbooks/)** | Users | Installable playbook examples (event → verdict → alert/audit), with empty-environment steps |
 
 ## Architecture
 
 ```
-External systems ─HTTP/WS─▶ Hub anotify (single binary) ─┬─▶ WS dispatch ─▶ node anode ─▶ run capability scripts
-                                     SQLite             └─▶ Web Push ─▶ devices
+External systems ─HTTP/WS─▶ Hub anotify (single binary) ─▶ WS dispatch ─▶ node anode ─▶ run capability scripts
+                                     SQLite
 ```
 
-- **Two products**: hub `anotify` (`cmd/server`: resource API + dispatch + push, **never executes
+- **Two products**: hub `anotify` (`cmd/server`: resource API + dispatch, **never executes
   capabilities**) and node `anode` (`cmd/anode`: `serve` / `install` / `emit`, the machine that
   actually runs them)
 - **Single binary**: Go + `go:embed` bundles frontend + SQLite (pure Go, no CGO)
@@ -53,8 +56,7 @@ git clone git@github.com:zzjcool/anotify.git && cd anotify
 
 # 3. Configure local env (.env.local is gitignored, holds secrets)
 cp .env.example .env.local
-make keys                                   # generate VAPID keypair
-# fill the public/private keys into .env.local (ANOTIFY_VAPID_PUBLIC_KEY / _PRIVATE_KEY)
+# optionally adjust ANOTIFY_RP_ID / ANOTIFY_RP_ORIGIN (Passkey RP must equal the access domain)
 ```
 
 Key fields in `.env.local` (pre-configured for dev.openaaas.org):
@@ -64,8 +66,6 @@ ANOTIFY_ADDR=:8080
 ANOTIFY_STATIC=./web
 ANOTIFY_RP_ID=dev.openaaas.org
 ANOTIFY_RP_ORIGIN=https://dev.openaaas.org
-ANOTIFY_VAPID_PUBLIC_KEY=<from make keys>
-ANOTIFY_VAPID_PRIVATE_KEY=<from make keys>
 ```
 
 ### Cloudflare named tunnel (dev.openaaas.org, optional but recommended)
@@ -122,15 +122,12 @@ After start:
 | `make ci` | PR gate: gofmt / vet / build / unit tests (same as GitHub Actions; no e2e) |
 | `make e2e` | full end-to-end tests (~57s, 968 assertions) |
 | `make e2e-one S=auth_flow` | run a single suite |
-| `make keys` | generate VAPID keypair |
 
 ## Docker
 
 ```bash
 make docker                              # hub image (ships the node upgrade source /app/anode)
 docker run -p 8080:8080 \
-  -e ANOTIFY_VAPID_PUBLIC_KEY=$ANOTIFY_VAPID_PUBLIC_KEY \
-  -e ANOTIFY_VAPID_PRIVATE_KEY=$ANOTIFY_VAPID_PRIVATE_KEY \
   -e ANOTIFY_RP_ID=your-domain \
   -e ANOTIFY_RP_ORIGIN=https://your-domain \
   anotify
@@ -190,8 +187,7 @@ make test                # Go unit tests (independent of e2e; default build does
 make e2e                 # full end-to-end tests (~57s, parallel, 968 assertions)
 make e2e-one S=auth_flow # run a single suite
 make integration         # integration tests (health / cache tiers / auth matrix)
-node scripts/ws_test.mjs # WS receiver (needs RECV_KEY/SEND_KEY)
-node scripts/push_e2e.mjs# Desktop Chrome push E2E (needs SESSION/API_KEY)
+node scripts/ws_test.mjs # WS receiver (needs SEND_KEY)
 go run ./cmd/devseed     # seed test user + keys + sessions
 ```
 
@@ -213,10 +209,8 @@ go run ./cmd/devseed     # seed test user + keys + sessions
 | `GET/POST/DELETE /v1/auth/password` | Password status / set / change / remove (session required) |
 | `POST /v1/notify` | **Deleted** — v4 uses `POST /v1/namespaces/{namespace}/events` (Bearer Key, scope=notify:send) |
 | `GET /v1/stream` | **Deleted** — v4 long-lived connections are the node stream in `api/agent.yaml`; the console reads events via `GET /v1/console/events` |
-| `GET/POST /v1/devices` | Push subscription device management |
 | `GET/POST /v1/keys` | API Key management |
 | `GET /v1/notifications` | **Deleted** — in v4 the event stream *is* the notification history: `GET /v1/console/events` |
-| `GET /v1/vapid-public-key` | VAPID public key (for frontend subscription) |
 
 ### Agent reporting example (v4 event ingress)
 
@@ -238,7 +232,6 @@ curl -X POST https://your-domain/v1/namespaces/{namespace}/events \
 | `ANOTIFY_ADDR` | `:8080` | Listen address |
 | `ANOTIFY_DB` | `./anotify.db` | SQLite path |
 | `ANOTIFY_STATIC` | empty (embed) | Local static directory (dev: `./web`) |
-| `ANOTIFY_VAPID_PUBLIC_KEY/PRIVATE_KEY` | — | VAPID keys (required for push) |
 | `ANOTIFY_RP_ID` | `localhost` | WebAuthn RP domain (= access domain) |
 | `ANOTIFY_RP_ORIGIN` | `http://localhost:8080` | WebAuthn Origin (with protocol) |
 | `ANOTIFY_CDN_PREFIX` | empty | CDN prefix (production static acceleration) |
@@ -250,23 +243,24 @@ cmd/server/         single binary entrypoint
 cmd/devseed/        test seeding tool
 internal/
   store/            SQLite data access + schema
-  broker/           message queue abstraction + SQLiteBroker
   auth/             Passkey(WebAuthn)/password sign-up + password(argon2id) + API Key(argon2id) + sessions
   api/              event ingress + resource routes (see api/*.yaml)
-  ws/               WebSocket dispatcher
-  push/             Web Push dispatcher(VAPID)
-  route/            tag/status delivery filter (shared pure logic)
+  ws/               node long-poll connections + dispatch
+  route/            event → task routing and pruning (shared pure logic)
+  protocol/         hub ↔ node wire protocol
+  playbook/         playbook parse / render / install
+  yamldoc/          YAML document layer (single-document rule)
   server/           route assembly + static assets(CDN cache tiers) + embed
 web/                frontend (static HTML + Tailwind CDN + tokens.css)
 scripts/hash.mjs    fingerprint script (content-hash + reference rewrite + manifest)
-scripts/integration.sh / ws_test.mjs / push_e2e.mjs   test scripts
+scripts/integration.sh / ws_test.mjs                  test scripts
 ```
 
 ## Security
 
 - API Keys are stored as **argon2id hashes only**; plaintext shown once at creation,
-  with scope (notify:send / notify:receive / devices:read)
+  with a scope set that currently holds only `notify:send` (it guards the event ingress
+  `POST /v1/namespaces/{ns}/events`)
 - Passkey (WebAuthn) passwordless; an optional password can be set at sign-up or later under Security & login. Sessions via httpOnly cookies
 - **Every account keeps at least one login method**: deleting the last Passkey requires a password, removing the password requires a Passkey
-- Push payloads end-to-end encrypted (p256dh/auth), VAPID private key stays server-side
-- `vapid.json` / `*.db` / `.env.local` are gitignored — do not commit
+- `*.db` / `.env.local` / `.env.dev` are gitignored — do not commit

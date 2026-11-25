@@ -324,11 +324,7 @@ add('auth-route-guards',async d=>{
 // 深链里的对象身份来自当前权威：mock 是固定事实，real 是 bootstrap 用真实 API 造出来的同一角色。
 // 名字类（source/playbook）两边一致，只有中枢生成的 id（任务/追踪/节点）需要经 d.fx 取。
 const queryFor=(file,d)=>file==='namespace'?'namespace=default&name=default':file==='message'?'namespace=default&id='+d.fx('msgTask'):file==='trace'?'namespace=default&traceUID='+d.fx('defaultTrace'):file==='node'?'namespace=default&id='+d.fx('node'):file==='source'?'namespace=default&name='+d.fx('source'):file==='source-detail'?'namespace=default&name='+d.fx('source'):file==='playbook'?'namespace=default&id=f3-page-package':file==='capability'?'namespace=default&name='+d.fx('capability'):'namespace=default';
-// receivers：e2e 真实权威**没有 VAPID 密钥**（run_all.sh 只在有 vapid.json 时注入），
-// 推送是关闭的 —— 按设计此时页面上不存在 #current-device-card（只在 push 开放分支
-// 创建，ux_regression_19_23 断言 card===null），所以 real 锚点必须是"永远存在"的
-// 真实控制器输出 #push-count（mock 权威下同样存在，两个权威都不放水）。
-const pageAnchors={admin:'#kpi-devices',capabilities:'[data-cap="fixer"]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',message:'#task-facts',namespace:'#namespace-vars:not([disabled])',namespaces:'#ns-list [data-ns]',node:'#node-machine-vars [data-key]',nodes:'[data-node="anode-1"]','passkey-enroll':'#code-input',playbook:'#pb-installs',playbooks:'#pb-grid [data-slug]',release:'#rd-gone-panel',receivers:'#push-count',security:'#passkey-list',source:'#src-name',
+const pageAnchors={admin:'#kpi-messages',capabilities:'[data-cap="fixer"]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',message:'#task-facts',namespace:'#namespace-vars:not([disabled])',namespaces:'#ns-list [data-ns]',node:'#node-machine-vars [data-key]',nodes:'[data-node="anode-1"]','passkey-enroll':'#code-input',playbook:'#pb-installs',playbooks:'#pb-grid [data-slug]',release:'#rd-gone-panel',security:'#passkey-list',source:'#src-name',
   // 源只读详情页：data-source 只在真的读到一个源之后才落盘（空态/404 不带它）。
   'source-detail':'#src-detail[data-source]',
   sources:'#src-list > div[data-name]',trace:'#trace-tasks [data-task]'};

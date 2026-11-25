@@ -6,8 +6,8 @@
  *   diff。本地 `git commit` 时毫无感觉 —— 而本仓的秘密面恰好都在「提交一次就完蛋」的位置：
  *   · `anode install` 把节点身份令牌写进 0600 的 `anode.yaml`（`cmd/anode/internal/config/config.go:59`
  *     的 `token` 字段；同目录的 `install.json` 是 PATH 记录），而 `.gitignore` 头三行专门列了
- *     「敏感数据（含私钥，绝勿提交）」：`vapid.json` / `subscriptions.json`；
- *   · VAPID 私钥对（`make keys` 生成，`scripts/genkeys.go` 直接打印）；
+ *     「敏感数据（含私钥，绝勿提交）」：各类本地凭据文件；
+ *   · 私钥落盘（`*_PRIVATE_KEY=` / `"privateKey":` 形状）；
  *   · `docs/` 里成百条示例命令，最容易「照抄一条把真值粘回来」。
  *   秘密一旦 push 出去，即使事后 rewrite 历史，PR diff / CI 日志 / GitHub 的副本都已经
  *   存下来了，GitGuardian 也会把该 commit 与令牌本身永久记档 —— **唯一正确处置是轮换
@@ -18,12 +18,12 @@
  *   `git diff --cached --name-only`（读**索引内容** `git show :path`，即真正要提交的字节）。
  *   内容不做熵检测（见「已知边界」），只认**高信号形状**，每条都能点名 `文件:行`：
  *   ① `PEM_PRIVATE_KEY`        `-----BEGIN (RSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----`
- *                              （`BEGIN PRIVATE KEY` / `BEGIN EC PRIVATE KEY` 都在内；VAPID 私钥
+ *                              （`BEGIN PRIVATE KEY` / `BEGIN EC PRIVATE KEY` 都在内；私钥
  *                              若以 PEM 形态落在文件里，命中的就是 BEGIN 这一行）
  *   ② 供应商形状 7 条           `ghp_` / `github_pat_` / `AKIA` / `xox[baprs]-` / `sk-` /
  *                              `sk_live_` / `AIza`
- *   ③ 本仓专属形状：`VAPID_PRIVATE(_KEY)` 或 `PRIVATE_KEY` / `"privateKey"` 后跟**实际值**
- *      （≥40 字符 base64url，即 32 字节私钥的真实长度；`YOUR_VAPID_PRIVATE_KEY_HERE` 这种
+ *   ③ 本仓专属形状：`PRIVATE_KEY` / `"privateKey"` 后跟**实际值**
+ *      （≥40 字符 base64url，即 32 字节私钥的真实长度；`YOUR_NODE_PRIVATE_KEY_HERE` 这种
  *      25 字符的占位符根本达不到长度阈值）；`token:` / `token=` / `ANOTIFY_*TOKEN[= ]` /
  *      `Bearer ` 后跟 ≥32 字符 base64url/hex 字面量（**占位符语法**另行放行，见下）。
  *   ④ 文件名判据（**被跟踪即报**，与内容无关）：`.env` / `.env.*` / `*.pem` / `*.key` /
@@ -167,15 +167,14 @@ export const CONTENT_DETECTORS = [
 		re: /AIza[0-9A-Za-z_-]{35}/g,
 	},
 	{
-		// 覆盖三种落盘形态：`ANOTIFY_VAPID_PRIVATE_KEY=<值>`（env 文件）、
-		// `VAPID_PRIVATE_KEY: <值>`（yaml/compose）、`"privateKey": "<值>"`（vapid.json，
-		// scripts/e2e/run_all.sh 的 VAPID 段读的就是这个文件；本仓 .gitignore 头一行专门禁它）。
+		// 覆盖三种落盘形态：`*_PRIVATE_KEY=<值>`（env 文件）、`PRIVATE_KEY: <值>`
+		// （yaml/compose）、`"privateKey": "<值>"`（JSON 凭证文件）。
 		// 阈值 40 字符 = 32 字节私钥的 base64url 真实长度：短占位符天然不命中。
-		id: "VAPID_PRIVATE_VALUE",
-		label: "VAPID/私钥变量带了实际值",
+		id: "PRIVATE_KEY_VALUE",
+		label: "私钥变量带了实际值",
 		needle: "private",
 		needleCi: true,
-		re: /(?:VAPID[_-]PRIVATE(?:[_-]KEY)?|PRIVATE[_-]?KEY)["']?\s*[:=]\s*["']?([A-Za-z0-9_+/=-]{40,})/gi,
+		re: /PRIVATE[_-]?KEY["']?\s*[:=]\s*["']?([A-Za-z0-9_+/=-]{40,})/gi,
 		group: 1,
 		placeholderGuard: true,
 	},
@@ -258,7 +257,7 @@ export const PATH_EXEMPTIONS = [
 	{
 		id: "env-example",
 		glob: ".env.example",
-		reason: "部署模板：值是 YOUR_VAPID_PRIVATE_KEY_HERE 之类占位符；真实 .env 已在 .gitignore",
+		reason: "部署模板：值是 YOUR_*_HERE 之类占位符；真实 .env 已在 .gitignore",
 	},
 	{
 		id: "env-suffix-example",
@@ -772,7 +771,7 @@ function selfTest() {
 					'token: "<token>"',
 					"token: ${ANOTIFY_NODE_TOKEN}",
 					"ANOTIFY_NODE_TOKEN=" + "x".repeat(40),
-					"ANOTIFY_VAPID_PRIVATE_KEY=YOUR_VAPID_PRIVATE_KEY_HERE",
+					"ANOTIFY_NODE_PRIVATE_KEY=YOUR_NODE_PRIVATE_KEY_HERE",
 					"Bearer <node token>",
 					"token: $(cat /run/secrets/token)",
 				].join("\n"),
@@ -789,7 +788,7 @@ function selfTest() {
 
 	// ⑧ .env.example ⇒ 必须绿（路径豁免），但豁免只针对文件名判据
 	run(".env.example 模板", "必须绿：模板文件走 PATH_EXEMPTIONS（只豁免文件名判据）", {
-		sources: [{ file: ".env.example", text: "ANOTIFY_VAPID_PRIVATE_KEY=YOUR_VAPID_PRIVATE_KEY_HERE" }],
+		sources: [{ file: ".env.example", text: "ANOTIFY_NODE_PRIVATE_KEY=YOUR_NODE_PRIVATE_KEY_HERE" }],
 		// 用**真实**登记里的那一条（证明 .env.example 的 glob 真的能呑住模板文件）
 		pathExemptions: PATH_EXEMPTIONS.filter((e) => e.id === "env-example"),
 		want: { codes: [], allowed: 0 },
@@ -861,18 +860,18 @@ function selfTest() {
 	});
 
 	// ⑬ 真值形态 ⇒ 必须红（证明占位符过滤器没把判据吞掉）
-	run("真值形态（token 字面量 / VAPID 私钥 / JSON privateKey）", "必须红：占位符过滤器不能把真值也放过去", {
+	run("真值形态（token 字面量 / 私钥变量 / JSON privateKey）", "必须红：占位符过滤器不能把真值也放过去", {
 		sources: [
 			{
 				file: "cmd/anode/config.go",
 				text: [
 					`\ttoken = "` + "Zm9vYmFyQmF6UXV1eENvcmdlR3JhdWx0R2FycGx5SGF1bHQ" + `"`,
-					`ANOTIFY_VAPID_PRIVATE_KEY=` + "kQ7rT2xLp9ZaB4nR8sV1yD3fH6jM0cW5uE2iO7gK4tA",
+					`ANOTIFY_NODE_PRIVATE_KEY=` + "kQ7rT2xLp9ZaB4nR8sV1yD3fH6jM0cW5uE2iO7gK4tA",
 					`  "privateKey": "` + "q_9-zA1bC2dE3fG4hJ5kL6mN7pQ8rS9tU0vW1xY2z",
 				].join("\n"),
 			},
 		],
-		want: { codes: ["TOKEN_LITERAL", "VAPID_PRIVATE_VALUE"], hits: 3 },
+		want: { codes: ["TOKEN_LITERAL", "PRIVATE_KEY_VALUE"], hits: 3 },
 	});
 
 	// ⑭ 路径豁免过期 ⇒ 必须红

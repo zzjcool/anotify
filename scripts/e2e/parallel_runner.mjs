@@ -34,7 +34,6 @@
  *   E2E_CONCURRENCY  Chrome 类套件并发上限（默认 4）
  *   E2E_RESULTS_DIR  JSON 结果输出目录（默认 .e2e-bin/results）
  *   ANOTIFY_BIN / DEVSEED_BIN / ANODE_BIN  二进制路径（由 run_all.sh 设置）
- *   ANOTIFY_VAPID_*  VAPID 密钥（由 run_all.sh 设置）
  *   E2E_MOCK_ONLY    **不由调用方设置**（#338）：只对四个具名套件自注入，其余一律剥掉
  *   E2E_SUITE_BUDGET_MS / E2E_SUITE_BUDGET_<SUITE>  临时覆盖墙钟预算（**诊断/注入用**；
  *                    被覆盖的套件会在启动横幅里显式打印，抬预算不许留静默）

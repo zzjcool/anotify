@@ -412,8 +412,6 @@ p3_start_server() {
 		ANOTIFY_LOG_LEVEL=warn \
 		ANOTIFY_RP_ID=localhost \
 		ANOTIFY_RP_ORIGIN="http://localhost:$port" \
-		ANOTIFY_VAPID_PUBLIC_KEY=dummy \
-		ANOTIFY_VAPID_PRIVATE_KEY=dummy \
 		ANOTIFY_BOOT_ID="perf3a-$tag" \
 		"$@" \
 		"$bin" >>"$rundir/server.log" 2>&1 &

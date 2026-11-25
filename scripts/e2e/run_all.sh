@@ -67,13 +67,6 @@ if [ -n "${E2E_LOCK_PROBE:-}" ]; then
 	exit 0
 fi
 
-# VAPID（推送相关套件需要）；优先环境变量，否则读原型 vapid.json
-if [ -z "${ANOTIFY_VAPID_PUBLIC_KEY:-}" ] && [ -f vapid.json ]; then
-	ANOTIFY_VAPID_PUBLIC_KEY=$(python3 -c "import json;print(json.load(open('vapid.json'))['publicKey'])" 2>/dev/null || true)
-	ANOTIFY_VAPID_PRIVATE_KEY=$(python3 -c "import json;print(json.load(open('vapid.json'))['privateKey'])" 2>/dev/null || true)
-fi
-export ANOTIFY_VAPID_PUBLIC_KEY ANOTIFY_VAPID_PRIVATE_KEY
-
 echo "=========================================="
 echo " Anotify E2E 全量测试"
 echo "=========================================="

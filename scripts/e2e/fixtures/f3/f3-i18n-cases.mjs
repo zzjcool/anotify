@@ -8,7 +8,7 @@ export const LOCALE_OUT = path.join(TEAM, 'screenshots/f3locales');
 const NS = '/v1/namespaces/default';
 // #381：登录页默认 tab 跟实例/浏览器状态走（首跑默认落在「注册」），#login-panel 可能
 // 是 hidden。锚点换成两个 tab 都在里面的容器：仍然证「这一页真的渲染了」，不赌默认态。
-const anchors = {admin:'#kpi-devices',capabilities:'[data-cap]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',login:'.auth-tabs',message:'#task-facts',namespace:'#ns-name',namespaces:'#ns-list [data-ns]',node:'#node-slots',nodes:'[data-node]','passkey-enroll':'#code-input',playbook:'#pb-installs',playbooks:'#pb-grid [data-slug]',release:'#rd-gone-panel',receivers:'#current-device-card',security:'#passkey-list',source:'#src-name',
+const anchors = {admin:'#kpi-messages',capabilities:'[data-cap]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',login:'.auth-tabs',message:'#task-facts',namespace:'#ns-name',namespaces:'#ns-list [data-ns]',node:'#node-slots',nodes:'[data-node]','passkey-enroll':'#code-input',playbook:'#pb-installs',playbooks:'#pb-grid [data-slug]',release:'#rd-gone-panel',security:'#passkey-list',source:'#src-name',
   // 源只读详情页：渲染成功后才带 data-source（空态/404 不带），所以它是吊吊的事实锤。
   'source-detail':'#src-detail[data-source]',
   sources:'#src-list [data-name]',trace:'#trace-tasks [data-task]'};
@@ -16,10 +16,10 @@ const pkgFiles = {
   'playbook.yaml': 'apiVersion: anotify/v1\nkind: Playbook\nmetadata:\n  name: f3-locale-package\n  version: 1\nspec:\n  values: { type: object }\n  capabilities:\n    - cap.yaml\n  sources: []\n',
   'cap.yaml': 'metadata:\n  name: f3-locale-cap\nspec:\n  next: [notify, f3-locale-missing]\n  run:\n    entrypoint: run.sh\n    files:\n      run.sh: |\n        #!/bin/sh\n        echo locale\n',
 };
-export const pageBatches = Object.freeze(Array.from({length:6},(_,i)=>PAGES.slice(i*4,i*4+4)));
+export const pageBatches = Object.freeze(Array.from({length:Math.ceil(PAGES.length/4)},(_,i)=>PAGES.slice(i*4,i*4+4)));
 // 裸 i18n key 扫描：前缀必须是一个独立 token，绝不能在 `-`、`/`、`.` 之后——否则
 // 渲染文本里的真实路径（如 locales 的 `common/login.sh`）会被当成 `login.sh` 裸 key（假阳）。
-const bareKeys = /(?<![-/\w.])(?:pb\.v4|nodes\.v4|sources\.v4|events\.v4|message\.v4|caps|receivers|keys|security|login)\.[a-z_]+/;
+const bareKeys = /(?<![-/\w.])(?:pb\.v4|nodes\.v4|sources\.v4|events\.v4|message\.v4|caps|keys|security|login)\.[a-z_]+/;
 const zhOnly = ['总览','通知接收','已停用','确定停用','已删除','已吊销','暂无该状态的通知','最近收录'];
 export function residue(text, lang) {
   if(lang==='en'||lang==='es') return text.split('\n').filter(x=>/[\u4e00-\u9fff\u3400-\u4dbf]/.test(x));
@@ -204,35 +204,6 @@ async function retained(d,lang) {
   await d.page.locator('#kxf-generate').click();await hasText(d,'#create-error','keys.error.no_scope');
   assert.equal(await d.page.inputValue('#new-key-name'),'locale-retained-draft');
   d.check('Retained key real validation exact localized error + draft, zero network write');
-  // Permission-denied is a real browser property, not a fake successful subscription.
-  await d.context.addInitScript(()=>{Object.defineProperty(Notification,'permission',{configurable:true,get:()=> 'denied'});});
-  await d.goto('receivers',query('receivers',f),lang);
-  await hasText(d,'#current-device-card','receivers.local.disabled');
-  if(d.mock)await d.page.evaluate(()=>{
-    // Explicit preview-only retained device fixture. Real mode uses the actual
-    // seeded subscription and NEVER constructs a mock device or intercepts API.
-    MockApi.state.devices=[{id:'f3-locale-device',userId:'usr_mock_demo',name:'Locale Receiver',platform:'desktop',userAgent:'Chrome',endpoint:'https://push.example.invalid/f3-locale-device',enabled:true,eventScope:'all',tags:[],p256dh:'preview-key',auth:'preview-auth',createdAt:123,lastDelivered:123}];
-    sessionStorage.setItem('f3-facts',JSON.stringify(MockApi.state));
-  });
-  await d.goto('receivers',query('receivers',f),lang);
-  const devices=await d.req('/v1/devices');assert.ok(devices.devices?.length,'Nonempty retained device fixture, no skip');
-  const deviceId=d.mock?'f3-locale-device':devices.devices.find(device=>device.enabled)?.id;
-  const device=devices.devices.find(device=>device.id===deviceId);assert.ok(device,'Exact retained device ID required');
-  const row=d.page.locator('.rc-dev-row').filter({has:d.page.getByText(device.name,{exact:true})});
-  assert.equal(await row.count(),1,'One exact retained device row');await row.waitFor();
-  const toggle=row.locator('button[aria-pressed]');const before=await toggle.getAttribute('aria-pressed');assert.equal(before,'true');
-  await toggle.click();
-  await d.page.waitForFunction(id=>__f3Calls.some(c=>c.method==='PATCH'&&c.url==='/v1/devices/'+encodeURIComponent(id)&&c.body?.enabled===false&&c.httpStatus===200&&c.result?.ok===true&&c.result?.device?.id===id&&c.result.device.enabled===false),deviceId);
-  const persisted=(await d.req('/v1/devices')).devices.find(item=>item.id===deviceId);
-  assert.ok(persisted,'DEV1 same-ID persisted GET');assert.equal(persisted.enabled,false);assert.equal(persisted.name,device.name);
-  assert.equal(await toggle.getAttribute('aria-pressed'),'false','Same retained device successfully paused');
-  assert.equal(await toggle.getAttribute('aria-label'),await t(d,'receivers.device.switch_aria'));
-  await hasText(d,'.rc-dev-row','receivers.device.'+(before==='true'?'paused':'receiving'));
-  await hasText(d,'#current-device-card','receivers.local.not_receiving');
-  await d.page.locator('#current-device-card button').click();
-  await hasText(d,'body','receivers.local.perm_denied_toast');
-  assert.equal((await d.calls()).filter(c=>c.method==='POST'&&c.url==='/v1/devices').length,0,'After fresh navigation, denied browser permission never subscribes');
-  d.check('Retained JA device status actual click/PATCH plus denied exact locale feedback/no subscribe');
   await scan(d,lang,f);
 }
 async function resourceStates(d,lang) {

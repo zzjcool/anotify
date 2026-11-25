@@ -418,19 +418,18 @@ async function main() {
 const SPEC_FIXTURE = [
 	"/v1/namespaces/{namespace}/events",
 	"/v1/namespaces/{namespace}/tasks",
-	"/v1/devices",
-	"/v1/devices/{id}",
+	"/v1/keys",
+	"/v1/cli-auth/sessions/{id}",
 	"/v1/hooks/{token}",
 	"/v1/system/config",
 	"/v1/console/events",
-	"/v1/vapid-public-key",
 ];
 
 export function selfTestCases() {
 	return [
 		{
 			name: "green: 存在的端点",
-			src: "POST /v1/devices 注册订阅",
+			src: "POST /v1/keys 新建 Key",
 			want: [],
 		},
 		{
@@ -450,7 +449,7 @@ export function selfTestCases() {
 		},
 		{
 			name: "green: 行尾标点/尾斜杠被归一化",
-			src: "见 /v1/devices.",
+			src: "见 /v1/keys.",
 			want: [],
 		},
 		{
@@ -465,7 +464,7 @@ export function selfTestCases() {
 		},
 		{
 			name: "red: 不存在的子路径（前缀对不上不算通过）",
-			src: "GET /v1/devices/abc/extra",
+			src: "GET /v1/keys/abc/extra",
 			want: ["doc-endpoint-missing"],
 		},
 		{
@@ -503,7 +502,7 @@ export function selfTestCases() {
 		},
 		{
 			name: "red: script 之外同样的字符串要判红",
-			src: '<div>x</div>\n<p>POST /v1/notify</p>\n<script>\nfetch("/v1/devices");\n</script>',
+			src: '<div>x</div>\n<p>POST /v1/notify</p>\n<script>\nfetch("/v1/keys");\n</script>',
 			want: ["doc-endpoint-missing"],
 			html: true,
 		},

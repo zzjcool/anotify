@@ -27,14 +27,14 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 /* BASELINE-BEGIN（`--init` / `--update` 只改这一段） */
 export const BASELINE = {
 	"schemaVersion": 2,
-	"measuredAt": "2026-11-24",
-	"commentLines": 43292,
-	"codeLines": 291695,
-	"files": 743,
+	"measuredAt": "2026-11-25",
+	"commentLines": 42952,
+	"codeLines": 287562,
+	"files": 732,
 	"dirs": {
-		".": 89,
+		".": 86,
 		".github/workflows": 108,
-		"api": 271,
+		"api": 267,
 		"cmd/anode": 282,
 		"cmd/anode/internal/app": 61,
 		"cmd/anode/internal/applied": 27,
@@ -69,48 +69,47 @@ export const BASELINE = {
 		"internal/logging": 22,
 		"internal/playbook": 1321,
 		"internal/protocol": 1061,
-		"internal/push": 108,
 		"internal/resultspool": 184,
 		"internal/route": 299,
 		"internal/schema": 73,
-		"internal/server": 7764,
+		"internal/server": 7754,
 		"internal/server/testdata": 2,
 		"internal/sitegen": 471,
 		"internal/sitegen/testdata/specs": 40,
 		"internal/source": 151,
 		"internal/sourcespec": 294,
-		"internal/store": 6787,
+		"internal/store": 6761,
 		"internal/store/v4test": 1193,
 		"internal/trigger": 25,
 		"internal/version": 48,
 		"internal/ws": 668,
 		"internal/yamldoc": 262,
-		"scripts": 3614,
+		"scripts": 3579,
 		"scripts/demo": 16,
-		"scripts/e2e": 634,
+		"scripts/e2e": 632,
 		"scripts/e2e/fixtures": 0,
-		"scripts/e2e/fixtures/f3": 1476,
+		"scripts/e2e/fixtures/f3": 1461,
 		"scripts/e2e/lib": 766,
-		"scripts/e2e/suites": 2182,
+		"scripts/e2e/suites": 2179,
 		"scripts/lib": 0,
 		"scripts/migrations": 20,
 		"scripts/perf/2a-auth": 41,
 		"scripts/perf/3a": 351,
 		"scripts/perf/3b": 66,
 		"scripts/perf/b": 405,
-		"scripts/perf/c": 801,
+		"scripts/perf/c": 800,
 		"scripts/perf/loadgen": 31,
 		"scripts/testdata/fakebroker": 24,
-		"web": 4674,
+		"web": 4657,
 		"web-src": 3,
 		"web-src/layouts": 98,
 		"web-src/locales": 49,
-		"web-src/pages": 2400,
+		"web-src/pages": 2284,
 		"web/fonts": 31
 	},
 	"dense": {
 		"docker-compose.dev.yml": 67,
-		"docker-compose.yml": 18,
+		"docker-compose.yml": 15,
 		"examples/capabilities/run-in-repo.yaml": 24,
 		"examples/capabilities/run-per-param-dir.yaml": 29,
 		"internal/auth/apikey_cache.go": 124,
@@ -130,14 +129,13 @@ export const BASELINE = {
 		"internal/protocol/hash.go": 30,
 		"internal/protocol/limits.go": 13,
 		"internal/protocol/ops_frames.go": 105,
-		"internal/push/device_filter.go": 33,
 		"internal/server/api_deps.go": 38,
 		"internal/server/artifact_download.go": 69,
 		"internal/server/artifact_support.go": 44,
 		"internal/server/backpressure.go": 155,
 		"internal/server/config.go": 305,
 		"internal/server/hub_fixture_test.go": 94,
-		"internal/server/mux.go": 260,
+		"internal/server/mux.go": 253,
 		"internal/server/node_capability.go": 117,
 		"internal/server/node_upgrade_handlers.go": 35,
 		"internal/server/postclose_guard_test.go": 87,
@@ -148,7 +146,7 @@ export const BASELINE = {
 		"internal/store/ids.go": 48,
 		"internal/store/ref.go": 52,
 		"internal/store/stmt.go": 157,
-		"internal/store/store.go": 122,
+		"internal/store/store.go": 125,
 		"internal/store/txexec.go": 27,
 		"internal/store/v4test/doc.go": 19,
 		"internal/version/version.go": 35,
@@ -156,7 +154,7 @@ export const BASELINE = {
 		"scripts/demo/chain.sh": 16,
 		"scripts/dev.sh": 147,
 		"scripts/e2e/fixtures/f3/f3-dialogs.mjs": 37,
-		"scripts/e2e/run_all.sh": 39,
+		"scripts/e2e/run_all.sh": 38,
 		"scripts/migrations/capability-lifecycle.sql": 20,
 		"scripts/perf/3b/lib.sh": 35,
 		"scripts/perf/c/s1-soak.sh": 193,
@@ -167,7 +165,7 @@ export const BASELINE = {
 	"docs": {
 		"contracts": {
 			"files": 16,
-			"lines": 2966
+			"lines": 2967
 		}
 	},
 	"rootPlans": {
@@ -250,7 +248,7 @@ export const DOC_POLICY = [
 ];
 
 /** 仓库根的 markdown：只有手册与会话入口算「活文档」，其余（plan/requirements/…）进 rootPlans 棘轮。 */
-export const ROOT_DOC_ALLOW = ["README.md", "README.en.md", "DEVELOPMENT.md", "E2E_TESTING.md", "IOS_TESTING.md", "AGENTS.md", "CHANGELOG.md"];
+export const ROOT_DOC_ALLOW = ["README.md", "README.en.md", "DEVELOPMENT.md", "E2E_TESTING.md", "AGENTS.md", "CHANGELOG.md"];
 
 export function langOf(file) {
 	return LANG_BY_EXT[path.extname(file)] ?? null;

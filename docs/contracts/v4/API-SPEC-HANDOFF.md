@@ -10,7 +10,7 @@
 | `api/events.yaml` | **只读** Event/Trace：namespace events列表/详情、trace读取、console events（显式ns授权与cursor）、事件/任务聚合stats等既有只读工作台数据。Event/Trace信封及continue读模型定义在此，不定义投递写入。 |
 | `api/agent.yaml` | 仅节点身份认证的出站/中枢节点通道：`GET /v1/node/binary`、`GET /v1/node/stream`、`GET /v1/node/capabilities/{digest}`、**`PUT /v1/node/tasks/{taskId}/artifacts/{sha256}`**；以及已冻结protocol frame/DTO的schema文档（无新增资源kind）。NodeStreamPath/部署/配置/执行/emit/logs字段T3共享Go为唯一源，T1规范对账，不私镜像。内容和上传是stream/Artifact例外，不套status四键。 |
 | `api/ingress.yaml` | 写入或预览触发：`POST /v1/namespaces/{namespace}/events`、`POST /v1/hooks/{token}`、`POST /v1/namespaces/{namespace}/sources/{name}/fire`、`POST /v1/namespaces/{namespace}/sources/dry-run`、`POST /v1/namespaces/{namespace}/sources/{name}/dry-run`。接收/预览回执沿W6，无新`/ingress/events`路径。中枢WS task.emit属于agent协议，不伪装公开HTTP ingress；本机POST /emit是T3节点同机网关，不进中枢HTTPpaths。 |
-| `api/auth.yaml` | 所有未退役的独立身份/账户/passkey/password/recovery/keys/CLI-auth/session/admin/device/VAPID/订阅/独立消息通知功能及现有登入脚本入口。这些域保留现有合法shape与鉴权，不把删除中枢能力executor误删独立推送服务；不混入旧资源API兼容端点。 |
+| `api/auth.yaml` | 所有未退役的独立身份域：账户/passkey/password/recovery/keys/CLI-auth/session/admin/设备授权（推送订阅已按 V4-D7 退役）|
 
 ## 文件边界与引用规则
 

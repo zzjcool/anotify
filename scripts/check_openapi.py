@@ -93,9 +93,6 @@ NON_SPEC_ROUTES = {
 # 升级**之后**（close 1008），没有任何 Status 形状可以引用——强行 $ref 一个 Status
 # 会让 spec 撒谎。
 NO_ERROR_RESPONSE_OPS = {
-    "auth.yaml": {
-        ("GET", "/v1/vapid-public-key"): "mux.go 里的内联 handler 恒 200（未配置 VAPID 时回空串），没有失败分支",
-    },
     "agent.yaml": {
         ("GET", "/v1/node/stream"): "WS 升级：成功只有 101；失败是 gorilla 的 text/plain 400"
         " 或升级后 close 1008（无 Status 形状）",

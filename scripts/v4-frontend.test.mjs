@@ -2345,70 +2345,6 @@ test("mock: 真正没实现的新接口仍是 501 + 既有 warn 文案（e2e 门
 	);
 });
 
-test("mock: 保留域仍可用（auth/me、devices、keys、admin/stats、cli-auth、templates、vapid）", async () => {
-	const { req } = loadMock();
-	const me = await req("/v1/auth/me");
-	assert.equal(me.status, 200);
-	assert.equal(me.body.username, "demo");
-
-	const devices = await req("/v1/devices");
-	assert.equal(devices.status, 200);
-	assert.deepEqual(devices.body.devices, []);
-
-	const keys = await req("/v1/keys");
-	assert.equal(keys.body.keys.length, 2);
-	assert.equal(keys.body.keys[0].enabled, true);
-
-	const created = await req("/v1/keys", jsonInit("POST", { name: "新 key", scopes: ["send"] }));
-	assert.equal(created.status, 200);
-	assert.equal(typeof created.body.key, "string", "key 是明文串（只返回一次）");
-	assert.equal(created.body.record.name, "新 key");
-
-	const admin = await req("/v1/admin/stats");
-	assert.equal(admin.body.nodes, 5);
-	assert.ok(admin.body.tasks > 0);
-
-	const cli = await req("/v1/cli-auth/sessions/by-code?code=MOCK-1234");
-	assert.equal(cli.body.session.code, "MOCK-1234");
-
-	// passkey 设备注册会话（保留域）：状态机 pending → requested → approved
-	const created2 = await req("/v1/passkey-enroll/sessions", jsonInit("POST", { deviceName: "cli" }));
-	assert.equal(created2.status, 201);
-	assert.ok(created2.body.sessionId);
-	assert.ok(created2.body.userCode);
-	const byId = await req("/v1/passkey-enroll/sessions/" + created2.body.sessionId);
-	assert.equal(byId.body.status, "pending");
-	const byCode = await req("/v1/passkey-enroll/sessions/by-code?code=" + created2.body.userCode);
-	assert.equal(byCode.body.sessionId, created2.body.sessionId);
-	const reqd = await req(
-		"/v1/passkey-enroll/sessions/" + created2.body.sessionId + "/request",
-		jsonInit("POST", { deviceHint: "Chrome on Linux" }),
-	);
-	assert.equal(reqd.body.status, "requested");
-	assert.equal(reqd.body.secret, created2.body.secret, "secret 只回给发起请求的设备");
-	const badPoll = await req(
-		"/v1/passkey-enroll/sessions/" + created2.body.sessionId + "/poll?secret=wrong",
-	);
-	assert.equal(badPoll.status, 404);
-	const poll = await req(
-		"/v1/passkey-enroll/sessions/" + created2.body.sessionId + "/poll?secret=" + created2.body.secret,
-	);
-	assert.equal(poll.body.status, "requested");
-	// mock 不伪造 WebAuthn：不返回 attestationOptions，页面会停在"等待批准"
-	assert.equal("attestationOptions" in poll.body, false);
-
-	const tpl = await req("/v1/capability-templates");
-	assert.ok(Array.isArray(tpl.body.templates));
-	assert.ok(tpl.body.templates.length >= 9);
-	assert.equal(tpl.body.templates[0].outputs, undefined, "v4 模板没有 outputs");
-
-	const vapid = await req("/v1/vapid-public-key");
-	assert.ok(vapid.body.publicKey);
-
-	const logout = await req("/v1/auth/logout", jsonInit("POST", {}));
-	assert.equal(logout.body.ok, true);
-});
-
 test("mock: ?mockFail=1 强制错误态；MockApi 旋钮（state/reset/capByName/noAgentBinary/failUpgrade/latency）", async () => {
 	const { req, Mock } = loadMock();
 	const fail = await req("/v1/stats?namespace=default&mockFail=1");
@@ -3283,12 +3219,12 @@ test("F2b2 Task facts: waiting preserves attempt, dual revisions, masked env/att
   assert.ok(abandon.body.status.result.error.reason);
 });
 
-test("F2b2 stats: daily uses actual events; delivery not task terminal count; empty devices honest", async () => {
+test("F2b2 stats: daily uses actual events; delivery not task terminal count; no deviceCount field", async () => {
   const { req, Mock } = loadMock();
   const stats = (await req('/v1/stats?namespace=default')).body;
   assert.equal(stats.total, Mock.state.events.filter(e => e.ns === 'default').length);
   assert.equal(stats.daily.reduce((sum, d) => sum + d.count, 0), stats.total);
-  assert.equal(stats.deviceCount, 0);
+  assert.equal('deviceCount' in stats, false, 'V4-D7：推送域退役后 stats 不再有 deviceCount');
   assert.equal(stats.deliveryTotal, 0, 'No push facts means no fabricated task-as-delivery samples');
   assert.equal(stats.delivered, 0);
   assert.equal(stats.running, Mock.state.tasks.filter(t => t.ns === 'default' && t.phase === 'running').length);
@@ -3504,7 +3440,7 @@ test("F2b2 message controller: diagnostics mask env, actual previous logs/emissi
   assert.match(b2Text(expired.get('task-result')), /message.v4.artifact_expired/);
 });
 
-test("F2b2 trace/index controllers: actual namespace Trace graph and task deep links, stats and 0 devices", async () => {
+test("F2b2 trace/index controllers: actual namespace Trace graph and task deep links, stats only", async () => {
   const trace = await b2Page('trace', '?namespace=default&traceUID=trace_mock_t1');
   assert.equal(trace.calls.filter(c => c.url.includes('/traces/')).length, 1);
   assert.ok(trace.get('trace-graph')._mountSpec.nodes.length >= 7);
@@ -3514,8 +3450,9 @@ test("F2b2 trace/index controllers: actual namespace Trace graph and task deep l
   assert.ok(links.every(n => n.getAttribute('href').includes('namespace=default&id=tsk_mock_')));
   const index = await b2Page('index', '?namespace=default');
   assert.equal(index.get('kpi-total').textContent, '4');
-  assert.equal(index.get('kpi-devices').textContent, '0');
-  assert.equal(index.get('kpi-rate').children[0].textContent, '–');
+  // V4-D7：设备 / 送达率两张 KPI 卡已删，首页不再有这两个 id。
+  assert.equal(index.get('kpi-devices'), null);
+  assert.equal(index.get('kpi-rate'), null);
   assert.equal(index.calls.some(c => /^\/v1\/tasks/.test(c.url)), false);
   assert.ok(index.get('flow-host')._mountSpec.nodes.length >= 7);
 });
@@ -4211,14 +4148,16 @@ test("F2c2: confirmed Node actions expose actual offline/unavailable/failed upgr
  assert.equal(JSON.stringify(Mock.state.nodes[0].facts.instances), before, "drain does not falsely reap occupied slots");
 });
 
-test("F2c2: retained login AUTH1 identity.error rejection and zero-device admin facts", async () => {
+test("F2c2: retained login AUTH1 identity.error rejection and admin delivery facts", async () => {
  const page = readFileSync(path.join(ROOT, "web-src/pages/login.html"), "utf8");
  const fn = page.slice(page.indexOf("async function postJSON"), page.indexOf("return res.json();", page.indexOf("async function postJSON")) + "return res.json();".length) + "\n}";
  const run = vm.runInNewContext("(" + fn + ")", { fetch: async () => ({ ok: false, status: 400, json: async () => ({ error: "Actual retained rejection sentinel" }) }) });
  await rejectsWith(run("/v1/auth/password/login", {}), { message: "Actual retained rejection sentinel", status: 400 });
  const { req, Mock } = loadMock();
  const stats = (await req("/v1/admin/stats")).body;
- assert.equal(stats.deviceCount, Mock.state.devices.length); assert.equal(stats.deliveryTotal, 0); assert.equal(stats.deliveredCount, 0);
+ assert.equal('deviceCount' in stats, false, 'V4-D7：admin/stats 不再有 deviceCount');
+ assert.equal('enabledDevices' in stats, false);
+ assert.equal(stats.deliveryTotal, 0); assert.equal(stats.deliveredCount, 0);
  assert.equal((await req("/v1/auth/password")).body.hasPassword, true);
  const invalid = await req("/v1/auth/password", jsonInit("DELETE", { currentPassword: "wrong" })); assert.equal(invalid.status, 400);
  assert.ok(!JSON.stringify(invalid.body).includes("wrong"));
@@ -5456,10 +5395,10 @@ test('G1 M3 condition provenance masks a private versioned-next derived name wit
 });
 
 // F3b2a locale registrations and aggregate anti-degeneration (original 141 retained).
-test('F3b2a both locale suites register all twenty-one pages in each of four languages and retained interactions', async () => {
+test('F3b2a both locale suites register all twenty-two pages in each of four languages and retained interactions', async () => {
   const { casesFor, pageBatches } = await import('./e2e/fixtures/f3/f3-i18n-cases.mjs');
   const { PAGES, LANGS } = await import('./e2e/fixtures/f3/f3-driver.mjs');
-  assert.equal(pageBatches.flat().length, 21);
+  assert.equal(pageBatches.flat().length, 22);
   for (const suite of ['i18n', 'i18n_coverage']) {
     const cases = casesFor(suite); assert.equal(new Set(cases.map(x => x.id)).size, cases.length);
     for (const lang of LANGS) {
@@ -5584,26 +5523,6 @@ test('L1 retained exact password login validates known user/hash, preserves raw 
   assert.ok(Mock.state.auth.passwordHash);
 });
 
-test('L1 retained device PATCH enabled=false preserves exact identity/other facts and rejects missing or invalid updates with DEV1 wire', async () => {
-  const { req, Mock } = loadMock();
-  const device = { id: 'f3-locale-device', userId: 'usr_mock_demo', name: 'Locale Receiver', enabled: true, eventScope: 'all', tags: ['fixed'], endpoint: 'https://push.example.invalid/device' };
-  Mock.state.devices.push(device);
-  const before = plain(device);
-  const route = '/v1/devices/' + device.id;
-  const updated = await req(route, jsonInit('PATCH', { enabled: false }));
-  assert.equal(updated.status, 200); assert.deepEqual(updated.body, { ok: true, device: { ...before, enabled: false } });
-  const current = (await req('/v1/devices')).body.devices.find(d => d.id === device.id);
-  assert.deepEqual(current, { ...before, enabled: false }); assert.equal(current.enabled, false);
-  assert.equal((await req(route, jsonInit('PATCH', {}))).status, 200, 'DEV1 omitted fields keep facts');
-  for (const body of [{ enabled: 'false' }, { enabled: false, uid: 'replace-uid' }]) {
-    const invalid = await req(route, jsonInit('PATCH', body));
-    assert.equal(invalid.status, 400); assert.deepEqual(Object.keys(invalid.body), ['error']);
-  }
-  const missing = await req('/v1/devices/missing-device', jsonInit('PATCH', { enabled: false }));
-  assert.equal(missing.status, 404); assert.deepEqual(Object.keys(missing.body), ['error']);
-  assert.deepEqual((await req('/v1/devices')).body.devices.find(d => d.id === device.id), current);
-});
-
 async function l1Boot(response, search = '') {
   const base = makeSandbox({ pathname: '/login.html', search, fetch: async () => {
     if (response instanceof Error) throw response;
@@ -5643,12 +5562,12 @@ test('L1 actual login controller boots only valid canonical200 sessions through 
   }
 });
 
-// F3b2b: last two suites — truthful 336-view registry, retained UX19–23 and
+// F3b2b: last two suites — truthful 352-view registry, retained UX19–23 and
 // aggregate rules that cannot be satisfied by a partial or retried run.
-test('F3b2b ui_shift registers every one of the 336 page views exactly once with an anonymous login view', async () => {
+test('F3b2b ui_shift registers every one of the 352 page views exactly once with an anonymous login view', async () => {
   const { casesFor, registeredViews } = await import('./e2e/fixtures/f3/f3-ui-cases.mjs');
   const { PAGES, LANGS, THEMES, VIEWPORTS, KEY_PAGES, MATRIX_VIEWS } = await import('./e2e/fixtures/f3/f3-ui-helper.mjs');
-  assert.deepEqual(PAGES.map(x => x), ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source-detail','sources','trace']);
+  assert.deepEqual(PAGES.map(x => x), ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','namespace','namespaces','node','nodes','passkey-enroll','playbook','playbooks','release','security','source-detail','sources','trace']);
   assert.deepEqual(LANGS.map(x => x), ['zh-CN','en','ja','es']);
   assert.deepEqual(THEMES.map(x => x), ['light','dark']);
   assert.deepEqual(Object.keys(VIEWPORTS), ['desktop','mobile']);
@@ -5657,13 +5576,13 @@ test('F3b2b ui_shift registers every one of the 336 page views exactly once with
   assert.equal(new Set(cases.map(x => x.id)).size, cases.length, 'unique registered ids');
   const grid = cases.filter(x => x.kind === 'grid');
   const cells = grid.flatMap(c => c.pages.map(page => [page, c.lang, c.theme, c.viewport].join('|')));
-  assert.equal(cells.length, MATRIX_VIEWS, '336 registered matrix views');
-  assert.equal(new Set(cells).size, 336, 'no duplicated page/lang/theme/viewport cell');
+  assert.equal(cells.length, MATRIX_VIEWS, '352 registered matrix views');
+  assert.equal(new Set(cells).size, 352, 'no duplicated page/lang/theme/viewport cell');
   for (const lang of LANGS) for (const theme of THEMES) for (const viewport of Object.keys(VIEWPORTS)) {
     const slice = grid.filter(c => c.lang === lang && c.theme === theme && c.viewport === viewport);
     assert.deepEqual(slice.flatMap(c => c.pages).sort(), PAGES.slice().sort(), `complete page coverage for ${lang}/${theme}/${viewport}`);
   }
-  assert.equal(registeredViews('ui_shift').matrix, 336);
+  assert.equal(registeredViews('ui_shift').matrix, 352);
   // login is a genuine guest form view in the matrix (no session), and never a duplicate of index.
   const loginViews = grid.filter(c => c.pages.includes('login')).length;
   assert.equal(loginViews, 16, 'login is registered in all sixteen lang/theme/viewport combinations');
@@ -5675,19 +5594,19 @@ test('F3b2b ui_shift registers every one of the 336 page views exactly once with
   assert.ok(cases.some(c => c.id === 'shift-lang-hint') && cases.some(c => c.id === 'shift-scope-slot') && cases.some(c => c.id === 'shift-collapsed'));
   assert.ok(cases.some(c => c.id === 'interact-namespace-switch') && cases.some(c => c.id === 'interact-dialogs') && cases.some(c => c.id === 'guards-guest'));
 });
-test('F3b2b ux_regression_19_23 retains all five behaviours plus device PATCH, guards and the exact password form', async () => {
+test('F3b2b ux_regression_19_23 retains the UX19–23 behaviours minus the retired push ones, guards and the exact password form', async () => {
   const { casesFor, registeredViews } = await import('./e2e/fixtures/f3/f3-ui-cases.mjs');
   const cases = casesFor('ux_regression_19_23');
   const ids = cases.map(c => c.id);
   assert.equal(new Set(ids).size, ids.length);
-  for (const id of ['ux19-member-admin','ux20-notification-denied','ux21-authme-identity','ux22-passkey-empty-enrollment','ux23-zero-devices-honest','retained-device-patch','retained-guards','retained-login-form'])
+  for (const id of ['ux19-member-admin','ux21-authme-identity','ux22-passkey-empty-enrollment','ux23-no-push-surface','retained-guards','retained-login-form'])
     assert.ok(ids.includes(id), 'registered retained case ' + id);
   assert.ok(cases.filter(c => c.id.startsWith('ux19') || c.id.startsWith('ux2')).every(c => c.views === 1));
-  assert.ok(registeredViews('ux_regression_19_23').views >= 12);
+  assert.ok(registeredViews('ux_regression_19_23').views >= 10);
   const source = readFileSync(path.join(ROOT, 'scripts/e2e/fixtures/f3/f3-ui-cases.mjs'), 'utf8')
     + readFileSync(path.join(ROOT, 'scripts/e2e/fixtures/f3/f3-ui-helper.mjs'), 'utf8');
   // Genuine wire/DOM facts, not "element exists" theatre.
-  for (const needle of ['role, "member"', '/v1/devices/', 'enabled, false', 'f3-guest', 'login-panel', 'Notification.permission', 'auth/me'])
+  for (const needle of ['role, "member"', 'f3-guest', 'login-panel', 'auth/me'])
     assert.ok(source.includes(needle), 'case body keeps genuine fact: ' + needle);
   assert.equal(/"skip"|skipped:|test\.skip/.test(source), false, 'no skip path in the retained UX cases');
 });
@@ -5740,19 +5659,6 @@ test('L1D AUTH1 password exact 400 401 429 error and RAW success cookie without 
   for(let n=0;n<10;n++) limited=await sandbox.fetch(route,jsonInit('POST',{username:'DEMO',password:'wrong'}));
   assert.equal(limited.status,429); assert.ok(Number(limited.headers.get('Retry-After'))>0);
   assert.deepEqual(plain(await limited.json()),{error:'请求过于频繁，请稍后再试'});
-});
-test('L1D DEV1 exact wrapped flat device PATCH null/omitted keep tags empty clear owner and persisted false', async () => {
-  const { req, Mock }=loadMock();
-  const device={id:'l1d-device',userId:'usr_mock_demo',name:'Owner',platform:'desktop',enabled:true,eventScope:'all',tags:['fixed'],endpoint:'https://push.invalid',p256dh:'fixed-key',auth:'fixed-auth',userAgent:'Chrome',createdAt:123};
-  Mock.state.devices.push(device,{...device,id:'other-device',userId:'other-user'});
-  const r=await req('/v1/devices/l1d-device',jsonInit('PATCH',{enabled:false,name:null,eventScope:null,tags:null}));
-  assert.equal(r.status,200); assert.deepEqual(r.body,{ok:true,device:{...device,enabled:false}});
-  assert.deepEqual((await req('/v1/devices')).body.devices.find(d=>d.id===device.id),r.body.device);
-  const clear=await req('/v1/devices/l1d-device',jsonInit('PATCH',{name:'Renamed',eventScope:'final',tags:[]}));
-  assert.equal(clear.body.device.enabled,false); assert.deepEqual(clear.body.device.tags,[]); assert.equal(clear.body.device.name,'Renamed');
-  for(const id of ['missing','other-device']) { const bad=await req('/v1/devices/'+id,jsonInit('PATCH',{enabled:false})); assert.equal(bad.status,404); assert.deepEqual(Object.keys(bad.body),['error']); }
-  await req('/v1/auth/logout',jsonInit('POST',{}));
-  const guest=await req('/v1/devices/l1d-device',jsonInit('PATCH',{enabled:true})); assert.equal(guest.status,401); assert.deepEqual(guest.body,{error:'未登录'});
 });
 test('L1D AUTH1 startup only enabled canonical six fields and visible honest unhealthy error', async () => {
   const valid=await l1Boot({status:200,body:L1D_USER}); assert.equal(valid.location.href,'index.html');
@@ -6328,7 +6234,7 @@ const finalR1Fetch = window.fetch; window.fetch = (p,o) => p === '/v1/admin/fina
     calls: async () => calls, archive: async () => { d.report.requests.push(...calls); calls = []; }, finish: async () => {},
     page: { goto: async () => { const r = await run.req('/v1/admin/finalr1-extra-get'); assert.equal(r.status,200,'mutation provider is an actual 200 extra GET'); calls.push({ url: '/v1/admin/finalr1-extra-get', method: 'GET', httpStatus: r.status }); },
       waitForFunction: async () => {}, evaluate: async fn => vm.runInNewContext('(' + fn + ')()', { document: doc, window: { Anotify: { me: { role: 'member' } } } }) } };
-  const body = finalR1CaseBody('ux19', 'ux20', { withDriver: async (id, opt, fn) => fn(d, { n: 0, inc() {} }),
+  const body = finalR1CaseBody('ux19', 'ux21', { withDriver: async (id, opt, fn) => fn(d, { n: 0, inc() {} }),
     greetMember: async () => { member = true; }, writeWrites: async () => calls.filter(c => c.method !== 'GET'), ok: () => ({ ok: true }) });
   await assert.rejects(body({ id: 'mutation-admin-get' }), /no privileged admin API/);
 });
@@ -6396,18 +6302,6 @@ test('FINALR1 U2 actual helper fixture creates canonical Playbook and GET conten
   assert.equal((await run.req('/v1/namespaces/default/playbooks')).body.items.length, 1);
   assert.equal(new URLSearchParams(ctx.queryUnderTest('playbook', {}, false)).has('id'), false, 'missing-id negative remains distinct');
 });
-test('FINALR1 U3 actual me.id owner PATCH wrapped200 GETfalse and foreign404 retain strict DEV1 domain', async () => {
-  const run = loadMock(), me = (await run.req('/v1/auth/me')).body;
-  const own = { id:'finalr1-own-device', userId:me.id, name:'Own receiver', platform:'web', enabled:true, eventScope:'all', tags:[] };
-  const foreign = { ...own, id:'finalr1-foreign-device', userId:'other-owner' };
-  run.Mock.state.devices = [own, foreign];
-  const patched = await run.req('/v1/devices/' + own.id, { method:'PATCH', body:JSON.stringify({enabled:false}) });
-  assert.equal(patched.status,200); assert.equal(patched.body.device.id,own.id); assert.equal(patched.body.device.enabled,false);
-  assert.equal((await run.req('/v1/devices')).body.devices.find(d=>d.id===own.id).enabled,false);
-  const rejected = await run.req('/v1/devices/' + foreign.id, { method:'PATCH', body:JSON.stringify({enabled:false}) });
-  assert.equal(rejected.status,404); assert.equal(foreign.enabled,true);
-});
-
 // A finite native delete case with one exact response-boundary mutation.
 for (const mutation of [false, true]) {
   test('PARENT-EPOCH native: deleted installs group ' + (mutation ? 'rejects exact GET 200 mutant' : '404 keeps exact receipt 200'), { timeout: 55000 }, () => {

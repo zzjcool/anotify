@@ -182,20 +182,26 @@ async function main() {
 		sess1._key = p.json.apiKey;
 	}
 
-	// AC-12 scope 减量（建一个 send+receive 的会话，只批 send）
+	// AC-12 scope 收敛（notify:receive 随推送域退役，只剩 notify:send；退休 scope 一律被拒）
 	{
-		const s12 = await createSession(server, { deviceName: "scope-test", scopes: ["notify:send", "notify:receive"] });
+		const s12 = await createSession(server, { deviceName: "scope-test", scopes: ["notify:send"] });
 		const ap = await approve(server, session, s12.json.sessionId, ["notify:send"]);
-		H.eq("AC-12 approve 减量 → 200", ap.status, 200);
+		H.eq("AC-12 approve send → 200", ap.status, 200);
 		const p = await pollSafe(server, s12.json.sessionId, s12.json.secret);
-		H.eq("AC-12 poll scopes 只含 send", JSON.stringify(p.json.scopes), JSON.stringify(["notify:send"]));
-		// 减量后的 Key 依然不能当 nodeToken 用
-		await V.expectNotNodeToken("AC-12 减量 Key 不能当 nodeToken 用", server.base, p.json.apiKey, { namespace: NS });
+		H.eq("AC-12 poll scopes 只有 send", JSON.stringify(p.json.scopes), JSON.stringify(["notify:send"]));
+		// 批准后的 Key 依然不能当 nodeToken 用
+		await V.expectNotNodeToken("AC-12 Key 不能当 nodeToken 用", server.base, p.json.apiKey, { namespace: NS });
 		// notify 仍可用
 		const notify = await V.ingestEvent(server.base, p.json.apiKey, NS, {
 			source: "github", type: "pr_opened", payload: { title: "scope reduce" },
 		});
-		H.eq("AC-12 减量 Key 调 …/events → 200", notify.status, 200);
+		H.eq("AC-12 Key 调 …/events → 200", notify.status, 200);
+	}
+	// AC-12b 退休 scope 不能批准，也不能在申请阶段带进来
+	{
+		const s12b = await createSession(server, { deviceName: "retired-scope", scopes: ["notify:send"] });
+		const ap = await approve(server, session, s12b.json.sessionId, ["notify:receive"]);
+		H.eq("AC-12b 批准退休 scope notify:receive → 400", ap.status, 400);
 	}
 
 	// AC-13 不允许勾出未申请的 scope（构造超集）

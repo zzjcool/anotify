@@ -1,18 +1,17 @@
 # Anotify 端到端测试体系（固化方案）
 
 > **规则：每次开发完成后，必须跑 `make e2e` 全绿才算完成。** 这是固化的质量门禁。
-> 除「iOS 真机 APNs 推送」外，**所有环节全自动，无需人工**。
+> **所有环节全自动，无需人工**（Passkey 用 CDP 虚拟认证器；真机推送已随推送域退役）。
 
 ## 技术选型
 
 | 层 | 技术 | 覆盖 |
 | --- | --- | --- |
-| 单元 | `go test ./...` | store/auth/api/push/ws/server/lease/source + 节点 runner/ops/resultstore 包级逻辑 |
+| 单元 | `go test ./...` | store/auth/api/route/ws/server/lease/source + 节点 runner/ops/resultstore 包级逻辑 |
 | API 契约 | Node fetch（`scripts/e2e/suites/api_contract.mjs`） | 全端点的状态码/鉴权/参数校验 |
 | **Passkey 认证** | **Playwright CDP 虚拟认证器** | 真实 WebAuthn 注册/登录/登出/会话（无头，无需真人） |
 | WS 协议 | Node WebSocket 客户端 | v4 帧：hello/welcome、config.get/applied/changed、task.dispatch/accept/reject、lease.grant/renew/ack、task.result/result.ack、task.emit/ack、task.cancel/cancel.ack、upgrade/logs |
 | 路由过滤 | Node fetch | 标签路由 + event_scope 过滤全矩阵（notify.matched 断言） |
-| 桌面推送 | Playwright 持久化 Chrome | 真实 FCM 订阅 → 投递记录 |
 | 持久化 | 重启服务验证 | 消息/设备/Key 重启后仍在 |
 | 安全 | Node fetch + DB 检查 | scope 越权/Key 篡改/哈希格式/会话属性 |
 | 前端 | Playwright | 6 页渲染 + 未登录跳登录 + 已登录真实数据 |
@@ -21,8 +20,7 @@
 
 ## 唯一人工环节
 
-- **iOS Safari 真机 APNs 推送**：需真实 iPhone，无法自动化（见 `IOS_TESTING.md`）。
-  其余全部自动。
+无。真机推送（原 iOS APNs 清单）已随推送域退役（V4-D7）。
 
 ## 目录结构
 

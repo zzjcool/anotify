@@ -162,8 +162,6 @@ async function startServer() {
 				ANOTIFY_LOG_LEVEL: "warn",
 				ANOTIFY_RP_ID: "localhost",
 				ANOTIFY_RP_ORIGIN: `http://localhost:${port}`,
-				ANOTIFY_VAPID_PUBLIC_KEY: "dummy",
-				ANOTIFY_VAPID_PRIVATE_KEY: "dummy",
 				ANOTIFY_BOOT_ID: boot,
 			},
 			stdio: ["ignore", "pipe", "pipe"],
@@ -228,7 +226,7 @@ function insertEvents(dbPath, ns, n) {
 // 采样口径（写进 finding，避免数字不可比）：
 //   * 每次测量一个**全新 context**（全新 HTTP 缓存、无 SW 残留）→ 记作 cold；
 //     同一 context 里再 reload 一次 → 记作 warm（缓存命中）。
-//     页面本身不注册 service worker（只有 receivers.html 注册），所以 SW 不参与。
+//     页面本身不注册 service worker，所以 SW 不参与。
 //   * 外域请求（fonts.googleapis.com）一律 abort：本环境无外网，不 abort 会把
 //     load 事件拖到超时，数字全是网络等待 —— 这是测量控制项，不是产品改进。
 //   * 等 load 后再等 networkidle（≤5s）+ 300ms，让首屏 XHR 落地，

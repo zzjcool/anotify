@@ -2,19 +2,20 @@
 /* Anotify WebSocket 接收端集成测试
  *
  * 流程：
- *   1. 用 API Key（notify:receive scope）连 wss://.../v1/stream
+ *   1. 用 API Key 连 wss://.../v1/stream
  *   2. 收到 hello 帧
  *   3. 用另一个 Key（notify:send scope）POST /v1/notify 发一条通知
  *   4. WS 应收到 notification 帧，校验字段
  *   5. 发送 ack 帧
  *
- * 用法：BASE=http://localhost:8080 RECV_KEY=ant_... SEND_KEY=ant_... node scripts/ws_test.mjs
+ * 用法：BASE=http://localhost:8080 SEND_KEY=ant_... node scripts/ws_test.mjs
  */
 const BASE = process.env.BASE || "http://localhost:8080";
-const RECV_KEY = process.env.RECV_KEY || "";
 const SEND_KEY = process.env.SEND_KEY || "";
-if (!RECV_KEY || !SEND_KEY) {
-	console.error("需要 RECV_KEY 与 SEND_KEY 环境变量");
+// 接收侧复用同一个 Key：`notify:receive` 已随推送域退役，v3 的两把 Key 形态不再存在。
+const KEY = process.env.KEY || SEND_KEY;
+if (!SEND_KEY) {
+	console.error("需要 SEND_KEY 环境变量");
 	process.exit(2);
 }
 
@@ -33,7 +34,7 @@ const bad = (m) => {
 async function main() {
 	console.log("=== WS 接收端集成测试 ===");
 	const ws = new WebSocket(wsUrl, {
-		headers: { Authorization: `Bearer ${RECV_KEY}` },
+		headers: { Authorization: `Bearer ${KEY}` },
 	});
 
 	const frames = [];

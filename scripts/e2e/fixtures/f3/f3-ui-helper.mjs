@@ -8,7 +8,7 @@ import { openDriver } from "./f3-driver.mjs";
 export const LANGS = Object.freeze(["zh-CN", "en", "ja", "es"]);
 // 旧的 source 页已删除（B-4）：它与 source-detail 是同一件事的两页，只留后者；
 // `/source.html` 现在是 404，所以矩阵里不能再有它（否则整格 404 判红）。
-export const PAGES = Object.freeze(["admin","capabilities","capability","cli-auth","docs","events","index","keys","login","message","namespace","namespaces","node","nodes","passkey-enroll","playbook","playbooks","receivers","release","security","source-detail","sources","trace"]);
+export const PAGES = Object.freeze(["admin","capabilities","capability","cli-auth","docs","events","index","keys","login","message","namespace","namespaces","node","nodes","passkey-enroll","playbook","playbooks","release","security","source-detail","sources","trace"]);
 export const THEMES = Object.freeze(["light", "dark"]);
 export const VIEWPORTS = Object.freeze({ desktop: Object.freeze({ width: 1440, height: 900 }), mobile: Object.freeze({ width: 390, height: 844 }) });
 // #384：「内容档」768×1024（竖屏平板）。**不进 VIEWPORTS** —— 那份是 PAGES × 4 语言 ×
@@ -21,16 +21,16 @@ export const PREVIEW_BANNER = "前端预览 · 数据均为 mock（接口未真�
 // 末段用 PAGES.length（不是写死的 21）：新增页面只登记 PAGES 就会自动进矩阵，
 // 写死上界会让新页在 ui 矩阵里**静默漏跑**（#436 新增 namespace/namespaces 两页）。
 export const MATRIX_BATCHES = Object.freeze([[0,5],[5,10],[10,15],[15,PAGES.length]].map(([a,b]) => PAGES.slice(a,b)));
-export const KEY_PAGES = Object.freeze(["index","capabilities","playbooks","security","receivers","events","trace","playbook"]);
+export const KEY_PAGES = Object.freeze(["index","capabilities","playbooks","security","events","trace","playbook"]);
 // Per-page structural anchor. Detail pages get their identity from real v4 list rows.
 // #381：登录页的默认 tab 跟实例/浏览器状态走（首跑默认落在「注册」），所以 #login-panel
 // 可能真的是 hidden（0×0）。锚点改成**两个 tab 都一定看得见**的容器：仍然证「这一页真的
 // 渲染了」，而不是在默认态上赌一把。
 export const ANCHORS = Object.freeze({
-  admin: "#kpi-devices", capabilities: "[data-cap]", capability: "#cap-name", "cli-auth": "#code-input", docs: "#endpoints",
+  admin: "#kpi-messages", capabilities: "[data-cap]", capability: "#cap-name", "cli-auth": "#code-input", docs: "#endpoints",
   events: "#ev-list article", index: "#kpi-total", keys: "#keys-body tr", login: ".auth-tabs",
   message: "#task-facts", namespace: "#ns-name", namespaces: "#ns-list [data-ns]", node: "#node-slots", nodes: "[data-node]", "passkey-enroll": "#code-input",
-  playbook: "#pb-installs", playbooks: "#pb-grid", receivers: "#current-device-card",
+  playbook: "#pb-installs", playbooks: "#pb-grid",
   release: "#rd-gone-panel",
   security: "#passkey-list",
   // 源只读详情页：根元素渲染成功后才有 data-source（深链成立 = 真的读到了那个源）。
@@ -41,7 +41,7 @@ export const ANCHORS = Object.freeze({
 // Capability（#cap-name 渲染成「显示名 · 名字」），所以进 DATA_PAGES；它不是自包含的
 // 匿名页（布局/受限读面都要登录），所以不进 STANDALONE；也不是关键页截图集（那份额度
 // 给的是入口页），所以不进 KEY_PAGES。
-export const DATA_PAGES = Object.freeze(["admin","capabilities","capability","events","index","keys","nodes","sources","security","receivers"]);
+export const DATA_PAGES = Object.freeze(["admin","capabilities","capability","events","index","keys","nodes","sources","security"]);
 const FAILURE_TEXT = /载入失败|加载失败|Failed to load|取不到数据|响应不是 \*List/;
 
 export const MATRIX_VIEWS = PAGES.length * LANGS.length * THEMES.length * 2;
@@ -58,15 +58,14 @@ export const localeFor = lang => ({ "zh-CN": "zh-CN", en: "en-US", ja: "ja-JP", 
 // Real v4 identities for detail pages; never uid/name aliases or the H.req adapter.
 export async function fixtures(d) {
   await d.goto("index");
-  const [tasks, sources, nodes, caps, devices] = await Promise.all([
+  const [tasks, sources, nodes, caps] = await Promise.all([
     d.req("/v1/namespaces/default/tasks?limit=100"), d.req("/v1/namespaces/default/sources"),
-    d.req("/v1/nodes"), d.req("/v1/namespaces/default/capabilities"), d.req("/v1/devices"),
+    d.req("/v1/nodes"), d.req("/v1/namespaces/default/capabilities"),
   ]);
   assert.equal(tasks.kind, "TaskList", "canonical TaskList required");
   assert.equal(sources.kind, "SourceList", "canonical SourceList required");
   assert.equal(nodes.kind, "NodeList", "canonical NodeList required");
   assert.equal(caps.kind, "CapabilityList", "canonical CapabilityList required");
-  assert.ok(Array.isArray(devices.devices), "device list wrapper required");
   const task = tasks.items[0], source = sources.items[0], node = nodes.items[0];
   assert.ok(task?.metadata?.name && task?.spec?.traceUID, "canonical Task.name/spec.traceUID required");
   assert.ok(source?.metadata?.name, "canonical Source.name required");
@@ -90,7 +89,7 @@ export async function fixtures(d) {
   const detail = await d.req("/v1/namespaces/default/playbooks/" + encodeURIComponent(playbook.metadata.name) + "?includeBody=true");
   assert.equal(detail.metadata.name, playbook.metadata.name);
   assert.ok(detail.spec.files["playbook.yaml"], "real Playbook GET supplies editor content");
-  return { task: task.metadata.name, traceUID: task.spec.traceUID, source: source.metadata.name, node: node.metadata.name, playbook: playbook.metadata.name, cap: caps.items[0].metadata.name, devices: devices.devices.length };
+  return { task: task.metadata.name, traceUID: task.spec.traceUID, source: source.metadata.name, node: node.metadata.name, playbook: playbook.metadata.name, cap: caps.items[0].metadata.name };
 }
 export function query(page, f = {}, guest) {
   const p = new URLSearchParams();

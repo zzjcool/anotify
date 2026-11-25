@@ -7,7 +7,7 @@
  *
  * 覆盖：（v4 迁移后）
  *  events 投递入口（/v1/namespaces/{ns}/events，Bearer key）
- *    无 Key→401；错误 Key→401；recv scope Key→403
+ *    无 Key→401；错误 Key→401；已退役 scope 建 Key→400（V4-D7）
  *    缺 source→400 且点名 source；空 source→400；源不存在→404（不泄露存在性之外的差异）
  *    type 可省略（v4 语义）→ 200 且事件类型回落源名
  *    id 幂等键 → 第二次 duplicate=true 且同一 eventId / traceId
@@ -26,7 +26,7 @@
  *    跨 ns 读不存在的对象与「真的不存在」逐字节同体（防存在性探测）
  *  v3 路径退役
  *    /v1/events、/v1/tasks、/v1/capabilities 全部 404（没有兼容分支）
- *  vapid-public-key / devices / keys / 静态缓存：沿用保留域形状（v4 不改）
+ *  keys / 静态缓存：沿用保留域形状（v4 不改）
  */
 import * as H from "../lib/harness.mjs";
 import * as V from "../lib/v4.mjs";
@@ -54,7 +54,7 @@ async function main() {
 		rpId: "localhost",
 	});
 	const B = server.base;
-	const { sendKey, recvKey, session } = H.seed(server.dbPath, "api");
+	const { sendKey, session } = H.seed(server.dbPath, "api");
 
 	// 默认命名空间的对外名（slug）—— v4 的 ns 在**路径**里，拼 URL 用它。
 	const ns = await H.defaultNamespace(B, session);
@@ -90,15 +90,6 @@ async function main() {
 		}),
 		401,
 		"Unauthorized",
-	);
-	V.expectReason(
-		"events recv scope Key → 403",
-		await H.req(B, V.P.events(NS), {
-			key: recvKey,
-			body: { source: "github", type: "t" },
-		}),
-		403,
-		"Forbidden",
 	);
 
 	// ---------- events 参数校验（v4：source 必填、type 可选）----------
@@ -145,109 +136,6 @@ async function main() {
 		"NotFound",
 	);
 
-	// ---------- vapid-public-key ----------
-	// 推送是**可选**功能：没配 VAPID 时服务端返回 200 + 空 publicKey，
-	// 前端据此隐藏「启用推送」入口。所以端点本身必须永远 200，
-	// 但 publicKey 是否非空取决于部署配置——不能把「未配置」当成失败。
-	const vapidResp = await H.req(B, "/v1/vapid-public-key");
-	H.eq("vapid-public-key → 200", vapidResp.status, 200);
-	const vapidPub = vapidResp.json?.publicKey || "";
-	if (process.env.ANOTIFY_VAPID_PUBLIC_KEY) {
-		H.check(
-			"vapid-public-key publicKey 非空（已配置 VAPID）",
-			vapidPub.length > 0,
-			vapidPub.slice(0, 20),
-		);
-	} else {
-		H.check(
-			"vapid-public-key 未配置时返回空串而非报错",
-			vapidPub === "",
-			vapidPub.slice(0, 20),
-		);
-	}
-
-	// ---------- devices ----------
-	H.eq("devices 无 session → 401", (await H.req(B, "/v1/devices")).status, 401);
-	H.eq(
-		"devices POST 缺 keys → 400",
-		(
-			await H.req(B, "/v1/devices", {
-				session,
-				body: { endpoint: "https://push.example.com/nokeys" },
-			})
-		).status,
-		400,
-	);
-	const devBody = H.makeDevice({ name: "契约设备A" });
-	const devPost = await H.req(B, "/v1/devices", { session, body: devBody });
-	H.eq("devices POST 合法 → 200", devPost.status, 200);
-	H.check("devices POST 返回 device", !!devPost.json?.device?.id);
-	const devId = devPost.json?.device?.id;
-	const devList = await H.req(B, "/v1/devices", { session });
-	H.eq("devices GET 列表 → 200", devList.status, 200);
-	H.check(
-		"devices GET 含刚 POST 的设备",
-		Array.isArray(devList.json?.devices) &&
-			devList.json.devices.some((d) => d.id === devId),
-	);
-	H.eq(
-		"devices PATCH 重命名 → 200",
-		(
-			await H.req(B, `/v1/devices/${devId}`, {
-				session,
-				method: "PATCH",
-				body: { name: "改名后" },
-			})
-		).status,
-		200,
-	);
-	H.eq(
-		"devices PATCH eventScope=final → 200",
-		(
-			await H.req(B, `/v1/devices/${devId}`, {
-				session,
-				method: "PATCH",
-				body: { eventScope: "final" },
-			})
-		).status,
-		200,
-	);
-	H.eq(
-		"devices PATCH 坏 eventScope → 400",
-		(
-			await H.req(B, `/v1/devices/${devId}`, {
-				session,
-				method: "PATCH",
-				body: { eventScope: "bogus" },
-			})
-		).status,
-		400,
-	);
-	H.eq(
-		"devices PATCH enabled=false → 200",
-		(
-			await H.req(B, `/v1/devices/${devId}`, {
-				session,
-				method: "PATCH",
-				body: { enabled: false },
-			})
-		).status,
-		200,
-	);
-	H.eq(
-		"devices DELETE → 200",
-		(await H.req(B, `/v1/devices/${devId}`, { session, method: "DELETE" }))
-			.status,
-		200,
-	);
-	const devListAfter = await H.req(B, "/v1/devices", { session });
-	const after = (devListAfter.json?.devices || []).find((d) => d.id === devId);
-	H.check(
-		"devices DELETE 后 enabled=false 或消失",
-		!after || after.enabled === false,
-		after ? `enabled=${after.enabled}` : "已消失",
-	);
-
 	// ---------- keys ----------
 	H.eq("keys 无 session → 401", (await H.req(B, "/v1/keys")).status, 401);
 	const keyPost = await H.req(B, "/v1/keys", {
@@ -264,6 +152,16 @@ async function main() {
 		"keys POST 无 scopes → 400",
 		(await H.req(B, "/v1/keys", { session, body: { name: "noScope" } })).status,
 		400,
+	);
+	const retiredScope = await H.req(B, "/v1/keys", {
+		session,
+		body: { name: "退役scope", scopes: ["notify:receive"] },
+	});
+	H.eq("退役 scope 建 Key → 400（V4-D7：scope 集合只剩 notify:send）", retiredScope.status, 400);
+	H.check(
+		"退役 scope 的报错点名 scope",
+		String(retiredScope.json?.error || "").includes("scope"),
+		`${retiredScope.status} ${String(retiredScope.text).slice(0, 120)}`,
 	);
 	const keyList = await H.req(B, "/v1/keys", { session });
 	H.eq("keys GET → 200", keyList.status, 200);

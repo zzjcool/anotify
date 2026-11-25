@@ -45,12 +45,12 @@ export function withDeadline(label, promise, ms = WAIT_DEADLINE_MS) {
 export const LANGS = ['zh-CN', 'en', 'ja', 'es'];
 // 旧的 source 页已删除（黑盒审计 B-4：两个源详情页重复，只留 source-detail 这一页）；
 // 无参/带参访问 `/source.html` 一律 404（internal/server/static.go 的未知文件路径）。
-export const PAGES = ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','namespace','namespaces','node','nodes','passkey-enroll','playbook','playbooks','receivers','release','security','source-detail','sources','trace'];
+export const PAGES = ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','namespace','namespaces','node','nodes','passkey-enroll','playbook','playbooks','release','security','source-detail','sources','trace'];
 // 401 → 登录页那条用例覆盖的页面。capability.html 是**受保护的深层链接页**：
 // 它自己的布局挂载就会打 /v1/auth/me，游客必得 401，且它在 partials.js 的
 // loginHref 白名单里（next=capability.html 必须保住 ?namespace=&name=），
 // 所以进 GUARDED 才是与产品真实页面集一致的覆盖。
-export const GUARDED = ['index','receivers','keys','security','message','events','sources','capabilities','capability','nodes'];
+export const GUARDED = ['index','keys','security','message','events','sources','capabilities','capability','nodes'];
 export const isMock = () => process.env.E2E_MOCK_ONLY === '1';
 export function chromePath() {
   if (process.env.E2E_CHROME_PATH) return process.env.E2E_CHROME_PATH;
@@ -86,7 +86,7 @@ function ensureSession(server, username, extraArgs = []) {
   const out = execFileSync(H.DEVSEED_BIN, ['-db', server.dbPath, '-username', username, ...extraArgs], { encoding: 'utf8' });
   const get = (k) => (out.match(new RegExp(`^${k}=(.*)$`, 'm')) || [])[1];
   assert.ok(get('SESSION'), `T1 seam: devseed must return SESSION for ${username}`);
-  return { session: get('SESSION'), uid: get('UID'), role: get('ROLE'), sendKey: get('SEND_KEY'), recvKey: get('RECV_KEY') };
+  return { session: get('SESSION'), uid: get('UID'), role: get('ROLE'), sendKey: get('SEND_KEY') };
 }
 
 // ensureNamespace 保证 default/prod 两个命名空间存在（契约 resource.yaml ·
