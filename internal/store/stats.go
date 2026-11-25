@@ -17,10 +17,10 @@ type DayCount struct {
 type Stats struct {
 	Total int `json:"total"` // 事件总数
 	Today int `json:"today"` // 今日事件数
-	// Delivered / DeliveryTotal 是任务口径：成功数 / 已结束（终态）数。
-	Delivered     int        `json:"delivered"`
-	DeliveryTotal int        `json:"deliveryTotal"`
-	Daily         []DayCount `json:"daily"`
+	// SucceededTasks / FinishedTasks 是任务口径：终态里成功数 / 终态数。
+	SucceededTasks int        `json:"succeededTasks"`
+	FinishedTasks  int        `json:"finishedTasks"`
+	Daily          []DayCount `json:"daily"`
 }
 
 // PhaseCount 是「相位 → 任务数」一行（按 PhaseCounts 的固定顺序出现）。
@@ -172,7 +172,7 @@ const (
 // 口径：#80 之后「发生了什么」是 events、「做完没有」是 tasks：
 //
 //	Total/Today/Daily = 事件数（今日与日桶用**服务端本地时区**的日界）
-//	Delivered/DeliveryTotal = 终态任务里 succeeded 的占比
+//	SucceededTasks/FinishedTasks = 终态任务里 succeeded 的占比
 //
 // 字段名与 JSON key 沿用旧契约：改名会让前端变成破坏性变更，而收益只是语义更贴切。
 func (d *DB) MessageStats(ctx context.Context, namespaceID string, sinceSec int64) (*Stats, error) {
@@ -186,7 +186,7 @@ func (d *DB) MessageStats(ctx context.Context, namespaceID string, sinceSec int6
 // 接受确定的命名空间；收到空串或 `*` 一律 ErrNamespaceRequired（防御，不是可选项）。
 //
 // 口径与单 ns **完全一致**（共用 accumulateMessageStats 里那一份 SQL）：
-//   - Total/Today/Delivered/DeliveryTotal 逐 ns 相加；
+//   - Total/Today/SucceededTasks/FinishedTasks 逐 ns 相加；
 //   - Daily 按 day 合并（不同 ns 的同一天合成一行，不重复计同一天），升序；
 //   - 空列表 = 全零 + `daily: []`（**不报错**：没有命名空间是合法的空集合，不是调用错误）。
 func (d *DB) MessageStatsAll(ctx context.Context, namespaceIDs []string, sinceSec int64) (*Stats, error) {
@@ -233,7 +233,7 @@ func (d *DB) accumulateMessageStats(ctx context.Context, s *Stats, namespaceID s
 		return ErrNamespaceRequired
 	}
 
-	var total, today, delivered, deliveryTotal int
+	var total, today, succeeded, finished int
 	if err := d.QueryRowContext(ctx, statsTotalSQL, namespaceID).Scan(&total); err != nil {
 		return fmt.Errorf("stats total: %w", err)
 	}
@@ -242,13 +242,13 @@ func (d *DB) accumulateMessageStats(ctx context.Context, s *Stats, namespaceID s
 	}
 	if err := d.QueryRowContext(ctx, statsTasksSQL,
 		TaskSucceeded, namespaceID, TaskSucceeded, TaskFailed, TaskCancelled, TaskAbandoned).
-		Scan(&delivered, &deliveryTotal); err != nil {
+		Scan(&succeeded, &finished); err != nil {
 		return fmt.Errorf("stats tasks: %w", err)
 	}
 	s.Total += total
 	s.Today += today
-	s.Delivered += delivered
-	s.DeliveryTotal += deliveryTotal
+	s.SucceededTasks += succeeded
+	s.FinishedTasks += finished
 
 	_, offset := now.Zone()
 	rows, err := d.QueryContext(ctx, statsDailySQL, offset, namespaceID, sinceSec)

@@ -188,11 +188,11 @@ func TestMessageStatsTotalsAndDelivery(t *testing.T) {
 	if s.Total != 3 {
 		t.Errorf("Total = %d, want 3", s.Total)
 	}
-	if s.Delivered != 1 {
-		t.Errorf("Delivered = %d, want 1（只有 succeeded 计成功）", s.Delivered)
+	if s.SucceededTasks != 1 {
+		t.Errorf("SucceededTasks = %d, want 1（只有 succeeded 计成功）", s.SucceededTasks)
 	}
-	if s.DeliveryTotal != 4 {
-		t.Errorf("DeliveryTotal = %d, want 4（pending 不进分母）", s.DeliveryTotal)
+	if s.FinishedTasks != 4 {
+		t.Errorf("FinishedTasks = %d, want 4（pending 不进分母）", s.FinishedTasks)
 	}
 }
 

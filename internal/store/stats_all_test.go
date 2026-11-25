@@ -6,7 +6,7 @@ package store
 // 的 store 侧只接受**显式**的 nsID 列表（不接 AllNamespaces），口径与单 ns 共用
 // accumulateMessageStats 里的同一份 SQL。本文件钉住五件事：
 //
-//  1. 逐字段求和 == 两个单 ns 结果之和（total/today/delivered/deliveryTotal）；
+//  1. 逐字段求和 == 两个单 ns 结果之和（total/today/succeededTasks/finishedTasks）；
 //  2. Daily 跨 ns 同日**合并成一行**（不重复计同一天）且升序；
 //  3. 空 nsID 列表 = 全零 + `daily: []`（不报错）；`*` / 空串元素 = ErrNamespaceRequired；
 //  4. 聚合 SQL 的索引计划（EXPLAIN QUERY PLAN 断言，直接跑生产常量，不抄副本）；
@@ -100,7 +100,7 @@ func TestMessageStatsAllSumsPerNamespace(t *testing.T) {
 	insertEventAt(t, db, nsB, today.AddDate(0, 0, -5))
 
 	// 任务：A 1 成功 / 1 失败 / 1 pending，B 1 成功 / 1 取消 / 1 running。
-	// → Delivered 1+1=2，DeliveryTotal 2+2=4（pending/running 不进分母）。
+	// → SucceededTasks 1+1=2，FinishedTasks 2+2=4（pending/running 不进分母）。
 	seedStatsAllTasks(t, db, nsA, capA, TaskSucceeded, TaskFailed, TaskPending)
 	seedStatsAllTasks(t, db, nsB, capB, TaskSucceeded, TaskCancelled, TaskRunning)
 
@@ -116,7 +116,7 @@ func TestMessageStatsAllSumsPerNamespace(t *testing.T) {
 		t.Fatalf("messageStats(B): %v", err)
 	}
 	// 前提断言：两边都非零，否则「A+B」可能只是 0+0（弱断言会掩盖漏累加）。
-	if singleA.Total == 0 || singleB.Total == 0 || singleA.Today == 0 || singleB.Delivered == 0 {
+	if singleA.Total == 0 || singleB.Total == 0 || singleA.Today == 0 || singleB.SucceededTasks == 0 {
 		t.Fatalf("夹具失效：单 ns 结果必须非零，得到 A=%+v B=%+v", *singleA, *singleB)
 	}
 
@@ -130,8 +130,8 @@ func TestMessageStatsAllSumsPerNamespace(t *testing.T) {
 	}{
 		{"Total", all.Total, singleA.Total + singleB.Total},
 		{"Today", all.Today, singleA.Today + singleB.Today},
-		{"Delivered", all.Delivered, singleA.Delivered + singleB.Delivered},
-		{"DeliveryTotal", all.DeliveryTotal, singleA.DeliveryTotal + singleB.DeliveryTotal},
+		{"SucceededTasks", all.SucceededTasks, singleA.SucceededTasks + singleB.SucceededTasks},
+		{"FinishedTasks", all.FinishedTasks, singleA.FinishedTasks + singleB.FinishedTasks},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("MessageStatsAll.%s = %d, want %d（= A+B 的单 ns 之和）", tc.name, tc.got, tc.want)
@@ -150,7 +150,7 @@ func TestMessageStatsAllSumsPerNamespace(t *testing.T) {
 		t.Fatalf("messageStatsAll(倒序): %v", err)
 	}
 	if rev.Total != all.Total || rev.Today != all.Today ||
-		rev.Delivered != all.Delivered || rev.DeliveryTotal != all.DeliveryTotal {
+		rev.SucceededTasks != all.SucceededTasks || rev.FinishedTasks != all.FinishedTasks {
 		t.Fatalf("ns 顺序改变了聚合结果：%+v vs %+v", *rev, *all)
 	}
 	if !slices.Equal(rev.Daily, all.Daily) {
@@ -174,7 +174,7 @@ func TestMessageStatsAllEmptyListIsZeroNotError(t *testing.T) {
 		if s == nil {
 			t.Fatalf("空 nsID 列表返回 nil Stats（ids=%#v）", ids)
 		}
-		if s.Total != 0 || s.Today != 0 || s.Delivered != 0 || s.DeliveryTotal != 0 {
+		if s.Total != 0 || s.Today != 0 || s.SucceededTasks != 0 || s.FinishedTasks != 0 {
 			t.Fatalf("空集合必须是全零，得到 %+v", *s)
 		}
 		if s.Daily == nil || len(s.Daily) != 0 {

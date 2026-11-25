@@ -2032,7 +2032,7 @@ components:
     AdminSystemStats:
       type: object
       description: 管理后台系统总览统计（`messageCount` / `daily` 的口径都是**事件**数）。
-      required: [userCount, adminCount, messageCount, todayMessages, keyCount, sessionCount, deliveredCount, deliveryTotal, daily, topUsers]
+      required: [userCount, adminCount, messageCount, todayMessages, keyCount, sessionCount, succeededTasks, finishedTasks, daily, topUsers]
       properties:
         userCount: { type: integer }
         adminCount: { type: integer, description: 角色为 `admin` 的用户数 }
@@ -2040,8 +2040,8 @@ components:
         todayMessages: { type: integer, description: 今日（服务端本地时区）事件数 }
         keyCount: { type: integer }
         sessionCount: { type: integer, description: 未过期会话数 }
-        deliveredCount: { type: integer, description: 已送达投递数（sent/delivered/acked） }
-        deliveryTotal: { type: integer, description: 投递尝试总数 }
+        succeededTasks: { type: integer, description: 终态任务里 succeeded 的数量 }
+        finishedTasks: { type: integer, description: 终态任务数（succeeded|failed|cancelled|abandoned；pending/running 不计） }
         daily:
           type: array
           items: { $ref: "#/components/schemas/AdminDayCount" }

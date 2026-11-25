@@ -314,11 +314,6 @@ message:
   body_label: 本文
   open_link: Agent セッションを開く
   fields_title: すべてのフィールド
-  deliveries_title: 配信記録
-  delivery:
-    delivered_count: '{ok}/{n} 配信済み'
-    empty: 配信記録なし（有効なデバイスが見つかりません）
-    attempt_info: '{channel} · {n} 回試行 · {time}'
   error:
     missing_id: メッセージ ID がありません（URL に ?id=ntf_… が必要）
     not_found: メッセージが見つからないか削除されました
@@ -793,33 +788,6 @@ docs:
       li2: · WebAuthn パスワードレスログイン、生体認証またはデバイスキー
       li3: · httpOnly Cookie、マルチデバイスセッションは独立して個別に取り消し可能
       li4: · クロスデバイス：プラットフォーム同期 / 一時接続ガイド / リカバリーコード
-  notify:
-    core: 中核
-    intro: Agent がタスク終了後にこのエンドポイントを呼び出して通知を上報します。サーバーは API Key を検証し、所有者を特定し、通知を<b class="doc-em">エンドツーエンド暗号化</b>で「有効かつレベル / タグが一致する」すべてのデバイスにプッシュします。
-    params:
-      title: リクエストボディ パラメータ
-      title_desc: 通知タイトル。例：<code>"デプロイ完了"</code>。システム通知のメインタイトルになります。
-      agent_state_desc: エージェント状態：<code>working</code> 実行中 · <code>blocked</code> 待機中 · <code>done</code> 完了 · <code>interrupted</code> 中断 · <code>error</code> 失敗。アイコン色とデバイスフィルタを決定します。
-      body_desc: 通知本文。補足説明です。
-      tags_desc: ルーティングタグ。空 = すべての有効デバイスにブロードキャスト。非空 = 「共通タグがある」または「タグなし（catch-all）」のデバイスのみに配信。≤10 個、各 ≤32 文字。
-      link_desc: 通知タップ時に開くディープリンク。例：<code>pi://session/sess_8f3a2c</code>。
-      meta_desc: コンテキストメタデータ。追跡と統計に使用され、通知履歴に保存されます。
-      ttl_desc: <code>ttl</code> 有効期限（秒）（デフォルト 86400）；<code>priority</code> 優先度（デフォルト normal）。
-    required: 必須
-    optional: 任意
-    curl:
-      title: cURL · 完全なリクエスト
-      title_val: デプロイ完了
-      body_val: ビルド成功、本番環境にデプロイ済み
-      tag_val: 仕事
-    resp200: 受領・配信完了
-    resp200_dev1: メインスマホ
-    resp200_dev2: オフィス Mac
-    resp400: 一致するデバイスなし / パラメータエラー
-    resp400_err: 購読済みデバイスがありません。先にワークスペースで購読してください
-    resp400_comment: // 401 · Key がないまたは無効（scope 不足時は 403）
-    rules:
-      title: 配信ルール（タグルーティング + レベルフィルタ）
   v4:
     five_specs: 'エンドポイント一覧：リソースごとにメソッドとパスを並べています。'
     missing: "エンドポイント一覧を利用できません"

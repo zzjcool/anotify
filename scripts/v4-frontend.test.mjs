@@ -2375,7 +2375,7 @@ test("mock: stats / console.events 必须显式给 namespace（不再默认全 n
 	const stats = await req("/v1/stats?namespace=default");
 	assert.equal(stats.status, 200);
 	assert.equal(typeof stats.body.total, "number");
-	assert.equal(typeof stats.body.deliveryTotal, "number");
+	assert.equal(typeof stats.body.finishedTasks, "number");
 	assert.ok(Array.isArray(stats.body.daily));
 	assert.equal(stats.body.daily.length, 7);
 	assert.equal(stats.body.nodesTotal, 3, "default 的候选节点数（授权交集）");
@@ -3225,8 +3225,8 @@ test("F2b2 stats: daily uses actual events; delivery not task terminal count; no
   assert.equal(stats.total, Mock.state.events.filter(e => e.ns === 'default').length);
   assert.equal(stats.daily.reduce((sum, d) => sum + d.count, 0), stats.total);
   assert.equal('deviceCount' in stats, false, 'V4-D7：推送域退役后 stats 不再有 deviceCount');
-  assert.equal(stats.deliveryTotal, 0, 'No push facts means no fabricated task-as-delivery samples');
-  assert.equal(stats.delivered, 0);
+  assert.equal(stats.finishedTasks, 0, '终态任务数：没有终态任务就是 0，不造样本');
+  assert.equal(stats.succeededTasks, 0);
   assert.equal(stats.running, Mock.state.tasks.filter(t => t.ns === 'default' && t.phase === 'running').length);
 });
 
@@ -4157,7 +4157,7 @@ test("F2c2: retained login AUTH1 identity.error rejection and admin delivery fac
  const stats = (await req("/v1/admin/stats")).body;
  assert.equal('deviceCount' in stats, false, 'V4-D7：admin/stats 不再有 deviceCount');
  assert.equal('enabledDevices' in stats, false);
- assert.equal(stats.deliveryTotal, 0); assert.equal(stats.deliveredCount, 0);
+ assert.equal(stats.finishedTasks, 0); assert.equal(stats.succeededTasks, 0);
  assert.equal((await req("/v1/auth/password")).body.hasPassword, true);
  const invalid = await req("/v1/auth/password", jsonInit("DELETE", { currentPassword: "wrong" })); assert.equal(invalid.status, 400);
  assert.ok(!JSON.stringify(invalid.body).includes("wrong"));

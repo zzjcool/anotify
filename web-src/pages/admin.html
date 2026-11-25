@@ -718,13 +718,13 @@
           t("admin.kpi.today", "今日 {n}").replace("{n}", s.todayMessages),
         );
         const rate =
-          s.deliveryTotal > 0
-            ? Math.round((s.deliveredCount / s.deliveryTotal) * 100)
+          s.finishedTasks > 0
+            ? Math.round((s.succeededTasks / s.finishedTasks) * 100)
             : 0;
         setText("kpi-rate", rate + "%");
         setText(
           "kpi-rate-sub",
-          fmtNum(s.deliveredCount) + " / " + fmtNum(s.deliveryTotal),
+          fmtNum(s.succeededTasks) + " / " + fmtNum(s.finishedTasks),
         );
 
         /* Top 用户：没有数据就整块不出现（不留一个空标题） */

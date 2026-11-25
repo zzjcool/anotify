@@ -314,11 +314,6 @@ message:
   body_label: Cuerpo
   open_link: Abrir sesión del Agent
   fields_title: Todos los campos
-  deliveries_title: Entregas
-  delivery:
-    delivered_count: '{ok}/{n} entregados'
-    empty: Sin registros de entrega (sin dispositivos habilitados coincidentes)
-    attempt_info: '{channel} · {n} intentos · {time}'
   error:
     missing_id: Falta el ID de mensaje (URL debe tener ?id=ntf_…)
     not_found: Mensaje no encontrado o ha sido eliminado
@@ -793,33 +788,6 @@ docs:
       li2: · Login sin contraseña con WebAuthn, biometría o clave de dispositivo
       li3: · Cookie httpOnly; las sesiones multi-dispositivo son independientes y revocables individualmente
       li4: '· Multi-dispositivo: sincronización de plataforma / guía de conexión / código de recuperación'
-  notify:
-    core: Núcleo
-    intro: Un Agent llama a este endpoint para reportar una notificación al terminar una tarea. El servidor valida la API Key, localiza al usuario y envía la notificación <b class="doc-em">cifrada de extremo a extremo</b> a todos los dispositivos "habilitados y que coincidan en nivel/tag".
-    params:
-      title: Parámetros del cuerpo de la petición
-      title_desc: Título de la notificación, p. ej. <code>"Despliegue completado"</code>, se muestra como título principal de la notificación del sistema.
-      agent_state_desc: 'Estado del agente: <code>working</code> en ejecución · <code>blocked</code> en espera · <code>done</code> completado · <code>interrupted</code> interrumpido · <code>error</code> fallido. Determina el color del icono y el filtrado de dispositivos.'
-      body_desc: Cuerpo de la notificación, detalle complementario.
-      tags_desc: Tags de enrutamiento. Vacío = difundir a todos los dispositivos habilitados; no vacío = solo se entrega a dispositivos con tag en común o sin tags (catch-all). ≤10 tags, cada uno ≤32 caracteres.
-      link_desc: Deep link que se abre al tocar la notificación, p. ej. <code>pi://session/sess_8f3a2c</code>.
-      meta_desc: Metadatos de contexto para trazabilidad y estadísticas, almacenados en el historial.
-      ttl_desc: <code>ttl</code> validez en segundos (por defecto 86400); <code>priority</code> prioridad (por defecto normal).
-    required: Obligatorio
-    optional: Opcional
-    curl:
-      title: cURL · petición completa
-      title_val: Despliegue completado
-      body_val: Build exitoso, desplegado a producción
-      tag_val: trabajo
-    resp200: Aceptado y enviado
-    resp200_dev1: Teléfono principal
-    resp200_dev2: Mac de oficina
-    resp400: Sin dispositivo coincidente / error de parámetros
-    resp400_err: No hay dispositivos suscritos; suscríbase primero en el workspace
-    resp400_comment: // 401 · Key ausente o inválida (403 si scope insuficiente)
-    rules:
-      title: Reglas de entrega (enrutamiento por tags + filtrado por nivel)
   v4:
     five_specs: 'Lista de endpoints: agrupada por recurso, con método y ruta.'
     missing: "Lista de endpoints no disponible"

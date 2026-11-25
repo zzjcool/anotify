@@ -314,11 +314,6 @@ message:
   body_label: Body
   open_link: Open Agent session
   fields_title: All fields
-  deliveries_title: Deliveries
-  delivery:
-    delivered_count: '{ok}/{n} delivered'
-    empty: No delivery records (no matching enabled devices)
-    attempt_info: '{channel} · {n} attempts · {time}'
   error:
     missing_id: Missing message ID (URL should have ?id=ntf_…)
     not_found: Message not found or has been cleaned up
@@ -793,33 +788,6 @@ docs:
       li2: · WebAuthn passwordless login, biometric or device key
       li3: · httpOnly Cookie; multi-device sessions are independent and individually revocable
       li4: '· Cross-device: platform sync / one-time connection guide / recovery code fallback'
-  notify:
-    core: Core
-    intro: An Agent calls this endpoint to report a notification after a task ends. The server validates the API Key, locates the owner, and pushes the notification <b class="doc-em">end-to-end encrypted</b> to all of that user's "enabled and level/tag-matched" devices.
-    params:
-      title: Request body parameters
-      title_desc: Notification title, e.g. <code>"Deploy done"</code>, shown as the system notification's main title.
-      agent_state_desc: 'Agent state: <code>working</code> running · <code>blocked</code> waiting · <code>done</code> completed · <code>interrupted</code> interrupted · <code>error</code> failed. Determines icon color and device filtering.'
-      body_desc: Notification body, supplementary detail.
-      tags_desc: Routing tags. Empty = broadcast to all enabled devices; non-empty = only delivered to devices with a matching tag or no tags (catch-all). ≤10 tags, each ≤32 chars.
-      link_desc: Deep link opened when the notification is tapped, e.g. <code>pi://session/sess_8f3a2c</code>.
-      meta_desc: Context metadata for traceability and statistics, stored in notification history.
-      ttl_desc: <code>ttl</code> validity in seconds (default 86400); <code>priority</code> (default normal).
-    required: Required
-    optional: Optional
-    curl:
-      title: cURL · full request
-      title_val: Deploy done
-      body_val: Build succeeded, deployed to production
-      tag_val: work
-    resp200: Accepted and dispatched
-    resp200_dev1: Primary phone
-    resp200_dev2: Office Mac
-    resp400: No matching device / bad request
-    resp400_err: No subscribed devices; please subscribe in the workspace first
-    resp400_comment: // 401 · Key missing or invalid (403 if scope insufficient)
-    rules:
-      title: Delivery rules (tag routing + level filtering)
   v4:
     five_specs: 'Endpoint list: grouped by resource, with method and path.'
     missing: "Endpoint list unavailable"

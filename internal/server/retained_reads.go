@@ -81,7 +81,7 @@ func methodNotAllowedAllowGet(w http.ResponseWriter, r *http.Request) {
 
 // stats 处理 GET /v1/stats?namespace=NAME|*。
 //
-// 形状沿用 v3（`internal/store.Stats`：total/today/delivered/deliveryTotal/daily）：
+// 形状沿用 v3（`internal/store.Stats`：total/today/succeededTasks/finishedTasks/daily）：
 // §8.4 明确「请求/响应形状本轮不改，只统一错误体」。
 //
 // 作用域：
@@ -90,7 +90,7 @@ func methodNotAllowedAllowGet(w http.ResponseWriter, r *http.Request) {
 //   - `?namespace=NAME` → 单 ns，行为与 v3 一致；
 //   - `?namespace=*` → 「全部命名空间」聚合：先 ListNamespaces + **逐 ns** 授权
 //     （store.AuthorizeNamespace，与 orphans 同一条收口），再把确定的 id 列表交给
-//     store.MessageStatsAll 求和。求和是有意义的：Total/Today/Delivered/DeliveryTotal
+//     store.MessageStatsAll 求和。求和是有意义的：Total/Today/SucceededTasks/FinishedTasks
 //     是「事实的条数」，跨 ns 相加不造出不存在的数字。
 //     逐 ns 授权不是形式：今天是「任何登录用户可读任何 ns」，将来按成员表收紧时，
 //     这一行就是权限生效的地方（不许因为「今天全员可读」把收口拿掉）。

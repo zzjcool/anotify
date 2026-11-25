@@ -2187,8 +2187,8 @@
 				return !Number.isNaN(d.getTime()) && dayKey(d) === today;
 			}).length,
 			// No device delivery facts in this preview, never count terminal tasks as push success.
-			delivered: 0,
-			deliveryTotal: 0,
+			succeededTasks: 0,
+			finishedTasks: 0,
 			totalEvents: evs.length,
 			succeeded: byPhase("succeeded"),
 			failed: byPhase("failed"),
@@ -5194,7 +5194,7 @@
 			tasks: state.tasks.length,
 			userCount: 3, adminCount: 1, activeUserCount: 3, disabledUsers: 0,
 			messageCount: 0, todayMessages: 0,
-			keyCount: state.keys.length, deliveredCount: 0, deliveryTotal: 0, topUsers: [],
+			keyCount: state.keys.length, succeededTasks: 0, finishedTasks: 0, topUsers: [],
 		}),
 	);
 	on("GET", /^\/v1\/admin\/users$/, () =>

@@ -116,8 +116,8 @@ type SystemStats struct {
 	TodayMessages  int64        `json:"todayMessages"`  // 今日消息数
 	KeyCount       int64        `json:"keyCount"`       // API Key 总数
 	SessionCount   int64        `json:"sessionCount"`   // 活跃会话数
-	DeliveredCount int64        `json:"deliveredCount"` // 已送达投递数（sent/delivered/acked）
-	DeliveryTotal  int64        `json:"deliveryTotal"`  // 投递尝试总数
+	SucceededTasks int64        `json:"succeededTasks"` // 终态任务里 succeeded 的数量
+	FinishedTasks  int64        `json:"finishedTasks"`  // 终态任务数（succeeded|failed|cancelled|abandoned）
 	Daily          []DayCount   `json:"daily"`          // 近 N 天每天全站消息数
 	TopUsers       []UserMetric `json:"topUsers"`       // 最近活跃 Top N 用户（见 ListTopUsers）
 }
@@ -167,8 +167,8 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 
 	// 任务完成统计（口径见 #80）：
 	//
-	//	DeliveredCount = 成功任务数（phase=succeeded）
-	//	DeliveryTotal  = 已结束任务数（四个终态相位）
+	//	SucceededTasks = 成功任务数（phase=succeeded）
+	//	FinishedTasks  = 已结束任务数（四个终态相位）
 	//
 	// 以前查 deliveries 表统计"推送送达"，但那张表随旧消息模型一起删除了。
 	// 现在的语义是"任务办成了没有"——推送只是其中一种任务结果。
@@ -179,8 +179,8 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 		 FROM tasks
 		 WHERE phase IN (?,?,?,?)`,
 		TaskSucceeded, TaskSucceeded, TaskFailed, TaskCancelled, TaskAbandoned).
-		Scan(&s.DeliveredCount, &s.DeliveryTotal); err != nil {
-		return nil, fmt.Errorf("system stats delivered: %w", err)
+		Scan(&s.SucceededTasks, &s.FinishedTasks); err != nil {
+		return nil, fmt.Errorf("system stats task outcomes: %w", err)
 	}
 
 	// 近 N 天每天全站事件数

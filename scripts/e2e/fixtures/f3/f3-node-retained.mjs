@@ -388,9 +388,9 @@ export async function nodeRetained(d,mode){
       // 真实投递账：速率与分子分母都按 /v1/admin/stats 的同一份事实算。
       const stats = (await calls()).findLast(c => c.url === '/v1/admin/stats')?.response;
       assert.ok(stats, 'admin 页必须真的请求 /v1/admin/stats');
-      const expectedRate = (stats.deliveryTotal > 0 ? Math.round((stats.deliveredCount / stats.deliveryTotal) * 100) : 0) + '%';
+      const expectedRate = (stats.finishedTasks > 0 ? Math.round((stats.succeededTasks / stats.finishedTasks) * 100) : 0) + '%';
       assert.equal(await page.locator('#kpi-rate').innerText(), expectedRate);
-      assert.equal(await page.locator('#kpi-rate-sub').innerText(), stats.deliveredCount + ' / ' + stats.deliveryTotal);
+      assert.equal(await page.locator('#kpi-rate-sub').innerText(), stats.succeededTasks + ' / ' + stats.finishedTasks);
     }
     await shot('admin-actual-zero-device-delivery');
     if(d.mock) await page.evaluate(() => sessionStorage.setItem('f3-member','1')); else { assert.ok(process.env.E2E_V4_MEMBER_SESSION,'T1 seam: retained member session required, never fake real role'); await d.context.addCookies([{name:'anotify_session',value:process.env.E2E_V4_MEMBER_SESSION,url:d.base}]); }

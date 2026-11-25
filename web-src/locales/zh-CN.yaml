@@ -314,11 +314,6 @@ message:
   body_label: 正文
   open_link: 打开 Agent 会话
   fields_title: 全部字段
-  deliveries_title: 投递记录
-  delivery:
-    delivered_count: '{ok}/{n} 已送达'
-    empty: 暂无投递记录（未匹配到启用设备）
-    attempt_info: '{channel} · 尝试 {n} 次 · {time}'
   error:
     missing_id: 缺少消息 ID（URL 应有 ?id=ntf_…）
     not_found: 消息不存在或已被清理
@@ -793,33 +788,6 @@ docs:
       li2: · WebAuthn 无密码登录，生物识别或设备密钥
       li3: · httpOnly Cookie，多端会话独立、可单独吊销
       li4: · 跨设备：平台同步 / 一次性连接引导 / 恢复码兜底
-  notify:
-    core: 核心
-    intro: Agent 在任务结束后调用本接口上报一条通知。服务端校验 API Key，定位所属用户，把通知<b class="doc-em">端到端加密</b>推送到该用户所有「已启用且级别/标签匹配」的设备。
-    params:
-      title: 请求体参数
-      title_desc: 通知标题，如 <code>"部署完成"</code>，作为系统通知主标题。
-      agent_state_desc: Agent 运行态：<code>working</code> 运行中 · <code>blocked</code> 等待中 · <code>done</code> 完成 · <code>interrupted</code> 中断 · <code>error</code> 失败。决定图标颜色与设备过滤。
-      body_desc: 通知正文，补充说明。
-      tags_desc: 路由标签。空 = 广播到所有已启用设备；非空时只投给「有共同标签」或「无标签(catch-all)」的设备。≤10 个，每个 ≤32 字符。
-      link_desc: 点击通知后打开的深链，如 <code>pi://session/sess_8f3a2c</code>。
-      meta_desc: 上下文元数据，用于回溯与统计，存入通知历史。
-      ttl_desc: <code>ttl</code> 有效期秒数（默认 86400）；<code>priority</code> 优先级（默认 normal）。
-    required: 必填
-    optional: 可选
-    curl:
-      title: cURL · 完整请求
-      title_val: 部署完成
-      body_val: 构建成功，已发布到生产环境
-      tag_val: 工作
-    resp200: 已接收并分发
-    resp200_dev1: 主力手机
-    resp200_dev2: 办公室 Mac
-    resp400: 无匹配设备 / 参数错误
-    resp400_err: 没有已订阅的设备，请先在工作台订阅
-    resp400_comment: // 401 · Key 缺失或无效（scope 不足时 403）
-    rules:
-      title: 投递规则（标签路由 + 级别过滤）
   v4:
     five_specs: '端点清单：按资源分组，列出方法与路径。'
     missing: "端点清单暂不可用"
