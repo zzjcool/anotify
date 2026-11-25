@@ -1,0 +1,7 @@
+{
+  "project": "anotify",
+  "ghTokenFile": "",
+  "dispatchUrl": "http://localhost:9999/hook",
+  "notifyUrl": "",
+  "branchPrefix": "pi-subagent/"
+}

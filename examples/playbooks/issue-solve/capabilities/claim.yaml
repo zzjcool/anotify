@@ -1,0 +1,122 @@
+# 链头：判断这个 issue 现在能不能动手。
+#
+# 判决只有三种，且必须是**可复述的事实**，不是感觉：
+#   go          可以动手 → emit 给 dispatch（下单）
+#   gate        需要人裁决 → emit 给 gate（把问题摆出来）
+#   skip        不该动手（已关闭 / 是 PR / 已有 open PR / 已有疑似分支）→ 终端，只留证据
+#
+# 这三个 skip 理由都是真事故：重复派发、往已关闭的 issue 上白跑、两个 agent 同时改同一处。
+apiVersion: anotify/v1
+kind: Capability
+
+metadata:
+  name: '{{values.project}}-issue-claim'
+  displayName: '{{values.project}} issue 收单判定'
+
+spec:
+  params:
+    type: object
+    required: [repo, issue]
+    properties:
+      repo:  { type: string }
+      issue: { type: integer }
+      note:  { type: string }
+  next:
+    - '{{values.project}}-issue-dispatch'
+    - '{{values.project}}-issue-gate'
+  requires:
+    commands: [curl, grep, sed]
+  lifecycle:
+    # 只读判定：网络抖动可以重试。真正下单的那条（dispatch）是 idempotent: false。
+    idempotent: true
+    timeoutSec: 90
+  run:
+    entrypoint: run.sh
+    files:
+      run.sh: |
+        #!/bin/sh
+        set -eu
+
+        repo=${ANOTIFY_PARAM_REPO:?repo 必填}
+        issue=${ANOTIFY_PARAM_ISSUE:?issue 必填}
+        note=${ANOTIFY_PARAM_NOTE:-}
+        api=${GITHUB_API:-https://api.github.com}
+        prefix='{{values.branchPrefix}}'
+        token_file='{{values.ghTokenFile}}'
+
+        mkdir -p "${ANOTIFY_ARTIFACT_DIR}"
+        art_dir=${ANOTIFY_ARTIFACT_DIR}
+
+        # token 从**文件**里读，值本身不进 params/env 的可见面
+        auth=''
+        if [ -n "${token_file}" ] && [ -r "${token_file}" ]; then
+          auth="authorization: Bearer $(tr -d '\n' < "${token_file}")"
+        fi
+
+        # get <path> <outfile> → 打印 HTTP 码；用同一个 curl 形态，失败也不中断脚本
+        get() {
+          _url="$1"; _out="$2"
+          if [ -n "${auth}" ]; then
+            curl -sS -m 20 -o "${_out}" -w '%{http_code}' -H "${auth}" -H 'accept: application/vnd.github+json' "${_url}"
+          else
+            curl -sS -m 20 -o "${_out}" -w '%{http_code}' -H 'accept: application/vnd.github+json' "${_url}"
+          fi
+        }
+
+        # verdict <kind> <reason> [detail]  —— 写证据并打印，供人复核
+        verdict() {
+          _kind="$1"; _reason="$2"; _detail="${3:-}"
+          printf '{"verdict":"%s","repo":"%s","issue":%s,"reason":"%s","detail":"%s"}\n' \
+            "${_kind}" "${repo}" "${issue}" "${_reason}" "${_detail}" > "${art_dir}/verdict.json"
+          echo "claim: ${_kind} — ${_reason}${_detail:+ (${_detail})}"
+        }
+
+        # ---- 1. issue 本身 ----
+        code=$(get "${api}/repos/${repo}/issues/${issue}" "${art_dir}/issue.json")
+        if [ "${code}" != "200" ]; then
+          verdict skip "issue_unreadable" "HTTP ${code}"
+          exit 0
+        fi
+        if grep -q '"pull_request"' "${art_dir}/issue.json"; then
+          verdict skip "is_pull_request" "这是 PR，不是 issue"
+          exit 0
+        fi
+        if grep -q '"state": *"closed"' "${art_dir}/issue.json"; then
+          verdict skip "already_closed" "issue 已关闭"
+          exit 0
+        fi
+
+        # title 只用来给工单做标题，转义后进 JSON
+        title=$(sed -n 's/.*"title": *"\([^"]*\)".*/\1/p' "${art_dir}/issue.json" | head -1 | tr -d '\n' | sed 's/\\/\\\\/g; s/"/\\"/g')
+
+        # ---- 2. 是否已经有人在处理 ----
+        # 2a. 已有一条 open PR 提到这个 issue（"#N"）
+        code=$(get "${api}/repos/${repo}/pulls?state=open&per_page=100" "${art_dir}/pulls.json")
+        if [ "${code}" = "200" ] && grep -q "#${issue}\b" "${art_dir}/pulls.json"; then
+          verdict skip "open_pr_exists" "已有 open PR 提到 #${issue}"
+          exit 0
+        fi
+
+        # 2b. 已有疑似分支（分支名里带这个号）—— 孤儿事故就是这么复发的
+        code=$(get "${api}/repos/${repo}/branches?per_page=100" "${art_dir}/branches.json")
+        if [ "${code}" = "200" ] && grep -qE "\"name\": *\"[^\"]*[-_/]${issue}([-_][^\"]*)?\"" "${art_dir}/branches.json"; then
+          verdict skip "branch_exists" "已有分支名包含 ${issue}（${prefix} 约定）"
+          exit 0
+        fi
+
+        # ---- 3. 要不要人先裁决 ----
+        # 判据是"命中显式信号"，不是"模型觉得复杂"：
+        #   label 里有 needs-human / needs-decision，或正文写了需裁决
+        if grep -qE '"name": *"(needs-human|needs-decision)"|需裁决|需要决策' "${art_dir}/issue.json"; then
+          verdict gate "needs_human" "命中需裁决信号（label 或正文）"
+          anode emit '{{values.project}}-issue-gate' --data \
+            "{\"repo\":\"${repo}\",\"issue\":${issue},\"title\":\"${title}\",\"reason\":\"needs_human\",\"note\":\"${note}\"}"
+          exit 0
+        fi
+
+        # ---- 4. 放行 ----
+        verdict go "claimable" "${title}"
+        anode emit '{{values.project}}-issue-dispatch' --data \
+          "{\"repo\":\"${repo}\",\"issue\":${issue},\"title\":\"${title}\",\"note\":\"${note}\"}"
+    env:
+      GITHUB_API: 'https://api.github.com'

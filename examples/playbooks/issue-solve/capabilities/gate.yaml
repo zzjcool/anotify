@@ -1,0 +1,73 @@
+# 需要人裁决的分支：把"要回答什么"写清楚，然后停住。
+#
+# 停住的意思是：**不动手**。等人在 issue 上回答之后，再手动触发一次
+# （第二次进来时 claim 会看到新的事实，例如已有 PR 或 label 变了）。
+#
+# 为什么要单独一个能力而不是"问一嘴然后继续"：我们踩过的翻车都发生在
+# "它自作聪明替人选了口径"。所以 here：问题落盘 + 可选通知，然后结束。
+apiVersion: anotify/v1
+kind: Capability
+
+metadata:
+  name: '{{values.project}}-issue-gate'
+  displayName: '{{values.project}} issue 待裁决'
+
+spec:
+  params:
+    type: object
+    required: [repo, issue]
+    properties:
+      repo:   { type: string }
+      issue:  { type: integer }
+      title:  { type: string }
+      reason: { type: string }
+      note:   { type: string }
+  next: []
+  requires:
+    commands: [curl, printf]
+  lifecycle:
+    idempotent: true          # 只是写证据 + 发一条通知，重复一次无害
+    timeoutSec: 45
+  run:
+    entrypoint: run.sh
+    files:
+      run.sh: |
+        #!/bin/sh
+        set -eu
+
+        repo=${ANOTIFY_PARAM_REPO:?}
+        issue=${ANOTIFY_PARAM_ISSUE:?}
+        title=${ANOTIFY_PARAM_TITLE:-}
+        reason=${ANOTIFY_PARAM_REASON:-needs_human}
+        note=${ANOTIFY_PARAM_NOTE:-}
+        notify_url='{{values.notifyUrl}}'
+
+        mkdir -p "${ANOTIFY_ARTIFACT_DIR}"
+        art_dir=${ANOTIFY_ARTIFACT_DIR}
+
+        gate=$(printf '{
+          "kind": "issue-gate",
+          "repo": "%s",
+          "issue": %s,
+          "title": "%s",
+          "reason": "%s",
+          "note": "%s",
+          "ask": [
+            "这个 issue 的口径按哪种？（同一件事有多种合理做法时，必须由人选定）",
+            "会不会删东西 / 对外承诺？（是则先确认范围）",
+            "要不要动别人的分支、共享环境或线上数据？（是则先确认）"
+          ],
+          "next": "人在 issue 上回答后，再手动触发一次"
+        }' "${repo}" "${issue}" "${title}" "${reason}" "${note}")
+
+        printf '%s\n' "${gate}" > "${art_dir}/gate.json"
+        echo "gate: ${repo}#${issue} 等待裁决（${reason}）—— 未动手"
+
+        if [ -n "${notify_url}" ]; then
+          code=$(printf '%s' "${gate}" \
+            | curl -sS -m 15 -o /dev/null -w '%{http_code}' \
+                -X POST -H 'content-type: application/json' --data-binary @- "${notify_url}" || echo 000)
+          echo "gate: 通知 HTTP ${code}"
+        fi
+    env:
+      NOTIFY_URL_PLACEHOLDER: '{{values.notifyUrl}}'

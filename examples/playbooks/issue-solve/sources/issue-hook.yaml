@@ -1,0 +1,41 @@
+# 链的入口：一个手动触发的 webhook。
+#
+# 手动触发 = 有人（或一个脚本）往 hookUrl POST 一次。载荷只有三个字段，
+# 因为它承载的是"一个事实"，不是"一个流程"：谁的哪个 issue。
+apiVersion: anotify/v1
+kind: Source
+
+metadata:
+  name: '{{values.project}}-issue-hook'
+  displayName: '{{values.project}} issue 收单'
+
+spec:
+  kind: webhook
+  enabled: true
+  config:
+    # 空串 = 安装时由服务端生成 token；GET 这个源，status.hookUrl 就是可直接 POST 的地址。
+    token: ''
+    payloadSchema:
+      type: object
+      required: [repo, issue]
+      properties:
+        repo:
+          type: string
+          description: owner/name，例如 zzjcool/anotify
+        issue:
+          type: integer
+          minimum: 1
+        note:
+          type: string
+          maxLength: 500
+          description: 可选。触发人写的一句话（会进工单，便于执行体理解意图）
+    sample:
+      repo: zzjcool/anotify
+      issue: 649
+      note: 生成产物只写不删，删掉的页面还在线上
+  targets:
+    - capability: '{{values.project}}-issue-claim'
+      params:
+        repo: $(payload.repo)
+        issue: $(payload.issue)
+        note: $(payload.note)
