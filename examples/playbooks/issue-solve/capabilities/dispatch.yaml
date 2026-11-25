@@ -1,0 +1,71 @@
+apiVersion: anotify/v1
+kind: Capability
+
+metadata:
+  name: '{{values.project}}-issue-dispatch'
+  displayName: '{{values.project}} issue 下单'
+
+spec:
+  params:
+    type: object
+    required: [repo, issue]
+    properties:
+      repo:  { type: string }
+      issue: { type: integer }
+      title: { type: string }
+      note:  { type: string }
+  next: []
+  requires:
+    commands: [curl, printf]
+  lifecycle:
+    idempotent: false
+    timeoutSec: 60
+  run:
+    entrypoint: run.sh
+    files:
+      run.sh: |
+        #!/bin/sh
+        set -eu
+
+        repo=${ANOTIFY_PARAM_REPO:?}
+        issue=${ANOTIFY_PARAM_ISSUE:?}
+        title=${ANOTIFY_PARAM_TITLE:-}
+        note=${ANOTIFY_PARAM_NOTE:-}
+        url='{{values.dispatchUrl}}'
+
+        mkdir -p "${ANOTIFY_ARTIFACT_DIR}"
+        art_dir=${ANOTIFY_ARTIFACT_DIR}
+
+        work_order=$(printf '{
+          "kind": "issue-work-order",
+          "repo": "%s",
+          "issue": %s,
+          "title": "%s",
+          "note": "%s",
+          "constraints": {
+            "first_commit_required": true,
+            "baseline": "origin/main",
+            "never_merge_by_hand": true,
+            "stop_for_human_when": ["delete_or_promise", "choose_policy", "touch_others", "retry_over_2"]
+          },
+          "expected_output": {
+            "branch": "%s",
+            "pr": true,
+            "gates": ["typecheck", "test", "e2e-affected"],
+            "report": "docs/reports/<slug>.md"
+          }
+        }' "${repo}" "${issue}" "${title}" "${note}" '{{values.branchPrefix}}')
+
+        printf '%s\n' "${work_order}" > "${art_dir}/work-order.json"
+        echo "dispatch: POST ${url}"
+
+        code=$(printf '%s' "${work_order}" \
+          | curl -sS -m 30 -o "${art_dir}/dispatch-response.txt" -w '%{http_code}' \
+              -X POST -H 'content-type: application/json' --data-binary @- "${url}" || echo 000)
+
+        echo "dispatch: HTTP ${code}"
+        case "${code}" in
+          2*) echo "dispatch: 已下单" ;;
+          *)  echo "dispatch: 下单失败（HTTP ${code}）—— 不自动重试，检查执行体后再触发一次" >&2
+              exit 1 ;;
+        esac

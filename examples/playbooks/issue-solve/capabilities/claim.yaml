@@ -1,0 +1,101 @@
+apiVersion: anotify/v1
+kind: Capability
+
+metadata:
+  name: '{{values.project}}-issue-claim'
+  displayName: '{{values.project}} issue 收单判定'
+
+spec:
+  params:
+    type: object
+    required: [repo, issue]
+    properties:
+      repo:  { type: string }
+      issue: { type: integer }
+      note:  { type: string }
+  next:
+    - '{{values.project}}-issue-dispatch'
+    - '{{values.project}}-issue-gate'
+  requires:
+    commands: [curl, grep, sed]
+  lifecycle:
+    idempotent: true
+    timeoutSec: 90
+  run:
+    entrypoint: run.sh
+    files:
+      run.sh: |
+        #!/bin/sh
+        set -eu
+
+        repo=${ANOTIFY_PARAM_REPO:?repo 必填}
+        issue=${ANOTIFY_PARAM_ISSUE:?issue 必填}
+        note=${ANOTIFY_PARAM_NOTE:-}
+        api=${GITHUB_API:-https://api.github.com}
+        prefix='{{values.branchPrefix}}'
+        token_file='{{values.ghTokenFile}}'
+
+        mkdir -p "${ANOTIFY_ARTIFACT_DIR}"
+        art_dir=${ANOTIFY_ARTIFACT_DIR}
+
+        auth=''
+        if [ -n "${token_file}" ] && [ -r "${token_file}" ]; then
+          auth="authorization: Bearer $(tr -d '\n' < "${token_file}")"
+        fi
+
+        get() {
+          _url="$1"; _out="$2"
+          if [ -n "${auth}" ]; then
+            curl -sS -m 20 -o "${_out}" -w '%{http_code}' -H "${auth}" -H 'accept: application/vnd.github+json' "${_url}"
+          else
+            curl -sS -m 20 -o "${_out}" -w '%{http_code}' -H 'accept: application/vnd.github+json' "${_url}"
+          fi
+        }
+
+        verdict() {
+          _kind="$1"; _reason="$2"; _detail="${3:-}"
+          printf '{"verdict":"%s","repo":"%s","issue":%s,"reason":"%s","detail":"%s"}\n' \
+            "${_kind}" "${repo}" "${issue}" "${_reason}" "${_detail}" > "${art_dir}/verdict.json"
+          echo "claim: ${_kind} — ${_reason}${_detail:+ (${_detail})}"
+        }
+
+        code=$(get "${api}/repos/${repo}/issues/${issue}" "${art_dir}/issue.json")
+        if [ "${code}" != "200" ]; then
+          verdict skip "issue_unreadable" "HTTP ${code}"
+          exit 0
+        fi
+        if grep -q '"pull_request"' "${art_dir}/issue.json"; then
+          verdict skip "is_pull_request" "这是 PR，不是 issue"
+          exit 0
+        fi
+        if grep -q '"state": *"closed"' "${art_dir}/issue.json"; then
+          verdict skip "already_closed" "issue 已关闭"
+          exit 0
+        fi
+
+        title=$(sed -n 's/.*"title": *"\([^"]*\)".*/\1/p' "${art_dir}/issue.json" | head -1 | tr -d '\n' | sed 's/\\/\\\\/g; s/"/\\"/g')
+
+        code=$(get "${api}/repos/${repo}/pulls?state=open&per_page=100" "${art_dir}/pulls.json")
+        if [ "${code}" = "200" ] && grep -Eqi "(close[sd]?|fix(e[sd])?|resolve[sd]?)[a-z ]*#${issue}([^0-9]|$)" "${art_dir}/pulls.json"; then
+          verdict skip "open_pr_exists" "已有 open PR 声称关闭 #${issue}"
+          exit 0
+        fi
+
+        code=$(get "${api}/repos/${repo}/branches?per_page=100" "${art_dir}/branches.json")
+        if [ "${code}" = "200" ] && grep -qE "\"name\": *\"[^\"]*[-_/]${issue}([-_][^\"]*)?\"" "${art_dir}/branches.json"; then
+          verdict skip "branch_exists" "已有分支名包含 ${issue}（${prefix} 约定）"
+          exit 0
+        fi
+
+        if grep -qE '"name": *"(needs-human|needs-decision)"|需裁决|需要决策' "${art_dir}/issue.json"; then
+          verdict gate "needs_human" "命中需裁决信号（label 或正文）"
+          anode emit '{{values.project}}-issue-gate' --data \
+            "{\"repo\":\"${repo}\",\"issue\":${issue},\"title\":\"${title}\",\"reason\":\"needs_human\",\"note\":\"${note}\"}"
+          exit 0
+        fi
+
+        verdict go "claimable" "${title}"
+        anode emit '{{values.project}}-issue-dispatch' --data \
+          "{\"repo\":\"${repo}\",\"issue\":${issue},\"title\":\"${title}\",\"note\":\"${note}\"}"
+    env:
+      GITHUB_API: 'https://api.github.com'
