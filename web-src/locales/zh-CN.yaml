@@ -996,7 +996,7 @@ admin:
     active: '{n} 7天活跃'
     messages: 消息总数
     today: 今日 {n}
-    delivery_rate: 投递成功率
+    task_success_rate: 任务成功率
   tab:
     users: 用户管理
     messages: 全局消息

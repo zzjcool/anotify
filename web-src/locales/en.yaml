@@ -996,7 +996,7 @@ admin:
     active: '{n} active (7d)'
     messages: Total messages
     today: Today {n}
-    delivery_rate: Delivery rate
+    task_success_rate: Task success rate
   tab:
     users: Users
     messages: Messages

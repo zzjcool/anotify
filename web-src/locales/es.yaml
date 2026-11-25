@@ -996,7 +996,7 @@ admin:
     active: '{n} activos (7d)'
     messages: Mensajes totales
     today: Hoy {n}
-    delivery_rate: Tasa de entrega
+    task_success_rate: Tasa de éxito de tareas
   tab:
     users: Usuarios
     messages: Mensajes
