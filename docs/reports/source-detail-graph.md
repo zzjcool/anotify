@@ -86,9 +86,12 @@ pageerror 断言），断言：图上 0 个节点、宿主文字恰为 `sources.
 - `check-ui-copy`：4 份 locale / 9312 条值 · 22 个页面 / 180 个文本节点，全部通过。
 - 注释密度棘轮：**不上调** —— 全仓 42929 行注释（733 个文件）与基线完全一致；
   本次新增的解释全部落在代码行尾注释上，另外删掉三条只复述类名/函数名的注释保持持平。
-- `make e2e-affected`：exit 0，选中 5 套（frontend / i18n / i18n_coverage / ui_shift / ux_regression_19_23），
-  **断言 216 通过 / 0 失败**，总耗时 250.4s；逐套：frontend 47/0（194.1s，real）、ui_shift 86/0（164.4s）、
-  i18n_coverage 44/0（70.3s）、i18n 33/0（55.4s）、ux_regression_19_23 6/0（8.1s）；case 级重试 0 条、套件级重试 0 个。
+- `make e2e-affected`（在最终交付树上跑）：exit 0，选中 5 套
+  （frontend / i18n / i18n_coverage / ui_shift / ux_regression_19_23），
+  **断言 216 通过 / 0 失败**，总耗时 246.0s；逐套：frontend 47/0（191.0s，real）、ui_shift 86/0（163.3s）、
+  i18n_coverage 44/0（69.1s）、i18n 33/0（54.0s）、ux_regression_19_23 6/0（8.2s）；
+  case 级重试 0 条、套件级重试 0 个、临时目录零残留。
+  复跑：`make e2e-affected`（选定口径见 `node scripts/e2e/affected.mjs`，本次 5 套）。
 
 ## 8. 已知取舍
 
