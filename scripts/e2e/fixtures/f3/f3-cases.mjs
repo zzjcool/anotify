@@ -11,7 +11,7 @@ import { observability } from './f3-observability.mjs';
 import { overviewAll } from './f3-overview-all.mjs';
 import { sourceEditJump } from './f3-source-edit.mjs';
 import { sourcePoll } from './f3-source-poll.mjs';
-import { sourcePollEdit } from './f3-source-poll-edit.mjs';
+import { sourcePollEdit, sourcePollEditUnreadable } from './f3-source-poll-edit.mjs';
 import { sourceDetailGraph } from './f3-source-graph.mjs';
 import { playbook } from './f3-playbook.mjs';
 import { nodeRetained } from './f3-node-retained.mjs';
@@ -74,6 +74,7 @@ add('source-edit-jump',sourceEditJump,{lang:'zh-CN'});
 add('source-poll',sourcePoll,{lang:'zh-CN'});
 add('source-detail-graph',sourceDetailGraph,{lang:'zh-CN'}); // #652 源详情页链路图：源 + 三个能力 + 三条边，以及图库缺失时的一行降级说明
 add('source-poll-edit',sourcePollEdit,{lang:'zh-CN'});
+add('source-poll-edit-unreadable',sourcePollEditUnreadable,{lang:'zh-CN'});
 add('observe-index-all',overviewAll);
 // observe-errors：pending 任务没有日志档案（410 no_local_archive）；并发取消之后再放弃
 // 必须 409（task_not_running）——两条都是用例要的拒绝路径。
