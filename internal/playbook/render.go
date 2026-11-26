@@ -580,9 +580,8 @@ func sortedValueKeys(m map[string]any) []string {
 }
 
 // ---------- 引用 ----------
-
 // 包内 next 成环合法（`review → fix → review` 是正常编排）：兜底是中枢派发预算
-// `max_hops` / `budget`（CONTRACT.md A7），打包期拒绝环会拒掉合法编排。
+// `max_hops` / `budget`（CONTRACT.md A7），打包期不判环。
 
 // refName 取 `name@version` 的名字部分。
 func refName(ref string) string {

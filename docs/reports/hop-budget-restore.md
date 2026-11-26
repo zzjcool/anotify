@@ -126,7 +126,13 @@ gofmt / staticcheck、`make fe` + `check-dist-fresh`、测试纪律与注释/注
 `test-frontend-v4`、`go build -tags embeddist`；基准冒烟
 `BenchmarkDispatchChain-12  4732183 ns/op / 2322 allocs/op`（预算查询占其中 ~70 µs）。
 
-`make e2e-affected`（`timeout 2400`）→ 见 PR 评论与下方「e2e 结果」（同一棵提交树复跑）。
+`make e2e-affected`（`timeout 2400`）→ **exit 0，31/31 套件全绿，断言 3556 通过 / 0 失败**
+（`E2E_CONCURRENCY=1`；`routing` 508 / `playbook_release` 614 / `contract` 185 / `api_contract` 206 /
+`ws_protocol` 134 / `persistence` 82 / `live_agent` 62 / `capacity` 84 / `frontend` 47 …）。
+
+一次**并行**（默认并发）跑出现过 `routing` 2 条断言失败：单跑 `./scripts/e2e/run_all.sh routing`
+→ 508 通过 / 0 失败 / exit 0，随后全量 `E2E_CONCURRENCY=1` → 31/31 全绿，故按负载假红处理
+（未写入任何 known-env 放行名单）。
 
 ## 7. 注释棘轮（只降不升）
 
