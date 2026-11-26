@@ -207,6 +207,11 @@ export const SUITE_SURFACES = {
 		why: "恢复码登录跳转（?next= 白名单）+ #453 重新生成失败时不造假码",
 		pages: ["keys", "login", "security"],
 	},
+	keys_create: {
+		why: "#616 Key 页「新建 Key」的重复提交：双击「生成」只许 1 个 POST /v1/keys、进行中 disabled、失败恢复可点、完成时按服务端重拉列表",
+		pages: ["keys"],
+		paths: ["web-src/locales/zh-CN.yaml"],
+	},
 	events_paging: {
 		why: "events 游标分页 + 资源分层",
 		pages: ["events", "index", "sources", "trace"],

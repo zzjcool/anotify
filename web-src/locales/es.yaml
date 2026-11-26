@@ -523,6 +523,7 @@ keys:
     scope_hint: 'Mínimo privilegio: enviar y recibir van separados, así una Key filtrada solo compromete un lado.'
     cancel: Cancelar
     generate: Generar Key
+    generating: Generando…
   save:
     title: Guarda tu Key
     subtitle_prefix: 'Esta es su '
