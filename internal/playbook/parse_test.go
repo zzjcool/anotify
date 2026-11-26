@@ -360,3 +360,13 @@ func assertCode(t *testing.T, err error, want string) {
 		t.Fatalf("错误码 = %q（%v），期望 %q", got, err, want)
 	}
 }
+
+func TestParseRejectsRootBooleanValuesSchema(t *testing.T) { // 布尔子 schema 受支持，但 spec.values 的根必须是对象：根布尔要报 invalid_playbook
+	for _, values := range []string{"true\n", "false\n"} {
+		err := newBundle().withStandard().setValues(values).pkgErr(t)
+		assertCode(t, err, CodeInvalidPlaybook)
+		if !strings.Contains(err.Error(), "JSON Schema 对象") {
+			t.Fatalf("根布尔 schema（%q）应被报成「必须是对象」，实际 %v", values, err)
+		}
+	}
+}

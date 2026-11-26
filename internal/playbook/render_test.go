@@ -792,3 +792,33 @@ func TestRenderSourceLegalNamesNoInputRename(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderEnforcesBooleanChildSchemas(t *testing.T) { // spec.values 里的布尔子 schema 在安装期真的执行：false 拒值（#642 返工点），true 不约束
+	values := `type: object
+additionalProperties: false
+required: [project]
+properties:
+  project: {type: string}
+  env: {type: string, default: prod}
+  repo: {type: string, default: ''}
+  replicas: {type: integer, default: 2}
+  region: false
+  passthrough: true
+  pins: {type: array, items: false}
+`
+	pkg := newBundle().withStandard().setValues(values).pkg(t)
+	mustRender(t, pkg, map[string]any{"project": "a"})
+	mustRender(t, pkg, map[string]any{"project": "a", "passthrough": map[string]any{"k": 1}})
+
+	err := renderErr(t, pkg, map[string]any{"project": "a", "region": "us"})
+	assertCode(t, err, CodeValuesInvalid)
+	if !strings.Contains(err.Error(), "values.region") || !strings.Contains(err.Error(), "false") {
+		t.Fatalf("false 字段被赋值应报 values_invalid 并点名 values.region，实际 %v", err)
+	}
+
+	err = renderErr(t, pkg, map[string]any{"project": "a", "pins": []any{"p1"}})
+	assertCode(t, err, CodeValuesInvalid)
+	if !strings.Contains(err.Error(), "values.pins[0]") {
+		t.Fatalf("items: false 的数组元素也要点名下标，实际 %v", err)
+	}
+}

@@ -21,7 +21,7 @@
 //	                        （也支持 type 为数组，如 ["string","null"]）
 //	properties               对象的字段模式
 //	required                 必填字段名数组
-//	additionalProperties     false 时禁止未声明字段
+//	additionalProperties     false 时禁止未声明字段；子 schema 可以是布尔（false = 拒一切值）
 //	items / prefixItems      数组元素模式
 //	minItems / maxItems      数组长度
 //	enum                     取值必须在此列表内
@@ -61,10 +61,27 @@ func FromRaw(raw json.RawMessage) (map[string]any, error) {
 // path 用于生成可读的错误位置（params.to / data.attachments[0] / payload.diff 等）。
 // 空 schema（len==0）接受一切——「没声明约束」和「约束为空」在这里是同一件事。
 func Value(sch map[string]any, v any, path string) string {
-	if len(sch) == 0 {
-		return "" // 空 schema = 接受一切
-	}
+	return valueNode(sch, v, path)
+}
 
+func valueNode(sch any, v any, path string) string { // 布尔子 schema 也是约束：false 不接受任何值（#642 返工点），true 才是不约束
+	switch node := sch.(type) {
+	case bool:
+		if node {
+			return ""
+		}
+		return fmt.Sprintf("%s: rejected by schema false（这个位置不接受任何值）", path)
+	case map[string]any:
+		if len(node) == 0 {
+			return "" // 空 schema = 接受一切
+		}
+		return valueObjectSchema(node, v, path)
+	}
+	return "" // 非对象非布尔的子 schema：ValidateSchema 在 Parse 期先拦，这里不假装能求值
+}
+
+// valueObjectSchema 是对象形态 schema 的求值主干（enum → type → 按值类型分派）。
+func valueObjectSchema(sch map[string]any, v any, path string) string {
 	// enum：最先判，语义最强
 	if raw, ok := sch["enum"]; ok {
 		if list, ok := raw.([]any); ok && len(list) > 0 {
@@ -251,10 +268,8 @@ func valueObject(sch map[string]any, obj map[string]any, path string) string {
 	for _, name := range names {
 		child, declared := lookupProp(props, name)
 		if declared {
-			if sub, ok := child.(map[string]any); ok {
-				if msg := Value(sub, obj[name], path+"."+name); msg != "" {
-					return msg
-				}
+			if msg := valueNode(child, obj[name], path+"."+name); msg != "" {
+				return msg
 			}
 			continue
 		}
@@ -263,10 +278,8 @@ func valueObject(sch map[string]any, obj map[string]any, path string) string {
 			if allowed, isBool := raw.(bool); isBool && !allowed {
 				return fmt.Sprintf("%s: unexpected field %q (additionalProperties=false)", path, name)
 			}
-			if sub, isMap := raw.(map[string]any); isMap {
-				if msg := Value(sub, obj[name], path+"."+name); msg != "" {
-					return msg
-				}
+			if msg := valueNode(raw, obj[name], path+"."+name); msg != "" {
+				return msg
 			}
 		}
 	}
@@ -296,21 +309,21 @@ func valueArray(sch map[string]any, arr []any, path string) string {
 	if raw, ok := sch["prefixItems"]; ok {
 		prefix, _ = raw.([]any)
 	}
-	// items：对剩余元素（或全部元素，若无 prefixItems）校验
-	itemsSchema, hasItems := sch["items"].(map[string]any)
+	// items：对剩余元素（或全部元素，若无 prefixItems）校验；布尔写法同样是约束（items: false = 不收元素）
+	itemsSchema, hasItems := sch["items"]
+	if _, isTuple := itemsSchema.([]any); isTuple {
+		hasItems = false // draft-07 的元组 items 不在受控子集内：忽略（与 ValidateSchema 同一口径）
+	}
 
 	for i, e := range arr {
-		var sub map[string]any
+		var sub any
 		switch {
 		case i < len(prefix):
-			sub, _ = prefix[i].(map[string]any)
+			sub = prefix[i]
 		case hasItems:
 			sub = itemsSchema
 		}
-		if sub == nil {
-			continue
-		}
-		if msg := Value(sub, e, fmt.Sprintf("%s[%d]", path, i)); msg != "" {
+		if msg := valueNode(sub, e, fmt.Sprintf("%s[%d]", path, i)); msg != "" {
 			return msg
 		}
 	}
@@ -348,9 +361,8 @@ func valueNumber(sch map[string]any, n float64, path string) string {
 	return ""
 }
 
-// checkNumberBound 检查 minXxx / maxXxx 一类的数值边界。
-//
-// isMin=true 检查下界（schema 键 lowerKey），否则上界。
+// checkNumberBound 检查 minXxx / maxXxx 一类的数值边界（isMin=true 查下界，否则上界）。
+// 边界值取自 schema[key]，非法声明不判；actual 由调用方按值的形态算好。
 func checkNumberBound(sch map[string]any, key string, actual float64, path string, isMin bool) string {
 	raw, ok := sch[key]
 	if !ok {

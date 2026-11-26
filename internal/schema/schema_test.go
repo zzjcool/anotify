@@ -43,3 +43,101 @@ func TestValuePatternOnlyConstrainsStrings(t *testing.T) {
 		t.Fatalf("不匹配时应同时给出 pattern 与实际值，得到 %q", msg)
 	}
 }
+
+func TestValueRejectsByFalseChildSchemas(t *testing.T) { // ValidateSchema 放行布尔子 schema，求值就必须执行它：false 不接受任何值（#642 返工点）
+	cases := []struct {
+		name string
+		sch  map[string]any
+		bad  any
+		at   string
+		ok   any
+	}{
+		{
+			name: "properties 下的 false 字段",
+			sch:  map[string]any{"type": "object", "properties": map[string]any{"pin": false}},
+			bad:  map[string]any{"pin": "1234"},
+			at:   "values.pin",
+			ok:   map[string]any{},
+		},
+		{
+			name: "嵌套 properties 下的 false 字段",
+			sch: map[string]any{"type": "object", "properties": map[string]any{
+				"outer": map[string]any{"type": "object", "properties": map[string]any{"inner": false}},
+			}},
+			bad: map[string]any{"outer": map[string]any{"inner": 1}},
+			at:  "values.outer.inner",
+			ok:  map[string]any{"outer": map[string]any{}},
+		},
+		{
+			name: "additionalProperties 子 schema 里的 false 字段",
+			sch:  map[string]any{"type": "object", "additionalProperties": map[string]any{"properties": map[string]any{"pin": false}}},
+			bad:  map[string]any{"extra": map[string]any{"pin": "x"}},
+			at:   "values.extra.pin",
+			ok:   map[string]any{"extra": map[string]any{"other": "x"}},
+		},
+		{
+			name: "items false 拒绝任何元素",
+			sch:  map[string]any{"type": "array", "items": false},
+			bad:  []any{1},
+			at:   "values[0]",
+			ok:   []any{},
+		},
+		{
+			name: "prefixItems 之后的 items false",
+			sch:  map[string]any{"type": "array", "prefixItems": []any{map[string]any{"type": "string"}}, "items": false},
+			bad:  []any{"a", "b"},
+			at:   "values[1]",
+			ok:   []any{"a"},
+		},
+		{
+			name: "prefixItems 里的 false 只拒该位置",
+			sch:  map[string]any{"type": "array", "prefixItems": []any{map[string]any{"type": "string"}, false}},
+			bad:  []any{"a", "b"},
+			at:   "values[1]",
+			ok:   []any{"a"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if probs := ValidateSchema(tc.sch); len(probs) != 0 {
+				t.Fatalf("布尔子 schema 是合法写法，ValidateSchema 不该报问题: %v", probs)
+			}
+			msg := Value(tc.sch, tc.bad, "values")
+			if !strings.Contains(msg, tc.at) || !strings.Contains(msg, "false") {
+				t.Fatalf("false 子 schema 必须拒绝该值、点名 %q 并提到 schema false，得到 %q", tc.at, msg)
+			}
+			if msg := Value(tc.sch, tc.ok, "values"); msg != "" {
+				t.Fatalf("不触发 false 的值应通过，得到 %q", msg)
+			}
+		})
+	}
+}
+
+func TestValueAcceptsByTrueChildSchemas(t *testing.T) { // true 是「不约束」，不能顺手当成 false
+	sch := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"any":  true,
+			"list": map[string]any{"type": "array", "items": true},
+		},
+		"additionalProperties": true,
+	}
+	if probs := ValidateSchema(sch); len(probs) != 0 {
+		t.Fatalf("true 子 schema 是合法写法: %v", probs)
+	}
+	value := map[string]any{"any": map[string]any{"k": []any{1, 2}}, "list": []any{"x", 1}, "extra": 3.5}
+	if msg := Value(sch, value, "values"); msg != "" {
+		t.Fatalf("true 子 schema 不该拦任何值，得到 %q", msg)
+	}
+}
+
+func TestFromRawRejectsRootBoolean(t *testing.T) { // 布尔**子** schema 受支持，但 spec 根必须是对象：根布尔要报错，不能当成「不约束」
+	for _, raw := range []string{"true", "false"} {
+		if _, err := FromRaw([]byte(raw)); err == nil {
+			t.Fatalf("根 schema %s 应报错（values 契约要求对象）", raw)
+		}
+	}
+	if sch, err := FromRaw(nil); err != nil || sch != nil {
+		t.Fatalf("没声明 schema = 不校验，得到 %v / %v", sch, err)
+	}
+}
