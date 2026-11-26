@@ -213,3 +213,7 @@ curl -sb /tmp/anotify.jar -X POST "$B/v1/namespaces/$NS/playbooks/pr-triage-noti
   `TestExamplePlaybooksInstallable`，它读的就是这个目录（`Parse → Render → Plan`）。
   字段拼错、`next` 悬空、`values.demo.json` 少给必填项，它都会失败 —— 不用手点一遍。
 - 示例里的 `alertUrl` 指向 `alerts.example.com`，只是个占位；真正发告警前换成你自己的端点。
+- **这个包的 values 里没有绝对机器路径**：`project`/`env`/`alertUrl`/`threshold` 都跟
+  机器无关（`threshold` 只是被渲染成脚本里的数字），所以它不需要节点变量。哪天要加
+  "在哪台机器的哪个目录里跑"，按 `examples/capabilities/run-in-repo.yaml` 的三件套写成
+  节点变量，别把某台机器的 home 写进安装 values——一份 values 对所有节点生效。

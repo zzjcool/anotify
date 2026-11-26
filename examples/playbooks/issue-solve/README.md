@@ -25,6 +25,11 @@ POST /v1/hooks/<token>  {"payload":{"issue":649}}
 | `values.dispatchUrl` | 安装时 | 工单往哪送（执行体入口） |
 | `payload.issue` | **每次触发** | 这才是手动触发要说的事：今天做哪个 |
 
+这个包的 values 里**没有绝对机器路径**（`repo` 是 `owner/name`，两个 URL 是端点），
+所以不需要节点变量。唯一与机器相关的是可选的 `ghTokenFile`：默认空 = 走匿名 API；
+如果多节点都要用它，按同一口径改成节点变量（`requires.values: [vars.GH_TOKEN_FILE]` +
+`run.env.GH_TOKEN_FILE.valueFrom`），别把某一台机器的 home 写进安装 values。
+
 ## 装
 
 ```sh
