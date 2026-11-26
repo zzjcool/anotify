@@ -22,6 +22,7 @@ spec:
     - '{{values.project}}-record'
   requires:
     commands: [pi, git, gh]
+    values: [vars.REPO_DIR]
   lifecycle:
     idempotent: false
     timeoutSec: 3600
@@ -60,7 +61,7 @@ spec:
 
         "
 
-        repo_dir=${REPO_DIR:?REPO_DIR 未注入}
+        repo_dir=${REPO_DIR:?该节点没配节点变量 REPO_DIR（spec.vars.REPO_DIR）}
         agent=${AGENT_CMD:-pi}
         agent_args=${AGENT_ARGS:--p}
         art_dir=${ANOTIFY_ARTIFACT_DIR}
@@ -91,7 +92,9 @@ spec:
         gh issue comment "$issue" --repo "$repo" --body "fix 没能完成：${reason:-见 agent.log}" || true
         anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"stuck\"}"
     env:
-      REPO_DIR: '{{values.repoDir}}'
+      REPO_DIR:
+        valueFrom:
+          fieldRef: {fieldPath: vars.REPO_DIR}
       AGENT_CMD: '{{values.agentCmd}}'
       AGENT_ARGS: '{{values.agentArgs}}'
       BASE_BRANCH: '{{values.baseBranch}}'

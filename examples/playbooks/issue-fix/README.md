@@ -5,7 +5,7 @@
 
 ```
 POST /v1/hooks/<token>  {"payload":{"issue":649}}
-        │  安装时填的 values.repo / values.repoDir
+        │  安装时填的 values.repo；仓库目录来自节点变量 REPO_DIR
         ▼
    triage ──不成立──► gh issue close + record(closed)   ← 结束
         │成立
@@ -25,7 +25,10 @@ POST /v1/hooks/<token>  {"payload":{"issue":649}}
      record(escalate)                                    ← 交回人
 ```
 
-装一次 = 一条仓库的修复线（`repo` + `repoDir` 是安装参数），触发时只给 issue 号。
+装一次 = 一条仓库的修复线（`repo` 是安装参数），触发时只给 issue 号。
+
+**仓库目录不是安装参数**：它走节点变量 `spec.vars.REPO_DIR`，每台节点配自己的路径。
+理由在下一节——同一份 values 对所有节点生效，而各机器的路径本来就不同。
 
 ## 环是真的，就在图上
 
@@ -61,8 +64,60 @@ fix        {"ok": true|false, "reason": "..."}
 | --- | --- |
 | `pi`（或你填进 `agentCmd` 的任何 agent） | 干活的是它；`values.agentArgs` 默认 `-p` 走非交互 |
 | `git` + 已登录的 `gh` | 建分支、开 PR、`gh issue close/comment` |
-| `values.repoDir` 里这个仓库的检出 | agent 在里面改；脚本 `cd` 进去，不自己 clone |
+| 节点变量 `REPO_DIR` 指到的检出（见下节） | agent 在里面改；脚本 `cd` 进去，不自己 clone |
 | 模型凭据（pi 自己的配置） | 否则 agent 起不来，`agent.log` 里会有真原因 |
+
+## 每台节点自己配 `REPO_DIR`
+
+机器路径不能进安装 values，根本原因是**两台机器的路径本来就不同**：服务用户是普通用户时
+仓库在 `/home/<user>/…` 下，服务用户是 root 时在 `/root/…` 下。一个安装 values 对所有节点
+生效，所以它要么逼你把两台机器的目录抄成一模一样（换用户 / 换 home 就崩），要么就写错一半。
+写成节点变量之后，中枢在派发时按 (node, ns) 解析 local > node > namespace，各用各的：
+
+| 节点 | 服务用户 | `spec.vars.REPO_DIR` |
+| --- | --- | --- |
+| `hw` | 普通用户（home `/home/zzjcool`） | `/home/zzjcool/code/anotify-agent` |
+| `host-ws` | `root`（home `/root`） | `/root/code/anotify-agent` |
+
+两行**不同**是常态，不是要抹平的差异。设置方法（`PATCH` 是 merge-patch + CAS，
+`resourceVersion` 必填；省略的字段 = 不动）：
+
+```bash
+SERVER=https://anotify.example.com   # 换成你的中枢
+COOKIE='<控制台会话 cookie>'        # 浏览器里那份，别写成脚本里的明文
+
+# hw：普通用户，路径在它的 home 下
+RV=$(curl -fsS -b "$COOKIE" "$SERVER/v1/nodes/hw" | jq -r .metadata.resourceVersion)
+curl -fsS -X PATCH "$SERVER/v1/nodes/hw" -b "$COOKIE" \
+  -H 'content-type: application/json' \
+  -d "{\"apiVersion\":\"anotify/v1\",\"kind\":\"Node\",
+       \"metadata\":{\"name\":\"hw\",\"resourceVersion\":\"$RV\"},
+       \"spec\":{\"vars\":{\"REPO_DIR\":\"/home/zzjcool/code/anotify-agent\"}}}"
+
+# host-ws：服务用户是 root，路径在 /root 下——**换一个值**，不要抄上面那条
+RV=$(curl -fsS -b "$COOKIE" "$SERVER/v1/nodes/host-ws" | jq -r .metadata.resourceVersion)
+curl -fsS -X PATCH "$SERVER/v1/nodes/host-ws" -b "$COOKIE" \
+  -H 'content-type: application/json' \
+  -d "{\"apiVersion\":\"anotify/v1\",\"kind\":\"Node\",
+       \"metadata\":{\"name\":\"host-ws\",\"resourceVersion\":\"$RV\"},
+       \"spec\":{\"vars\":{\"REPO_DIR\":\"/root/code/anotify-agent\"}}}"
+```
+
+多台一起改用 `POST /v1/nodes/config/batch`（逐台 CAS、逐台给结论，失败只影响那一台）。
+
+**变量名是 `REPO_DIR`，不是 `repoDir`**：`spec.vars` 的键必须匹配 `^[A-Z][A-Z0-9_]{0,63}$`
+（`internal/store/config.go` 的 `ValidateVars`），小写键会被 400 `value_invalid` 拒绝。
+
+**缺配不会退到任何默认目录**（没有默认值、没有兜底、没有"两处都试一遍"的探测）：
+
+- 派发期：`spec.requires.values: [vars.REPO_DIR]` 解析不出来 → 该节点对这个能力是
+  `ValueMissing`，任务不派给它（`EligibleNodes`）；所有节点都缺 → 任务挂着等人补配置。
+- 执行期：`run.env.REPO_DIR` 只来自中枢解析出的节点变量，缺失就不会有 `$REPO_DIR`，
+  脚本第一行 `${REPO_DIR:?该节点没配节点变量 REPO_DIR}` 立即失败并说明原因。
+
+**为什么不顺手写成 `run.workDir: $(vars.REPO_DIR)`**：`run.files` 会展开进 workDir，
+`run.sh` 就会落进用户的 git 检出、并参与 `git status`——而这条链的 agent 正是在这个仓库里
+提 PR。所以保持"默认临时目录 + 脚本自己 `cd "$REPO_DIR"`"，目录来源还是一个值。
 
 ## 失败语义（重要）
 
