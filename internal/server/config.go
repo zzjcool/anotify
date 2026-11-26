@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/route"
 )
 
@@ -221,6 +222,20 @@ type Config struct {
 	// 判据事实（无引用才删、tasks 是 RESTRICT / deployments 是 CASCADE）全在 store 侧
 	// （PurgeDeletedCapabilities），这里只是驱动器。
 	CapabilityGCIntervalSec int
+
+	// LeaseTTL 是中枢授予/续租的租约时长（#661）。
+	//
+	// 语义（解析见 leaseTTLFromEnv，校验见 Validate）：
+	//   - 未设置 / 空 → 默认（protocol.DefaultLeaseTTL = 180s）；
+	//   - "180s" / "3m" / "180"（纯数字按秒）→ 原值；
+	//   - 其它（0 / 负数 / 低于协议下限 60s / 与续租间隔不成比例 / 写错）→
+	//     **启动即拒**（不像保留期那样回落默认）。
+	//
+	// 为什么这个旋钮必须“写错就拒”而不是静默回落：缩小的租约不会报错，只会让整单
+	// 任务在隧道抽一下时被判失联（#661 现场：10–37 分钟的 implement 一步被 60s
+	// 抖动作废），而回落的默认值恰好比运维想配的**更小**。类型是 time.Duration
+	// 而非秒数：协议侧全是 time.Duration，两处单位口径不能分家。
+	LeaseTTL time.Duration
 }
 
 // hookRateLimits 把两个字段归宿成最终额度（perToken, perIP）。
@@ -498,6 +513,42 @@ func (c Config) PendingMaxAge() time.Duration {
 	return time.Duration(n) * time.Second
 }
 
+// LeaseGrantTTL 归一化 `ANOTIFY_LEASE_TTL`：0（未配置 / 直接构造 Config）= 默认。
+//
+// 归一化只在这个方法里做一次：handler/mux/测试都调它，不各自猜零值语义。
+func (c Config) LeaseGrantTTL() time.Duration {
+	if c.LeaseTTL == 0 {
+		return protocol.DefaultLeaseTTL
+	}
+	return c.LeaseTTL
+}
+
+// leaseTTLFromEnv 读 ANOTIFY_LEASE_TTL（#661，租约时长）。
+//
+// 语义（与同文件其它 *_from_env 不同，这里是“写错就拒”的那种）：
+//   - 未设置 / 空 → def（默认 180s）；
+//   - "180s" / "3m" / "180"（纯数字按秒，排障时不用记单位）→ 原值；
+//   - 其它（含 0 / 负数 / 写错）→ -1（**哨兵**：配置非法，Validate 会带着原值报错）。
+//
+// 为什么不像保留期那样回落默认：租约被调小是**静默**的危险（任务在隧道抽一下时
+// 被判失联），而手滑写的值往往正好比默认小；拒绝启动才能让错配在部署时就现形。
+func leaseTTLFromEnv(key string, def time.Duration) time.Duration {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if raw == "" {
+		return def
+	}
+	if d, err := time.ParseDuration(raw); err == nil {
+		if d <= 0 {
+			return -1
+		}
+		return d
+	}
+	if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return -1
+}
+
 // cacheTTLFromEnv 读取一个缓存 TTL 环境变量。
 //
 // 语义：
@@ -573,6 +624,9 @@ func FromEnv() Config {
 		// 已删能力（tombstone）物理回收周期（issue 003）：默认 1 小时，0 = 禁用。
 		CapabilityGCIntervalSec: capabilityGCIntervalFromEnv("ANOTIFY_CAPABILITY_GC_INTERVAL_SEC"),
 
+		// 租约时长（#661）：默认 180s，非法值由 Validate 拦在启动那一刻。
+		LeaseTTL: leaseTTLFromEnv("ANOTIFY_LEASE_TTL", protocol.DefaultLeaseTTL),
+
 		// 派发预算（v3 契约 §2）：非法值由 Validate 拦在启动那一刻。
 		//
 		// v4 的 route.Router 不消费这两个值（中枢不再有跳数预算），默认值因此落在
@@ -631,6 +685,11 @@ func (c Config) Validate() error {
 		if it.got <= 0 {
 			return fmt.Errorf("%s 必须是正整数（当前 %q）", it.key, os.Getenv(it.key))
 		}
+	}
+	// 租约时长（#661）：低于协议下限 / 与续租间隔不成比例都**启动即拒**。
+	// 带上 env 里的原值，否则运维只会看到「低于下限」却不知道自己配了什么。
+	if err := protocol.ValidateLeaseTTL(c.LeaseGrantTTL(), protocol.LeaseRenewInterval); err != nil {
+		return fmt.Errorf("ANOTIFY_LEASE_TTL 非法（当前 %q）：%w", os.Getenv("ANOTIFY_LEASE_TTL"), err)
 	}
 	return nil
 }

@@ -101,6 +101,19 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		"path", cfg.DBPath,
 	)
 
+	// 租约时长（#661）：grant / renew 两个写入点都读它（store.leaseUntil）。
+	//
+	// 必须在第一条 grant 之前注入，否则第一批任务拿到的是协议下限 60s——
+	// 症状是「改了这个旋钮但前几条任务还是被抖动判死」。启动日志把生效值写成
+	// 事实：排查「到底是 60s 还是 180s」不该靠读 env。
+	db.SetLeaseTTL(cfg.LeaseGrantTTL())
+	slog.Info("lease ttl configured",
+		"event", "server.lease.ttl.configured",
+		"lease_ttl_sec", int(db.LeaseTTL()/time.Second),
+		"renew_interval_sec", int(protocol.LeaseRenewInterval/time.Second),
+		"note", "节点按每帧 lease.ack 的 expiresAt 自算本地 deadline，两侧用同一个数",
+	)
+
 	// events 保留期（#229 / #005）：**生效值来自 system_config**，env 只在空库首次启动时播种。
 	//
 	// 为什么启动时必须打这一条：events 清理**不可逆**，而「默认 30 天」是一个真实的

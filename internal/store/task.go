@@ -141,7 +141,10 @@ type Task struct {
 	// AssignmentExpiresAt 是这次候选的**统一有界窗口**（与节点 reservation 同一截止时刻）。
 	// 窗口失效后不得再据它 grant；新派发写新 assignment + 新窗口。
 	AssignmentExpiresAt *int64 `json:"assignmentExpiresAt"`
-	// Idempotent 是派发时钉住的幂等声明（重试判定只看它，不回读能力）。
+	// Idempotent 是派发时钉住的幂等声明（只做事实记录与对外投影，不回读能力）。
+	//
+	// 它**不再**决定租约失联是否重试（#661）：重试预算由 maxAttempts 表达，声明
+	// 不可重跑的能力应当写 maxAttempts: 1，而不是靠这个标记去否决预算。
 	Idempotent bool `json:"idempotent"`
 	// NamespaceVars 是**任务被接受时**钉住的命名空间默认输入快照（D2）。
 	//
@@ -1069,11 +1072,18 @@ func cancelPhase(stopIntent, reason string) string {
 // 两类候选人：租约到点的 running 任务，以及**所在节点已 offline** 的 running 任务。
 // `draining` **不是**失联：drain 是「不再接新任务、把存量跑完」，在跑的照常续租。
 //
-// 决策分三条，判据来自任务行上钉住的 idempotent（不回读能力，避免「能力改过一次就换了语义」）：
+// 决策分三条，判据只用任务行上钉住的事实（不回读能力，避免「能力改过一次就换了语义」）：
 //
-//	有停止意图                    → 终局（cancelPhase(stop_intent, reason)），**绝不 retry**
-//	幂等 且 attempt < maxAttempts → 回 pending + retry_backoff + 退避（会重跑）
-//	否则                          → abandoned（infra 原因，绝不重跑非幂等能力）
+//	有停止意图            → 终局（cancelPhase(stop_intent, reason)），**绝不 retry**
+//	attempt < maxAttempts → 回 pending + retry_backoff + 退避（会重跑）
+//	否则                  → abandoned（infra 原因：重试预算用尽）
+//
+// 租约失联**不看 idempotent**（#661）：maxAttempts 才是运维声明的重试预算，而幂等声明
+// 曾被当成「失联一律不重试」——于是 10–37 分钟的 implement 一步被一次 ≥TTL 的隧道抖动
+// 整单作废。声明「绝不重跑」的正确写法是 maxAttempts: 1（那时这里仍然直接终态）。
+// 「同一次执行跑两遍」由 attempt 栅栏挡住：重排不动 attempt、新 grant 换新 token 并覆盖
+// 哈希，旧进程的 emit/result 一律被拒；旧进程组最迟在它自己的 deadline+TERM 宽限内被
+// KILL，而重排的退避不小于 RetryBackoff(attempt)+LeaseTermGrace，新 attempt 不会与它同时跑。
 //
 // 物理槽位的默认规则是**不在这里释放**：租约过期只吊销授权，不证明进程组已回收；
 // 节点 offline 也只说明连接断了。物理槽必须由可信事实回收：`cancel.ack` 的
@@ -1186,7 +1196,9 @@ func (d *DB) recoverOne(ctx context.Context, t *Task, now int64) (requeued bool,
 			return false, fmt.Errorf("recover lease %s: %w", t.ID, aerr)
 		}
 		// 槽位不释放：reaped 还没被确认，物理槽必须保持占用（等节点事实）。
-	case t.Idempotent && t.Attempt < t.MaxAttempts:
+	case t.Attempt < t.MaxAttempts:
+		// 退避里额外加 LeaseTermGrace：旧进程组收到 TERM 后还有宽限期才被 KILL，
+		// 早于它派新 attempt 就是「同一次副作用跑两遍」的现实窗口。
 		if _, uerr := tx.ExecContext(ctx,
 			`UPDATE tasks SET phase = ?, waiting_reason = ?, next_attempt_at = ?,
 			        node_id = NULL, node_name = '', lease_id = '', lease_until = NULL,
@@ -1194,7 +1206,8 @@ func (d *DB) recoverOne(ctx context.Context, t *Task, now int64) (requeued bool,
 			        decision = '', decision_at = NULL, decision_token_hash = '', decision_expires_at = NULL,
 			        assignment_id = '', proposed_attempt = 0, assignment_expires_at = NULL
 			  WHERE id = ? AND phase = ? AND attempt = ? AND cancel_requested_at IS NULL`,
-			TaskPending, WaitingRetryBackoff, now+RetryBackoff(t.Attempt),
+			TaskPending, WaitingRetryBackoff,
+			now+RetryBackoff(t.Attempt)+int64(protocol.LeaseTermGrace/time.Second),
 			t.ID, TaskRunning, t.Attempt); uerr != nil {
 			return false, fmt.Errorf("recover lease %s: requeue: %w", t.ID, uerr)
 		}
@@ -1205,8 +1218,10 @@ func (d *DB) recoverOne(ctx context.Context, t *Task, now int64) (requeued bool,
 		}
 		requeued = true
 	default:
+		// 走到这里只有一个原因：预算用尽（attempt >= maxAttempts）。maxAttempts<=0 的
+		// 存量行仍归到 lease_expired：那是病因，不能谎报「预算用尽」。
 		reason := protocol.ReasonLeaseExpired
-		if t.Idempotent && t.Attempt >= t.MaxAttempts {
+		if t.MaxAttempts > 0 && t.Attempt >= t.MaxAttempts {
 			reason = protocol.ReasonMaxAttemptsExceeded
 		}
 		ok, ferr := d.finishTxGuarded(ctx, tx, t.ID, TaskRunning, TaskAbandoned, "", nil, now)

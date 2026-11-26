@@ -303,13 +303,15 @@ func TestTaskCancelPendingIsTerminal(t *testing.T) {
 	}
 }
 
-// TestTaskRecoverIdempotentRequeues 验幂等 + infra 失败可重试；非幂等绝不重跑。
+// TestTaskRecoverIdempotentRequeues 验 infra 失败按**重试预算**重排（幂等声明不再是判据，#661）：
+// 还有预算 → 回 pending；预算用尽（maxAttempts=1）→ abandoned。
 func TestTaskRecoverIdempotentRequeues(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 	ns := newNS(t, db, "recover")
 	idem := lifeCycleCap(t, db, ns, "idem", true, 3)
-	plain := lifeCycleCap(t, db, ns, "plain", false, 3)
+	// maxAttempts=1 = 运维显式声明「绝不重跑」：租约失联仍然直接终局。
+	plain := lifeCycleCap(t, db, ns, "plain", false, 1)
 	node := newNode(t, db, "node-a", 2)
 
 	idemTask := newTask(t, db, ns, idem, "trace-1", "")
@@ -332,7 +334,7 @@ func TestTaskRecoverIdempotentRequeues(t *testing.T) {
 		t.Fatalf("recover: %v", err)
 	}
 	if requeued != 1 || abandoned != 1 {
-		t.Fatalf("幂等应重排、非幂等应放弃：requeued=%d abandoned=%d", requeued, abandoned)
+		t.Fatalf("有预算应重排、预算用尽应放弃：requeued=%d abandoned=%d", requeued, abandoned)
 	}
 	back := mustPhase(t, db, ns, idemTask.ID, store.TaskPending)
 	if back.WaitingReason != store.WaitingRetryBackoff || back.NextAttemptAt == nil {
@@ -345,8 +347,8 @@ func TestTaskRecoverIdempotentRequeues(t *testing.T) {
 		t.Fatalf("重排应清掉上一代执行事实：node=%v lease=%q", back.NodeID, back.LeaseID)
 	}
 	dead := mustPhase(t, db, ns, plainTask.ID, store.TaskAbandoned)
-	if dead.Error != protocol.ReasonLeaseExpired {
-		t.Fatalf("非幂等过期应 abandoned + lease_expired，得到 %q", dead.Error)
+	if dead.Error != protocol.ReasonMaxAttemptsExceeded {
+		t.Fatalf("预算用尽应 abandoned + max_attempts_exceeded，得到 %q", dead.Error)
 	}
 	// 重排那格必须保留（旧进程可能还在跑）；abandoned 那格在终局同事务收敛时释放，
 	// 否则那条 attempt 永远算未回收执行 + 永远占着物理槽（#660）。

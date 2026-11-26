@@ -3,7 +3,9 @@ package lease
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/store"
@@ -104,7 +106,81 @@ func (f *fixture) runningTask(t *testing.T, capability *store.CapabilityVersion,
 	return task
 }
 
-func TestRunOnceRecoversExpiredNonIdempotentLease(t *testing.T) {
+// TestRunOnceRequeuesLostLeaseWithinBudget 租约失联按**重试预算**重排（#661）：
+// 非幂等能力只要还有预算就回 pending，不再整单作废。
+// newTask 建一条 pending 任务并回读（拿权威 id/attempt 等字段）。
+func (f *fixture) newTask(t *testing.T, capability *store.CapabilityVersion) *store.Task {
+	t.Helper()
+	ctx := context.Background()
+	task := &store.Task{
+		NamespaceID: f.ns.ID, TraceID: "trace-" + capability.Name,
+		CapabilityID: capability.ID, Capability: capability.Name,
+		Version: capability.Version, Digest: capability.Digest,
+		Params: json.RawMessage(`{}`),
+	}
+	if err := f.db.CreateTasks(ctx, []*store.Task{task}); err != nil {
+		t.Fatalf("建任务: %v", err)
+	}
+	got, err := f.db.GetTask(ctx, f.ns.ID, task.ID)
+	if err != nil {
+		t.Fatalf("回读任务: %v", err)
+	}
+	return got
+}
+
+// startTask 走真实入口把任务推到 running（assign + grant），返回续租需要的节点身份。
+// assignment 必须每轮不同：同一个候选不能被授予两次。
+func (f *fixture) startTask(t *testing.T, task *store.Task, assignment string, proposed int, now int64) (store.NodeAuthorization, string, int) {
+	t.Helper()
+	ctx := context.Background()
+	// 节点申报的并发槽位（首次调用时落库；后续轮次沿用同一格，除非测试显式归还）。
+	if instances, err := f.db.ListInstances(ctx, f.node.ID); err != nil {
+		t.Fatalf("列槽位: %v", err)
+	} else if len(instances) == 0 {
+		if _, err := f.db.UpsertInstances(ctx, f.node.ID, []store.InstanceSpec{{Slot: 0}}); err != nil {
+			t.Fatalf("申报槽位: %v", err)
+		}
+	}
+	if err := f.db.AssignTaskAt(ctx, task.ID, f.node.ID, assignment, proposed, now); err != nil {
+		t.Fatalf("派发候选 %s: %v", assignment, err)
+	}
+	_, hash, err := store.NewNodeToken()
+	if err != nil {
+		t.Fatalf("生成节点令牌: %v", err)
+	}
+	if err := f.db.SetNodeTokenHash(ctx, f.node.ID, hash); err != nil {
+		t.Fatalf("写节点令牌: %v", err)
+	}
+	auth := store.NodeAuthorization{NodeID: f.node.ID, NodeTokenHash: hash}
+	leaseID, _, _, attempt, _, err := f.db.GrantLeaseAuthorized(ctx, auth, task.ID, assignment, proposed, 0, now)
+	if err != nil {
+		t.Fatalf("授予租约 %s: %v", assignment, err)
+	}
+	return auth, leaseID, attempt
+}
+
+// reclaim 模拟「节点重连并明确声明这一格空闲 + 那次执行已回收」：走真实入口
+// ReclaimStaleSlots（带历史 task/attempt/lease 引用的 Busy=false 事实）。
+// 重排的 attempt 不伪造 reaped，所以下一轮 grant 前必须真的拿到这条回收事实。
+func (f *fixture) reclaim(t *testing.T, taskID string, attempt int, leaseID string) {
+	t.Helper()
+	ctx := context.Background()
+	noProcess := false
+	released, err := f.db.ReclaimStaleSlots(ctx, f.node.ID, []store.SlotObservation{{
+		Slot: 0, Busy: &noProcess, TaskID: taskID, Attempt: attempt, LeaseID: leaseID,
+	}}, store.Now())
+	if err != nil {
+		t.Fatalf("回收槽位: %v", err)
+	}
+	if released != 1 {
+		t.Fatalf("回收槽位数 = %d，want 1（没拿到可信事实）", released)
+	}
+	if _, err := f.db.Exec(`UPDATE tasks SET next_attempt_at = NULL`); err != nil {
+		t.Fatalf("清退避: %v", err)
+	}
+}
+
+func TestRunOnceRequeuesLostLeaseWithinBudget(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	now := store.Now()
@@ -118,28 +194,33 @@ func TestRunOnceRecoversExpiredNonIdempotentLease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
-	if report.LeasesAbandoned != 1 || report.LeasesRequeued != 0 {
-		t.Fatalf("非幂等过期租约应直接 abandoned: %+v", report)
+	if report.LeasesRequeued != 1 || report.LeasesAbandoned != 0 {
+		t.Fatalf("还有预算的过期租约应回 pending 重试: %+v", report)
 	}
 	stored, err := f.db.GetTask(ctx, f.ns.ID, task.ID)
 	if err != nil {
 		t.Fatalf("读任务: %v", err)
 	}
-	if stored.Phase != store.TaskAbandoned {
-		t.Fatalf("phase = %q，want abandoned", stored.Phase)
+	if stored.Phase != store.TaskPending || stored.WaitingReason != store.WaitingRetryBackoff {
+		t.Fatalf("应回 pending + retry_backoff，得到 %q/%q", stored.Phase, stored.WaitingReason)
 	}
-	// 终局 abandon 同事务收敛两本账（#660）：落 reaped + 释放自己的绑定。
-	// 这一代执行不会再得到节点事实（节点已失联/非幂等不重跑）。
+	if stored.Attempt != 1 {
+		t.Fatalf("重排不动 attempt（新 attempt 由下次 grant 计）：%d", stored.Attempt)
+	}
+	// 重排**不伪造** reaped 事实：旧进程可能还在跑（#660 的反面纪律）。
 	att, err := f.db.GetTaskAttempt(ctx, task.ID, stored.Attempt)
-	if err != nil || att.ReapedAt == nil {
-		t.Fatalf("终局 abandon 必须补 reaped 事实：%+v err=%v", att, err)
+	if err != nil {
+		t.Fatalf("读 attempt: %v", err)
+	}
+	if att.ReapedAt != nil || att.Phase != store.AttemptPhaseRequeued {
+		t.Fatalf("重排的 attempt 应标 requeued 且 reaped 仍为 NULL：%+v", att)
 	}
 	instances, err := f.db.ListInstances(ctx, f.node.ID)
 	if err != nil {
 		t.Fatalf("列槽位: %v", err)
 	}
-	if len(instances) != 1 || instances[0].BusyTask != nil {
-		t.Fatalf("终局 abandon 必须释放它自己的槽: %+v", instances)
+	if len(instances) != 1 || instances[0].BusyTask == nil {
+		t.Fatalf("重排必须保留物理槽（旧进程可能还在跑）: %+v", instances)
 	}
 }
 
@@ -280,5 +361,231 @@ func TestOccupancyByNodeReadsRealLedger(t *testing.T) {
 	got := occupancy[f.node.ID]
 	if got.Total != 2 || got.Busy != 1 || got.Free != 1 {
 		t.Fatalf("占用投影不对: %+v（task=%s）", got, task.ID)
+	}
+}
+
+// TestRunOnceAbandonsExpiredLeaseWithoutBudget 声明「不可重跑」（maxAttempts=1）时，
+// 租约失联仍然是终局，且 #660 的两本账照旧同事务收敛。
+func TestRunOnceAbandonsExpiredLeaseWithoutBudget(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	now := store.Now()
+	capability := f.capability(t, "once", false, 1)
+	task := f.runningTask(t, capability, now)
+	running, err := f.db.GetTask(ctx, f.ns.ID, task.ID)
+	if err != nil || running.LeaseUntil == nil {
+		t.Fatalf("读 running 任务: %+v err=%v", running, err)
+	}
+	report, err := NewSweeper(f.db, nil).RunOnce(ctx, *running.LeaseUntil+1)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if report.LeasesAbandoned != 1 || report.LeasesRequeued != 0 {
+		t.Fatalf("预算用尽应直接 abandoned: %+v", report)
+	}
+	dead, err := f.db.GetTask(ctx, f.ns.ID, task.ID)
+	if err != nil {
+		t.Fatalf("读任务: %v", err)
+	}
+	if dead.Phase != store.TaskAbandoned {
+		t.Fatalf("phase = %q，want abandoned", dead.Phase)
+	}
+	att, err := f.db.GetTaskAttempt(ctx, task.ID, dead.Attempt)
+	if err != nil || att.ReapedAt == nil {
+		t.Fatalf("终局 abandon 必须补 reaped 事实（#660）：%+v err=%v", att, err)
+	}
+	instances, err := f.db.ListInstances(ctx, f.node.ID)
+	if err != nil {
+		t.Fatalf("列槽位: %v", err)
+	}
+	if len(instances) != 1 || instances[0].BusyTask != nil {
+		t.Fatalf("终局 abandon 必须释放它自己的槽: %+v", instances)
+	}
+}
+
+// TestLongTaskAcrossTwoTTLsIsNotAbandoned 是验收 ③：一次真实的长执行跨过 ≥2 个 TTL
+// 仍然 running（不被 abandon、不被重排）。
+//
+// 口径与生产同构，只是把量级缩小：TTL=2s、续租 200ms（10 个续租周期/TTL，生产是
+// 180s/20s = 9 个），巡检每 50ms 一轮，用真实定时器跑 2.25 个 TTL（lease_until 是
+// 秒口径，TTL 不能再压到 1s：那样续租永远推不动同一秒内的 deadline）。
+func TestLongTaskAcrossTwoTTLsIsNotAbandoned(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.db.SetLeaseTTL(2 * time.Second)
+	capability := f.capability(t, "long-step", false, 3)
+	task := f.newTask(t, capability)
+	auth, leaseID, attempt := f.startTask(t, task, "asg-long-1", 1, store.Now())
+	granted, err := f.db.GetTask(ctx, f.ns.ID, task.ID)
+	if err != nil || granted.LeaseUntil == nil {
+		t.Fatalf("读 grant 后的任务: %+v err=%v", granted, err)
+	}
+	initialLease := *granted.LeaseUntil
+
+	const (
+		renewEvery = 200 * time.Millisecond
+		sweepEvery = 50 * time.Millisecond
+		total      = 4500 * time.Millisecond // 2.25 个 TTL
+	)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var loopErr error
+	var reports []Report
+	renewals := 0
+	sweeper := NewSweeper(f.db, nil)
+
+	// 续租循环：节点侧 lease.renew 的服务端一半（真实事务 + 身份校验）。
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tick := time.NewTicker(renewEvery)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				if _, err := f.db.RenewLeaseAuthorized(ctx, auth, task.ID, attempt, leaseID, store.Now()); err != nil {
+					mu.Lock()
+					if loopErr == nil {
+						loopErr = err
+					}
+					mu.Unlock()
+					continue
+				}
+				mu.Lock()
+				renewals++
+				mu.Unlock()
+			}
+		}
+	}()
+	// 巡检循环：与生产同一条入口（RunOnce = 回收过期租约 + 收敛 + 保留期 + 统计）。
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tick := time.NewTicker(sweepEvery)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				report, err := sweeper.RunOnce(ctx, store.Now())
+				if err != nil {
+					mu.Lock()
+					if loopErr == nil {
+						loopErr = err
+					}
+					mu.Unlock()
+					continue
+				}
+				mu.Lock()
+				reports = append(reports, report)
+				mu.Unlock()
+			}
+		}
+	}()
+	// 跑满 2.25 个 TTL（等的是「跑够这么久」这个条件，不是等某个动画/超时）。
+	timer := time.NewTimer(total)
+	<-timer.C
+	close(stop)
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	abandoned, requeued := 0, 0
+	for _, r := range reports {
+		abandoned += r.LeasesAbandoned
+		requeued += r.LeasesRequeued
+	}
+	if abandoned != 0 || requeued != 0 {
+		t.Fatalf("租约一直在续，巡检却回收了 %d 次（abandoned=%d requeued=%d）", abandoned+requeued, abandoned, requeued)
+	}
+	if loopErr != nil {
+		t.Fatalf("长任务期间续租/巡检出错: %v", loopErr)
+	}
+	if renewals < 15 {
+		t.Fatalf("续租次数过少（%d）：这条用例没跨过 2 个 TTL", renewals)
+	}
+	got, err := f.db.GetTask(ctx, f.ns.ID, task.ID)
+	if err != nil {
+		t.Fatalf("读任务: %v", err)
+	}
+	if got.Phase != store.TaskRunning || got.Attempt != 1 {
+		t.Fatalf("长任务必须还在第 1 次执行上：phase=%q attempt=%d", got.Phase, got.Attempt)
+	}
+	if got.LeaseUntil == nil || *got.LeaseUntil <= initialLease {
+		t.Fatalf("租约应随续租推进：lease_until=%v initial=%d", got.LeaseUntil, initialLease)
+	}
+}
+
+// TestKilledNodeIsAbandonedAfterTTL 是验收 ④（反例）：节点进程真死了（不再续租）时，
+// 回收逻辑必须仍然在 TTL 后把它从节点上摘下来，且重排次数被 maxAttempts 卡死——
+// 新逻辑不能把「死」变成「永远不判死」。
+func TestKilledNodeIsAbandonedAfterTTL(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.db.SetLeaseTTL(time.Second)
+	capability := f.capability(t, "killed", false, 3)
+	task := f.newTask(t, capability)
+	sweeper := NewSweeper(f.db, nil)
+
+	auth, leaseID, attempt := f.startTask(t, task, "asg-killed-1", 1, store.Now())
+	_ = auth
+	for round := 1; round <= 3; round++ {
+		running, err := f.db.GetTask(ctx, f.ns.ID, task.ID)
+		if err != nil || running.LeaseUntil == nil {
+			t.Fatalf("第 %d 轮读 running 任务: %+v err=%v", round, running, err)
+		}
+		if running.Phase != store.TaskRunning || running.NodeID == nil {
+			t.Fatalf("第 %d 轮应仍在节点上 running：phase=%q node=%v", round, running.Phase, running.NodeID)
+		}
+		report, err := sweeper.RunOnce(ctx, *running.LeaseUntil+1)
+		if err != nil {
+			t.Fatalf("第 %d 轮巡检: %v", round, err)
+		}
+		if round < 3 {
+			if report.LeasesRequeued != 1 || report.LeasesAbandoned != 0 {
+				t.Fatalf("第 %d 轮：还有预算应重排一次，得到 %+v", round, report)
+			}
+			back, err := f.db.GetTask(ctx, f.ns.ID, task.ID)
+			if err != nil {
+				t.Fatalf("第 %d 轮读重排后的任务: %v", round, err)
+			}
+			if back.Phase != store.TaskPending || back.NodeID != nil {
+				t.Fatalf("第 %d 轮应回 pending 且摘掉节点：phase=%q node=%v", round, back.Phase, back.NodeID)
+			}
+			// 死节点的进程组是内核收的；节点"回来"后给出这条回收事实，下一轮才能重派。
+			f.reclaim(t, task.ID, attempt, leaseID)
+			auth, leaseID, attempt = f.startTask(t, task, "asg-killed-"+string(rune('1'+round)), round+1, store.Now())
+			_ = auth
+			continue
+		}
+		// 第 3 轮：预算用尽 → 终局，两本账同事务收敛（不会无限重排）。
+		if report.LeasesAbandoned != 1 || report.LeasesRequeued != 0 {
+			t.Fatalf("预算用尽应 abandoned，得到 %+v", report)
+		}
+		dead, err := f.db.GetTask(ctx, f.ns.ID, task.ID)
+		if err != nil {
+			t.Fatalf("读终态任务: %v", err)
+		}
+		if dead.Phase != store.TaskAbandoned {
+			t.Fatalf("phase = %q，want abandoned", dead.Phase)
+		}
+		if dead.Attempt != 3 {
+			t.Fatalf("终态 attempt = %d，want 3（重排次数被 maxAttempts 卡死）", dead.Attempt)
+		}
+		att, err := f.db.GetTaskAttempt(ctx, task.ID, dead.Attempt)
+		if err != nil || att.ReapedAt == nil {
+			t.Fatalf("终局 abandon 必须补 reaped 事实（#660）：%+v err=%v", att, err)
+		}
+		instances, err := f.db.ListInstances(ctx, f.node.ID)
+		if err != nil {
+			t.Fatalf("列槽位: %v", err)
+		}
+		if len(instances) != 1 || instances[0].BusyTask != nil {
+			t.Fatalf("终局 abandon 必须释放槽位: %+v", instances)
+		}
 	}
 }

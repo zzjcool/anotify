@@ -5,13 +5,26 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/zzjcool/anotify/internal/artifact"
 )
+
+// onceCap 造一个「声明不可重试」的能力（maxAttempts=1）：只有它才会在租约失联时
+// 直接走终局，从而验到 #660 的两本账收敛。有剩余预算的任务在 #661 之后改为重排。
+func onceCap(t *testing.T, db *DB, nsID, name string) *CapabilityVersion {
+	t.Helper()
+	one := 1
+	return v4CapWith(t, db, &CapabilityVersion{
+		NamespaceID: nsID, Name: name, Version: 1,
+		Spec: artifact.Spec{Lifecycle: artifact.Lifecycle{MaxAttempts: &one}},
+	})
+}
 
 func TestLeaseSweepAbandonSettlesBothLedgers(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
-	c := v4Cap(t, db, nsID, "abandon-both-ledgers", 1)
+	c := onceCap(t, db, nsID, "abandon-both-ledgers")
 	node := v4Node(t, db, "abandon-node", 1)
 	task := v4Task(t, db, nsID, c, "tr_abandon_both", "")
 	_, _, attempt := v4Grant(t, db, task.ID, node.ID, "asg-1")
@@ -44,7 +57,7 @@ func TestConsecutiveLeaseAbandonsDoNotLeakCapacity(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
-	c := v4Cap(t, db, nsID, "abandon-repeat", 1)
+	c := onceCap(t, db, nsID, "abandon-repeat")
 	node := v4Node(t, db, "repeat-node", 1)
 	auth := v4Auth(t, db, node.ID)
 

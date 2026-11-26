@@ -3,6 +3,8 @@ package server
 import (
 	"testing"
 	"time"
+
+	"github.com/zzjcool/anotify/internal/protocol"
 )
 
 // TestEventRetentionDaysEnvParsing 覆盖 ANOTIFY_EVENT_RETENTION_DAYS 的五种输入（契约 §1.3.1 / A1）。
@@ -207,5 +209,78 @@ func TestCapabilityGCIntervalConversion(t *testing.T) {
 		if got := (Config{CapabilityGCIntervalSec: c.sec}).CapabilityGCInterval(); got != c.want {
 			t.Errorf("CapabilityGCIntervalSec=%d → %v, want %v", c.sec, got, c.want)
 		}
+	}
+}
+
+// TestLeaseTTLEnvParsing 覆盖 ANOTIFY_LEASE_TTL 的合法/非法输入（#661）。
+//
+// 与保留期那几条不同：这里**非法值不回落默认**，而是一个哨兵（-1），由 Validate
+// 变成启动失败。理由是缩小租约不会报错、只会让长任务在隧道抖一下时被判失联。
+func TestLeaseTTLEnvParsing(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want time.Duration
+	}{
+		{"未设置 = 默认 180s", "", 180 * time.Second},
+		{"duration 形式", "120s", 120 * time.Second},
+		{"分钟形式", "5m", 5 * time.Minute},
+		{"纯数字按秒", "240", 240 * time.Second},
+		{"零", "0", -1},
+		{"负数", "-30s", -1},
+		{"写错", "3 minutes", -1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("ANOTIFY_LEASE_TTL", c.raw)
+			if got := FromEnv().LeaseTTL; got != c.want {
+				t.Errorf("ANOTIFY_LEASE_TTL=%q → %v, want %v", c.raw, got, c.want)
+			}
+		})
+	}
+}
+
+// TestLeaseTTLValidate 钉住「启动即拒」的四类错配：低于下限、0、负数、与续租间隔不成比例。
+func TestLeaseTTLValidate(t *testing.T) {
+	bad := []struct {
+		name string
+		ttl  time.Duration
+	}{
+		{"显式 0（哨兵）", -1},
+		{"低于协议下限 60s", 59 * time.Second},
+		{"负数", -time.Minute},
+		// 生产中续租间隔固定 20s，所以「3 个续租周期」正好落在协议下限 60s 上：这条
+		// 同时被两条判据拒绝。「只违反比例、不违反下限」的组合在 protocol 包单测里用
+		// renew=45s 单独覆盖（续租间隔不是本旋钮，不可配）。
+		{"恰好差一点到 3 个续租周期", 3*protocol.LeaseRenewInterval - time.Second},
+	}
+	for _, c := range bad {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := Config{MaxHops: defaultMaxHops, TraceTaskBudget: defaultTraceTaskBudget, LeaseTTL: c.ttl}
+			if err := cfg.Validate(); err == nil {
+				t.Fatalf("LeaseTTL=%v 必须被 Validate 拒绝", c.ttl)
+			}
+		})
+	}
+	good := []struct {
+		name string
+		ttl  time.Duration
+		want time.Duration
+	}{
+		{"未配置 = 默认", 0, 180 * time.Second},
+		{"协议下限", 60 * time.Second, 60 * time.Second},
+		{"实测默认", 180 * time.Second, 180 * time.Second},
+		{"更长也合法", time.Hour, time.Hour},
+	}
+	for _, c := range good {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := Config{MaxHops: defaultMaxHops, TraceTaskBudget: defaultTraceTaskBudget, LeaseTTL: c.ttl}
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("LeaseTTL=%v 应当合法，得到 %v", c.ttl, err)
+			}
+			if got := cfg.LeaseGrantTTL(); got != c.want {
+				t.Fatalf("LeaseGrantTTL() = %v, want %v", got, c.want)
+			}
+		})
 	}
 }

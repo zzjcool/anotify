@@ -792,10 +792,13 @@ func TestReasonSets(t *testing.T) {
 	}
 }
 
-// TestLeaseConstants 租约 60/20/5 全目录一致。
+// TestLeaseConstants 租约 60/20/5 全目录一致（60 现在是**下限**，默认值见 DefaultLeaseTTL）。
 func TestLeaseConstants(t *testing.T) {
 	if LeaseTTL != 60*time.Second {
-		t.Fatalf("LeaseTTL = %v，期望 60s", LeaseTTL)
+		t.Fatalf("LeaseTTL = %v，期望 60s（协议下限）", LeaseTTL)
+	}
+	if DefaultLeaseTTL != 180*time.Second {
+		t.Fatalf("DefaultLeaseTTL = %v，期望 180s", DefaultLeaseTTL)
 	}
 	if LeaseRenewInterval != 20*time.Second {
 		t.Fatalf("LeaseRenewInterval = %v，期望 20s", LeaseRenewInterval)
@@ -806,11 +809,50 @@ func TestLeaseConstants(t *testing.T) {
 	if LeaseRenewInterval >= LeaseTTL {
 		t.Fatal("续租间隔必须小于租约时长")
 	}
+	if err := ValidateLeaseTTL(DefaultLeaseTTL, LeaseRenewInterval); err != nil {
+		t.Fatalf("默认配置必须自洽：%v", err)
+	}
 	if RetryBackoffBase != 5*time.Second || RetryBackoffMax != 5*time.Minute || RetryBackoffFactor != 2 {
 		t.Fatal("attempt 退避参数（5s 起、×2、上限 5m）漂了")
 	}
 	if StaleConfigBackoffBase != 5*time.Second || StaleConfigBackoffMax != 60*time.Second {
 		t.Fatal("stale_config 退避参数（5s 起、上限 60s）漂了")
+	}
+}
+
+// TestValidateLeaseTTL 是配置校验的两条硬线：低于协议下限、与续租间隔不成比例。
+func TestValidateLeaseTTL(t *testing.T) {
+	bad := []struct {
+		name  string
+		ttl   time.Duration
+		renew time.Duration
+	}{
+		{"零值", 0, LeaseRenewInterval},
+		{"负数", -time.Minute, LeaseRenewInterval},
+		{"低于协议下限", LeaseTTL - time.Second, LeaseRenewInterval},
+		{"续租间隔为零", DefaultLeaseTTL, 0},
+		{"续租间隔为负", DefaultLeaseTTL, -time.Second},
+		// 120s 本身合法，但相对 45s 的续租间隔只剩 2.7 个周期。
+		{"抖动余量不足", 120 * time.Second, 45 * time.Second},
+	}
+	for _, c := range bad {
+		if err := ValidateLeaseTTL(c.ttl, c.renew); err == nil {
+			t.Fatalf("%s：ttl=%v renew=%v 必须被拒绝", c.name, c.ttl, c.renew)
+		}
+	}
+	good := []struct {
+		name  string
+		ttl   time.Duration
+		renew time.Duration
+	}{
+		{"协议下限", LeaseTTL, LeaseRenewInterval},
+		{"默认值", DefaultLeaseTTL, LeaseRenewInterval},
+		{"恰好三倍", 3 * LeaseRenewInterval, LeaseRenewInterval},
+	}
+	for _, c := range good {
+		if err := ValidateLeaseTTL(c.ttl, c.renew); err != nil {
+			t.Fatalf("%s：ttl=%v renew=%v 必须被接受，得到 %v", c.name, c.ttl, c.renew, err)
+		}
 	}
 }
 

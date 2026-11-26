@@ -285,7 +285,7 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 	leaseID = newID("lse")
 	attemptToken = NewTaskToken()
 	tokenHash := hashAttemptToken(attemptToken)
-	expiresAt = now + int64(protocol.LeaseTTL.Seconds())
+	expiresAt = d.leaseUntil(now)
 
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
@@ -570,7 +570,8 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 // 同事务判据：nodes.token_hash == auth.NodeTokenHash、任务归 auth.NodeID、
 // ns 交集仍成立、phase=running、attempt/lease 相等、**没有取消在飞**、
 // 租约未过期（now >= lease_until 一律拒绝——`expiry==now` 不得复活授权）。
-// 全部通过才把租约推到 now+60s；任何一项对不上都是 ErrLeaseMismatch，写入零行。
+// 全部通过才把租约推到 now+生效 TTL（DB.LeaseTTL，默认 180s）；任何一项对不上
+// 都是 ErrLeaseMismatch，写入零行。
 //
 // wire 的 lease.renew 没有 attemptToken 字段：当前认证节点 + attempt + lease 就是
 // 它的授权凭据（不发明新字段）。
@@ -585,7 +586,7 @@ func (d *DB) RenewLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 	if now == 0 {
 		now = Now()
 	}
-	expiresAt := now + int64(protocol.LeaseTTL.Seconds())
+	expiresAt := d.leaseUntil(now)
 
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
