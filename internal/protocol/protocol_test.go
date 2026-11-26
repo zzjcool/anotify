@@ -792,7 +792,7 @@ func TestReasonSets(t *testing.T) {
 	}
 }
 
-// TestLeaseConstants 租约 60/20/5 全目录一致（60 现在是**下限**，默认值见 DefaultLeaseTTL）。
+// TestLeaseConstants 租约 60/20/5 全目录一致（60 是**下限**，默认值见 DefaultLeaseTTL）。
 func TestLeaseConstants(t *testing.T) {
 	if LeaseTTL != 60*time.Second {
 		t.Fatalf("LeaseTTL = %v，期望 60s（协议下限）", LeaseTTL)

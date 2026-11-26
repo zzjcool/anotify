@@ -288,39 +288,28 @@ func (c CancelReason) Valid() bool {
 	return false
 }
 
-// 租约参数（capability.md §2.3「全目录一致」）。
-//
-// 基础租约 60s、续租间隔 20s、TERM 宽限 5s 后 KILL 整个进程组。三个数必须来自
-// 同一处，否则节点与中枢各算各的 deadline，症状是「任务莫名其妙被 KILL」。
+// 租约参数（capability.md §2.3「全目录一致」）：60s 下限 / 20s 续租 / 5s TERM 宽限。三个
+// 数必须来自同一处，否则节点与中枢各算各的 deadline，症状是「任务莫名其妙被 KILL」。
 const (
-	// LeaseTTL 是租约时长的**协议下限**（历史默认值也是它）。
-	// 中枢可以用 ANOTIFY_LEASE_TTL 调大，但不得短于它：一次隧道重建（502 /
-	// TLS 握手重置）实测可达 40–90s，60s 的租约撞上这种抖动就直接判死整个
-	// attempt（#661 现场：10–37 分钟的 implement 一步被 60s 抖动整单作废）。
+	// LeaseTTL 是租约时长的**协议下限**（历史默认值也是它）：中枢可用 ANOTIFY_LEASE_TTL
+	// 调大，但不得短于它——隧道重建（502/TLS 重置）实测可达 40–90s，60s 的租约撞上这种
+	// 抖动就整单作废（#661：10–37 分钟的 implement 一步被判死）。
 	LeaseTTL = 60 * time.Second
-	// DefaultLeaseTTL 是中枢未显式配置时授予的租约时长。
-	//
-	// 为什么是 180s 而不是协议下限 60s：中枢侧的租约是「节点最后一次续租 + TTL」，
-	// 而 60s 只够 3 个续租周期，任何一次超过 60s 的断连都会让中枢判失联并把任务
-	// 推向终态。180s（= 9 个续租周期）覆盖了实测的隧道重建窗口，代价只是节点失联
-	// 到被回收最多晚 120s（回收的旧路径语义不变，见 store.RecoverLostLeases）。
+	// DefaultLeaseTTL 是中枢未显式配置时授予的租约时长（180s = 9 个续租周期）。
+	// 为什么不用下限 60s：中枢的判据是「最后一次续租 + TTL」，60s 只够 3 个续租周期，
+	// 任何超过 60s 的断连都直接推终态；代价只是失联回收最多晚 120s。
 	DefaultLeaseTTL = 180 * time.Second
 	// LeaseRenewInterval 是节点续租间隔（默认租约的九分之一）。
 	LeaseRenewInterval = 20 * time.Second
 	// LeaseTermGrace 是 TERM 之后到 KILL 进程组的宽限期。
 	LeaseTermGrace = 5 * time.Second
-	// LeaseRenewRatio 是「租约时长至少几个续租间隔」。
-	//
-	// 少于 3 个就没有任何抗抖动余量（一次丢两个 ACK 就到期），所以配置检查把它当硬线。
+	// LeaseRenewRatio 是「租约时长至少几个续租间隔」：少于 3 个就没有抗抖动余量。
 	LeaseRenewRatio = 3
 )
 
-// ValidateLeaseTTL 校验 (ttl, renew) 的组合是否自洽：非法配置必须**启动即拒**，
-// 不能在运行期才表现为「任务莫名其妙被判失联」。
-//
-// 两条判据都是不同的事故形态，别合并：
-//   - ttl < LeaseTTL：一次隧道重建就够判死（本可以避免的整单作废）；
-//   - ttl < LeaseRenewRatio*renew：续租间隔相对租约太长，丢一两个 ACK 就到期。
+// ValidateLeaseTTL 校验 (ttl, renew) 自洽：非法配置必须**启动即拒**，不能在运行期才表现
+// 为「任务莫名其妙被判失联」。两条判据是不同的事故形态：低于协议下限（一次隧道重建就
+// 够判死）与续租间隔相对太长（丢一两个 ACK 就到期）。
 func ValidateLeaseTTL(ttl, renew time.Duration) error {
 	if ttl <= 0 {
 		return fmt.Errorf("租约时长必须为正数（当前 %v）", ttl)

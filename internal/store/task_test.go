@@ -898,7 +898,7 @@ func TestRecoverLostLeasesRequeues(t *testing.T) {
 		},
 	})
 	nonIdem := v4Cap(t, db, nsID, "nonidem", 1)
-	// 声明「不可重试」（maxAttempts=1）的非幂等能力：失联仍然直接终局。
+	// 声明「不可重试」（maxAttempts=1）：失联仍然直接终局。
 	once := 1
 	onceBudget := v4CapWith(t, db, &CapabilityVersion{
 		NamespaceID: nsID, Name: "once", Version: 1,

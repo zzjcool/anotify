@@ -122,12 +122,8 @@ func TestStreamURLDefaultAndExplicitPath(t *testing.T) {
 	}
 }
 
-// TestHeartbeatClosesSilentlyDeadLink 是验收 ②：帧不再到达但连接不报错时，
-// 节点侧必须在 2 次心跳内判死并重连。
-//
-// 夹具刻意让**控制帧照常工作**：假中枢持续读（所以 ping 有 pong），但一个下行
-// 业务帧都不写。这正是 #661 的形态——连接"看起来"是活的，Read 却永远阻塞。
-// 去掉硬心跳（watchHeartbeat）后，这条用例会一直等到 testTimeout 才红。
+// TestHeartbeatClosesSilentlyDeadLink 是验收 ②：帧不再到达但连接不报错时，节点侧必须在
+// 2 次心跳内判死并重连。假中枢持续读（ping 有 pong）却一个下行业务帧都不写 = #661 的形态。
 func TestHeartbeatClosesSilentlyDeadLink(t *testing.T) {
 	var conns atomic.Int64
 	helloCh := make(chan struct{}, 4)
@@ -163,7 +159,6 @@ func TestHeartbeatClosesSilentlyDeadLink(t *testing.T) {
 	client.HeartbeatTimeout = heartbeat
 	client.HeartbeatInterval = 20 * time.Millisecond
 	client.Logf = t.Logf
-	// 退避压到毫秒级：本用例量的是「判死延迟」，不是重连退避策略。
 	client.Sleep = func(ctx context.Context, d time.Duration) error {
 		if d > 20*time.Millisecond {
 			d = 20 * time.Millisecond
@@ -184,7 +179,6 @@ func TestHeartbeatClosesSilentlyDeadLink(t *testing.T) {
 		defer close(runDone)
 		_ = client.Run(ctx)
 	}()
-	// Run 必须真的退出再让 TempDir 收尸（否则缓存目录还在被写，清理报 ENOTEMPTY）。
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -199,8 +193,7 @@ func TestHeartbeatClosesSilentlyDeadLink(t *testing.T) {
 	case <-time.After(testTimeout):
 		t.Fatal("首连未建立")
 	}
-	// 一个等回执的上行帧：中枢永远不回（下行帧全丢），链条就此静默。
-	// 连接就绪（hello 已出站）之前 Send 返回 ErrOffline，所以按毫秒级有界重试。
+	// 一个等回执的上行帧：中枢永远不回（下行帧全丢）。连接就绪前 Send 返回 ErrOffline。
 	renew := &protocol.LeaseRenewFrame{
 		Type: protocol.FrameLeaseRenew, TaskID: "silent", Attempt: 1, LeaseID: "lease-silent",
 	}
@@ -216,7 +209,6 @@ func TestHeartbeatClosesSilentlyDeadLink(t *testing.T) {
 	if sendErr != nil {
 		t.Fatalf("发送 lease.renew: %v", sendErr)
 	}
-	// 「2 次心跳内」= 2×HeartbeatTimeout 之内必须断开并重新握手（helloCh 再来一发）。
 	deadline := time.NewTimer(2 * heartbeat)
 	defer deadline.Stop()
 	select {

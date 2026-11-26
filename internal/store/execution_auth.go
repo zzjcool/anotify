@@ -131,31 +131,16 @@ func maxPerNodeOn(ctx context.Context, ex queryExec, capabilityID string) (int, 
 	return spec.Concurrency.EffectiveMaxPerNode(), nil
 }
 
-// grantBudgetOn 在同一授权事务里执行三层独立的执行预算（G1-6C3 / D6）：
+// grantBudgetOn 在同一授权事务里执行三层独立的预算（G1-6C3 / D6）：**机器总量**（local > node
+// 合并后的 limits.total，跨 ns、跨能力）、**按能力名**（跨 ns 的同名能力，无单列则 "*"）、
+// **pinned maxPerNode**（同 ns + 同能力名、跨版本）。
 //
-//  1. **机器总量**：local > node 合并后的 limits.total（machineConfigSnapshot.limits
-//     已经是合并结果）。这是整台机器的并发上限，跨 namespace、跨能力。
-//  2. **按能力名**：limits.perCapability[能力名]，没有单列就用 "*"；口径是
-//     **跨 namespace 的同名能力**（namespaces 不是预算维度；机器只有一台）。
-//  3. **pinned maxPerNode**：任务钉住的能力版本里的 concurrency.maxPerNode，
-//     口径是**同 namespace + 同能力名、跨版本**在这台机器上的并发数。
-//
-// 占用口径（三条预算共用）：
-//   - **未回收的真实执行**：task_attempts 里 reaped_at IS NULL 的每一行。不看任务
-//     相位（running/pending/终态都可能还压着一个没回收的进程组），phase 变化、
-//     rehello、租约过期都不会假释放它。
-//   - **真实 busy reservation**：节点已接受（Busy=true）并落进真实槽账本
-//     （node_instances.busy_lease_id 为空）的候选。纯中枢侧 assignment（节点还没接住）
-//     不是物理占用，不进预算；窗口过期/被拒绝时由节点的明确 idle 事实清掉。
-//   - 本次请求自己的 reservation **只算一次**：只有 node + task + assignment +
-//     proposed + **同一个 slot** 全部相符的那一条被排除；同 task 在别的 slot 上的
-//     预约仍是真实物理占用（不能按 taskID 整包排除，否则会少算并越过预算）。grant
-//     成功时它原地从 reservation 变成 attempt（槽账本同一条绑定），新增的「+1」
-//     正好就是它。
-//
-// 拒绝只返回 ErrSlotUnavailable（不耗 attempt、不绑槽、不改别人的 reservation）；
-// 调用方负责把本条任务放回 pending + waiting_for_slot 的有界退避。缩小预算只阻止
-// 新授权，存量 busy 账本原样保留（不假释放）。
+// 占用口径（三条共用）：**未回收的真实执行**（task_attempts.reaped_at IS NULL 的每一行；不看
+// 任务相位，phase 变化/rehello/租约过期都不假释放）；**真实 busy reservation**（节点已接受且
+// 落进真实槽账本的候选，纯中枢侧 assignment 不是物理占用）；本次请求自己的 reservation 只算
+// 一次（node+task+assignment+proposed+同一个 slot 全相等才排除，别的 slot 仍算真实占用）。
+// 拒绝只返回 ErrSlotUnavailable（不耗 attempt、不绑槽、不改别人的 reservation），调用方负责
+// 放回 pending + waiting_for_slot；缩小预算只阻止新授权，存量 busy 账本原样保留。
 func grantBudgetOn(ctx context.Context, ex queryExec, nodeID, taskID, assignmentID string,
 	proposedAttempt, slot int, namespaceID, capability string,
 	maxPerNode int, limits protocol.Limits) error {
@@ -244,22 +229,11 @@ func grantBudgetOn(ctx context.Context, ex queryExec, nodeID, taskID, assignment
 	return nil
 }
 
-// GrantLeaseAuthorized 授予一次执行租约（**每次执行唯一授权入口**）。
-//
-// 与旧 GrantLease 的区别不是「加了一个参数」：认证/授权/预算/绑定/快照都在
-// **同一个 BEGIN IMMEDIATE 事务**里完成——没有任何「先 GetNode 校验再无条件写」
-// 的窗口。事务内顺序：
-//
-//  1. 当前节点身份（nodes.token_hash == auth.NodeTokenHash）；
-//  2. 任务当前候选：assignmentId + node 归属 + proposedAttempt **三项精确匹配**且窗口未过
-//     （stale 请求只被拒绝，不改当前候选）；
-//  3. namespace 交集（node 声明 ∩ 授权覆盖任务 ns）；
-//  4. attempt 预算（maxAttempts，超了直接终态）；
-//  5. 机器配置 applied 事实；
-//  6. 三层执行预算（grantBudgetOn：总量 / 跨 ns 同名能力 / pinned maxPerNode）；
-//  7. 把节点 accept 回报的真实 slot 绑到 (task, attempt, lease)；
-//  8. 落 attempt 机器快照（vars/limits/来源/revision/hash）+ 写任务执行授权事实。
-//
+// GrantLeaseAuthorized 授予一次执行租约（**每次执行唯一授权入口**）。认证/授权/预算/绑定/
+// 快照都在**同一个 BEGIN IMMEDIATE 事务**里完成，没有「先校验再无条件写」的窗口。顺序：
+// 节点身份 → 候选三项精确匹配（assignmentId + node + proposedAttempt，stale 只被拒）→
+// ns 交集 → attempt 预算（超了直接终态）→ 机器配置 applied 事实 → 三层执行预算
+// （grantBudgetOn）→ 绑定节点回报的真实 slot → 落 attempt 机器快照 + 写授权事实。
 // 任何失败都不消耗 attempt、不占槽、不伪造 lease；容量拒绝回 pending + waiting_for_slot。
 // decisionToken 只对声明了 outcomes 的 router 任务非空（#522）。
 func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,

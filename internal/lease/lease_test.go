@@ -106,9 +106,6 @@ func (f *fixture) runningTask(t *testing.T, capability *store.CapabilityVersion,
 	return task
 }
 
-// TestRunOnceRequeuesLostLeaseWithinBudget 租约失联按**重试预算**重排（#661）：
-// 非幂等能力只要还有预算就回 pending，不再整单作废。
-// newTask 建一条 pending 任务并回读（拿权威 id/attempt 等字段）。
 func (f *fixture) newTask(t *testing.T, capability *store.CapabilityVersion) *store.Task {
 	t.Helper()
 	ctx := context.Background()
@@ -128,12 +125,9 @@ func (f *fixture) newTask(t *testing.T, capability *store.CapabilityVersion) *st
 	return got
 }
 
-// startTask 走真实入口把任务推到 running（assign + grant），返回续租需要的节点身份。
-// assignment 必须每轮不同：同一个候选不能被授予两次。
 func (f *fixture) startTask(t *testing.T, task *store.Task, assignment string, proposed int, now int64) (store.NodeAuthorization, string, int) {
 	t.Helper()
 	ctx := context.Background()
-	// 节点申报的并发槽位（首次调用时落库；后续轮次沿用同一格，除非测试显式归还）。
 	if instances, err := f.db.ListInstances(ctx, f.node.ID); err != nil {
 		t.Fatalf("列槽位: %v", err)
 	} else if len(instances) == 0 {
@@ -159,9 +153,6 @@ func (f *fixture) startTask(t *testing.T, task *store.Task, assignment string, p
 	return auth, leaseID, attempt
 }
 
-// reclaim 模拟「节点重连并明确声明这一格空闲 + 那次执行已回收」：走真实入口
-// ReclaimStaleSlots（带历史 task/attempt/lease 引用的 Busy=false 事实）。
-// 重排的 attempt 不伪造 reaped，所以下一轮 grant 前必须真的拿到这条回收事实。
 func (f *fixture) reclaim(t *testing.T, taskID string, attempt int, leaseID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -180,13 +171,13 @@ func (f *fixture) reclaim(t *testing.T, taskID string, attempt int, leaseID stri
 	}
 }
 
+// TestRunOnceRequeuesLostLeaseWithinBudget 租约失联按**重试预算**重排（#661）。
 func TestRunOnceRequeuesLostLeaseWithinBudget(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	now := store.Now()
 	capability := f.capability(t, "script", false, 3)
 	task := f.runningTask(t, capability, now)
-	// 租约过期（进程可能还在跑）。
 	if _, err := f.db.Exec(`UPDATE tasks SET lease_until = ? WHERE id = ?`, now-1, task.ID); err != nil {
 		t.Fatalf("过期租约: %v", err)
 	}
@@ -207,7 +198,6 @@ func TestRunOnceRequeuesLostLeaseWithinBudget(t *testing.T) {
 	if stored.Attempt != 1 {
 		t.Fatalf("重排不动 attempt（新 attempt 由下次 grant 计）：%d", stored.Attempt)
 	}
-	// 重排**不伪造** reaped 事实：旧进程可能还在跑（#660 的反面纪律）。
 	att, err := f.db.GetTaskAttempt(ctx, task.ID, stored.Attempt)
 	if err != nil {
 		t.Fatalf("读 attempt: %v", err)
@@ -257,7 +247,6 @@ func TestRunOnceRetentionHonorsTTLAndKeepsActive(t *testing.T) {
 	ctx := context.Background()
 	now := store.Now()
 	capability := f.capability(t, "cleanup", false, 3)
-	// 终态旧任务 + 活动任务各一条。
 	terminal := &store.Task{
 		NamespaceID: f.ns.ID, TraceID: "trace-terminal",
 		CapabilityID: capability.ID, Capability: capability.Name,
@@ -364,8 +353,8 @@ func TestOccupancyByNodeReadsRealLedger(t *testing.T) {
 	}
 }
 
-// TestRunOnceAbandonsExpiredLeaseWithoutBudget 声明「不可重跑」（maxAttempts=1）时，
-// 租约失联仍然是终局，且 #660 的两本账照旧同事务收敛。
+// TestRunOnceAbandonsExpiredLeaseWithoutBudget maxAttempts=1 时租约失联仍是终局，
+// 且 #660 的两本账照旧同事务收敛。
 func TestRunOnceAbandonsExpiredLeaseWithoutBudget(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -403,12 +392,8 @@ func TestRunOnceAbandonsExpiredLeaseWithoutBudget(t *testing.T) {
 	}
 }
 
-// TestLongTaskAcrossTwoTTLsIsNotAbandoned 是验收 ③：一次真实的长执行跨过 ≥2 个 TTL
-// 仍然 running（不被 abandon、不被重排）。
-//
-// 口径与生产同构，只是把量级缩小：TTL=2s、续租 200ms（10 个续租周期/TTL，生产是
-// 180s/20s = 9 个），巡检每 50ms 一轮，用真实定时器跑 2.25 个 TTL（lease_until 是
-// 秒口径，TTL 不能再压到 1s：那样续租永远推不动同一秒内的 deadline）。
+// TestLongTaskAcrossTwoTTLsIsNotAbandoned 是验收 ③：真实长执行跨过 ≥2 个 TTL 仍 running
+// （口径同生产，只缩小量级：TTL=2s、续租 200ms、巡检 50ms、跑 2.25 个 TTL）。
 func TestLongTaskAcrossTwoTTLsIsNotAbandoned(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -435,7 +420,6 @@ func TestLongTaskAcrossTwoTTLsIsNotAbandoned(t *testing.T) {
 	renewals := 0
 	sweeper := NewSweeper(f.db, nil)
 
-	// 续租循环：节点侧 lease.renew 的服务端一半（真实事务 + 身份校验）。
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -460,7 +444,6 @@ func TestLongTaskAcrossTwoTTLsIsNotAbandoned(t *testing.T) {
 			}
 		}
 	}()
-	// 巡检循环：与生产同一条入口（RunOnce = 回收过期租约 + 收敛 + 保留期 + 统计）。
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -486,7 +469,6 @@ func TestLongTaskAcrossTwoTTLsIsNotAbandoned(t *testing.T) {
 			}
 		}
 	}()
-	// 跑满 2.25 个 TTL（等的是「跑够这么久」这个条件，不是等某个动画/超时）。
 	timer := time.NewTimer(total)
 	<-timer.C
 	close(stop)
@@ -520,9 +502,8 @@ func TestLongTaskAcrossTwoTTLsIsNotAbandoned(t *testing.T) {
 	}
 }
 
-// TestKilledNodeIsAbandonedAfterTTL 是验收 ④（反例）：节点进程真死了（不再续租）时，
-// 回收逻辑必须仍然在 TTL 后把它从节点上摘下来，且重排次数被 maxAttempts 卡死——
-// 新逻辑不能把「死」变成「永远不判死」。
+// TestKilledNodeIsAbandonedAfterTTL 是验收 ④（反例）：节点真死了仍须在 TTL 后被摘下来，
+// 且重排被 maxAttempts 卡死——不能变成「永远不判死」。
 func TestKilledNodeIsAbandonedAfterTTL(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

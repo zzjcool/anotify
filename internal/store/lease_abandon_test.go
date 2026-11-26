@@ -9,8 +9,8 @@ import (
 	"github.com/zzjcool/anotify/internal/artifact"
 )
 
-// onceCap 造一个「声明不可重试」的能力（maxAttempts=1）：只有它才会在租约失联时
-// 直接走终局，从而验到 #660 的两本账收敛。有剩余预算的任务在 #661 之后改为重排。
+// onceCap 造一个「声明不可重试」的能力（maxAttempts=1）：只有它才会在租约失联时直接走
+// 终局，从而验到 #660 的两本账收敛（有剩余预算的任务在 #661 之后改为重排）。
 func onceCap(t *testing.T, db *DB, nsID, name string) *CapabilityVersion {
 	t.Helper()
 	one := 1

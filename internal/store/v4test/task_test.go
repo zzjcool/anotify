@@ -303,14 +303,12 @@ func TestTaskCancelPendingIsTerminal(t *testing.T) {
 	}
 }
 
-// TestTaskRecoverIdempotentRequeues 验 infra 失败按**重试预算**重排（幂等声明不再是判据，#661）：
-// 还有预算 → 回 pending；预算用尽（maxAttempts=1）→ abandoned。
+// TestTaskRecoverIdempotentRequeues 验 infra 失败按**重试预算**重排（幂等声明不再是判据，#661）。
 func TestTaskRecoverIdempotentRequeues(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 	ns := newNS(t, db, "recover")
 	idem := lifeCycleCap(t, db, ns, "idem", true, 3)
-	// maxAttempts=1 = 运维显式声明「绝不重跑」：租约失联仍然直接终局。
 	plain := lifeCycleCap(t, db, ns, "plain", false, 1)
 	node := newNode(t, db, "node-a", 2)
 

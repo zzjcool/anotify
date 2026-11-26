@@ -1,12 +1,7 @@
-// Package lease 是 v4 的巡检层：租约过期回收、保留期清理、统计与槽位占用投影。
-//
-// 它只消费 **store 的真实入口**（RecoverLostLeases / RunRetention / MaintainStats /
-// FreeSlotsByNode / InstanceStatsByNode / TaskStats），没有旧 v3 的别名层：
-//
-//   - 租约过期只吊销授权，**不释放物理槽**（reaped 由 cancel.ack 或实例观测给出）；
-//     例外是 abandoned 终局：它同事务收敛两本账（#660），绝不自动重跑非幂等能力；
-//   - 保留期只删 store 里的事件/任务/投递去重记录（TTL=0 永久）；
-//   - 统计/占用是读投影：Total/Busy/Free 都来自真实账本，不按 phase 推断空闲。
+// Package lease 是 v4 的巡检层：租约过期回收、保留期清理、统计与槽位占用投影。它只消费
+// **store 的真实入口**（RecoverLostLeases / RunRetention / MaintainStats / FreeSlotsByNode），
+// 没有旧 v3 的别名层：租约过期只吊销授权、**不释放物理槽**（reaped 由 cancel.ack 或实例观测
+// 给出），例外是 abandoned 终局——它同事务收敛两本账（#660），绝不自动重跑非幂等能力。
 package lease
 
 import (

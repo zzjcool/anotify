@@ -158,13 +158,10 @@ func TestRetentionAndBackpressureOverflowClamp(t *testing.T) {
 	})
 }
 
-// TestCapabilityGCIntervalEnvParsing 覆盖 ANOTIFY_CAPABILITY_GC_INTERVAL_SEC 的六种输入（issue 003）。
-//
-// 语义（逐字模仿 ANOTIFY_ARTIFACT_GC_INTERVAL_SEC，只有默认值与上限不同）：
+// TestCapabilityGCIntervalEnvParsing 覆盖 ANOTIFY_CAPABILITY_GC_INTERVAL_SEC 的六种输入（issue 003）：
 // 未设 / 空 / 非法 → 3600；"0" / 负数 → 0（禁用）；正数 → 原值；超大 → 钳到 1 天。
 //
-// 为什么非法值回落默认而不是 0：`0` 是「关掉 tombstone 回收」这种**不可逆方向**
-// （行只增不减）的显式选择，一个拼写错误不能替运维做这个决定。
+// 非法值回落默认而不是 0：`0` 是「关掉 tombstone 回收」这种不可逆方向的显式选择。
 func TestCapabilityGCIntervalEnvParsing(t *testing.T) {
 	cases := []struct {
 		name string
@@ -212,10 +209,8 @@ func TestCapabilityGCIntervalConversion(t *testing.T) {
 	}
 }
 
-// TestLeaseTTLEnvParsing 覆盖 ANOTIFY_LEASE_TTL 的合法/非法输入（#661）。
-//
-// 与保留期那几条不同：这里**非法值不回落默认**，而是一个哨兵（-1），由 Validate
-// 变成启动失败。理由是缩小租约不会报错、只会让长任务在隧道抖一下时被判失联。
+// TestLeaseTTLEnvParsing 覆盖 ANOTIFY_LEASE_TTL（#661）：非法值不回落默认，而是哨兵 -1，
+// 由 Validate 变成启动失败（缩小租约不报错，只是让长任务被判失联）。
 func TestLeaseTTLEnvParsing(t *testing.T) {
 	cases := []struct {
 		name string
@@ -240,7 +235,7 @@ func TestLeaseTTLEnvParsing(t *testing.T) {
 	}
 }
 
-// TestLeaseTTLValidate 钉住「启动即拒」的四类错配：低于下限、0、负数、与续租间隔不成比例。
+// TestLeaseTTLValidate 钉住「启动即拒」的几类错配：0、负数、低于下限、不足 3 个续租周期。
 func TestLeaseTTLValidate(t *testing.T) {
 	bad := []struct {
 		name string
