@@ -63,7 +63,7 @@ func emitWithTimeout(args []string, out, errOut io.Writer, timeout time.Duration
 	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(*data), &obj); err != nil || obj == nil {
-		return emitFailure(out, errOut, protocol.ReasonTargetNotDeclared, "--data must be a JSON object", 2)
+		return emitFailure(out, errOut, protocol.ReasonParamType, "--data must be a JSON object", 2)
 	}
 	token := os.Getenv(protocol.EnvTaskToken)
 	if token == "" {

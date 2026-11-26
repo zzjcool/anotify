@@ -127,6 +127,20 @@ anode emit --to deploy-preview --id apply-fix --data '{"ok":true}'
 - 0 次 emit = 到此为止（合法）；失败**之前** emit 过就继续（路由只看出口，不看 status）。
 - 不在任务里（没有 `ANOTIFY_EMIT_ENDPOINT` / `ANOTIFY_TASK_TOKEN`）会明确报错退出，
   不会静默成功。
+- `--data` 必须是 JSON **对象**（`{}`）：坏 JSON、数组、`null`、字符串都在本地预检就失败，
+  回 `param_type`（与节点网关对同类错误的判据一致，不是 `target_not_declared`）。
+
+失败时 stdout 只写一行 `{"error":"<码>","message":"…"}`，stderr 写一行人话，退出码如下：
+
+| `error` | 含义 | 退出码 |
+| --- | --- | --- |
+| `param_type` | `--data` 不是 JSON 对象（本地预检，请求未发出） | 2 |
+| `target_not_declared` | 目标不在本次 attempt 钉住的 `spec.next` 里 | 2 |
+| `missing_target` | 没给目标，或给了互相冲突的多个目标 | 2 |
+| `token_invalid` | 任务令牌缺失/无效/过期 | 3 |
+| `task_not_running` | 任务已结束（终态后不要再 emit） | 4 |
+| `emit_unreachable` | 端点不可达/结果未知——**可能已派发**，重发请带同一个 `--id` | 5 |
+| `emit_id_conflict` | 同 `--id` 但 `to`/`data` 不同 | 6 |
 
 ## 5. 版本与帮助
 
