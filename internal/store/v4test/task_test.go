@@ -348,7 +348,7 @@ func TestTaskRecoverIdempotentRequeues(t *testing.T) {
 	if dead.Error != protocol.ReasonLeaseExpired {
 		t.Fatalf("非幂等过期应 abandoned + lease_expired，得到 %q", dead.Error)
 	}
-	// 重排那格必须保留（旧进程可能还在跑）；abandoned 那格已由同事务的终局收敛释放，
+	// 重排那格必须保留（旧进程可能还在跑）；abandoned 那格在终局同事务收敛时释放，
 	// 否则那条 attempt 永远算未回收执行 + 永远占着物理槽（#660）。
 	if busySlots(t, db, node.ID) != 1 {
 		t.Fatalf("重排的槽必须保留、abandoned 的槽必须收敛：busy=%d", busySlots(t, db, node.ID))
