@@ -1360,3 +1360,126 @@ func TestSourceResourceYAMLIsMaskedProjection(t *testing.T) {
 		t.Fatalf("跨 ns 的 404 响应体泄露了凭据投影：%s", rr.Body.String())
 	}
 }
+
+// ---------- #644 第 3 条：message 只留「最后一段原因」 ----------
+
+// TestSourceErrorMessageDropsInternalPrefixes 钉住「面向用户的 message 不背内部前缀」。
+//
+// 实测的旧 message 是三层前缀叠加：
+//
+//	create source: invalid source config: config.schedule：cron 表达式需要 5 段…
+//
+// 前两段是 store / 域的定位信息（日志、调试用），`reason`（`invalid_source_config`）已经把
+// 分类说全了；用户要改的只有最后那句。五个用例逐个钉（POST/PATCH × 配置/引用/保留名），
+// 免得只修了 issue 复现的那一条。
+//
+// 顺带钉 #644 第 2 条：poll `timeoutMs` 的上界以代码为准（`sourcespec.PollTimeoutMaxMs`）。
+// 边界值写死在断言里：文档再写回 60000 时，这条测试里的 120000 就是那句「以代码为准」。
+func TestSourceErrorMessageDropsInternalPrefixes(t *testing.T) {
+	env := newSourceResEnv(t)
+	// 内部前缀：store 的写操作（create/update）+ 两个错误域前缀（config / target）。
+	internalPrefixes := []string{
+		"create source: ", "update source: ",
+		"invalid source config: ", "invalid source target: ",
+	}
+	assertClean := func(t *testing.T, doc map[string]any, want ...string) {
+		t.Helper()
+		if got := sourceResString(t, doc["reason"]); got != "invalid_source_config" {
+			t.Fatalf("reason = %q, want invalid_source_config", got)
+		}
+		msg, _ := doc["message"].(string)
+		if msg == "" {
+			t.Fatal("message 为空：错误体必须给出可读原因")
+		}
+		for _, prefix := range internalPrefixes {
+			if strings.Contains(msg, prefix) {
+				t.Fatalf("message 不应含内部前缀 %q，得到 %q", prefix, msg)
+			}
+		}
+		for _, token := range want {
+			if !strings.Contains(msg, token) {
+				t.Fatalf("message 应含 %q，得到 %q", token, msg)
+			}
+		}
+	}
+	pollSpec := func(config map[string]any) map[string]any {
+		return map[string]any{"kind": "poll", "config": config}
+	}
+	sourceBody := func(name string, spec map[string]any) map[string]any {
+		return map[string]any{
+			"apiVersion": "anotify/v1",
+			"kind":       "Source",
+			"metadata":   map[string]any{"name": name},
+			"spec":       spec,
+		}
+	}
+
+	// ① POST poll 源、cron 非法（issue 的复现用例）：只剩 config.schedule 那句。
+	rr := env.request(http.MethodPost, env.sourcesPath(), sourceBody("poll.bad-schedule", pollSpec(map[string]any{
+		"url":      "https://example.com/feed",
+		"schedule": map[string]any{"expr": "* * *"},
+	})))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("非法 cron 期望 400，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	badSchedule := env.doc(rr)
+	assertClean(t, badSchedule, "config.schedule", "cron")
+	// details.causes[] 的路径定位（#519 的红点点位）不因剪前缀而丢。
+	details := sourceResObj(t, badSchedule["details"])
+	causes := sourceResArr(t, details["causes"])
+	if len(causes) != 1 {
+		t.Fatalf("causes 应有 1 条，得到 %v", causes)
+	}
+	if field := sourceResString(t, sourceResObj(t, causes[0])["field"]); field != "spec.config.schedule" {
+		t.Fatalf("causes[0].field = %q，want spec.config.schedule", field)
+	}
+
+	// ② timeoutMs 越上界 → 400，message 里的区间与代码常量一致（[1000, 120000]）。
+	rr = env.request(http.MethodPost, env.sourcesPath(), sourceBody("poll.bad-timeout", pollSpec(map[string]any{
+		"url":       "https://example.com/feed",
+		"schedule":  map[string]any{"expr": "*/5 * * * *"},
+		"timeoutMs": 120001,
+	})))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("timeoutMs 越界期望 400，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	assertClean(t, env.doc(rr), "config.timeoutMs", "[1000, 120000]")
+
+	// ③ 边界内侧仍可建（120000 是允许的，不是被夹到 60000）。
+	env.createSource(pollSpec(map[string]any{
+		"url":       "https://example.com/feed",
+		"schedule":  map[string]any{"expr": "*/5 * * * *"},
+		"timeoutMs": 120000,
+	}), map[string]any{"name": "poll.max-timeout"})
+
+	// ④ POST 指向不存在的出口能力：只剩「哪个引用写错了」那句。
+	const missing = "does.not.exist"
+	rr = env.request(http.MethodPost, env.sourcesPath(), sourceBody("broken.target", map[string]any{
+		"kind":    "manual",
+		"targets": []any{map[string]any{"capability": missing}},
+	}))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("非法 target 期望 400，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	assertClean(t, env.doc(rr), missing)
+
+	// ⑤ PATCH 写坏 config（未知键）：`update source: ` 也不能出现在 message 里。
+	env.createSource(map[string]any{"kind": "manual"}, map[string]any{"name": "patch.bad-config"})
+	rr = env.request(http.MethodPatch, env.sourcePath("patch.bad-config"), map[string]any{
+		"apiVersion": "anotify/v1",
+		"kind":       "Source",
+		"metadata":   map[string]any{"name": "patch.bad-config", "resourceVersion": env.resourceVersion("patch.bad-config")},
+		"spec":       map[string]any{"config": map[string]any{"expr": "*/5 * * * *"}},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("PATCH 未知键期望 400，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	assertClean(t, env.doc(rr), "expr")
+
+	// ⑥ 保留来源名：sourcespec 的原文就是给人看的，只剩它（前缀 `create source: ` 剪掉）。
+	rr = env.request(http.MethodPost, env.sourcesPath(), sourceBody("route", map[string]any{"kind": "manual"}))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("保留来源名期望 400，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	assertClean(t, env.doc(rr), "保留来源名")
+}

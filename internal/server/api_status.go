@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/zzjcool/anotify/internal/playbook"
 	"github.com/zzjcool/anotify/internal/protocol"
@@ -188,13 +189,14 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		writeStatus(w, http.StatusBadRequest, "invalid_source_kind", err.Error(), nil)
 	case errors.Is(err, store.ErrInvalidSourceConfig):
 		// #519：带路径校验失败逐条落进 details.causes[]（红点点到具体那行配置）。
-		writeStatus(w, http.StatusBadRequest, sourceConfigReason(err), err.Error(), sourceConfigCauses(err))
+		// #644：message 只留最后一段原因（前缀进 error chain / 日志，不进 message）。
+		writeStatus(w, http.StatusBadRequest, sourceConfigReason(err), sourceConfigMessage(err), sourceConfigCauses(err))
 	case errors.Is(err, store.ErrSourceTargetInvalid):
 		// 指向不存在的出口能力是**调用方输入错误**（改引用就好）：不加这条会落 500，被当成瞬时故障重试。
-		writeStatus(w, http.StatusBadRequest, "invalid_source_config", err.Error(), nil)
+		writeStatus(w, http.StatusBadRequest, "invalid_source_config", sourceConfigMessage(err), nil)
 	case errors.Is(err, store.ErrReservedEventSource):
 		// 保留来源名（`route`）是**调用方输入错误**：v3 钉死它必须 400，不加这条会落 500。
-		writeStatus(w, http.StatusBadRequest, "invalid_source_config", err.Error(), nil)
+		writeStatus(w, http.StatusBadRequest, "invalid_source_config", sourceConfigMessage(err), nil)
 	case errors.Is(err, store.ErrCapabilityInvalid):
 		writeStatus(w, http.StatusBadRequest, reasonBadRequest, err.Error(), nil)
 	case errors.Is(err, store.ErrVersionConflict):
@@ -304,4 +306,36 @@ func sourceConfigCauseList(err error) []sourcespec.Cause {
 		return nil
 	}
 	return causes.Causes
+}
+
+// sourceConfigMessage 只把「最后一段原因」交给用户（#644）。
+//
+// store 写路径在包装时逐层给错误文本加上了定位前缀——`create source: ` / `update source: `
+// （操作）与 `invalid source config: ` / `invalid source target: `（错误域）——那是日志/调试用的
+// 信息，`reason` 已经把分类给全了。三层前缀叠在 message 上，真正要改的那句
+// （`config.schedule：cron 表达式需要 5 段…`）就被推到一屏之外。
+//
+// 只做前缀剪裁、不重建文本：`CausesError` 的 `field：原因` 拼接仍然只有一处实现。
+// 层数不写死（循环到没前缀可剪），所以「包装层数变了」不会把前缀又漏出来。
+func sourceConfigMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	prefixes := []string{
+		"create source: ",
+		"update source: ",
+		sourcespec.ErrInvalidConfig.Error() + ": ",
+		"invalid source target: ",
+	}
+	text := err.Error()
+	for {
+		rest := text
+		for _, prefix := range prefixes {
+			rest = strings.TrimPrefix(rest, prefix)
+		}
+		if rest == text {
+			return text
+		}
+		text = rest
+	}
 }

@@ -819,7 +819,7 @@ func (a *capabilityAPI) testRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Version < 0 {
-		writeAPIError(w, errStatus(http.StatusBadRequest, reasonBadRequest, "version must be ≥ 1"))
+		writeAPIError(w, errStatus(http.StatusBadRequest, reasonBadRequest, "version must be ≥ 0 (0 = live version)"))
 		return
 	}
 	row, err := a.testTargetVersion(r, ns, name, body.Version)

@@ -596,3 +596,56 @@ func TestCapabilityTestEventOriginInEventStream(t *testing.T) {
 		t.Fatalf("非法 origin 应 400，实际 %d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+// ---------- 6b) version: 0 = live（#644 第 1 条） ----------
+
+// TestCapabilityTestVersionZeroIsLive 钉住「省略 / 0 = 当前 live 版本」与代码一致。
+//
+// 契约（api/resource.yaml `CapabilityTestRequest.version`）一直写的是「省略 / 0 = 当前
+// live 版本」，schema 却写着 `minimum: 1`：严格按 schema 生成的客户端**永远发不出 0**
+// （本地就拒），描述与 schema 自相矛盾。handler 的判据本来就是 `< 0` 才拒，所以这里把
+// 三条一起钉住，防止有人反过来把 0 当非法：
+//   - 显式 0 → 200，且回执版本就是 live 那一版；
+//   - 省略（= zero value）→ 200，与显式 0 同一个版本（两条路径不许分叉）；
+//   - 负数 → 400（0 合法不代表负数合法）。
+func TestCapabilityTestVersionZeroIsLive(t *testing.T) {
+	env := newCapTestEnv(t)
+	env.createCapability(t, env.nsA, "live-version", "#!/bin/sh\necho live\n")
+
+	versionOf := func(t *testing.T, receipt map[string]any) int {
+		t.Helper()
+		tasks := capArray(t, receipt["tasks"], "tasks")
+		if len(tasks) != 1 {
+			t.Fatalf("回执 tasks 应有 1 条，实际 %d: %#v", len(tasks), tasks)
+		}
+		return capNumber(t, capObject(t, tasks[0], "tasks[0]"), "version")
+	}
+
+	// ① 显式 0。
+	code, zero := env.testReceipt(t, env.nsA, "live-version", map[string]any{"version": 0})
+	if code != http.StatusOK {
+		t.Fatalf("version: 0 应解析成 live（200），实际 %d: %#v", code, zero)
+	}
+	if got := versionOf(t, zero); got != 1 {
+		t.Fatalf("version: 0 落到的版本 = %d，want 1（live）", got)
+	}
+
+	// ② 省略：与 ① 同一个版本。
+	code, omitted := env.testReceipt(t, env.nsA, "live-version", nil)
+	if code != http.StatusOK {
+		t.Fatalf("省略 version 应为 200，实际 %d: %#v", code, omitted)
+	}
+	if got, want := versionOf(t, omitted), versionOf(t, zero); got != want {
+		t.Fatalf("省略 version 落到 %d，显式 0 落到 %d（两条解析必须同一条）", got, want)
+	}
+
+	// ③ 负数仍然 400（不是 500，也不是被当成 live）。
+	rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "live-version", "test"),
+		map[string]any{"version": -1})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("version: -1 应 400，实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := capString(t, decodeCapJSON(t, rec), "reason"); got != reasonBadRequest {
+		t.Fatalf("version: -1 的 reason = %q，want %q", got, reasonBadRequest)
+	}
+}
