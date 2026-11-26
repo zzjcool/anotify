@@ -1541,6 +1541,18 @@ nodes:
     save: 'Guardar'
     reload: "Recargar última configuración explícitamente"
     reload_confirm: "Recargar reemplaza su borrador. ¿Continuar?"
+    save_confirm_title: "¿Cambiar la retención de datos?"
+    save_confirm_line: "{label} {from} → {to}"
+    save_confirm_line_same: "{label} sin cambios"
+    save_confirm_impact_forever: " (se conserva para siempre; el disco solo crece)"
+    save_confirm_impact_shrink: " (los datos fuera de la nueva ventana se eliminan y no se pueden recuperar)"
+    save_confirm_impact_extend: " (ventana más larga; no se elimina nada)"
+    save_confirm_note: "Se aplica de inmediato a la limpieza. Los datos eliminados no se pueden recuperar."
+    save_confirm_ok: "Confirmar y guardar"
+    ttl_forever: "para siempre"
+    ttl_days: "{n} d"
+    ttl_hours: "{n} h"
+    ttl_seconds: "{n} s"
     saved: "Guardado. La nodo espera apply; los valores de namespace afectan solo la siguiente tarea."
     stale: 'Se modificó en otro lugar; tu borrador se conserva intacto. Actualiza y vuelve a intentar: no se sobrescribe automáticamente.'
     error: "Solicitud fallida"

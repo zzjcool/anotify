@@ -268,15 +268,36 @@ export async function nodeRetained(d,mode){
     assert.equal(await page.locator('#result-ttl').inputValue(), String(initial.resultTtlSec));
     assert.equal(await page.locator('#event-ttl').inputValue(), String(initial.eventTtlSec));
     assert.equal(await page.locator('#task-ttl').inputValue(), String(initial.taskTtlSec));
-    await page.locator('#result-ttl').fill('0'); await page.locator('#system-save').click(); await waitStateKey('system-state', 'nodes.v4.saved');
+    const sysPath = get.url; // #647：保留期保存会真删数据 → 先确认再写；取消必须零写入、草稿保留
+    const systemPuts = async () => (await calls()).filter(c => c.method === 'PUT' && c.url === sysPath).length;
+    await page.locator('#result-ttl').fill('0');
+    const putsBeforeCancel = await systemPuts();
+    const cancelText = await dismissDialog(page, () => page.locator('#system-save').click());
+    assert.ok(cancelText.includes('forever') && cancelText.includes('unchanged'), '确认弹层要逐字段给出影响摘要（改的字段 + 未变的字段）：' + cancelText);
+    assert.equal(await systemPuts(), putsBeforeCancel, '取消确认后不得发出任何写入');
+    assert.equal(await page.locator('#result-ttl').inputValue(), '0', '取消后草稿原样保留');
+    await shot('system0-save-confirm');
+    await acceptDialog(page, () => page.locator('#system-save').click());
+    await waitStateKey('system-state', 'nodes.v4.saved');
     // 保存会同时刷新只读 YAML（同一份事实的两个视图，不允许其中一个是旧的）。
     await page.waitForFunction(() => (document.getElementById('system-yaml-text')?.textContent || '').includes('resultTtlSec: 0'));
     const zero = (await req('/v1/system/config')).body; assert.equal(zero.retention.resultTtlSec, 0); assert.equal(zero.retention.eventTtlSec, initial.eventTtlSec);
     const systemPut = (await calls()).filter(c => c.method === 'PUT' && c.url === '/v1/system/config').at(-1); assert.deepEqual(Object.keys(systemPut.body).sort(), ['metadata','retention']);
     const remoteEventTtl = initial.eventTtlSec + 1000;
     const remote = await req('/v1/system/config', { metadata: zero.metadata, retention: { ...zero.retention, eventTtlSec: remoteEventTtl } }, 'PUT'); assert.equal(remote.status, 200);
-    await page.locator('#event-ttl').fill('42'); await page.locator('#system-save').click(); await waitStateKey('system-state', 'nodes.v4.stale'); assert.equal(await page.locator('#event-ttl').inputValue(), '42');
+    await page.locator('#event-ttl').fill('42'); await acceptDialog(page, () => page.locator('#system-save').click()); await waitStateKey('system-state', 'nodes.v4.stale'); assert.equal(await page.locator('#event-ttl').inputValue(), '42');
     await shot('system0-permanent-stale409-draft'); await acceptDialog(page, () => page.locator('#system-reload').click()); await waitStateKey('system-state', 'nodes.v4.loaded'); assert.equal(await page.locator('#event-ttl').inputValue(), String(remoteEventTtl));
+    const dialogVisible = async () => (await page.locator('#anotify-dialog:not(.hidden)').count()) > 0; // 弹层是单例，只能按 .hidden 判可见
+    const wrotePut = before => page.waitForFunction(([p, n]) => __f3Calls.filter(c => c.method === 'PUT' && c.url === p).length > n, [sysPath, before]);
+    const putsAfterReload = await systemPuts();
+    await page.locator('#task-ttl').fill(String(initial.taskTtlSec + 86400)); // 延长不删数据：不该弹确认；这两次写必须在 reload 之后，否则会把下面要用的 rv 弄过期
+    await page.locator('#system-save').click();
+    assert.equal(await dialogVisible(), false, '延长保留期不需要确认');
+    await wrotePut(putsAfterReload);
+    const putsAfterExtend = await systemPuts();
+    await page.locator('#system-save').click();
+    assert.equal(await dialogVisible(), false, '未改动时保存不需要确认');
+    await wrotePut(putsAfterExtend);
     // 顺序很关键：页面**先**加载旧 rv，再做远端写入，页面的草稿才会真的过期
     // （反过来的话页面拿到的是远端写入后的新 rv，保存会成功，"stale 409" 就假绿了）。
     await goto('namespace', 'en', '?namespace=default&name=default'); await page.locator('#namespace-save:not([disabled])').waitFor();
