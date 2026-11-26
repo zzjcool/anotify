@@ -636,13 +636,11 @@ async function main() {
 			const paused = document.getElementById("node-vars-paused");
 			return { value: cell ? cell.textContent.trim() : null, saveDisabled: save.disabled === true, paused: !paused.hidden, pausedText: paused.textContent.trim() };
 		});
-		/* 后台刷新由「切回标签页」触发：headless 里 document.visibilityState 永远是 visible，切不出真的
-		 * hidden → visible，所以派发同名事件驱动同一个 handler（守卫本身才是被测对象）。 */
+		/* 后台刷新由「切回标签页」触发：headless 切不出真的 hidden→visible，派发同名事件驱动同一个 handler。 */
 		const background = () => page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
 		const frame = () => page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
 		const expects = await page.evaluate(() => ({ paused: window.Anotify.t("nodes.v4.vars_refresh_paused"), confirm: window.Anotify.t("nodes.v4.vars_refresh_confirm") }));
-		/* 弹层关闭是 140ms 退场（partials.js closeModal：先加 .is-closing、计时到点才写 .hidden）：点了取消/确认 ≠ 已收掉。
-		 * 判据取 .hidden 类 —— 淡出中（opacity:0）的元素对 Playwright 仍算 visible，用可见性当判据会继续踩这条时序（#547）。 */
+		/* 弹层关闭是 140ms 退场（closeModal 先加 .is-closing、计时到点才写 .hidden）：判据取 .hidden 类，用可见性会踩 #547。 */
 		const dialogNow = () => page.evaluate(() => {
 			const dlg = document.getElementById("anotify-dialog");
 			const txt = (id) => (document.getElementById(id)?.textContent || "").trim();
@@ -741,6 +739,98 @@ async function main() {
 			`可见弹层：标题=${JSON.stringify(seen.title)} 正文=${JSON.stringify(seen.body)} closing=${seen.closing}`);
 		H.eq("⑤ 不脏时没有暂停提示", (await state()).paused, false);
 		H.check("节点页无 JS pageerror（#546 阶段）", errs.length === 0, errs[0]?.slice(0, 160));
+		await page.close();
+		await ctx.close();
+	}
+
+	/* ================= #639：页头「刷新」不许静默覆盖未保存的 vars 草稿 ================= */
+	console.log("--- #639：命名空间页页头刷新遇未保存的草稿 ---");
+	{
+		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
+		await primeScope(ctx);
+		await injectSession(ctx, s.session, server.base);
+		const page = await ctx.newPage();
+		const errs = [];
+		page.on("pageerror", (e) => errs.push(String(e)));
+		const net = watchInflight(page);
+		const frame = () => page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+		const configPath = V.P.namespaceConfig(NS);
+		const configReads = []; // 只数命名空间 config 的 GET：它就是被页头刷新丢掉的那份草稿的来源，比数「所有请求」精确
+		const isConfigGet = (req) => req.method() === "GET" && new URL(req.url()).pathname === configPath;
+		page.on("request", (req) => { if (isConfigGet(req)) configReads.push(req.url()); });
+		await page.goto(server.base + "/namespace.html?name=" + NS, { waitUntil: "load", timeout: 15000 });
+		await H.waitForAppReady(page, "workspace");
+		/* 等首轮 loadNamespace 落地：原始值（也就是脏判据的另一半）由它写入，编辑框也由它解禁。 */
+		await page.waitForFunction(() => {
+			const ta = document.getElementById("namespace-vars");
+			return ta && ta.disabled === false && ta.value.trim() !== "";
+		}, null, { timeout: STATE_WAIT });
+		const expects = await page.evaluate(() => ({ confirm: window.Anotify.t("nodes.v4.reload_confirm") }));
+		const DRAFT = '{\n  "DRAFT_639": "unsaved"\n}';
+		const textarea = page.locator("#namespace-vars");
+		const dialogNow = () => page.evaluate(() => {
+			const dlg = document.getElementById("anotify-dialog");
+			return { hidden: !dlg || dlg.classList.contains("hidden"), closing: !!dlg && dlg.classList.contains("is-closing"), body: (document.getElementById("anotify-dialog-body")?.textContent || "").trim() };
+		});
+		const waitDialogClosed = async (why) => { // 收尾只等条件（closeModal 计时真的写下 .hidden），不 sleep 猜时长
+			try {
+				await page.waitForFunction(() => {
+					const dlg = document.getElementById("anotify-dialog");
+					return !dlg || dlg.classList.contains("hidden");
+				}, null, { timeout: 5000 });
+			} catch {
+				throw new Error(`${why}：确认框没收掉（${JSON.stringify(await dialogNow())}）—— 下一个用例的断言会把这件事误报成「守卫有问题」`);
+			}
+		};
+
+		console.log("--- ① 有草稿 → 页头刷新先确认；取消 → 草稿保留、整次刷新没发生 ---");
+		await textarea.fill(DRAFT);
+		const readsBeforeCancel = configReads.length;
+		await page.locator("#ns-refresh").click();
+		await page.locator("#anotify-dialog [data-dialog-ok]").waitFor({ state: "visible", timeout: 5000 });
+		H.eq("① #ns-refresh 遇未保存的草稿 → 先确认，文案与「重新加载」逐字相同", (await page.locator("#anotify-dialog-body").innerText()).trim(), expects.confirm);
+		await page.locator("#anotify-dialog [data-dialog-cancel]").click();
+		await waitDialogClosed("① 取消刷新后的收尾");
+		H.eq("① 取消 → 编辑框里的草稿原样保留", await textarea.inputValue(), DRAFT);
+		H.eq("① 取消整次刷新：没有发出任何命名空间 config 读请求", configReads.length, readsBeforeCancel);
+
+		console.log("--- ② 同一份草稿改成确认 → 刷新真的发生（草稿这次是被问过才丢的）---");
+		await page.locator("#ns-refresh").click();
+		await page.locator("#anotify-dialog [data-dialog-ok]").waitFor({ state: "visible", timeout: 5000 });
+		await page.locator("#anotify-dialog [data-dialog-ok]").click();
+		await page.waitForFunction(() => !document.getElementById("namespace-vars").value.includes("DRAFT_639"), null, { timeout: STATE_WAIT });
+		H.check("② 确认刷新 → 编辑框回到服务端值", !(await textarea.inputValue()).includes("DRAFT_639"), await textarea.inputValue());
+		H.check("② 确认刷新 → 真的重读了 …/config", configReads.length > readsBeforeCancel, `${readsBeforeCancel} → ${configReads.length}`);
+		await waitDialogClosed("② 确认刷新后的收尾");
+		await net.idle(); await frame(); // loadAll 是多跳：等收尾停下，再让同步重绘落地（④ 的开编辑器不能被它的重建收掉）
+
+		console.log("--- ③ 无草稿时刷新不弹框（对照组：不是无条件拦截）---");
+		const readsBeforeClean = configReads.length;
+		const [cleanResp] = await Promise.all([
+			page.waitForResponse((r) => r.request().method() === "GET" && new URL(r.url()).pathname === configPath, { timeout: STATE_WAIT }),
+			page.locator("#ns-refresh").click(),
+		]);
+		H.eq("③ 无草稿时页头刷新照常发出 config 读（没有被守卫拦下）", cleanResp.status(), 200);
+		H.eq("③ 无草稿时刷新不弹确认框", (await dialogNow()).hidden, true);
+		H.check("③ 刷新真的发生了一次", configReads.length > readsBeforeClean, `${readsBeforeClean} → ${configReads.length}`);
+		await net.idle(); await frame();
+
+		console.log("--- ④ 右侧表格里未保存的行也是草稿：刷新同样先问，取消后行还在 ---");
+		await page.locator("#namespace-vars-add").click();
+		await page.locator('#namespace-effective-vars tr[data-editing="true"] input[data-field="name"]').fill("PENDING_639");
+		await page.locator('#namespace-effective-vars tr[data-editing="true"] input[data-field="value"]').fill("pending-639");
+		const readsBeforeTable = configReads.length;
+		await page.locator("#ns-refresh").click();
+		await page.locator("#anotify-dialog [data-dialog-ok]").waitFor({ state: "visible", timeout: 5000 });
+		H.eq("④ 表格草稿遇到刷新 → 先确认（同一条文案）", (await page.locator("#anotify-dialog-body").innerText()).trim(), expects.confirm);
+		await page.locator("#anotify-dialog [data-dialog-cancel]").click();
+		await waitDialogClosed("④ 取消刷新后的收尾");
+		H.eq("④ 取消 → 编辑中的那一行还在，刚填的值没被重画掉",
+			await page.locator('#namespace-effective-vars tr[data-editing="true"] input[data-field="value"]').inputValue(), "pending-639");
+		H.eq("④ 取消整次刷新：没有发出 config 读", configReads.length, readsBeforeTable);
+		await page.locator('#namespace-effective-vars [data-act="vars-cancel"]').click();
+		H.check("命名空间页无 JS pageerror（#639 阶段）", errs.length === 0, errs[0]?.slice(0, 160));
 		await page.close();
 		await ctx.close();
 	}
