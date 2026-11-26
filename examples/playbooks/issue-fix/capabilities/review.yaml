@@ -89,7 +89,13 @@ spec:
 
         findings=$(sed -n 's/.*"findings": *"\([^"]*\)".*/\1/p' "$verdict" | head -1)
         if [ "$round" -lt 2 ]; then
-          anode emit '{{values.project}}-fix' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"round\":$round,\"pr\":\"$pr\",\"branch\":\"$branch\",\"findings\":\"${findings:-review 未通过}\"}"
+          gh issue comment "$issue" --repo "$repo" --body "review（第 $round 轮）未通过，findings 见上一条评论或本条：${findings:-review 未通过}"
+          anode emit '{{values.project}}-fix' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"round\":$round,\"pr\":\"$pr\",\"branch\":\"$branch\"}"
           exit 0
         fi
-        anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"escalate\",\"pr\":\"$pr\",\"findings\":\"${findings:-第二轮 review 仍未通过}\"}"
+        anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"escalate\",\"pr\":\"$pr\"}"
+    env:
+      REPO_DIR: '{{values.repoDir}}'
+      AGENT_CMD: '{{values.agentCmd}}'
+      AGENT_ARGS: '{{values.agentArgs}}'
+      BASE_BRANCH: '{{values.baseBranch}}'
