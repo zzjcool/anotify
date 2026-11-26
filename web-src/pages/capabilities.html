@@ -1736,6 +1736,8 @@
           p.textContent = "";
           p.classList.add("hidden");
         }
+        const body = $("cap-modal") && $("cap-modal").querySelector(".modal-body");
+        A.clearCauses(body);
         $("cap-form-msg").textContent = "";
       }
       function showFormError(field, message) {
@@ -1765,24 +1767,12 @@
       function hideBanner() {
         const banner = $("cap-banner");
         if (banner) banner.className = "cap-banner hidden";
+        const holder = $("cap-banner-text");
+        if (holder) holder.replaceChildren();
       }
+      /* 能力写面今天只有 params 会被后端点名（artifact.go:633 是唯一非空 field 的生产点），其余落 rest[]。 */
       const CAUSE_FIELDS = {
-        name: "cap-name",
-        "metadata.name": "cap-name",
-        displayName: "cap-display-name",
-        "metadata.displayName": "cap-display-name",
-        version: "cap-version",
-        "metadata.version": "cap-version",
         params: "cap-params",
-        "run.files": "cap-files",
-        "run.entrypoint": "cap-entrypoint",
-        "run.script": "cap-entrypoint",
-        run: "cap-entrypoint",
-        "run.workDir": "cap-workdir",
-        next: "cap-next",
-        requires: "cap-requires-commands",
-        lifecycle: "cap-idempotent",
-        concurrency: "cap-concurrency",
       };
       function causeStep(control) {
         for (const body of wizardBodies()) {
@@ -1796,8 +1786,7 @@
         A.focusCause(control);
       }
       function showWriteError(e) {
-        /* 新建只有一个写动作（POST），409 就是「这个名字已被占用」，400 是输入问题；
-           两种都把服务端结论原样说清楚，输入一律保留、不自动重试。 */
+        /* 新建只有一个写动作（POST）：409 是名字被别人占用，400 是输入问题，两种都把服务端结论原样说清、输入一律保留。 */
         const body = $("cap-modal") && $("cap-modal").querySelector(".modal-body");
         const res = A.applyCauses(body, e, CAUSE_FIELDS);
         if (res.causes.length) {

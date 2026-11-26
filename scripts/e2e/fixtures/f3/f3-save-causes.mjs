@@ -91,4 +91,31 @@ export async function sourceSaveCauses(d) {
 	await page.locator('#src-modal').waitFor({ state: 'hidden', timeout: 20000 });
 	const after = await d.response(POST + '/' + NAME);
 	assert.equal(after.status, 404, '被拒绝的源不许落库，实际 ' + after.status);
+
+	await page.locator('#btn-new').click();
+	await page.locator('#src-modal:not(.hidden)').waitFor({ state: 'visible', timeout: 20000 });
+	const residue = await page.evaluate(() => {
+		const body = document.getElementById('src-modal-body');
+		return {
+			fields: ['f-poll-url', 'f-expr', 'f-poll-timeout'].map((id) => {
+				const input = document.getElementById(id);
+				return { id, aria: input.getAttribute('aria-invalid'), invalid: input.classList.contains('is-invalid'), value: input.value };
+			}),
+			hints: [...body.querySelectorAll('[data-cause-for]')].map((n) => n.getAttribute('data-cause-for')),
+			report: body.querySelectorAll('.cause-report').length,
+			result: (document.getElementById('form-result').textContent || '').trim(),
+		};
+	});
+	for (const row of residue.fields) {
+		assert.equal(row.aria, null, '重开后 ' + row.id + ' 不许还挂着上一轮的 aria-invalid');
+		assert.equal(row.invalid, false, '重开后 ' + row.id + ' 不许还是上一轮的红框');
+	}
+	assert.deepEqual(residue.hints, [], '重开后不许残留上一轮的 cause 提示，实际 ' + JSON.stringify(residue.hints));
+	assert.equal(residue.report, 0, '重开后不许残留上一轮的原因清单');
+	assert.equal(residue.result, '', '重开后 #form-result 必须是空的，实际 ' + residue.result);
+	assert.equal(residue.fields[1].value, '0 3 * * *', '重开后 cron 必须回到默认值，实际 ' + residue.fields[1].value);
+	assert.equal(residue.fields[2].value, '10000', '重开后 timeoutMs 必须回到默认值，实际 ' + residue.fields[2].value);
+	check('SAVE-CAUSES-05 reopening the editor drops the previous round of marks (aria-invalid / hint / report)');
+	await page.locator('#modal-cancel').click();
+	await page.locator('#src-modal').waitFor({ state: 'hidden', timeout: 20000 });
 }

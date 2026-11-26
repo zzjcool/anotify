@@ -557,6 +557,7 @@ function syncHeaderCap(){
   $("add-poll-header").disabled=$("f-poll-headers").children.length>=POLL_HEADER_MAX;
 }
 function resetPollForm(){
+  A.clearCauses($("src-modal-body"));
   for(const id of ["f-poll-url","f-poll-cred-name","f-poll-cred-header","f-poll-cred-prefix","f-poll-secret","f-env-items","f-env-type","f-env-delivery"])$(id).value="";
   $("f-poll-timeout").value=POLL_TIMEOUT_DEFAULT;
   $("f-poll-maxitems").value=POLL_MAXITEMS_DEFAULT;
@@ -767,6 +768,13 @@ function flagField(id,message){
   const input=$(id),box=$(id+"-error");
   if(!input)return;
   input.classList.toggle("is-invalid",!!message);
+  /* aria-invalid 与动态 cause hint 是 applyCauses 的通道，flagField 不清就会与红框脱节。 */
+  if(message)input.setAttribute("aria-invalid","true");
+  else{
+    input.removeAttribute("aria-invalid");
+    const stale=document.querySelector('[data-cause-for="'+id+'"]');
+    if(stale)stale.remove();
+  }
   if(box){
     box.textContent=message||"";
     box.classList.toggle("hidden",!message);
@@ -853,6 +861,8 @@ function flagField(id,message){
   function closeEditor() {
     const done = CTX.onClose;
     CTX.onClose = null;
+    /* 关掉弹层只隐藏 DOM，标记不清就会活到下一次打开，在新表单上报上一轮的错。 */
+    A.clearCauses($("src-modal-body"));
     A.closeModal($("src-modal"));
     $("f-token").value="";
     $("f-secret").value="";

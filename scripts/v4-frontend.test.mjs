@@ -6074,11 +6074,11 @@ test('E1b immutable exactly-once attempt validator: UNIT fake records never brow
   for(const change of [{ok:false},{checks:0},{report:{errors:['501 network failure']}}])assert.throws(()=>e1bEpoch.validateAttempt(id,{...result,...change},exit,id));
   assert.throws(()=>e1bEpoch.validateAttempt(id,result,null,id));
 });
-test('E1b all 48 ACTUAL frontend registered IDs exactly once: UNIT records, not browser PASS', async () => {
+test('E1b all 49 ACTUAL frontend registered IDs exactly once: UNIT records, not browser PASS', async () => {
   const {CASES}=await import('./e2e/fixtures/f3/f3-cases.mjs');
   // 条数 = f3-cases 的直呼项 + 四组循环展开；顺带钉「没有重复注册」（这个数漂过）。
-  assert.equal(CASES.length,48);
-  assert.equal(new Set(CASES.map(x=>x.id)).size,48,'注册 ID 不得重复');
+  assert.equal(CASES.length,49);
+  assert.equal(new Set(CASES.map(x=>x.id)).size,49,'注册 ID 不得重复');
   const attempts=CASES.map(({id},i)=>({suite:'frontend',id,runId:'UNIT-all38',attemptId:'a'+i,cwd:ROOT,mode:'explicit-mock',authority:'explicit-mock',sourceHash:'unitSHA',sourceCodeSHA:'unitCode',fullSourceArtifactSHA:'unitSHA',artifactEpoch:'unitSHA'}));
   const exits=attempts.map(x=>({...x,exitCode:0,signal:null,timedOut:false}));
   const registered=CASES.map(x=>x.id),manifest={registered,attempts};

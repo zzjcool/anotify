@@ -686,7 +686,6 @@
 
 		trigger.addEventListener("click", toggleMenu);
 
-		/* keyboard nav inside menu */
 		menu.addEventListener("keydown", (e) => {
 			const idx = menuItems.indexOf(document.activeElement);
 			if (e.key === "ArrowDown") {
@@ -710,7 +709,6 @@
 			}
 		});
 
-		/* trigger keyboard: Enter/Space/ArrowDown to open */
 		trigger.addEventListener("keydown", (e) => {
 			if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown") {
 				e.preventDefault();
@@ -718,7 +716,6 @@
 			}
 		});
 
-		/* outside click closes */
 		document.addEventListener("click", (e) => {
 			if (!host.contains(e.target)) closeMenu();
 		});
@@ -2610,6 +2607,11 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			}
 		}
 		CAUSE_MARKS.delete(root);
+	}
+
+	/* 标记按 root 存在 WeakMap 里，不随表单值重置消失：打开/关闭编辑器必须显式收掉上一轮。 */
+	function clearCauses(root) {
+		clearCauseMarks(root && root.querySelector ? root : document);
 	}
 
 	function markCause(root, control, message) {
@@ -4905,6 +4907,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		api,
 		copyText,
 		applyCauses,
+		clearCauses,
 		causeReport,
 		causeMessage,
 		focusCause,
