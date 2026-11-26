@@ -110,14 +110,12 @@ func newSourceResEnv(t *testing.T) *sourceResEnv {
 	return &sourceResEnv{t: t, db: db, mux: mux, nsID: ns.ID, nsSlug: ns.Slug}
 }
 
-// sourcesPath 是 List/创建路径；sourcePath 是单对象路径。
 func (e *sourceResEnv) sourcesPath() string { return "/v1/namespaces/" + e.nsID + "/sources" }
 
 func (e *sourceResEnv) sourcePath(name string) string {
 	return e.sourcesPath() + "/" + name
 }
 
-// request 发一次请求并返回 recorder。body 可以是 nil / string（原样）/ 任意可 JSON 值。
 func (e *sourceResEnv) request(method, target string, body any) *httptest.ResponseRecorder {
 	e.t.Helper()
 	var reader io.Reader
@@ -157,7 +155,6 @@ func (e *sourceResEnv) count(table string) int {
 	return n
 }
 
-// createSource 走 HTTP 建一个源并返回 201 文档；非 201 直接失败。
 func (e *sourceResEnv) createSource(spec map[string]any, meta map[string]any) map[string]any {
 	e.t.Helper()
 	body := map[string]any{
@@ -173,7 +170,6 @@ func (e *sourceResEnv) createSource(spec map[string]any, meta map[string]any) ma
 	return e.doc(rr)
 }
 
-// resourceVersion 取单对象的 metadata.resourceVersion（CAS 用例的令牌来源）。
 func (e *sourceResEnv) resourceVersion(name string) string {
 	e.t.Helper()
 	rr := e.request(http.MethodGet, e.sourcePath(name), nil)
@@ -345,7 +341,6 @@ func TestSourceResourceCreateGetMasksSecrets(t *testing.T) {
 	}
 	sourceResAssertNoCredentialLeak(t, mustJSONString(t, created), token, secret)
 
-	// 单对象读。
 	rr := env.request(http.MethodGet, env.sourcePath("deploy-hook"), nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("GET 单对象期望 200，得到 %d：%s", rr.Code, rr.Body.String())
@@ -359,7 +354,6 @@ func TestSourceResourceCreateGetMasksSecrets(t *testing.T) {
 		t.Fatalf("GET 单对象的读投影不对：%v", gotCfg)
 	}
 
-	// 列表。
 	rr = env.request(http.MethodGet, env.sourcesPath(), nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("GET 列表期望 200，得到 %d：%s", rr.Code, rr.Body.String())
@@ -682,7 +676,6 @@ func TestSourceResourceFireReceiptShape(t *testing.T) {
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("停用源 fire 期望 404，得到 %d：%s", rr.Code, rr.Body.String())
 	}
-	// 不存在的源同码同文案。
 	rr = env.request(http.MethodPost, env.sourcePath("nope")+"/fire", nil)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("不存在的源 fire 期望 404，得到 %d：%s", rr.Code, rr.Body.String())
@@ -885,7 +878,6 @@ func TestSourceResourceHookResolvesNamespaceByToken(t *testing.T) {
 	}
 }
 
-// mustJSONString 把文档再编码成字符串（脱敏断言要扫「整份响应体任何位置」）。
 func mustJSONString(t *testing.T, doc map[string]any) string {
 	t.Helper()
 	raw, err := json.Marshal(doc)
@@ -1053,7 +1045,6 @@ func TestSourceResourceFireFailureWritesNothing(t *testing.T) {
 		t.Fatalf("停用源 fire 的 reason 期望 %q，得到 %q", reasonNotFound, reason)
 	}
 
-	// ② 不存在的源 fire → 404。
 	rr = env.request(http.MethodPost, env.sourcePath("never-existed")+"/fire", map[string]any{
 		"payload": map[string]any{"k": "v"},
 	})
@@ -1061,7 +1052,7 @@ func TestSourceResourceFireFailureWritesNothing(t *testing.T) {
 		t.Fatalf("不存在源 fire 期望 404，得到 %d：%s", rr.Code, rr.Body.String())
 	}
 
-	// ③ 两次失败请求前后，tasks / events 的行数必须完全不变（直接数表，最硬的判据）。
+	// ② 两次失败请求前后，tasks / events 的行数必须完全不变（直接数表，最硬的判据）。
 	if got := env.count("tasks"); got != tasksBefore {
 		t.Fatalf("fire 失败写了任务行：%d → %d", tasksBefore, got)
 	}
@@ -1069,7 +1060,7 @@ func TestSourceResourceFireFailureWritesNothing(t *testing.T) {
 		t.Fatalf("fire 失败写了事件行：%d → %d", eventsBefore, got)
 	}
 
-	// ④ 用 store 读模型复核（防「写了又删」这种把表数抹平的实现）。
+	// ③ 用 store 读模型复核（防「写了又删」这种把表数抹平的实现）。
 	tasks, err := env.db.ListTasks(ctx, env.nsID, store.TaskFilter{})
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
@@ -1092,7 +1083,7 @@ func TestSourceResourceFireFailureWritesNothing(t *testing.T) {
 		t.Fatalf("fire 失败不该留下事件（含剪枝留痕），实际 %d 条", len(events))
 	}
 
-	// ⑤ 源本身也没被改写：仍可读、仍停用。
+	// ④ 源本身也没被改写：仍可读、仍停用。
 	kept := env.request(http.MethodGet, env.sourcePath("paused-hook"), nil)
 	if kept.Code != http.StatusOK {
 		t.Fatalf("失败的 fire 不该动到源本身，期望 200，得到 %d：%s", kept.Code, kept.Body.String())
@@ -1107,9 +1098,6 @@ func TestSourceResourceFireFailureWritesNothing(t *testing.T) {
 // `route` 是剪枝/失败观察留痕的保留来源名（store.EventPruneSource）。把它当普通源名
 // 建出来，会让自己投递的业务事件在事件流里被**静默过滤**（并且 trace 视图把它当剪枝）
 // ——这是会丢数据的调用方输入错误，必须是 400，而不是 500（服务端故障）。
-//
-// v3 有专门用例 `TestWriteSourceErrReservedNameIs400`（三层：包装错误→400、其它错误→500、
-// body 含 `route` 提示）；v4 迁移时丢了，这里恢复同一安全意图。
 func TestSourceResourceReservedNameIs400(t *testing.T) {
 	env := newSourceResEnv(t)
 
@@ -1146,11 +1134,6 @@ func TestSourceResourceReservedNameIs400(t *testing.T) {
 // targets 是用户写的**引用**：指向一个不存在的名字（或钉死的版本）是调用方输入错误，
 // 客户端改一下就好。它落 default 500 会把「参数写错了」报成「服务器坏了」——客户端/
 // 控制台据此分支重试策略，报错方向反了就会无限重试一个永远不可能成功的写。
-//
-// 三条一起钉：
-//   - POST 非法 target → 400 + source 域封闭码 + 消息点名那个能力（0 落行）；
-//   - 同一路径上合法 target 仍然 201（修复不能顺手把所有 target 都拒掉）；
-//   - PATCH 换成非法 target → 同样 400，且**库里的声明不变**（拒绝 = 不改）。
 func TestSourceResourceInvalidTargetIs400(t *testing.T) {
 	env := newSourceResEnv(t)
 	const missing = "does.not.exist"
@@ -1359,4 +1342,123 @@ func TestSourceResourceYAMLIsMaskedProjection(t *testing.T) {
 	if strings.Contains(rr.Body.String(), wantHook) || strings.Contains(rr.Body.String(), token) {
 		t.Fatalf("跨 ns 的 404 响应体泄露了凭据投影：%s", rr.Body.String())
 	}
+}
+
+// ---------- #644 第 3 条：message 只留「最后一段原因」 ----------
+
+// TestSourceErrorMessageDropsInternalPrefixes 钉住「面向用户的 message 不背内部前缀」。
+//
+// 旧 message 是三层叠加（`create source: invalid source config: config.schedule：…`）：前两段是
+// store / 域的定位信息，`reason` 已把分类说全，用户要改的只有最后那句。前缀清单不手抄（遍历
+// `store.SourceWritePrefixes`）：手抄版本改一个空格就静默失配（#644 第 4 条）。
+func TestSourceErrorMessageDropsInternalPrefixes(t *testing.T) {
+	env := newSourceResEnv(t)
+	// 内部前缀 = store 的写操作（create/update/delete/insert）+ 两个错误域（config / target）；
+	// kind 域的 `invalid source kind: ` **不剪**：它带着可选值清单（cron / webhook / …），是改对的唯一线索。
+	internalPrefixes := append([]string{}, store.SourceWritePrefixes...)
+	internalPrefixes = append(internalPrefixes,
+		store.ErrInvalidSourceConfig.Error()+": ",
+		store.ErrSourceTargetInvalid.Error()+": ",
+	)
+	assertClean := func(t *testing.T, doc map[string]any, wantReason string, want ...string) {
+		t.Helper()
+		if got := sourceResString(t, doc["reason"]); got != wantReason {
+			t.Fatalf("reason = %q, want %s", got, wantReason)
+		}
+		msg, _ := doc["message"].(string)
+		if msg == "" {
+			t.Fatal("message 为空：错误体必须给出可读原因")
+		}
+		for _, prefix := range internalPrefixes {
+			if strings.Contains(msg, prefix) {
+				t.Fatalf("message 不应含内部前缀 %q，得到 %q", prefix, msg)
+			}
+		}
+		for _, token := range want {
+			if !strings.Contains(msg, token) {
+				t.Fatalf("message 应含 %q，得到 %q", token, msg)
+			}
+		}
+	}
+	pollSpec := func(config map[string]any) map[string]any {
+		return map[string]any{"kind": "poll", "config": config}
+	}
+	sourceBody := func(name string, spec map[string]any) map[string]any {
+		return map[string]any{
+			"apiVersion": "anotify/v1",
+			"kind":       "Source",
+			"metadata":   map[string]any{"name": name},
+			"spec":       spec,
+		}
+	}
+
+	rr := env.request(http.MethodPost, env.sourcesPath(), sourceBody("poll.bad-schedule", pollSpec(map[string]any{
+		"url":      "https://example.com/feed",
+		"schedule": map[string]any{"expr": "* * *"},
+	})))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("非法 cron 期望 400，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	badSchedule := env.doc(rr)
+	assertClean(t, badSchedule, "invalid_source_config", "config.schedule", "cron")
+	// details.causes[] 的路径定位（#519 的红点点位）不因剪前缀而丢。
+	details := sourceResObj(t, badSchedule["details"])
+	causes := sourceResArr(t, details["causes"])
+	if len(causes) != 1 {
+		t.Fatalf("causes 应有 1 条，得到 %v", causes)
+	}
+	if field := sourceResString(t, sourceResObj(t, causes[0])["field"]); field != "spec.config.schedule" {
+		t.Fatalf("causes[0].field = %q，want spec.config.schedule", field)
+	}
+
+	rr = env.request(http.MethodPost, env.sourcesPath(), sourceBody("poll.bad-timeout", pollSpec(map[string]any{
+		"url":       "https://example.com/feed",
+		"schedule":  map[string]any{"expr": "*/5 * * * *"},
+		"timeoutMs": 120001,
+	})))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("timeoutMs 越界期望 400，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	assertClean(t, env.doc(rr), "invalid_source_config", "config.timeoutMs", "[1000, 120000]")
+
+	env.createSource(pollSpec(map[string]any{
+		"url":       "https://example.com/feed",
+		"schedule":  map[string]any{"expr": "*/5 * * * *"},
+		"timeoutMs": 120000,
+	}), map[string]any{"name": "poll.max-timeout"})
+
+	const missing = "does.not.exist"
+	rr = env.request(http.MethodPost, env.sourcesPath(), sourceBody("broken.target", map[string]any{
+		"kind":    "manual",
+		"targets": []any{map[string]any{"capability": missing}},
+	}))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("非法 target 期望 400，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	assertClean(t, env.doc(rr), "invalid_source_config", missing)
+
+	env.createSource(map[string]any{"kind": "manual"}, map[string]any{"name": "patch.bad-config"})
+	rr = env.request(http.MethodPatch, env.sourcePath("patch.bad-config"), map[string]any{
+		"apiVersion": "anotify/v1",
+		"kind":       "Source",
+		"metadata":   map[string]any{"name": "patch.bad-config", "resourceVersion": env.resourceVersion("patch.bad-config")},
+		"spec":       map[string]any{"config": map[string]any{"expr": "*/5 * * * *"}},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("PATCH 未知键期望 400，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	assertClean(t, env.doc(rr), "invalid_source_config", "expr")
+
+	rr = env.request(http.MethodPost, env.sourcesPath(), sourceBody("route", map[string]any{"kind": "manual"}))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("保留来源名期望 400，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	assertClean(t, env.doc(rr), "invalid_source_config", "保留来源名")
+
+	rr = env.request(http.MethodPost, env.sourcesPath(), sourceBody("bad.kind", map[string]any{"kind": "pollz"}))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("未知 kind 期望 400，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	assertClean(t, env.doc(rr), "invalid_source_kind",
+		"invalid source kind", "pollz", "cron", "webhook", "manual", "poll")
 }

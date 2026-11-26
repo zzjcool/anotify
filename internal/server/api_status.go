@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/zzjcool/anotify/internal/playbook"
 	"github.com/zzjcool/anotify/internal/protocol"
@@ -185,16 +186,19 @@ func writeAPIError(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrSourceKindImmutable):
 		writeStatus(w, http.StatusBadRequest, "source_kind_immutable", "spec.kind is immutable", nil)
 	case errors.Is(err, store.ErrInvalidSourceKind):
-		writeStatus(w, http.StatusBadRequest, "invalid_source_kind", err.Error(), nil)
+		// #644：以前直接 `err.Error()`，把 store 的 `create source: ` 一起吐给用户。只剪写操作前缀，
+		// **保留** `invalid source kind: "pollz"（可选：…）`：可选值清单是用户改对的唯一线索。
+		writeStatus(w, http.StatusBadRequest, "invalid_source_kind", sourceConfigMessage(err), nil)
 	case errors.Is(err, store.ErrInvalidSourceConfig):
 		// #519：带路径校验失败逐条落进 details.causes[]（红点点到具体那行配置）。
-		writeStatus(w, http.StatusBadRequest, sourceConfigReason(err), err.Error(), sourceConfigCauses(err))
+		// #644：message 只留最后一段原因（前缀进 error chain / 日志，不进 message）。
+		writeStatus(w, http.StatusBadRequest, sourceConfigReason(err), sourceConfigMessage(err), sourceConfigCauses(err))
 	case errors.Is(err, store.ErrSourceTargetInvalid):
 		// 指向不存在的出口能力是**调用方输入错误**（改引用就好）：不加这条会落 500，被当成瞬时故障重试。
-		writeStatus(w, http.StatusBadRequest, "invalid_source_config", err.Error(), nil)
+		writeStatus(w, http.StatusBadRequest, "invalid_source_config", sourceConfigMessage(err), nil)
 	case errors.Is(err, store.ErrReservedEventSource):
 		// 保留来源名（`route`）是**调用方输入错误**：v3 钉死它必须 400，不加这条会落 500。
-		writeStatus(w, http.StatusBadRequest, "invalid_source_config", err.Error(), nil)
+		writeStatus(w, http.StatusBadRequest, "invalid_source_config", sourceConfigMessage(err), nil)
 	case errors.Is(err, store.ErrCapabilityInvalid):
 		writeStatus(w, http.StatusBadRequest, reasonBadRequest, err.Error(), nil)
 	case errors.Is(err, store.ErrVersionConflict):
@@ -297,11 +301,36 @@ func sourceConfigCauses(err error) *statusDetails {
 	return &statusDetails{Causes: out}
 }
 
-// sourceConfigCauseList 取出 sourcespec 的结构化结论。
 func sourceConfigCauseList(err error) []sourcespec.Cause {
 	var causes *sourcespec.CausesError
 	if !errors.As(err, &causes) {
 		return nil
 	}
 	return causes.Causes
+}
+
+// sourceConfigMessage 只把「最后一段原因」交给用户（#644）：前缀是 store 的定位信息，`reason` 已把
+// 分类说全，三层叠上去会把用户要改的那句推到一屏之外。只剪前缀、不重建文本：`CausesError` 的
+// `field：原因` 拼接仍只有一处实现。层数不写死；前缀表引用 `store.SourceWritePrefixes`
+// （手抄字面量时改一个空格就静默失配，见 #644 第 4 条）。
+func sourceConfigMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	prefixes := append([]string{}, store.SourceWritePrefixes...)
+	prefixes = append(prefixes,
+		sourcespec.ErrInvalidConfig.Error()+": ",
+		store.ErrSourceTargetInvalid.Error()+": ",
+	)
+	text := err.Error()
+	for {
+		rest := text
+		for _, prefix := range prefixes {
+			rest = strings.TrimPrefix(rest, prefix)
+		}
+		if rest == text {
+			return text
+		}
+		text = rest
+	}
 }
