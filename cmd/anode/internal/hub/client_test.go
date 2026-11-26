@@ -122,8 +122,7 @@ func TestStreamURLDefaultAndExplicitPath(t *testing.T) {
 	}
 }
 
-// TestHeartbeatClosesSilentlyDeadLink 是验收 ②：帧不再到达但连接不报错时，节点侧必须在
-// 2 次心跳内判死并重连。假中枢持续读（ping 有 pong）却一个下行业务帧都不写 = #661 的形态。
+// TestHeartbeatClosesSilentlyDeadLink 是验收 ②：#661 的静默丢包形态（假中枢 ping 有 pong 却不下发业务帧）。
 func TestHeartbeatClosesSilentlyDeadLink(t *testing.T) {
 	var conns atomic.Int64
 	helloCh := make(chan struct{}, 4)
@@ -193,7 +192,6 @@ func TestHeartbeatClosesSilentlyDeadLink(t *testing.T) {
 	case <-time.After(testTimeout):
 		t.Fatal("首连未建立")
 	}
-	// 一个等回执的上行帧：中枢永远不回（下行帧全丢）。连接就绪前 Send 返回 ErrOffline。
 	renew := &protocol.LeaseRenewFrame{
 		Type: protocol.FrameLeaseRenew, TaskID: "silent", Attempt: 1, LeaseID: "lease-silent",
 	}

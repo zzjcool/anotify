@@ -138,6 +138,8 @@ func New(serverURL, token string, handler Handler) (*Client, error) {
 // Check 做一次性身份预检：连接 → hello → 等到 welcome → 返回（`anode serve --check` 的实现，
 // v4.1 契约 §4）。只确认「中枢可达 + 身份被接受」，不应用配置、不写盘、不上报 applied。
 // **不重连、不重试、不 sleep、不 backoff**：调用方给的 ctx deadline（CLI 固定 10s）就是上限。
+// 诊断约定（CLI 据此分 kind）：401/403 或 welcome 前的 close 1008 → ErrAuthRejected；ctx 到期
+// → ErrCheckTimeout；其它原样返回（归入 timeout 诊断，detail 带真实原因）。
 func Check(ctx context.Context, serverURL, token string, hello protocol.HelloFrame) error {
 	streamURL, err := StreamURL(serverURL)
 	if err != nil {

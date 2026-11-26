@@ -196,7 +196,6 @@ type Config struct {
 	// 全扫 + `json_tree` + 临时 B 树排序，全程持 `BEGIN IMMEDIATE` 写锁（见
 	// store.PurgeDeletedCapabilities）；按分钟级跑等于持续与事件入口抢写锁，而 tombstone
 	// 是「个位数/天」量级。判据事实全在 store 侧，这里只是驱动器。
-	// （PurgeDeletedCapabilities），这里只是驱动器。
 	CapabilityGCIntervalSec int
 
 	// LeaseTTL 是中枢授予/续租的租约时长（#661）。
