@@ -3312,6 +3312,9 @@ a.side-link svg {
  * 注意：这里的容器类不声明 display —— hidden ↔ flex 的切换由页面 / JS 用
  * Tailwind 的 hidden/flex 控制，ui.css 在 tailwind.css 之后加载，一旦在这里
  * 写死 display:flex，.hidden 就会失效（详情弹层再也关不掉）。 */
+#anotify-dialog-body {
+	white-space: pre-line; /* #647：正文可多行（保留期保存确认的逐字段摘要）；单行文案观感与默认一致 */
+}
 .modal-backdrop {
 	position: fixed;
 	inset: 0;
