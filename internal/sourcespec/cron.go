@@ -14,8 +14,8 @@ import (
 // CronSchedule 是一个解析好的五段表达式。
 type CronSchedule struct {
 	Minute, Hour, Dom, Month, Dow map[int]bool
-	// DomStar / DowStar 记录这两个字段是不是 `*`：标准 cron 里两者都受限是 **OR**、
-	// 只有一个受限是 AND，所以必须知道哪个是通配。
+	// DomStar / DowStar：该字段是否以 `*` 开头，**只决定 dom/dow 的组合方式**（任一以 `*`
+	// 开头 → 两者 AND，都受限 → OR）。它不表示「不用判断」：`*/2` 的位图只有奇数日。
 	DomStar, DowStar bool
 }
 
@@ -44,8 +44,7 @@ func ParseCron(expr string) (*CronSchedule, error) {
 	if s.Dow, s.DowStar, err = parseCronField(fields[4], 0, 7, "周"); err != nil {
 		return nil, err
 	}
-	// 7 也表示周日（两套惯例都有人用）
-	if s.Dow[7] {
+	if s.Dow[7] { // 7 也表示周日（两套惯例都有人用）
 		s.Dow[0] = true
 		delete(s.Dow, 7)
 	}
@@ -148,20 +147,13 @@ func (s *CronSchedule) Next(after time.Time) time.Time {
 	return time.Time{}
 }
 
-// matchDay 实现 dom/dow 的 OR 语义（见 CronSchedule 的字段注释）。
+// matchDay 判 dom/dow（cronie）：任一字段以 `*` 开头 → 两者 AND，都受限 → OR；位图始终参与。
 func (s *CronSchedule) matchDay(t time.Time) bool {
-	domOK := s.Dom[t.Day()]
-	dowOK := s.Dow[int(t.Weekday())]
-	switch {
-	case s.DomStar && s.DowStar:
-		return true // 两个都通配：天天都行
-	case s.DomStar:
-		return dowOK
-	case s.DowStar:
-		return domOK
-	default:
-		return domOK || dowOK // 都受限 → OR
+	domOK, dowOK := s.Dom[t.Day()], s.Dow[int(t.Weekday())]
+	if s.DomStar || s.DowStar {
+		return domOK && dowOK
 	}
+	return domOK || dowOK
 }
 
 // NextCronTime 按源的 config 算下次触发时刻（供 store 与调度器共用）。
