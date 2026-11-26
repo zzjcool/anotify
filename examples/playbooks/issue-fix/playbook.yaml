@@ -14,7 +14,7 @@ spec:
   values:
     type: object
     additionalProperties: false
-    required: [project, repo, repoDir]
+    required: [project, repo]
     properties:
       project:
         type: string
@@ -23,11 +23,8 @@ spec:
       repo:
         type: string
         pattern: '^[A-Za-z0-9][A-Za-z0-9.-]*/[A-Za-z0-9][A-Za-z0-9._-]*$'
-        description: 仓库（owner/name），装包时填一次
-      repoDir:
-        type: string
-        pattern: '^/'
-        description: 节点上这个仓库的检出目录（agent 在里面干活，绝对路径）
+        description: 仓库（owner/name），装包时填一次；检出目录不在 values 里——
+          走节点变量 spec.vars.REPO_DIR（每台节点各配自己的路径，见 README）
       baseBranch:
         type: string
         default: main

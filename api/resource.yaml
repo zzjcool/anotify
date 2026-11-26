@@ -2880,8 +2880,8 @@ components:
       properties:
         version:
           type: integer
-          minimum: 1
-          description: "省略 = 最新版本"
+          minimum: 0
+          description: "省略 / 0 = 最新（live）版本；显式版本不存在 → 404；负数 → 400"
         nodes:
           type: array
           description: "目标节点名；省略 = 全部已授权且在线节点"
@@ -2924,8 +2924,8 @@ components:
       properties:
         version:
           type: integer
-          minimum: 1
-          description: "省略 / 0 = 当前 live 版本（与 PATCH/deploy 同一条解析）；显式版本不存在 → 404"
+          minimum: 0
+          description: "省略 / 0 = 当前 live 版本（与 PATCH/deploy 同一条解析）；显式版本不存在 → 404；负数 → 400"
         params:
           type: object
           additionalProperties: true
@@ -3265,7 +3265,7 @@ components:
               headers:   { Accept: application/vnd.github+json }         # 可选，≤20 项
               secretRef: { name: gh-token, header: Authorization, prefix: "Bearer " }
               schedule:  { expr: "*/5 * * * *", tz: UTC }                # 与 cron 同一套表达式
-              timeoutMs: 10000        # 默认 10000，夹到 [1000, 60000]
+              timeoutMs: 10000        # 默认 10000，允许 [1000, 120000]；越界 = 400（不夹取）
               maxItems:  100          # 默认 100，硬上限 500；超限 = 该轮失败不截断
               allowInsecure: false    # 只给 e2e：允许 http + 跳过私网判据
               envelope:  { items: ".", type: {pointer: type}, deliveryId: {pointer: id}, payload: {pointer: ""} }
