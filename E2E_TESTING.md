@@ -11,8 +11,8 @@
 | API 契约 | Node fetch（`scripts/e2e/suites/api_contract.mjs`） | 全端点的状态码/鉴权/参数校验 |
 | **Passkey 认证** | **Playwright CDP 虚拟认证器** | 真实 WebAuthn 注册/登录/登出/会话（无头，无需真人） |
 | WS 协议 | Node WebSocket 客户端 | v4 帧：hello/welcome、config.get/applied/changed、task.dispatch/accept/reject、lease.grant/renew/ack、task.result/result.ack、task.emit/ack、task.cancel/cancel.ack、upgrade/logs |
-| 路由过滤 | Node fetch | 标签路由 + event_scope 过滤全矩阵（notify.matched 断言） |
-| 持久化 | 重启服务验证 | 消息/设备/Key 重启后仍在 |
+| 路由与剪枝 | Node fetch（`routing.mjs`） | `spec.next` / `spec.targets` 解析 + `no_target`/`param_missing`/`param_type`/`event_schema` 四类剪枝 + 未触发原因 |
+| 持久化 | 重启服务验证（`persistence.mjs`） | 资源 uid/version + 任务相位 + 事件 trace + 会话/Key 重启后仍在 |
 | 安全 | Node fetch + DB 检查 | scope 越权/Key 篡改/哈希格式/会话属性 |
 | 前端 | Playwright | 6 页渲染 + 未登录跳登录 + 已登录真实数据 |
 | 边界 | Node fetch | 畸形输入/超大体/并发/Unicode |
@@ -250,7 +250,9 @@ GitHub runner 比开发机慢，f3 的浏览器矩阵套件会偶发**环境性*
 - 每个 API 端点的 成功/401/403/400/404 路径
 - Passkey 注册→登录→登出→会话失效 全生命周期
 - WS 全部帧类型 + 断线续传
-- 投递规则全部边界（无tag消息/无tag设备/交集/ALL拒绝/status 5 种 × filter 3 种）
+- 路由与剪枝边界（`routing`：`source.spec.targets` / `capability.spec.next` 的解析；
+  `no_target` / `param_missing` / `param_type` / `event_schema` 四类剪枝；无节点时任务照建、pending、
+  不剪枝；`edges` 只是两者的只读派生投影）
 - 并发 seq 单调性、畸形输入、SQL 注入安全性、Key 哈希不可逆
 - **P2 工程守卫**（`p2_guards`，30 断言）：字体 0 外部请求 + `document.fonts.check`
   证明 Inter/Fraunces/JetBrains Mono 真的生效；390 视口抽屉的 role=dialog /

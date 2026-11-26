@@ -131,7 +131,7 @@ G1后产出可读的 `EXPORTED-INTERFACES.md`（团队自己的进度目录）�
 
 ### 物理 slot / 历史回收（A3补充）
 
-详见父 `SLOT-HANDOFF.md`：Node accept前预留slot，grant echo相同slot和assignment；dispatch同一有界assignmentExpiresAt窗口但不授执行权；cancel/ack带历史leaseId/slot，旧reaped事实只回收旧occupancy不恢复执行授权。hello busy/slot显式presence，未知不idle，config.applied可附实例；不按phase/rehello假回收。原reject闭集正式扩stale_config|slot_unavailable，均启动前不计attempt，无真实容量回waiting_for_slot。wire每instance concurrency旧模型删除，limits预算不变。共享协议T3唯一作者、T1S阶段消费，当前各自单writer不并发抢写；不引bootId/occupancySeq框架或新帧。
+槽位不变量见 `internal/protocol` 的 slot 帧与 `cmd/anode/internal/runner` 文件头（`slots_test.go` 有具名回归）：Node accept前预留slot，grant echo相同slot和assignment；dispatch同一有界assignmentExpiresAt窗口但不授执行权；cancel/ack带历史leaseId/slot，旧reaped事实只回收旧occupancy不恢复执行授权。hello busy/slot显式presence，未知不idle，config.applied可附实例；不按phase/rehello假回收。原reject闭集正式扩stale_config|slot_unavailable，均启动前不计attempt，无真实容量回waiting_for_slot。wire每instance concurrency旧模型删除，limits预算不变。共享协议T3唯一作者、T1S阶段消费，当前各自单writer不并发抢写；不引bootId/occupancySeq框架或新帧。
 
 ### 并行验证边界
 

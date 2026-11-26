@@ -25,7 +25,7 @@ const schemaVersionTable = `CREATE TABLE IF NOT EXISTS schema_version (
     applied_at INTEGER NOT NULL
 )`
 
-// baselineVersion 是 v4 baseline 的版本号（schema.sql 唯一的一块）。
+// baselineVersion 是 v4 baseline 的版本号（schema.sql 的第 1 块，其余按编号追加的块都是增量）。
 const baselineVersion = 1
 
 // headVersion 是本版本代码认识的**最高**迁移版本（= schema.sql 的最后一块）。

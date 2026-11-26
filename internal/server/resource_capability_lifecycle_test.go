@@ -30,8 +30,6 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// newCapLifecycleEnv 在 capTestEnv 之上把 taskAPI 也挂进同一个 mux。
-//
 // 为什么必须同一个 mux：试跑建的**事件**要经由 `GET …/events` 读回来（origin 口径），
 // 两个域各自起一套夹具就会把「同一个 store 的两条读路径」测成两件无关的事。
 func newCapLifecycleEnv(t *testing.T) *capTestEnv {
@@ -53,7 +51,6 @@ func (e *capTestEnv) setClock(sec int64) {
 	e.deps.Now = func() int64 { return sec * 1000 }
 }
 
-// capEnabled 读 `GET …/{name}` 的 status.enabled。
 func (e *capTestEnv) capEnabled(t *testing.T, ns, name string) bool {
 	t.Helper()
 	status := e.capabilityStatus(t, ns, name)
@@ -64,7 +61,6 @@ func (e *capTestEnv) capEnabled(t *testing.T, ns, name string) bool {
 	return enabled
 }
 
-// testReceipt 发一次 `POST …/{name}/test` 并解出回执（状态码由用例先断言）。
 func (e *capTestEnv) testReceipt(t *testing.T, ns, name string, body any) (int, map[string]any) {
 	t.Helper()
 	rec := e.do(t, http.MethodPost, e.capPath(ns, name, "test"), body)
@@ -74,7 +70,6 @@ func (e *capTestEnv) testReceipt(t *testing.T, ns, name string, body any) (int, 
 	return rec.Code, decodeCapJSON(t, rec)
 }
 
-// auditItems 读审计列表（`limit` 为空 = 不带参数）。
 func (e *capTestEnv) auditItems(t *testing.T, ns, name, query string) []any {
 	t.Helper()
 	rec := e.do(t, http.MethodGet, e.capPath(ns, name, "audit")+query, nil)
@@ -594,5 +589,104 @@ func TestCapabilityTestEventOriginInEventStream(t *testing.T) {
 	rec = env.do(t, http.MethodGet, eventsPath+"?origin=robot", nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("非法 origin 应 400，实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// ---------- 6b) version: 0 = live（#644 第 1 条） ----------
+
+// TestCapabilityTestVersionZeroIsLive 钉住「省略 / 0 = 当前 live 版本」与代码一致。
+//
+// schema 曾写 `minimum: 1` 而 description 写「省略 / 0 = live」：按 schema 生成的客户端永远发不出 0，
+// 而 handler 的判据本来就是 `< 0` 才拒。别反过来把 0 当非法。
+func TestCapabilityTestVersionZeroIsLive(t *testing.T) {
+	env := newCapTestEnv(t)
+	env.createCapability(t, env.nsA, "live-version", "#!/bin/sh\necho live\n")
+
+	versionOf := func(t *testing.T, receipt map[string]any) int {
+		t.Helper()
+		tasks := capArray(t, receipt["tasks"], "tasks")
+		if len(tasks) != 1 {
+			t.Fatalf("回执 tasks 应有 1 条，实际 %d: %#v", len(tasks), tasks)
+		}
+		return capNumber(t, capObject(t, tasks[0], "tasks[0]"), "version")
+	}
+
+	code, zero := env.testReceipt(t, env.nsA, "live-version", map[string]any{"version": 0})
+	if code != http.StatusOK {
+		t.Fatalf("version: 0 应解析成 live（200），实际 %d: %#v", code, zero)
+	}
+	if got := versionOf(t, zero); got != 1 {
+		t.Fatalf("version: 0 落到的版本 = %d，want 1（live）", got)
+	}
+
+	code, omitted := env.testReceipt(t, env.nsA, "live-version", nil)
+	if code != http.StatusOK {
+		t.Fatalf("省略 version 应为 200，实际 %d: %#v", code, omitted)
+	}
+	if got, want := versionOf(t, omitted), versionOf(t, zero); got != want {
+		t.Fatalf("省略 version 落到 %d，显式 0 落到 %d（两条解析必须同一条）", got, want)
+	}
+
+	rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "live-version", "test"),
+		map[string]any{"version": -1})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("version: -1 应 400，实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := capString(t, decodeCapJSON(t, rec), "reason"); got != reasonBadRequest {
+		t.Fatalf("version: -1 的 reason = %q，want %q", got, reasonBadRequest)
+	}
+}
+
+// TestCapabilityDeployVersionZeroIsLive 把同一个不变量钉在 deploy 上（review 第 1 轮第 3 条）。
+//
+// 修前三处不同向：schema `minimum: 1`、400 文案 `≥ 1`、handler 却只拒 `< 0`（`version <= 0`
+// 走 ResolveRef = live）—— 0 被 schema 说成非法、被判据当成 live。修后三处同向：
+// schema 下界 0、文案 `≥ 0 (0 = live version)`、0 与省略同一版。
+func TestCapabilityDeployVersionZeroIsLive(t *testing.T) {
+	env := newCapTestEnv(t)
+	env.createCapability(t, env.nsA, "deploy-live", "#!/bin/sh\necho live\n")
+
+	deploy := func(t *testing.T, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		return env.do(t, http.MethodPost, env.capPath(env.nsA, "deploy-live", "deploy"), body)
+	}
+
+	rec := deploy(t, map[string]any{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deploy 省略 version: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	omitted := capNumber(t, decodeCapJSON(t, rec), "version")
+	if omitted != 1 {
+		t.Fatalf("deploy 省略 version 落到 %d，want 1（live）", omitted)
+	}
+
+	rec = deploy(t, map[string]any{"version": 0})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deploy version: 0: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if zero := capNumber(t, decodeCapJSON(t, rec), "version"); zero != omitted {
+		t.Fatalf("deploy version: 0 落到 %d，省略落到 %d（两条解析必须同一条）", zero, omitted)
+	}
+
+	// 负数 → 400，且文案与试跑共用一条（不许再把 0 说成非法）。
+	rec = deploy(t, map[string]any{"version": -1})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("deploy version: -1: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	doc := decodeCapJSON(t, rec)
+	if got := capString(t, doc, "reason"); got != reasonBadRequest {
+		t.Fatalf("deploy version: -1 的 reason = %q，want %q", got, reasonBadRequest)
+	}
+	msg := capString(t, doc, "message")
+	if !strings.Contains(msg, "≥ 0 (0 = live version)") {
+		t.Fatalf("deploy version: -1 的 message = %q，want 含 “≥ 0 (0 = live version)”", msg)
+	}
+	if strings.Contains(msg, "≥ 1") {
+		t.Fatalf("deploy version: -1 的 message = %q：不得再出现把 0 说成非法的 “≥ 1”", msg)
+	}
+
+	rec = deploy(t, map[string]any{"version": 99})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("deploy version: 99 应 404，实际 %d body=%s", rec.Code, rec.Body.String())
 	}
 }

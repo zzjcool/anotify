@@ -284,7 +284,6 @@ func bumpResourceVersion(t *testing.T, token string) string {
 	return fmt.Sprintf("rv1:%s:%d", parts[1], rev+7)
 }
 
-// createCapability 建一个能力并返回它的信封。
 func (e *capTestEnv) createCapability(t *testing.T, ns, name, script string) map[string]any {
 	t.Helper()
 	rec := e.do(t, http.MethodPost, e.capPath(ns, "", ""), capabilityBody(name, 0, script))
@@ -1213,7 +1212,6 @@ func capNodeStates(t *testing.T, status map[string]any) map[string]string {
 	return out
 }
 
-// capConditionOf 按 type 取一条 condition。
 func capConditionOf(t *testing.T, status map[string]any, typ string) map[string]any {
 	t.Helper()
 	for _, item := range capArray(t, status["conditions"], "status.conditions") {

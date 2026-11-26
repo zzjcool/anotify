@@ -6,7 +6,20 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zzjcool/anotify/internal/artifact"
 )
+
+var machinePathPrefixes = []string{"/home/", "/Users/", "/root/"}
+
+func machinePathIn(s string) string {
+	for _, prefix := range machinePathPrefixes {
+		if strings.HasPrefix(s, prefix) {
+			return prefix
+		}
+	}
+	return ""
+}
 
 // 例包必须真的可渲染：库里的示例被人 copy 出去当模板用，它红比它"看起来对"重要。
 func TestExamplePackagesRender(t *testing.T) {
@@ -61,6 +74,24 @@ func TestExamplePackagesRender(t *testing.T) {
 			body := c.Spec.Run.Files[c.Spec.Run.Entrypoint]
 			if !strings.HasPrefix(body, "#!") {
 				t.Fatalf("%s/%s 的 %s 不以 #! 开头", dir, c.Metadata.Name, c.Spec.Run.Entrypoint)
+			}
+			for key, value := range c.Spec.Run.Env {
+				if value.IsValueFrom() {
+					continue
+				}
+				if prefix := machinePathIn(value.Value); prefix != "" {
+					t.Fatalf("%s/%s 把机器路径 %q 写进了 run.env.%s 的字面值（命中前缀 %q）："+
+						"这个包装一次就对所有节点生效，机器路径必须写成 valueFrom 引用节点变量",
+						dir, c.Metadata.Name, value.Value, key, prefix)
+				}
+			}
+			if prefix := machinePathIn(c.Spec.Run.WorkDir); prefix != "" {
+				t.Fatalf("%s/%s 把机器路径 %q 写成了 run.workDir 字面量（命中前缀 %q）："+
+					"workDir 要用 $(vars.X) 引用节点变量", dir, c.Metadata.Name, c.Spec.Run.WorkDir, prefix)
+			}
+			if err := artifact.Validate(c); err != nil {
+				t.Fatalf("%s/%s 过不了 artifact 校验（渲染出来的产物用户装不上）：%v",
+					dir, c.Metadata.Name, err)
 			}
 			for _, key := range []string{"REPO_DIR", "AGENT_CMD", "AGENT_ARGS", "BASE_BRANCH"} {
 				if !strings.Contains(body, "${"+key) {

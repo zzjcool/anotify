@@ -28,9 +28,9 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const BASELINE = {
 	"schemaVersion": 2,
 	"measuredAt": "2026-11-26",
-	"commentLines": 42889,
-	"codeLines": 290340,
-	"files": 755,
+	"commentLines": 42893,
+	"codeLines": 289800,
+	"files": 753,
 	"dirs": {
 		".": 86,
 		".github/workflows": 107,
@@ -74,11 +74,11 @@ export const BASELINE = {
 		"internal/lease": 36,
 		"internal/logging": 22,
 		"internal/playbook": 1307,
-		"internal/protocol": 1059,
+		"internal/protocol": 1061,
 		"internal/resultspool": 184,
 		"internal/route": 299,
 		"internal/schema": 73,
-		"internal/server": 7732,
+		"internal/server": 7734,
 		"internal/server/testdata": 2,
 		"internal/sitegen": 471,
 		"internal/sitegen/testdata/specs": 40,
@@ -131,7 +131,7 @@ export const BASELINE = {
 		"internal/protocol/emit_frames.go": 91,
 		"internal/protocol/env.go": 25,
 		"internal/protocol/errors.go": 17,
-		"internal/protocol/exec_frames.go": 116,
+		"internal/protocol/exec_frames.go": 127,
 		"internal/protocol/hash.go": 30,
 		"internal/protocol/limits.go": 13,
 		"internal/protocol/ops_frames.go": 105,
@@ -139,7 +139,7 @@ export const BASELINE = {
 		"internal/server/artifact_download.go": 69,
 		"internal/server/artifact_support.go": 44,
 		"internal/server/backpressure.go": 155,
-		"internal/server/config.go": 284,
+		"internal/server/config.go": 289,
 		"internal/server/hub_fixture_test.go": 94,
 		"internal/server/mux.go": 252,
 		"internal/server/node_capability.go": 117,
@@ -170,8 +170,8 @@ export const BASELINE = {
 	},
 	"docs": {
 		"contracts": {
-			"files": 15,
-			"lines": 2719
+			"files": 11,
+			"lines": 2628
 		}
 	},
 	"rootPlans": {

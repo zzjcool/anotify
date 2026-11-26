@@ -114,7 +114,7 @@
  * ── 扫描范围 ────────────────────────────────────────────────────────────
  *   代码：web/**\/*.js、web-src/**\/*.html、internal/**\/*.go、scripts/**\/*.mjs、
  *         scripts/**\/*.py、cmd/**\/*.go、Makefile（见 CODE_SOURCES / EXTRA_CODE_FILES）
- *   文档：`git ls-files '*.md'` **并上工作区里的 `.md`**（未提交的新文档同样是契约，见 listTrackedDocs 注释）
+ *   文档：`git ls-files '*.md'` 并上工作区里**未被 .gitignore 忽略**的 `.md`（`--others --exclude-standard`）
  *   排除：node_modules/ .git/ .pi/ .pi-subagents/ .pi-orchestrator/ 以及仓库根下的
  *         stale/ missing/ _tmp_\* 系列 g2-resume-evidence/，还有 internal/server/dist/。
  *         2026-11-19：设计文档的两棵目录（`docs/` 下的设计子目录与仓库根的设计稿目录）都已移除，对应的排除项也随之删掉
@@ -166,7 +166,8 @@
  * @guard scripts/check-annotations.mjs#CLAIM_UNBACKED_OVER
  * @guard scripts/check-annotations.mjs#COUNT_UNMARKED_OVER
  */
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -265,7 +266,7 @@ export const ANCHOR_MIN = ANNOTATION_MIN.anchors;
 // 也压掉了两段历史校准流水账，所以 C 299→298、D 312→311（均为本树实测；不是判据放宽）。
 // B1（删 docs/v4 五份清单）后 D 311→248、B2（删 docs/research + docs/perf）后 210：它们整篇落在规则 D 的扫描面里，删掉即降（C 不动）。
 // V4-D7 删掉 f3 夹具里的推送页用例块（连带其注释），实测 C 296→295 —— 同批下调。
-export const CLAIM_UNBACKED_BASELINE = 295;
+export const CLAIM_UNBACKED_BASELINE = 294; // 本批收窄扫描面注释，按实测下调（只降不升）
 export const COUNT_UNMARKED_BASELINE = 209;
 
 /* ---------- 判据 ---------- */
@@ -1450,25 +1451,26 @@ export function listCodeFiles(env) {
 }
 
 /**
- * 列出要检查的 markdown：`git ls-files` 已跟踪的 **并上工作区里尚未提交的**。
- *
- * 为什么并上未跟踪的：新写的文档本身就是「给后人/agent 看的契约草稿」，它里面的坏引用
- * 与旧文档一样会误导人。只认已跟踪文件会让「新增文档写错引用」在 `make ci` 前完全隐形
- * （本守卫自己首次体检时 `docs/lint-guards.md` 就是未跟踪状态而整个被跳过的）。
+ * 列出要检查的 markdown：已跟踪的 **并上工作区里未跟踪、且未被 .gitignore 忽略的**
+ * （未提交的新文档是契约草稿；被忽略的本地产物不是——本地 `.reports/` 就属于后者）。
+ * 非 git 环境退化为纯文件系统走查。
  */
 export function listTrackedDocs(root = ROOT) {
-	const tracked = (() => {
+	const gitMd = (args) => {
 		try {
-			const stdout = execFileSync("git", ["ls-files", "-z", "--", "*.md"], {
-				cwd: root,
-				encoding: "utf8",
-				maxBuffer: 64 * 1024 * 1024,
-			});
-			return stdout.split("\0").filter(Boolean);
+			return execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
+				.split("\0")
+				.filter(Boolean);
 		} catch {
-			return []; // 非 git 环境（或 git 不可用）：退化为纯文件系统走查
+			return null;
 		}
-	})();
+	};
+	const tracked = gitMd(["ls-files", "-z", "--", "*.md"]);
+	if (tracked !== null) {
+		// --others --exclude-standard = 未跟踪且没被 .gitignore 忽略（工作区新文档）。
+		const fresh = gitMd(["ls-files", "-z", "--others", "--exclude-standard", "--", "*.md"]) ?? [];
+		return [...new Set([...tracked, ...fresh])].filter((rel) => !isExcluded(rel)).sort();
+	}
 	const walked = [];
 	const walk = (dir) => {
 		let names;
@@ -1491,7 +1493,7 @@ export function listTrackedDocs(root = ROOT) {
 		}
 	};
 	walk("");
-	return [...new Set([...tracked, ...walked])].filter((rel) => !isExcluded(rel)).sort();
+	return [...new Set(walked)].filter((rel) => !isExcluded(rel)).sort();
 }
 
 /** 组装真实的扫描输入。 */
@@ -2144,6 +2146,27 @@ function selfTest() {
 			r.counts.claimUnbacked === 1 && r.counts.specDocFiles === 0 && r.counts.specDocSuppressed === 0,
 			JSON.stringify(r.counts),
 		);
+	}
+
+	// ㉝ 被 .gitignore 忽略的 .md 不进扫描面（本地 .reports/ 那类产物不是契约草稿）
+	{
+		const tmp = mkdtempSync(path.join(tmpdir(), "ann-ignore-"));
+		try {
+			execFileSync("git", ["init", "-q"], { cwd: tmp });
+			writeFileSync(path.join(tmp, ".gitignore"), "/.reports/\n");
+			mkdirSync(path.join(tmp, "docs"));
+			writeFileSync(path.join(tmp, "docs", "kept.md"), "# kept\n");
+			mkdirSync(path.join(tmp, ".reports"));
+			writeFileSync(path.join(tmp, ".reports", "noise.md"), "跑 `make nope`。\n");
+			const docs = listTrackedDocs(tmp);
+			check(
+				"㉝ .gitignore 里的 .md 不扫、未跟踪的新文档照扫",
+				docs.includes("docs/kept.md") && !docs.includes(".reports/noise.md"),
+				JSON.stringify(docs),
+			);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
 	}
 
 	console.log(failed === 0 ? `\n✅ 自测全部通过（${total} 组红/绿判据）` : `\n❌ 自测失败 ${failed} 组`);

@@ -60,11 +60,15 @@
 - **前端**：纯静态 HTML + Tailwind CDN + `tokens.css`（颜色只用 tokens 变量，不硬编码色值）；无构建框架
   - **class 纪律（硬红线）**：HTML 里的类只允许三种来源——① `ui.css`/`tokens.css` 组件类、② `ui.css`/页面内联 `<style>` 里定义的类、③ Tailwind 工具类。**禁止自造无定义的类**（如 `input-field` 这种不在任何 CSS 里的类，Tailwind CDN 会静默不生效，导致风格脱节）。`make fe`/`make sitegen`/`make dev` 已接入 `scripts/check-classes.mjs` 死类守卫，会拦住这种类；手写新类前先确认它落在上述三个来源内（若想要新组件类，就加进 `ui.css`）。
 - **API 契约**：JSON 字段统一 camelCase（给结构体加 `json` tag）；空列表返回 `[]` 而非 `null`
-- **v4 开发期全量切换（用户已批准）**：以 `docs/contracts/v4/CONTRACT.md`（含 V4-D1～D6 决策索引）为本轮契约；不保留 v3 API/协议/旧数据库迁移兼容层。允许把 `schema.sql` 直接重建为 v4 baseline、移除旧迁移 hooks/专属测试；仍须保留新库结构、重开幂等、错误拒绝和字段往返测试。旧库不可用时明确报错，禁止自动删除用户数据。此例外覆盖下面的历史 baseline 追加规则，仅适用于本次尚未发布的 v4 全量开发。
+- **v4 开发期全量切换（用户已批准）**：以 `docs/contracts/v4/CONTRACT.md`（含 V4-D1～D6 决策索引）为本轮契约；不保留 v3 API/协议/旧数据库迁移兼容层。允许把 `schema.sql` 直接重建为 v4 baseline、移除旧迁移 hooks/专属测试；仍须保留新库结构、重开幂等、错误拒绝和字段往返测试。旧库不可用时明确报错，禁止自动删除用户数据。此例外**只属于 v4 开发期，已随 v4 发布（tag）结束**；现状是 baseline 冻结、只追加迁移块（见下一条）。
 - **store 层**：新增字段必加"往返一致性"单测（存什么读什么）。schema 变更的当前规则见
-  [`internal/store/AGENTS.md §3.2`](internal/store/AGENTS.md)：**迁移引擎目前只支持单块**（`baselineLayout()` 硬校验），
-  所以 v4 未发布期加表/加列是在 baseline 块内原地改、`headVersion` 保持 1；要引入第 2 块必须先改引擎（单独授权）。
-  已发布之后回到「baseline 不再改、只追加 `-- +migration N` 块」。老库不会被自动迁移或删数据（`Open` 明确报错）。
+  [`internal/store/AGENTS.md §3.2`](internal/store/AGENTS.md)：**baseline 冻结，只追加迁移块**——
+  `schema.sql` 现在是 `-- +migration 1 baseline` + 增量块（当前到 11），`migrate.go:35` 的
+  `headVersion` 必须等于最后一块；加表/加列 = 追加 `-- +migration N` 块（`ALTER TABLE … ADD COLUMN`
+  + 回填 + 索引）并把 `headVersion` +1，**禁止原地改 baseline**（已记账到旧版本的库会缺列）。
+  参照结构按「已记账到的版本」重放（`schemaLayoutAt`，`migrate.go:494`），所以记着 1..k 的 v4 库
+  在 `Open` 时会被**就地迁移**到 head，不需要删库；只有 v3/更旧、未知布局、或记账超过
+  `headVersion` 的库报 `ErrUnsupportedFormat`（不改写、不删数据）。
 - 提交信息：`type(scope): 中文描述`，`scope` 用 §0 的 area 名，如 `feat(store): 事件分页改 keyset`
 
 ## 4. 完成后上报（必须）
@@ -103,9 +107,10 @@ DONE <任务ID>
 - **store 只依赖叶子包**：`protocol`/`artifact`/`sourcespec`/`playbook`/`route`/`source`；
   不得 import `server`/`ws`/`lease`/`auth`/`api`（分层倒挂 + import 循环）
 - **空列表返回 `[]`**：别返回 `null`，否则前端误判"未连接"
-- **schema 变更按 `internal/store/AGENTS.md` §3.2 走**：当前引擎只支持单块，v4 未发布期的加列就是改 baseline；
-  写成 `-- +migration 2` 而不先改引擎 → 每次 `Open` 报 `expected one v4 baseline`。
-  `CREATE TABLE IF NOT EXISTS` 不改已存在的表，老库缺列会被 `ErrSchemaInvalid` 具名拒绝（不迁移、不删数据）。
+- **schema 变更按 `internal/store/AGENTS.md` §3.2 走**：baseline 冻结，加列 = 追加 `-- +migration N` 块
+  并把 `headVersion`（`migrate.go:35`）一起 +1；漏 +1 则新块永远不被应用（`schemaLayoutAt` 也拿不到参照结构）。
+  原地改 baseline 会让「已记账到旧版本」的库缺列/多列 → `Open` 报 `ErrSchemaInvalid` 具名拒绝（不迁移、不删数据）；
+  `CREATE TABLE IF NOT EXISTS` 不改已存在的表，这也是必须追加块的原因。
 
 ## 7. 测试要求
 
