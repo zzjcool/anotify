@@ -62,14 +62,34 @@ Anotify 是「Agent 完成即通知」平台：Agent 任务结束后通过事件
 
 **中枢不执行，节点才是执行面**：中枢侧任何包不得 `os/exec`（`make contract` A5 机检），
 执行器只在 `cmd/anode/internal/runner`；节点用同一条 WS 长连接上报 hello/心跳/结果，
-中枢通过 `logical / config / upgrade / logs` 运维帧反向发起动作。v3 的 `internal/broker`
+中枢通过下行帧反向发起动作：`config.changed`（配置）/ `task.dispatch` + `lease.grant`（派发与授权）/
+`task.cancel`（取消）/ `upgrade`（升级）/ `logs_request`（历史日志）/ `capability.deploy`（人工部署）；
+帧方向表是 `internal/protocol/codec.go` 的 `upstreamFrames` / `downstreamFrames`。v3 的 `internal/broker`
 （SQLite 队列 + WS/Push 两个消费者）与 NodeHandler 已删除，不保留兼容层。
 
-### 投递规则（投递给设备 ⟺ 三条件全满足）
+### 派发规则（任务 → 节点 ⟺ 六条件全满足）
 
-1. `device.enabled = true`
-2. `scopeMatch(device.event_scope, msg.agentState)`：all 全过；final 仅终态（done/interrupted/error）
-3. `tagMatch`：消息无 deviceTags → 广播到所有 enabled 设备；设备无 tags → catch-all 收一切；双方都有 tags → 交集 ≥1（ANY，非 ALL）
+「投递」在 v4 有两段，别混：**事件 → 任务**是 `route.Router` 的纯投影（边来自能力 `spec.next`
+与源 `spec.targets`，任务在**建行那一刻**钉住 name/version/digest/params；剪枝不算错误，回执
+`taskId:null` + `pruned` 并留一条 `source='route'` 事件）。**任务 → 节点**才是下面这些条件。
+
+判定只有一处：`store.nodeIneligibilityReason`（`internal/store/node.go:1533`），按「最具体的事实优先」
+短路，最终汇总成能力的 `NodesAvailable` condition：
+
+1. 节点在线（`nodes.status = online`）→ 否则 `NodeOffline`
+2. 命名空间 ∈ 节点申报 ∩ 中枢授权（任一侧为 `*` 即全过）→ 否则 `NamespaceUnauthorized`
+3. 机器级配置已 apply（`applied_revision == revision`）→ 否则 `ConfigPending`
+4. 该 digest 的部署事实为 `applied`（`pending` 不算持有：派过去只会换来一次注定失败的执行）→ 否则 `NotDeployed`
+5. 能力 `requires.commands` 都在节点探测结果里 `found` → 否则 `CommandMissing`
+6. `requires.values` 的每个 vars 名字至少在 local / node / namespace 某一层有值（只匹配名字，值不下发）→ 否则 `ValueMissing`
+
+过了这六条还要过两道**派发闸**（不满足就不发帧，任务留 pending）：
+
+- **真实空闲槽**：`node_instances` 里 `alive = 1 AND busy_task IS NULL` 的实例数 > 0（`FreeSlotsByNode`，`internal/store/node.go:757`）；
+- **单一候选窗口**：同一任务同一时刻只有一个 30s 的 assignment（`AssignmentWindowSec`，`ProposeTaskAssignment`），未到期不换节点。
+
+派不出去**不会自动放弃**：pending 留在库里当事故证据，用 `GET /v1/orphans` 看病因
+（`no_capability` / `no_online_node`），要清场就 `POST /v1/namespaces/{ns}/tasks/{id}/abandon` 显式处置。
 
 ### 登录模型（两套并存）
 
@@ -568,9 +588,9 @@ make ci
 | API 契约 | `scripts/e2e/suites/api_contract.mjs` | 全端点状态码/鉴权/校验 |
 | Passkey 认证 | `scripts/e2e/suites/auth_flow.mjs` | **虚拟认证器无头跑注册/登录/登出/会话** |
 | 密码登录 | `scripts/e2e/suites/password_login.mjs` | 用密码注册、设置/修改/移除密码、密码登录、两套模型并存、最后一种登录方式护栏 |
-| 节点协议 | `scripts/e2e/suites/ws_protocol.mjs` | 九帧（hello/heartbeat/ack/progress/result + welcome/assign/cancel/error）、握手鉴权、out 三态、心跳判死 |
-| 派发路由 | `scripts/e2e/suites/routing.mjs` | 派发四步 + 六种未触发原因（no_edge/param_schema/no_node/foreign_user/path）、扇出、容量不足留 pending |
-| 持久化 | `scripts/e2e/suites/persistence.mjs` | 重启后 events/tasks 存活、状态机与 out 三态保持、终态不可变 |
+| 节点协议 | `scripts/e2e/suites/ws_protocol.mjs` | 九组帧边界：握手/配置/部署/派发不授权/accept→grant/结果绑定/日志转发/取消绑定/未知帧与超大帧 |
+| 派发路由 | `scripts/e2e/suites/routing.mjs` | 源 targets → 校参 → 候选节点 → 派发四步；四类剪枝（`no_target`/`param_missing`/`param_type`/`event_schema`）；无节点不剪枝、留 pending；扇出 |
+| 持久化 | `scripts/e2e/suites/persistence.mjs` | 重启后资源 uid、version、resourceVersion、任务相位、事件 trace、会话与 API Key 仍存活（终态不复活） |
 | 安全 | `scripts/e2e/suites/security.mjs` | scope 越权/Key 篡改/哈希不可逆/SQL 注入/路径穿越 |
 | 前端 | `scripts/e2e/suites/frontend.mjs` | 6 页渲染 + 路由守卫 + 真实数据 |
 | 边界 | `scripts/e2e/suites/edge_cases.mjs` | 并发 seq/Unicode/超大体/畸形输入 |

@@ -20,8 +20,8 @@ as_of: 2026-11-16 · area: store · 门禁: `go test ./internal/store/... -count
 
 1. **`schema.sql` 全文（含注释）不得出现 `argv` / `shell` / `script`** —— `make contract` 的 A2 机检，出现即红。
 2. **schema 变更 = 追加一个迁移块，不改 baseline**：`schema.sql` 是分块迁移，`headVersion`
-   （`migrate.go:37`）必须等于块数——追加块忘了 +1，新块**永远不会被应用**。
-   参照结构按「已记账到的版本」重放（`schemaLayoutAt`，`migrate.go:516`）：还没跑增量块的库
+   （`migrate.go:35`）必须等于块数——追加块忘了 +1，新块**永远不会被应用**。
+   参照结构按「已记账到的版本」重放（`schemaLayoutAt`，`migrate.go:494`）：还没跑增量块的库
    按旧一块校验，跑完再按 head 复核，所以**已有本地库会被就地迁移**，不需要删库重建。
    - 加/改列 = `-- +migration N <word>` 块（`ALTER TABLE … ADD COLUMN` + 回填 + 索引）+
      `headVersion` + 本文件 §3.7 的三处。
