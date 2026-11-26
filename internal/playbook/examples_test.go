@@ -62,6 +62,14 @@ func TestExamplePackagesRender(t *testing.T) {
 			if !strings.HasPrefix(body, "#!") {
 				t.Fatalf("%s/%s 的 %s 不以 #! 开头", dir, c.Metadata.Name, c.Spec.Run.Entrypoint)
 			}
+			for _, key := range []string{"REPO_DIR", "AGENT_CMD", "AGENT_ARGS", "BASE_BRANCH"} {
+				if !strings.Contains(body, "${"+key) {
+					continue
+				}
+				if strings.TrimSpace(c.Spec.Run.Env[key].Value) == "" && c.Spec.Run.Env[key].FieldPath == "" {
+					t.Fatalf("%s/%s 的脚本用了 ${%s}，但 run.env 没声明它（脚本会立刻退出）", dir, c.Metadata.Name, key)
+				}
+			}
 			for _, ln := range strings.Split(body, "\n") {
 				if strings.TrimSpace(ln) == "env:" {
 					t.Fatalf("%s/%s 的脚本里出现了被吞掉的 YAML 键 %q：run.env 缩进错了，整块会变成脚本文本", dir, c.Metadata.Name, "env:")
