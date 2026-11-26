@@ -1706,7 +1706,9 @@ func decodeCapabilityDeployBody(r *http.Request) (capabilityDeployRequest, error
 		return body, unknownFieldError(err)
 	}
 	if body.Version < 0 {
-		return body, errStatus(http.StatusBadRequest, reasonBadRequest, "version must be ≥ 1")
+		// #644：deploy 的 0 与省略同义（handleDeploy 的 `version <= 0` 走 ResolveRef = live），
+		// 拒的只是负数。旧文案写 `≥ 1`，与试跑的 `≥ 0 (0 = live version)` 相互矛盾。
+		return body, errStatus(http.StatusBadRequest, reasonBadRequest, "version must be ≥ 0 (0 = live version)")
 	}
 	return body, nil
 }

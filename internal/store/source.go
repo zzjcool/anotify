@@ -54,6 +54,28 @@ var (
 	ErrSourceTargetInvalid = errors.New("invalid source target")
 )
 
+// 写路径的错误前缀：既是日志/调试用的定位信息，也是 server 错误投影要剪掉的串。
+//
+// 为什么是常量而不是各写各的字面量：server 侧的剪裁表曾经手抄过 `create source: `，
+// 前缀改一个空格（`create source:`）剪裁表就静默失配，用户又开始看到内部前缀而测试仍绿（#644 第 4 条）。
+// 现在两侧引用同一组常量，`SourceWritePrefixes` 给 server 遍历、`source_write_prefix_test.go`
+// 反向枚举 store 真实包装串，改前缀只可能改一处。
+const (
+	SourceWritePrefixCreate = "create source: "
+	SourceWritePrefixUpdate = "update source: "
+	SourceWritePrefixDelete = "delete source: "
+	SourceWritePrefixInsert = "insert source: "
+)
+
+// SourceWritePrefixes 是写路径前缀的全量表（server 的 `sourceConfigMessage` 按它剪裁）。
+// 新增写操作前缀时**必须**同时加进这里，否则用户会在 message 里看到它。
+var SourceWritePrefixes = []string{
+	SourceWritePrefixCreate,
+	SourceWritePrefixUpdate,
+	SourceWritePrefixDelete,
+	SourceWritePrefixInsert,
+}
+
 // Source 是一个「源」实例：事件的入口。
 //
 // 它**不是能力**：能力由节点声明、中枢派任务给它；源自己产生事件、不干活。
@@ -154,25 +176,25 @@ func NewSourceToken() (string, error) {
 // **空 targets 合法**（先建入口再接能力，触发时留一条 no_target 剪枝痕）。
 func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	if s == nil {
-		return fmt.Errorf("create source: nil")
+		return fmt.Errorf(SourceWritePrefixCreate + "nil")
 	}
 	if s.NamespaceID == "" || s.NamespaceID == AllNamespaces {
 		return ErrNamespaceRequired
 	}
 	if err := sourcespec.ValidateName(s.Name); err != nil {
-		return fmt.Errorf("create source: %w", err)
+		return fmt.Errorf(SourceWritePrefixCreate+"%w", err)
 	}
 	secret := pollSecretOf(s.Kind, s.Config)
 	cfg, err := d.prepareSourceConfig(s.Kind, s.Config)
 	if err != nil {
-		return fmt.Errorf("create source: %w", err)
+		return fmt.Errorf(SourceWritePrefixCreate+"%w", err)
 	}
 	s.Config = cfg
 	if err := resolveSourceSecretOn(ctx, d, s.NamespaceID, s.Kind, cfg, secret); err != nil {
-		return fmt.Errorf("create source: %w", err)
+		return fmt.Errorf(SourceWritePrefixCreate+"%w", err)
 	}
 	if err := d.checkSourceTargets(ctx, s); err != nil {
-		return fmt.Errorf("create source: %w", err)
+		return fmt.Errorf(SourceWritePrefixCreate+"%w", err)
 	}
 	if s.ID == "" {
 		s.ID = NewSourceID()
@@ -185,21 +207,21 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	}
 	nextFire, err := sourceNextFire(s, s.CreatedAt)
 	if err != nil {
-		return fmt.Errorf("create source: %w", err)
+		return fmt.Errorf(SourceWritePrefixCreate+"%w", err)
 	}
 	s.NextFireAt = nextFire
 
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("create source: begin: %w", err)
+		return fmt.Errorf(SourceWritePrefixCreate+"begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	if err := insertSourceOn(ctx, txExec{tx: tx}, s); err != nil {
-		return fmt.Errorf("create source: %w", err)
+		return fmt.Errorf(SourceWritePrefixCreate+"%w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("create source: commit: %w", err)
+		return fmt.Errorf(SourceWritePrefixCreate+"commit: %w", err)
 	}
 	return nil
 }
@@ -212,10 +234,10 @@ func insertSourceOn(ctx context.Context, ex queryExec, s *Source) error {
 		secret := pollSecretOf(s.Kind, s.Config)
 		cfg, err := sourcespec.NormalizeConfig(s.Kind, s.Config)
 		if err != nil {
-			return fmt.Errorf("insert source: %w", err)
+			return fmt.Errorf(SourceWritePrefixInsert+"%w", err)
 		}
 		if err := resolveSourceSecretOn(ctx, ex, s.NamespaceID, s.Kind, cfg, secret); err != nil {
-			return fmt.Errorf("insert source: %w", err)
+			return fmt.Errorf(SourceWritePrefixInsert+"%w", err)
 		}
 		s.Config = cfg
 	}
@@ -233,7 +255,7 @@ func insertSourceOn(ctx context.Context, ex queryExec, s *Source) error {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("%w: %q", ErrSourceNameTaken, s.Name)
 		}
-		return fmt.Errorf("insert source: %w", err)
+		return fmt.Errorf(SourceWritePrefixInsert+"%w", err)
 	}
 	if err := replaceSourceEdgesOn(ctx, ex, s.NamespaceID, s.Name, targetRefs(s)); err != nil {
 		return err
@@ -267,7 +289,7 @@ func (d *DB) prepareSourceConfig(kind string, raw json.RawMessage) (json.RawMess
 	fields["token"] = token
 	withToken, err := json.Marshal(fields)
 	if err != nil {
-		return nil, fmt.Errorf("create source: marshal config: %w", err)
+		return nil, fmt.Errorf(SourceWritePrefixCreate+"marshal config: %w", err)
 	}
 	return sourcespec.NormalizeConfig(kind, withToken)
 }
@@ -510,7 +532,7 @@ func (d *DB) LookupHook(ctx context.Context, token string) (*Source, error) {
 // 「改了 targets 但边还是旧的」这个形状不会出现。
 func (d *DB) UpdateSource(ctx context.Context, s *Source) error {
 	if s == nil || s.ID == "" {
-		return fmt.Errorf("update source: missing id")
+		return fmt.Errorf(SourceWritePrefixUpdate + "missing id")
 	}
 	if s.NamespaceID == "" || s.NamespaceID == AllNamespaces {
 		return ErrNamespaceRequired
@@ -520,7 +542,7 @@ func (d *DB) UpdateSource(ctx context.Context, s *Source) error {
 	}
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("update source: begin: %w", err)
+		return fmt.Errorf(SourceWritePrefixUpdate+"begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	ex := txExec{tx: tx}
@@ -536,7 +558,7 @@ func (d *DB) UpdateSource(ctx context.Context, s *Source) error {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("update source: commit: %w", err)
+		return fmt.Errorf(SourceWritePrefixUpdate+"commit: %w", err)
 	}
 	*s = updated
 	return nil
@@ -573,11 +595,11 @@ func (d *DB) updateSourceOn(ctx context.Context, ex queryExec, cur, s *Source, t
 	if s.Config != nil {
 		cfg, err = sourcespec.MergeConfig(cur.Kind, cur.Config, s.Config)
 		if err != nil {
-			return fmt.Errorf("update source: %w", err)
+			return fmt.Errorf(SourceWritePrefixUpdate+"%w", err)
 		}
 	}
 	if err := resolveSourceSecretOn(ctx, ex, cur.NamespaceID, cur.Kind, cfg, secret); err != nil {
-		return fmt.Errorf("update source: %w", err)
+		return fmt.Errorf(SourceWritePrefixUpdate+"%w", err)
 	}
 	if cur.Kind == SourceKindWebhook && sourcespec.ParseConfig(cur.Kind, cfg).Token == "" {
 		cfg, err = d.prepareSourceConfig(cur.Kind, cfg)
@@ -607,14 +629,14 @@ func (d *DB) updateSourceOn(ctx context.Context, ex queryExec, cur, s *Source, t
 	}
 	targetsJSON, err := json.Marshal(s.Targets)
 	if err != nil {
-		return fmt.Errorf("update source: marshal targets: %w", err)
+		return fmt.Errorf(SourceWritePrefixUpdate+"marshal targets: %w", err)
 	}
 	res, err := ex.execContext(ctx,
 		`UPDATE sources SET display_name = ?, config = ?, targets = ?, enabled = ?, next_fire_at = ?, resource_version = resource_version + 1
 		 WHERE namespace_id = ? AND name = ? AND id = ? AND resource_version = ?`,
 		s.DisplayName, string(cfg), string(targetsJSON), boolToInt(s.Enabled), nullableUnix(nextFire), cur.NamespaceID, cur.Name, cur.ID, cur.ResourceVersion)
 	if err != nil {
-		return fmt.Errorf("update source: %w", err)
+		return fmt.Errorf(SourceWritePrefixUpdate+"%w", err)
 	}
 	if err := requireCASRow(res, cur.ID, cur.ResourceVersion); err != nil {
 		return err
@@ -640,7 +662,7 @@ func (d *DB) DeleteSource(ctx context.Context, namespaceID, id string, expectedR
 	}
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("delete source: begin: %w", err)
+		return fmt.Errorf(SourceWritePrefixDelete+"begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	ex := txExec{tx: tx}
@@ -655,7 +677,7 @@ func (d *DB) DeleteSource(ctx context.Context, namespaceID, id string, expectedR
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("delete source: commit: %w", err)
+		return fmt.Errorf(SourceWritePrefixDelete+"commit: %w", err)
 	}
 	return nil
 }
@@ -664,14 +686,14 @@ func deleteSourceOn(ctx context.Context, ex queryExec, cur *Source) error {
 	res, err := ex.execContext(ctx, `DELETE FROM sources WHERE namespace_id = ? AND name = ? AND id = ? AND resource_version = ?`,
 		cur.NamespaceID, cur.Name, cur.ID, cur.ResourceVersion)
 	if err != nil {
-		return fmt.Errorf("delete source: %w", err)
+		return fmt.Errorf(SourceWritePrefixDelete+"%w", err)
 	}
 	if err := requireCASRow(res, cur.ID, cur.ResourceVersion); err != nil {
 		return err
 	}
 	_, err = ex.execContext(ctx, `DELETE FROM edges WHERE namespace_id = ? AND from_is_source = 1 AND from_ref = ?`, cur.NamespaceID, cur.Name)
 	if err != nil {
-		return fmt.Errorf("delete source: clear projection: %w", err)
+		return fmt.Errorf(SourceWritePrefixDelete+"clear projection: %w", err)
 	}
 	return nil
 }

@@ -649,3 +649,61 @@ func TestCapabilityTestVersionZeroIsLive(t *testing.T) {
 		t.Fatalf("version: -1 的 reason = %q，want %q", got, reasonBadRequest)
 	}
 }
+
+// TestCapabilityDeployVersionZeroIsLive 把同一个不变量钉在 deploy 上（review 第 1 轮第 3 条）。
+//
+// 修前：schema `CapabilityDeployRequest.version` 是 `minimum: 1` + 双“省略 = 最新版本”，
+// handler 拒的却只是 `< 0`（`handleDeploy` 的 `version <= 0` 走 ResolveRef = live），
+// 而且 400 文案回的是 `version must be ≥ 1`——同一语义的 test 回 `≥ 0 (0 = live version)`，
+// 两个动作 body 互相矛盾。自后三处同向：schema 下界 0、文案 `≥ 0`、0 与省略同一版。
+func TestCapabilityDeployVersionZeroIsLive(t *testing.T) {
+	env := newCapTestEnv(t)
+	env.createCapability(t, env.nsA, "deploy-live", "#!/bin/sh\necho live\n")
+
+	deploy := func(t *testing.T, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		return env.do(t, http.MethodPost, env.capPath(env.nsA, "deploy-live", "deploy"), body)
+	}
+
+	// ① 省略 = live（基线）：没有节点 → 诚实的空结果，版本依旧是 live 那一版。
+	rec := deploy(t, map[string]any{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deploy 省略 version: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	omitted := capNumber(t, decodeCapJSON(t, rec), "version")
+	if omitted != 1 {
+		t.Fatalf("deploy 省略 version 落到 %d，want 1（live）", omitted)
+	}
+
+	// ② 显式 0：与省略同一条解析（不许分叉成“没有这个版本”）。
+	rec = deploy(t, map[string]any{"version": 0})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deploy version: 0: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if zero := capNumber(t, decodeCapJSON(t, rec), "version"); zero != omitted {
+		t.Fatalf("deploy version: 0 落到 %d，省略落到 %d（两条解析必须同一条）", zero, omitted)
+	}
+
+	// ③ 负数 → 400，且文案与试跑共用一条（不许再把 0 说成非法）。
+	rec = deploy(t, map[string]any{"version": -1})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("deploy version: -1: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	doc := decodeCapJSON(t, rec)
+	if got := capString(t, doc, "reason"); got != reasonBadRequest {
+		t.Fatalf("deploy version: -1 的 reason = %q，want %q", got, reasonBadRequest)
+	}
+	msg := capString(t, doc, "message")
+	if !strings.Contains(msg, "≥ 0 (0 = live version)") {
+		t.Fatalf("deploy version: -1 的 message = %q，want 含 “≥ 0 (0 = live version)”", msg)
+	}
+	if strings.Contains(msg, "≥ 1") {
+		t.Fatalf("deploy version: -1 的 message = %q：不得再出现把 0 说成非法的 “≥ 1”", msg)
+	}
+
+	// ④ 显式不存在的版本 → 404（不是静默回 live）。schema 描述里的这句跟这里同源。
+	rec = deploy(t, map[string]any{"version": 99})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("deploy version: 99 应 404，实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+}

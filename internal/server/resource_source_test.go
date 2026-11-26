@@ -1370,22 +1370,27 @@ func TestSourceResourceYAMLIsMaskedProjection(t *testing.T) {
 //	create source: invalid source config: config.schedule：cron 表达式需要 5 段…
 //
 // 前两段是 store / 域的定位信息（日志、调试用），`reason`（`invalid_source_config`）已经把
-// 分类说全了；用户要改的只有最后那句。五个用例逐个钉（POST/PATCH × 配置/引用/保留名），
-// 免得只修了 issue 复现的那一条。
+// 分类说全了；用户要改的只有最后那句。**七个**子用例逐个钉：①POST 配置 ②timeoutMs 越界
+// ③边界内侧（120000 可建） ④POST 引用 ⑤PATCH 配置 ⑥POST 保留名 ⑦POST 未知 kind。
+// 注意 ①④⑥⑦ 都是 POST、⑤ 是 PATCH（review 第 5 条指出旧注释写「五个用例，POST/PATCH ×
+// 配置/引用/保留名」，与实际条数、方法都对不上，此处按真实枚举重写）；
+// ⑦ 的 reason 是 `invalid_source_kind` 而不是 `invalid_source_config`——同一端点、同一类前缀。
 //
-// 顺带钉 #644 第 2 条：poll `timeoutMs` 的上界以代码为准（`sourcespec.PollTimeoutMaxMs`）。
-// 边界值写死在断言里：文档再写回 60000 时，这条测试里的 120000 就是那句「以代码为准」。
+// 前缀清单**不手抄**：直接遍历 `store.SourceWritePrefixes`（store 写路径用的同一组常量）。
+// 手抄版本改一个空格就静默失配（#644 第 4 条），现在 store 侧改前缀这里自动跟着改。
 func TestSourceErrorMessageDropsInternalPrefixes(t *testing.T) {
 	env := newSourceResEnv(t)
-	// 内部前缀：store 的写操作（create/update）+ 两个错误域前缀（config / target）。
-	internalPrefixes := []string{
-		"create source: ", "update source: ",
-		"invalid source config: ", "invalid source target: ",
-	}
-	assertClean := func(t *testing.T, doc map[string]any, want ...string) {
+	// 内部前缀：store 的写操作（create/update/delete/insert）+ 两个错误域前缀（config / target）。
+	// kind 域的 `invalid source kind: ` **不剪**：那句带着可选值清单，是给用户的信息。
+	internalPrefixes := append([]string{}, store.SourceWritePrefixes...)
+	internalPrefixes = append(internalPrefixes,
+		store.ErrInvalidSourceConfig.Error()+": ",
+		store.ErrSourceTargetInvalid.Error()+": ",
+	)
+	assertClean := func(t *testing.T, doc map[string]any, wantReason string, want ...string) {
 		t.Helper()
-		if got := sourceResString(t, doc["reason"]); got != "invalid_source_config" {
-			t.Fatalf("reason = %q, want invalid_source_config", got)
+		if got := sourceResString(t, doc["reason"]); got != wantReason {
+			t.Fatalf("reason = %q, want %s", got, wantReason)
 		}
 		msg, _ := doc["message"].(string)
 		if msg == "" {
@@ -1423,7 +1428,7 @@ func TestSourceErrorMessageDropsInternalPrefixes(t *testing.T) {
 		t.Fatalf("非法 cron 期望 400，得到 %d：%s", rr.Code, rr.Body.String())
 	}
 	badSchedule := env.doc(rr)
-	assertClean(t, badSchedule, "config.schedule", "cron")
+	assertClean(t, badSchedule, "invalid_source_config", "config.schedule", "cron")
 	// details.causes[] 的路径定位（#519 的红点点位）不因剪前缀而丢。
 	details := sourceResObj(t, badSchedule["details"])
 	causes := sourceResArr(t, details["causes"])
@@ -1443,7 +1448,7 @@ func TestSourceErrorMessageDropsInternalPrefixes(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("timeoutMs 越界期望 400，得到 %d：%s", rr.Code, rr.Body.String())
 	}
-	assertClean(t, env.doc(rr), "config.timeoutMs", "[1000, 120000]")
+	assertClean(t, env.doc(rr), "invalid_source_config", "config.timeoutMs", "[1000, 120000]")
 
 	// ③ 边界内侧仍可建（120000 是允许的，不是被夹到 60000）。
 	env.createSource(pollSpec(map[string]any{
@@ -1461,7 +1466,7 @@ func TestSourceErrorMessageDropsInternalPrefixes(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("非法 target 期望 400，得到 %d：%s", rr.Code, rr.Body.String())
 	}
-	assertClean(t, env.doc(rr), missing)
+	assertClean(t, env.doc(rr), "invalid_source_config", missing)
 
 	// ⑤ PATCH 写坏 config（未知键）：`update source: ` 也不能出现在 message 里。
 	env.createSource(map[string]any{"kind": "manual"}, map[string]any{"name": "patch.bad-config"})
@@ -1474,12 +1479,23 @@ func TestSourceErrorMessageDropsInternalPrefixes(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("PATCH 未知键期望 400，得到 %d：%s", rr.Code, rr.Body.String())
 	}
-	assertClean(t, env.doc(rr), "expr")
+	assertClean(t, env.doc(rr), "invalid_source_config", "expr")
 
 	// ⑥ 保留来源名：sourcespec 的原文就是给人看的，只剩它（前缀 `create source: ` 剪掉）。
 	rr = env.request(http.MethodPost, env.sourcesPath(), sourceBody("route", map[string]any{"kind": "manual"}))
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("保留来源名期望 400，得到 %d：%s", rr.Code, rr.Body.String())
 	}
-	assertClean(t, env.doc(rr), "保留来源名")
+	assertClean(t, env.doc(rr), "invalid_source_config", "保留来源名")
+
+	// ⑦ 未知 kind：同一端点的另一条分支（`invalid_source_kind`）也背 `create source: `。
+	// 只剪写操作前缀，`invalid source kind: "pollz"（可选：…）` 那句要**留着**：可选值清单是用户改对
+	// 输入的唯一线索。Review 第 1 轮实测旧响应是
+	// `create source: invalid source kind: "pollz"（可选：cron / webhook / manual / poll）`。
+	rr = env.request(http.MethodPost, env.sourcesPath(), sourceBody("bad.kind", map[string]any{"kind": "pollz"}))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("未知 kind 期望 400，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	assertClean(t, env.doc(rr), "invalid_source_kind",
+		"invalid source kind", "pollz", "cron", "webhook", "manual", "poll")
 }
