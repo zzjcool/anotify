@@ -127,12 +127,13 @@ gofmt / staticcheck、`make fe` + `check-dist-fresh`、测试纪律与注释/注
 `BenchmarkDispatchChain-12  4732183 ns/op / 2322 allocs/op`（预算查询占其中 ~70 µs）。
 
 `make e2e-affected`（`timeout 2400`）→ **exit 0，31/31 套件全绿，断言 3556 通过 / 0 失败**
-（`E2E_CONCURRENCY=1`；`routing` 508 / `playbook_release` 614 / `contract` 185 / `api_contract` 206 /
-`ws_protocol` 134 / `persistence` 82 / `live_agent` 62 / `capacity` 84 / `frontend` 47 …）。
+（`routing` 508 / `playbook_release` 614 / `contract` 185 / `api_contract` 206 / `ws_protocol` 134 /
+`persistence` 82 / `live_agent` 62 / `capacity` 84 / `frontend` 47 / `events_paging` 179 …）。
+跑了两次：默认并发与 `E2E_CONCURRENCY=1` **都是 31/31 / 3556 通过 / 0 失败**。
 
-一次**并行**（默认并发）跑出现过 `routing` 2 条断言失败：单跑 `./scripts/e2e/run_all.sh routing`
-→ 508 通过 / 0 失败 / exit 0，随后全量 `E2E_CONCURRENCY=1` → 31/31 全绿，故按负载假红处理
-（未写入任何 known-env 放行名单）。
+（第一次默认并发的跑里 `routing` 有 2 条断言失败——单跑 `./scripts/e2e/run_all.sh routing` →
+508 通过 / 0 失败 / exit 0，重跑全量默认并发也全绿，按负载假红处理；**没有**写任何
+known-env 放行名单。）
 
 ## 7. 注释棘轮（只降不升）
 
