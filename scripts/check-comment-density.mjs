@@ -29,8 +29,8 @@ export const BASELINE = {
 	"schemaVersion": 2,
 	"measuredAt": "2026-11-26",
 	"commentLines": 42893,
-	"codeLines": 288733,
-	"files": 749,
+	"codeLines": 289800,
+	"files": 753,
 	"dirs": {
 		".": 86,
 		".github/workflows": 107,
@@ -170,8 +170,8 @@ export const BASELINE = {
 	},
 	"docs": {
 		"contracts": {
-			"files": 15,
-			"lines": 2719
+			"files": 11,
+			"lines": 2628
 		}
 	},
 	"rootPlans": {
