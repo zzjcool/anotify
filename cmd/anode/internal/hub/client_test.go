@@ -122,6 +122,113 @@ func TestStreamURLDefaultAndExplicitPath(t *testing.T) {
 	}
 }
 
+// TestHeartbeatClosesSilentlyDeadLink 是验收 ②：帧不再到达但连接不报错时，
+// 节点侧必须在 2 次心跳内判死并重连。
+//
+// 夹具刻意让**控制帧照常工作**：假中枢持续读（所以 ping 有 pong），但一个下行
+// 业务帧都不写。这正是 #661 的形态——连接"看起来"是活的，Read 却永远阻塞。
+// 去掉硬心跳（watchHeartbeat）后，这条用例会一直等到 testTimeout 才红。
+func TestHeartbeatClosesSilentlyDeadLink(t *testing.T) {
+	var conns atomic.Int64
+	helloCh := make(chan struct{}, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != StreamPath {
+			http.NotFound(w, r)
+			return
+		}
+		conn := acceptWS(t, w, r)
+		if conn == nil {
+			return
+		}
+		conns.Add(1)
+		helloCh <- struct{}{}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		// 读循环一直跑：ping 会被应答，控制面看起来完全健康。
+		for {
+			if _, err := readFrame(ctx, conn); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	n := testNode(t, wsURL(srv.URL), "")
+	client, err := New(wsURL(srv.URL), "node-secret-token", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const heartbeat = 150 * time.Millisecond
+	client.HeartbeatTimeout = heartbeat
+	client.HeartbeatInterval = 20 * time.Millisecond
+	client.Logf = t.Logf
+	// 退避压到毫秒级：本用例量的是「判死延迟」，不是重连退避策略。
+	client.Sleep = func(ctx context.Context, d time.Duration) error {
+		if d > 20*time.Millisecond {
+			d = 20 * time.Millisecond
+		}
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		}
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		_ = client.Run(ctx)
+	}()
+	// Run 必须真的退出再让 TempDir 收尸（否则缓存目录还在被写，清理报 ENOTEMPTY）。
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-runDone:
+		case <-time.After(testTimeout):
+			t.Error("Run 未退出")
+		}
+	})
+
+	select {
+	case <-helloCh:
+	case <-time.After(testTimeout):
+		t.Fatal("首连未建立")
+	}
+	// 一个等回执的上行帧：中枢永远不回（下行帧全丢），链条就此静默。
+	// 连接就绪（hello 已出站）之前 Send 返回 ErrOffline，所以按毫秒级有界重试。
+	renew := &protocol.LeaseRenewFrame{
+		Type: protocol.FrameLeaseRenew, TaskID: "silent", Attempt: 1, LeaseID: "lease-silent",
+	}
+	tick := time.NewTicker(2 * time.Millisecond)
+	defer tick.Stop()
+	var sendErr error
+	for attempt := 0; attempt < 500; attempt++ {
+		if sendErr = client.Send(renew); sendErr == nil {
+			break
+		}
+		<-tick.C
+	}
+	if sendErr != nil {
+		t.Fatalf("发送 lease.renew: %v", sendErr)
+	}
+	// 「2 次心跳内」= 2×HeartbeatTimeout 之内必须断开并重新握手（helloCh 再来一发）。
+	deadline := time.NewTimer(2 * heartbeat)
+	defer deadline.Stop()
+	select {
+	case <-helloCh:
+	case <-deadline.C:
+		t.Fatalf("静默断连未被判定：%s 内没有重连（连接数 %d）", 2*heartbeat, conns.Load())
+	}
+	if conns.Load() < 2 {
+		t.Fatalf("应已重连，实际连接数 %d", conns.Load())
+	}
+}
+
 func TestRunSendsHelloAndAppliesWelcome(t *testing.T) {
 	helloCh := make(chan protocol.HelloFrame, 1)
 	appliedCh := make(chan protocol.ConfigAppliedFrame, 1)

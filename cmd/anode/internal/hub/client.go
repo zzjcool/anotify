@@ -46,6 +46,20 @@ const (
 	pingTimeout  = 10 * time.Second
 )
 
+// 硬心跳（frame heartbeat）：**读循环卡在隧道里时唯一的自救手段**。
+//
+// keepalive 的 ping 只在「这条连接还能收发控制帧」时有效；反向代理/隧道把**下行
+// 业务帧**丢掉而连接不报错时（#661：中枢从未 disconnected、节点也不报错，但
+// lastSeenAt 冻结、派发不再发生），Read 会永久阻塞，节点除了重启没有出路。
+// 这里的判据是「我们发了一个等回执的帧，N 内一个下行帧都没来」→ 主动断开重连。
+//
+// N = 2×LeaseRenewInterval（生产 40s）：一次续租就该有一个 ACK，丢两个就是链路死了；
+// 再长会让「节点已死」比中枢的租约回收还晚发现。
+const (
+	defaultHeartbeatTimeout  = 2 * protocol.LeaseRenewInterval
+	defaultHeartbeatInterval = defaultHeartbeatTimeout / 4
+)
+
 // Handler 是节点对配置/部署帧的处理入口（由 internal/node 实现）。
 //
 // N2B 的执行/运维/emit 帧通过下面的可选接口接线：只实现 Handler 的节点（N2A
@@ -107,9 +121,20 @@ type Client struct {
 	ReadLimit int64
 	Logf      func(format string, args ...any)
 
+	// HeartbeatTimeout 是「等回执的帧最多等多久」（0 = 2×LeaseRenewInterval）。
+	HeartbeatTimeout time.Duration
+	// HeartbeatInterval 是判定周期（0 = HeartbeatTimeout/4）。
+	HeartbeatInterval time.Duration
+
 	writeMu    sync.Mutex
 	conn       *websocket.Conn
 	generation atomic.Uint64 // changes invalidate sends queued for an earlier connection
+
+	// lastFrame 是最近一次收到**下行帧**的时刻（unixnano；0 = 本会话还没收到）。
+	lastFrame atomic.Int64
+	// awaitAck 是「第一个等回执的帧发出去」的时刻（unixnano；0 = 没有等待中的回执）。
+	// 只在下行帧到达时清零：它就是「链路还在把字节送回来」的正向证据。
+	awaitAck atomic.Int64
 }
 
 // New 校验 server 形状并装配客户端。
@@ -248,6 +273,7 @@ func (c *Client) Send(frame any) error {
 	if err := c.conn.Write(ctx, websocket.MessageText, data); err != nil {
 		return fmt.Errorf("hub: 写帧: %w", err)
 	}
+	c.noteAwaitAck(frame)
 	return nil
 }
 
@@ -294,6 +320,7 @@ func (c *Client) SendGuarded(ctx context.Context, frame any, guard func() bool) 
 	if err := c.conn.Write(writeCtx, websocket.MessageText, data); err != nil {
 		return false, fmt.Errorf("hub: 写 guarded 帧: %w", err)
 	}
+	c.noteAwaitAck(frame)
 	return true, nil
 }
 
@@ -319,10 +346,11 @@ func (c *Client) runSession(ctx context.Context) error {
 	c.setConn(conn)
 	defer c.clearConn(conn)
 
-	// 保活：与本会话同生共死（连接一断，ping 循环也随之结束）。
+	// 保活 + 硬心跳：都与本会话同生共死（连接一断，两个循环也随之结束）。
 	pingCtx, stopPing := context.WithCancel(ctx)
 	defer stopPing()
 	go c.keepalive(pingCtx, conn)
+	go c.watchHeartbeat(pingCtx, conn)
 
 	if err := c.Send(c.Handler.Hello()); err != nil {
 		return err
@@ -353,6 +381,7 @@ func (c *Client) runSession(ctx context.Context) error {
 		if _, ok := frame.(*protocol.WelcomeFrame); ok {
 			welcomed = true
 		}
+		c.noteInbound()
 		c.dispatch(ctx, conn, frame)
 	}
 }
@@ -377,6 +406,78 @@ func (c *Client) keepalive(ctx context.Context, conn *websocket.Conn) {
 				_ = conn.Close(websocket.StatusPolicyViolation, "ping timeout")
 				return
 			}
+		}
+	}
+}
+
+// noteInbound 记录「收到一帧」：这是链路活着的唯一正向证据，顺带清掉等待中的回执。
+func (c *Client) noteInbound() {
+	c.lastFrame.Store(time.Now().UnixNano())
+	c.awaitAck.Store(0)
+}
+
+// noteAwaitAck 在发出一帧**需要回执**的上行帧后登记等待起点（已有等待则不覆盖：
+// 判据是「第一个还没被回执的上行请求等了多久」）。
+func (c *Client) noteAwaitAck(frame any) {
+	if !expectsReply(frame) {
+		return
+	}
+	c.awaitAck.CompareAndSwap(0, time.Now().UnixNano())
+}
+
+// expectsReply 报告上行帧是否应该换来一个下行回执。
+//
+// 只登记**协议保证有回执**的三种：lease.renew→lease.ack、task.result→result.ack、
+// task.emit→emit.ack。hello/config.applied/cancel.ack 是单向事实，把它们算进来
+// 会让空闲连接被自己的心跳判死。
+func expectsReply(frame any) bool {
+	switch frame.(type) {
+	case *protocol.LeaseRenewFrame, *protocol.TaskResultFrame, *protocol.TaskEmitFrame:
+		return true
+	}
+	return false
+}
+
+// watchHeartbeat 是读循环的硬超时：超过 HeartbeatTimeout 还没收到任何下行帧就断开重连。
+//
+// 只在「有等待回执的上行帧」时计时（见文件头 defaultHeartbeatTimeout 的注释）：
+// 空闲连接本来就不该有下行帧，拿它判死会把每条空闲连接每 40s 掐一次。
+func (c *Client) watchHeartbeat(ctx context.Context, conn *websocket.Conn) {
+	timeout := c.HeartbeatTimeout
+	if timeout <= 0 {
+		timeout = defaultHeartbeatTimeout
+	}
+	interval := c.HeartbeatInterval
+	if interval <= 0 {
+		interval = timeout / 4
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			waiting := c.awaitAck.Load()
+			if waiting == 0 {
+				continue
+			}
+			waited := time.Since(time.Unix(0, waiting))
+			if waited < timeout {
+				continue
+			}
+			last := c.lastFrame.Load()
+			lastText := "本会话还没收到任何帧"
+			if last > 0 {
+				lastText = fmt.Sprintf("最后收到帧于 %s 前",
+					time.Since(time.Unix(0, last)).Truncate(time.Millisecond))
+			}
+			c.logf("hub: 超过 %s 没收到任何下行帧（等回执已 %s，%s），主动断开重连",
+				timeout, waited.Truncate(time.Millisecond), lastText)
+			// CloseNow 而不是 Close：Close 要等对端的 close 帧（握手期 5s 级），
+			// 而这里的判据就是「对端不说话」——等它只会把重连推迟到判据失效之后。
+			_ = conn.CloseNow()
+			return
 		}
 	}
 }

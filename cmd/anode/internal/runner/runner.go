@@ -78,6 +78,9 @@ type Options struct {
 	Logf func(format string, args ...any)
 
 	// LeaseTTL / RenewInterval / TermGrace 默认取协议常量（生产不得缩小）。
+	//
+	// LeaseTTL 只是**兜底**：正常路径的 deadline 来自中枢在 grant/lease.ack 里给的
+	// expiresAt（见 leaseDeadline）——中枢侧租约可配（默认 180s），节点自算就会错。
 	LeaseTTL      time.Duration
 	RenewInterval time.Duration
 	TermGrace     time.Duration
@@ -561,7 +564,24 @@ func (r *Runner) HandleLeaseGrant(f *protocol.LeaseGrantFrame) {
 	}()
 }
 
-// HandleLeaseAck 更新本地 deadline（最后一次 ACK + TTL）；旧 lease 的 ACK 不动新 attempt。
+// leaseDeadline 把 wire 上的绝对到期时刻翻成本地 deadline。
+//
+// 用中枢给的 expiresAt 而不是本地常量：中枢租约可配（ANOTIFY_LEASE_TTL，默认 180s），
+// 节点仍按 60s 自算就会在中枢还认这次执行时 TERM/KILL 它（#661 的另一半）。
+// 时钟偏差保护：节点快了几十秒时，一个刚到的 ACK 可能看起来已过期——那种情况退回
+// 「now + 一个续租周期」而不是当场判死；帧里没带 expiresAt 时才用配置的兜底 TTL。
+func (r *Runner) leaseDeadline(expiresAt time.Time) time.Time {
+	now := r.clk.Now()
+	if expiresAt.IsZero() {
+		return now.Add(r.opts.LeaseTTL)
+	}
+	if floor := now.Add(r.opts.RenewInterval); !expiresAt.After(floor) {
+		return floor
+	}
+	return expiresAt
+}
+
+// HandleLeaseAck 更新本地 deadline（中枢给的 expiresAt）；旧 lease 的 ACK 不动新 attempt。
 func (r *Runner) HandleLeaseAck(f *protocol.LeaseAckFrame) {
 	if f == nil || f.Type != protocol.FrameLeaseAck {
 		return
@@ -577,7 +597,7 @@ func (r *Runner) HandleLeaseAck(f *protocol.LeaseAckFrame) {
 			f.TaskID, f.Attempt, f.LeaseID)
 		return
 	}
-	att.noteAck(r.clk.Now().Add(r.opts.LeaseTTL))
+	att.noteAck(r.leaseDeadline(f.ExpiresAt))
 }
 
 // HandleResultAck 匹配 pending 结果（事实已结束，不再重发；accepted=false 只记诊断）。
