@@ -43,14 +43,14 @@ spec:
 
         硬性要求：
         1. 先 gh issue view $issue --repo $repo 读全文，再读相关代码。
-        2. 在**新分支**上改：分支名 pi-subagent/issue-$issue-r$round（基线是 $BASE_BRANCH，先 git fetch）。
+        2. 基线必须干净：先 git fetch origin，再 git checkout $BASE_BRANCH 并 git reset --hard origin/$BASE_BRANCH
+           （工作区里可能是上一次任务留下的分支，不许在它上面接着长）。
+           然后建新分支 pi-subagent/issue-$issue-r$round。
         3. 改完必须自己跑门禁（至少构建/单测/相关测试），把真实输出留在提交说明或日志里。
         4. 提交并推送，开一个 PR（base $BASE_BRANCH），PR 正文写清：改了什么、为什么、怎么验证。
         5. 不许手工合并、不许 force push 到共享分支、不许改无关文件。
 
-        上一轮 review 的意见（若有，逐条处理）：
-
-        $findings
+        如果这个 issue 上已经有前几轮的 review 意见，用 gh issue view $issue --comments 读到并逐条处理。
 
         把你自己的裁决**只**写成 JSON 文件：$art_dir/agent-verdict.json
         格式（严格）：
