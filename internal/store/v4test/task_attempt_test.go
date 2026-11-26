@@ -622,6 +622,7 @@ func TestRehelloIsNotProcessFact(t *testing.T) {
 
 // TestTerminalPhaseIsNotProcessFact 验「数据库相位 = 终态」不能当进程已回收：
 // 节点说还在跑就保持 busy；缺字段/重连都不算；只有明确 idle + 匹配引用才清。
+// 终态取取消在飞那条（等 cancel.ack）：abandon 终局归 sweep 收敛（#660）。
 func TestTerminalPhaseIsNotProcessFact(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
@@ -638,13 +639,16 @@ func TestTerminalPhaseIsNotProcessFact(t *testing.T) {
 	if err := db.MarkNodeOffline(ctx, node.ID, store.Now()); err != nil {
 		t.Fatalf("mark offline: %v", err)
 	}
+	if err := db.RequestCancel(ctx, task.ID, protocol.ReasonCancelledByUser, store.Now()); err != nil {
+		t.Fatalf("request cancel: %v", err)
+	}
 	if _, err := db.Exec(`UPDATE tasks SET lease_until = ? WHERE id = ?`, store.Now()-1, task.ID); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
 	if _, terminal, err := db.RecoverLostLeases(ctx, store.Now()); err != nil || terminal != 1 {
-		t.Fatalf("非幂等过期应终态：terminal=%d err=%v", terminal, err)
+		t.Fatalf("cancelled-without-ack 过期应终态：terminal=%d err=%v", terminal, err)
 	}
-	mustPhase(t, db, ns, task.ID, store.TaskAbandoned)
+	mustPhase(t, db, ns, task.ID, store.TaskCancelled)
 	if busySlots(t, db, node.ID) != 1 {
 		t.Fatalf("终态不等于进程已回收：busy 必须保留")
 	}

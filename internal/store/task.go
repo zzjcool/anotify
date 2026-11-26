@@ -1044,8 +1044,7 @@ func cancelPhase(stopIntent, reason string) string {
 // RecoverLostLeases 回收**真正失联**的 running 任务（调度巡检的唯一入口）。
 //
 // 两类候选人：租约到点的 running 任务，以及**所在节点已 offline** 的 running 任务。
-// `draining` **不是**失联：drain 的语义是「不再接新任务、把存量跑完」，在跑的
-// 任务照常续租/回报结果（只有 offline 才是「这台机器不在了」）。
+// `draining` **不是**失联：drain 是「不再接新任务、把存量跑完」，在跑的照常续租。
 //
 // 决策分三条，判据来自任务行上钉住的 idempotent（不回读能力，避免「能力改过一次就换了语义」）：
 //
@@ -1053,11 +1052,10 @@ func cancelPhase(stopIntent, reason string) string {
 //	幂等 且 attempt < maxAttempts → 回 pending + retry_backoff + 退避（会重跑）
 //	否则                          → abandoned（infra 原因，绝不重跑非幂等能力）
 //
-// **物理槽位不在这里释放**（任何分支都不）：租约过期只吊销授权，不证明进程组已回收；
-// 节点 offline 也只说明连接断了（会话死亡），不等于机器上的进程没了。物理槽必须由
-// 可信事实回收：`cancel.ack` 的 reaped=true（当前 attempt）或 ReapTaskAttempt /
-// ReclaimStaleSlots 的明确实例事实（历史 attempt）。节点 offline 时另一个入口
-// （MarkNodeOffline）会把槽位标成不可派发且**保留** busy 账本。
+// 物理槽位的默认规则是**不在这里释放**：租约过期只吊销授权，不证明进程组已回收；
+// 节点 offline 也只说明连接断了。物理槽必须由可信事实回收：`cancel.ack` 的
+// reaped=true、ReapTaskAttempt / ReclaimStaleSlots 的明确实例事实。唯一例外是
+// abandon 终局（#660）：不会再有入口为它补 reaped，两本账留下就是永久满负荷。
 //
 // 返回 (重排条数, 直接终态条数)。
 func (d *DB) RecoverLostLeases(ctx context.Context, now int64) (int, int, error) {
@@ -1107,11 +1105,8 @@ func (d *DB) RecoverLostLeases(ctx context.Context, now int64) (int, int, error)
 
 // recoverOne 处理一条过期租约（一个事务）。
 //
-// CAS 双守卫 `phase='running' AND attempt=?`：判断与写入之间任务可能刚被续租/
-// 被取消/被重派，那种情况下这一行一行都不该动。
-//
-// 槽位一律不在这里释放（见 RecoverLostLeases）：只把 attempt 记成 requeued/终态，
-// reaped 仍等可信事实。
+// CAS 双守卫 `phase='running' AND attempt=?`：判断与写入之间任务可能刚被续租/取消/
+// 重派，那种情况下这一行都不动。槽位处理见 RecoverLostLeases。
 func (d *DB) recoverOne(ctx context.Context, t *Task, now int64) (requeued bool, err error) {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
@@ -1126,10 +1121,11 @@ func (d *DB) recoverOne(ctx context.Context, t *Task, now int64) (requeued bool,
 		cancelReason sql.NullString
 		stopIntent   string
 		instanceID   string
+		nodeID       sql.NullString
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT phase, attempt, cancel_requested_at, cancel_reason, stop_intent, lease_instance_id FROM tasks WHERE id = ?`, t.ID).
-		Scan(&phase, &attempt, &cancelReq, &cancelReason, &stopIntent, &instanceID)
+		`SELECT phase, attempt, cancel_requested_at, cancel_reason, stop_intent, lease_instance_id, node_id FROM tasks WHERE id = ?`, t.ID).
+		Scan(&phase, &attempt, &cancelReq, &cancelReason, &stopIntent, &instanceID, &nodeID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -1201,9 +1197,15 @@ func (d *DB) recoverOne(ctx context.Context, t *Task, now int64) (requeued bool,
 			`UPDATE tasks SET error = ? WHERE id = ?`, reason, t.ID); uerr != nil {
 			return false, fmt.Errorf("recover lease %s: write reason: %w", t.ID, uerr)
 		}
+		// 终局：不会再有可信 reaped 事实，同事务把两本账都收敛掉——执行账写 reaped，
+		// 槽账按 (busy_task, busy_attempt) 精确释放自己那一格（#660：留任一处即永久满负荷）。
 		if _, aerr := finishAttemptOn(ctx, txExec{tx: tx}, t.ID, attempt, TaskAbandoned, reason,
-			now, "", false); aerr != nil {
+			now, ReclaimReasonLeaseAbandon, true); aerr != nil && !errors.Is(aerr, ErrNotFound) {
 			return false, fmt.Errorf("recover lease %s: %w", t.ID, aerr)
+		}
+		// attempt 行缺失时上面不释槽：用任务行钉住的实例再精确清一次（幂等）。
+		if _, rerr := releaseSlotBindingOn(ctx, txExec{tx: tx}, nodeID.String, instanceID, t.ID, attempt, now); rerr != nil {
+			return false, fmt.Errorf("recover lease %s: %w", t.ID, rerr)
 		}
 	}
 	if cerr := tx.Commit(); cerr != nil {
@@ -1267,10 +1269,8 @@ func hashAttemptToken(token string) string {
 
 // reapAttemptForTaskTx 收束「tasks 上的当前 attempt」的物理事实：写 attempt 级
 // 诊断/reaped 事实，并只清它自己绑定的那个槽（instance + task + attempt 三重核对）。
-//
-// 为什么不能按 task_id 释放：同一逻辑任务换 attempt 重试时会同时占着旧 attempt 的槽
-// （旧进程还没回收），按 task_id 一把清会把旧进程还在用的槽位放给下一个任务。
-// 快照行缺失（坏数据/手工夹具）时退回按任务行绑定的实例释放，不把物理槽永久钉死。
+// 按 task_id 一把清会把旧进程还在用的槽放给下一个任务；快照行缺失时退回按任务行
+// 绑定的实例释放，不把物理槽永久钉死。
 func reapAttemptForTaskTx(ctx context.Context, tx *sql.Tx, taskID string, attempt int, phase, errMsg string,
 	nodeID, instanceID string, now int64, reason string) error {
 	ex := txExec{tx: tx}

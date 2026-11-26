@@ -128,13 +128,18 @@ func TestRunOnceRecoversExpiredNonIdempotentLease(t *testing.T) {
 	if stored.Phase != store.TaskAbandoned {
 		t.Fatalf("phase = %q，want abandoned", stored.Phase)
 	}
-	// 物理槽不在这里释放：进程可能还在跑。
+	// 终局 abandon 同事务收敛两本账（#660）：落 reaped + 释放自己的绑定。
+	// 这一代执行不会再得到节点事实（节点已失联/非幂等不重跑）。
+	att, err := f.db.GetTaskAttempt(ctx, task.ID, stored.Attempt)
+	if err != nil || att.ReapedAt == nil {
+		t.Fatalf("终局 abandon 必须补 reaped 事实：%+v err=%v", att, err)
+	}
 	instances, err := f.db.ListInstances(ctx, f.node.ID)
 	if err != nil {
 		t.Fatalf("列槽位: %v", err)
 	}
-	if len(instances) != 1 || instances[0].BusyTask == nil {
-		t.Fatalf("租约过期不得释放物理槽: %+v", instances)
+	if len(instances) != 1 || instances[0].BusyTask != nil {
+		t.Fatalf("终局 abandon 必须释放它自己的槽: %+v", instances)
 	}
 }
 
