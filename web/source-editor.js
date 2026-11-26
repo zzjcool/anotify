@@ -32,7 +32,6 @@
     return b;
   };
 
-  /* 弹层 DOM：与历史模板逐字同构（id/class 全部保留，e2e 锚点不变）。 */
   const MARKUP = `<div id="src-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
 <div class="modal-panel">
 <div class="modal-head">
@@ -338,8 +337,9 @@ ${A.t("sources.v4.save")}
   let EVENTS = [];
   let CAPS = [];
   let editorSeq = 0;
-  /* poll 的 headers/secretRef/allowInsecure 不在读投影里 —— 打开时另读原始 config 当基底。 */
+  /* 读投影里没有 headers/secretRef/allowInsecure ⇒ 打开时另读原始 config 当基底；读不到就置 POLLERR。 */
   let POLLCFG = null;
+  let POLLERR = null;
   let KIND = null;
   const POLL_HEADER_MAX = 10;
   const POLL_TIMEOUT_DEFAULT = 10000;
@@ -381,7 +381,6 @@ ${A.t("sources.v4.save")}
     }
   }
 
-  /* ---------- 工具（与页面里同名实现一致） ---------- */
 const json = (box, optional=false) => {
   const raw=box.value.trim();
   if(!raw)return optional ? undefined : {
@@ -449,7 +448,10 @@ async function openEditor(src){
   $("dry-payload").value="";
   KIND=null;
   POLLCFG=null;
+  POLLERR=null;
   resetPollForm();
+  /* #637：清理必须先于读取 —— 原来清在读取之后，读取失败写进去的提示正好被它擦掉。 */
+  $("form-result").replaceChildren();
   if(m?.kind==="poll"){
     try{
       const doc=await request(m.name,null,"","GET");
@@ -459,19 +461,21 @@ async function openEditor(src){
       };
       fillPollForm(POLLCFG);
     }catch(err){
-      error($("form-result"),err);
+      if(seq!==editorSeq)return;
+      pollLoadFailed(err);
     }
   }
   $("f-targets").replaceChildren(...(m?.targets||[]).map(targetRow));
   $("source-capabilities").replaceChildren(...CAPS.map(cap=>{
     const opt=el("option");opt.value=cap.metadata.name;return opt;
   }));
-  $("form-result").replaceChildren();
   $("reload-draft").classList.add("hidden");
   $("hook-read").replaceChildren();
   if(cfg.hookUrl)$("hook-read").append(el("code","source-wrap",cfg.hookUrl),el("p","source-status","secretSet: "+String(cfg.secretSet)));
   syncKind();
+  syncEditorLocks();
   A.openModal($("src-modal"));
+  if(POLLERR)scrollToResult(); // 打开之前滚是空操作（弹层还 hidden），所以补在 openModal 之后
   syncScrollHint();
   suggest();
   try{
@@ -574,6 +578,64 @@ function fillPollForm(cfg){
   $("f-env-payload").disabled=whole;
   syncHeaderCap();
 }
+/* #637：poll 原始 config 没读到 ⇒ 表单只有默认值，存下去就是静默丢配置：弹层照开 + 表单/保存/试运行锁死 + 重试。 */
+function pollLoadFailed(err,notify){
+  POLLERR=err||new Error(t("poll_load_blocked"));
+  const detail=[POLLERR.reason,POLLERR.message].filter(Boolean).join(": ")||String(POLLERR.status||"");
+  const msg=t("poll_load_failed").replace("{reason}",detail||"?");
+  const box=$("form-result");
+  box.replaceChildren(el("p","source-error",msg));
+  const retry=el("button","btn btn-ghost btn-sm",t("poll_load_retry"));
+  retry.type="button";
+  retry.id="poll-reload";
+  retry.setAttribute("data-err-action","retry");
+  retry.onclick=reloadPollConfig;
+  box.append(retry);
+  syncEditorLocks();
+  // 只写 #form-result 仍然看不见：它在可滚动的 .modal-body 末尾（poll 表单很高）⇒ 按 W2-4 的口径补错误条 + 滚进视口
+  if(notify!==false)A.toast(msg,"error");
+  scrollToResult();
+}
+function scrollToResult(){
+  const box=$("form-result");
+  if(typeof box.scrollIntoView==="function")box.scrollIntoView({
+    block:"nearest"
+  });
+}
+const LOCKED=new Set(); // 读不到基底就锁表单：否则先填再重试，fillPollForm 会静默覆盖刚填的（只恢复这里锁过的，别碰自带禁用口径的控件）
+function syncEditorLocks(){
+  const blocked=!!POLLERR;
+  $("modal-save").disabled=blocked;
+  $("btn-dry").disabled=blocked;
+  for(const node of LOCKED)node.disabled=false;
+  LOCKED.clear();
+  if(!blocked)return;
+  for(const node of $("src-modal-body").querySelectorAll("input,textarea,select,button")){
+    if(node.disabled||node.dataset.errAction)continue;
+    node.disabled=true;
+    LOCKED.add(node);
+  }
+}
+/* 重试：再读一次原始 config。序号 + EDITING 双检 —— 等待期间弹层可能被关掉或换了源。 */
+async function reloadPollConfig(){
+  const target=EDITING,seq=editorSeq,btn=$("poll-reload");
+  if(!target)return;
+  if(btn)btn.disabled=true;
+  try{
+    const doc=await request(target.metadata.name,null,"","GET");
+    if(seq!==editorSeq||EDITING!==target)return;
+    POLLCFG=(doc.spec||{
+    }).config||{
+    };
+    POLLERR=null;
+    syncEditorLocks(); // 先解锁再回填：fillPollForm 自己的禁用口径（whole 载荷）不能被解锁盖掉
+    fillPollForm(POLLCFG);
+    $("form-result").replaceChildren();
+  }catch(err){
+    if(seq!==editorSeq||EDITING!==target)return;
+    pollLoadFailed(err);
+  }
+}
 function schemaPaths(schema,root="payload"){
   return Object.entries(schema?.properties||{
   }).flatMap(([k,v])=>{
@@ -620,8 +682,6 @@ function suggest(){
 }
 function writeSource(){
   const kind=$("f-kind").value;
-  /* poll 的 config 是整体替换：从存储的原始 config 出发只覆盖表单 own 的键；
-     allowInsecure / sample 这些表单不提供的键必须原样留着（#540 的原始缺陷）。 */
   const config=kind==="poll" ? pollConfig() : {
     payloadSchema:json($("f-payload-schema"),true)||null
   };
@@ -641,8 +701,7 @@ function writeSource(){
     capability:row.querySelector("input").value.trim(),params:json(row.querySelector("textarea"))
   }));
   const name=$("f-name").value.trim();
-  /* W2-4：必填失败必须给出**看得见**的反馈（字段红框 + 文案 + toast），
-     不能只把错误写进 body 底部的 #form-result（那在可视区外）。 */
+  /* 必填失败必须给出看得见的反馈（字段红框 + 文案 + toast）：只写进 #form-result 在可视区外。 */
   if(!name){
     const err=new Error(t("name_required"));
     err.field="name";
@@ -718,6 +777,8 @@ function collectEnvelope(){
   return Object.keys(env).length ? env : null;
 }
 function pollConfig(){
+  /* 编辑已有 poll 源时 config 只以服务器那份为基底、只覆盖表单 own 的键：拿不到基底就只剩读投影，保存会静默抹掉 headers / sample / allowInsecure / secretRef / envelope（#540 / #637）。 */
+  if(EDITING && !POLLCFG)throw new Error(t("poll_load_blocked"));
   const cfg=POLLCFG ? JSON.parse(JSON.stringify(POLLCFG)) : {
   };
   const url=$("f-poll-url").value.trim();
@@ -767,7 +828,8 @@ function flagField(id,message){
       closeEditor();
       await (CTX.onSaved ? CTX.onSaved() : Promise.resolve());
     }catch(err){
-      error($("form-result"),err);
+      if(POLLERR)pollLoadFailed(POLLERR,false); // 被 pollConfig() 拦下时重试入口必须留在原处（错误条由下面那句 toast 统一给）
+      else error($("form-result"),err);
       // 校验类错误：字段红框 + 立即可见的 toast（W2-4）
       if(err.field)flagField(err.field,err.message);
       else A.toast([err.reason,err.message].filter(Boolean).join(": ")||t("save_failed"),"error");
@@ -778,6 +840,7 @@ function flagField(id,message){
       }
     }finally{
       btn.disabled=false;
+      syncEditorLocks();
     }
   };
 
@@ -803,10 +866,12 @@ function flagField(id,message){
         payload
       })));
     }catch(err){
-      error($("form-result"),err);
+      if(POLLERR)pollLoadFailed(POLLERR,false); // 试运行同样过 pollConfig() 闸门：被拦下也要留住重试入口
+      else error($("form-result"),err);
       A.toast([err.reason,err.message].filter(Boolean).join(": ")||t("save_failed"),"error");
     }finally{
       btn.disabled=false;
+      syncEditorLocks();
     }
   };
 
@@ -831,6 +896,8 @@ function flagField(id,message){
     $("f-secret").value="";
     $("f-poll-secret").value="";
     POLLCFG=null;
+    POLLERR=null;
+    syncEditorLocks();
     flagField("f-name","");
     EDITING=null;
     if (done) {
