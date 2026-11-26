@@ -475,6 +475,7 @@ async function openEditor(src){
   syncKind();
   syncEditorLocks();
   A.openModal($("src-modal"));
+  if(POLLERR)scrollToResult(); // 打开之前滚是空操作（弹层还 hidden），所以补在 openModal 之后
   syncScrollHint();
   suggest();
   try{
@@ -577,12 +578,13 @@ function fillPollForm(cfg){
   $("f-env-payload").disabled=whole;
   syncHeaderCap();
 }
-/* #637：poll 原始 config 没读到 ⇒ 表单只有默认值，存下去就是静默丢配置：弹层照开 + 保存/试运行锁死 + 重试。 */
-function pollLoadFailed(err){
+/* #637：poll 原始 config 没读到 ⇒ 表单只有默认值，存下去就是静默丢配置：弹层照开 + 表单/保存/试运行锁死 + 重试。 */
+function pollLoadFailed(err,notify){
   POLLERR=err||new Error(t("poll_load_blocked"));
   const detail=[POLLERR.reason,POLLERR.message].filter(Boolean).join(": ")||String(POLLERR.status||"");
+  const msg=t("poll_load_failed").replace("{reason}",detail||"?");
   const box=$("form-result");
-  box.replaceChildren(el("p","source-error",t("poll_load_failed").replace("{reason}",detail||"?")));
+  box.replaceChildren(el("p","source-error",msg));
   const retry=el("button","btn btn-ghost btn-sm",t("poll_load_retry"));
   retry.type="button";
   retry.id="poll-reload";
@@ -590,9 +592,29 @@ function pollLoadFailed(err){
   retry.onclick=reloadPollConfig;
   box.append(retry);
   syncEditorLocks();
+  // 只写 #form-result 仍然看不见：它在可滚动的 .modal-body 末尾（poll 表单很高）⇒ 按 W2-4 的口径补错误条 + 滚进视口
+  if(notify!==false)A.toast(msg,"error");
+  scrollToResult();
 }
+function scrollToResult(){
+  const box=$("form-result");
+  if(typeof box.scrollIntoView==="function")box.scrollIntoView({
+    block:"nearest"
+  });
+}
+const LOCKED=new Set(); // 读不到基底就锁表单：否则先填再重试，fillPollForm 会静默覆盖刚填的（只恢复这里锁过的，别碰自带禁用口径的控件）
 function syncEditorLocks(){
-  for(const id of ["modal-save","btn-dry"])$(id).disabled=!!POLLERR;
+  const blocked=!!POLLERR;
+  $("modal-save").disabled=blocked;
+  $("btn-dry").disabled=blocked;
+  for(const node of LOCKED)node.disabled=false;
+  LOCKED.clear();
+  if(!blocked)return;
+  for(const node of $("src-modal-body").querySelectorAll("input,textarea,select,button")){
+    if(node.disabled||node.dataset.errAction)continue;
+    node.disabled=true;
+    LOCKED.add(node);
+  }
 }
 /* 重试：再读一次原始 config。序号 + EDITING 双检 —— 等待期间弹层可能被关掉或换了源。 */
 async function reloadPollConfig(){
@@ -606,9 +628,9 @@ async function reloadPollConfig(){
     }).config||{
     };
     POLLERR=null;
+    syncEditorLocks(); // 先解锁再回填：fillPollForm 自己的禁用口径（whole 载荷）不能被解锁盖掉
     fillPollForm(POLLCFG);
     $("form-result").replaceChildren();
-    syncEditorLocks();
   }catch(err){
     if(seq!==editorSeq||EDITING!==target)return;
     pollLoadFailed(err);
@@ -806,8 +828,7 @@ function flagField(id,message){
       closeEditor();
       await (CTX.onSaved ? CTX.onSaved() : Promise.resolve());
     }catch(err){
-      /* #637：源配置没读到时保存会被 pollConfig() 拦下，但重试入口必须留在原处（不能被通用错误渲染盖掉）。 */
-      if(POLLERR)pollLoadFailed(POLLERR);
+      if(POLLERR)pollLoadFailed(POLLERR,false); // 被 pollConfig() 拦下时重试入口必须留在原处（错误条由下面那句 toast 统一给）
       else error($("form-result"),err);
       // 校验类错误：字段红框 + 立即可见的 toast（W2-4）
       if(err.field)flagField(err.field,err.message);
@@ -845,7 +866,8 @@ function flagField(id,message){
         payload
       })));
     }catch(err){
-      error($("form-result"),err);
+      if(POLLERR)pollLoadFailed(POLLERR,false); // 试运行同样过 pollConfig() 闸门：被拦下也要留住重试入口
+      else error($("form-result"),err);
       A.toast([err.reason,err.message].filter(Boolean).join(": ")||t("save_failed"),"error");
     }finally{
       btn.disabled=false;
