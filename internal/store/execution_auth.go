@@ -164,12 +164,14 @@ func grantBudgetOn(ctx context.Context, ex queryExec, nodeID, taskID, assignment
 		effectiveTotal = protocol.DefaultLimitsTotal
 	}
 
-	// 未回收执行：每一行 attempt 都是一个仍可能占着物理槽的执行。
+	// 未回收执行：每行 attempt 都仍可能占着物理槽；**已终态的任务不算**（#660）。
+	termIn, termArgs := terminalPhaseIn()
 	countUnreaped := func(where string, args ...any) (int, error) {
 		var n int
 		q := `SELECT COUNT(*) FROM task_attempts a JOIN tasks t ON t.id = a.task_id
-		       WHERE a.node_id = ? AND a.reaped_at IS NULL` + where
-		if err := ex.queryRowContext(ctx, q, append([]any{nodeID}, args...)...).Scan(&n); err != nil {
+		       WHERE a.node_id = ? AND a.reaped_at IS NULL AND t.phase NOT IN (` + termIn + `)` + where
+		base := append([]any{nodeID}, termArgs...)
+		if err := ex.queryRowContext(ctx, q, append(base, args...)...).Scan(&n); err != nil {
 			return 0, fmt.Errorf("授予租约: 统计未回收执行: %w", err)
 		}
 		return n, nil
