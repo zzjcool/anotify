@@ -253,9 +253,9 @@ FAIL
 | `make lint-go`（gofmt + vet + staticcheck SA\*/U1000） | ✅ |
 | `make check-annotations` | ✅ 全部引用可解析、棘轮未超基线 |
 | `make check-test-discipline` | ✅ 五项与基线一致（`time.Sleep` 37/37，未新增） |
-| `make check-comment-density` | ✅ 总量 **42893 → 42890（只降）**，dirs/dense 同步收紧 |
+| `make check-comment-density` | ✅ 总量 **42893 → 42889（只降）**，dirs/dense 同步收紧（`--update` 只许降） |
 | `make contract` / `check-agents` / `check-examples` / `check-secrets` / `check-anode-skill` / `bench-dispatch` | ✅（`make ci` 跑到 `make test` 之前的全部步骤都过） |
-| `make ci` 的 `make test`（`go test ./...`） | ⚠️ 本机（Darwin）**不能** exit 0：`cmd/anode` 的 install/TUI/ETXTBSY 一批用例是 Linux-only。**已在基线 `04c5e22e` 上复跑同一套**，失败集合逐条比对：51 条相同 + `TestRework2HubWriteQueueFencesRealRunnerResult`（既有 flake，本机 3/8 概率红，且**回滚本 PR 的 runner 改动后仍是 3/8**） |
+| `make ci` 的 `make test`（`go test ./... -shuffle=on`） | ⚠️ 本机（Darwin）**不能** exit 0：失败包与基线**完全相同**（`cmd/anode`、`cmd/anode/internal/{execenv,install,listen,runner}`、`internal/artifact`），51 条用例名逐条相同（Linux-only 的 install/unit/TUI 用例 + ETXTBSY 用例）。逐条 diff 只多出 1 条**既有 flake**，且每条 flake 都在基线 `04c5e22e` 上复现：`TestRework2HubWriteQueueFencesRealRunnerResult`（3/8，回滚本 PR 的 runner 改动后仍 3/8）、`TestRework2TimeoutUploadsRenewAcross20And60UntilResultACK`（"15.001s 上限 15s"，基线同一条）、`TestIntentionalPipeCloseIsNotCopyFailure`（真实 SIGKILL/reap 时序，基线 8 次内同样红） |
 | `make test-frontend-v4` | ⚠️ 未设 `E2E_CHROME_PATH` 时 16 条红（`Installed Chrome required`，本机 Chrome 在 `/Applications`，驱动只找 Linux 路径）；设上之后 **213/213 通过**（基线 commit 同样 16 条红） |
 | `make e2e` | ❌ 本机 docker 不可用 —— **未跑**（如实说明，不冒充覆盖） |
 
@@ -291,3 +291,22 @@ ok  	github.com/zzjcool/anotify/cmd/anode/internal/app
 5. **压缩时钟的取舍**：验收 ③ 用 2s TTL 而非 180s（跨 2 个 TTL 就是 6 分钟），机制同构但
    不覆盖「真实 20s 续租节奏下的调度抖动」。真 180s 的长任务验证需要两台真节点 + 隧道，
    属 `make e2e` 面的补测。
+
+## 9. 交付（提交 + PR）
+
+分支 `wt/leaseres`，基于 `origin/main` `04c5e22e`，共 7 个提交（第一个是开工空提交）：
+
+```
+73a1c617 chore(lease): 开工标记：长任务租约韧性（TTL 可配/硬心跳/abandoned 可恢复）
+538e6b24 feat(lease): 租约时长可配（默认 180s，下限 60s）+ 失联按 maxAttempts 重试（#661）
+099a9ebd feat(node): 硬心跳超时（2×续租间隔无下行帧即断开重连）+ deadline 跟随中枢 expiresAt（#661）
+5fb4ec3a chore(lease): 注释按棘轮预算付账（总量 42893 → 42890，无新增预算）
+d5ba02f8 test(store): TTL 生效往返用例 + 交付报告（docs/reports/lease-resilience.md）
+0fea5df1 chore(store): 新用例不留注释预算（store 目录回落到基线）
+f591d023 chore(lease): 注释收紧时保住契约级信息（Check 诊断约定/runner 硬不变量）+ 修掉压缩残留行
+```
+
+PR（base `main`，**不手工 merge**）由收队的 centurion 创建；建议标题与正文：
+
+- 标题：`feat(lease): 长任务租约韧性——TTL 可配（默认 180s/下限 60s）+ 节点硬心跳 + 失联按 maxAttempts 重试（#661）`
+- 正文：`Fixes #661`；正文直接引用本报告 §2（TTL 依据）、§3（两种断连形态）、§4（恢复策略与幂等论证）、§5–§6（验收与变异）。
