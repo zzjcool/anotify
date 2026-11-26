@@ -3,7 +3,9 @@ package playbook
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"path"
 	"regexp"
 	"sort"
@@ -61,7 +63,6 @@ func Parse(files map[string]string) (*Package, error) {
 }
 
 // checkBundleLimits 是 §1.5 的体积与文件数上界。
-//
 // 体积超限没有专属错误码（§9.2 没有"文件太大"这一行），统一报 `invalid_playbook` 并在消息里点名文件与建议（拆能力 / 拆包）——比杜撰一个新码好。
 func checkBundleLimits(files map[string]string) error {
 	if len(files) > MaxFiles {
@@ -75,8 +76,7 @@ func checkBundleLimits(files map[string]string) error {
 	sort.Strings(paths)
 	var yamlTotal int
 	for _, p := range paths {
-		// 文件集合的键本身就是路径：包体可能来自 tar（OCI），路径逃逸在写库之前就该拒。
-		// 引用清单里的路径在 checkReferences 里再校验一次（两处都要过）。
+		// 文件集合的键本身就是路径：包体可能来自 tar（OCI），路径逃逸在写库之前就该拒（引用清单里的路径在 checkReferences 再校验一次）。
 		if msg := pathProblem(p); msg != "" {
 			return errf(CodeFilePathInvalid, "包内文件路径 %q 不合法：%s", p, msg)
 		}
@@ -260,7 +260,6 @@ func checkReferences(pkg *Package) error {
 }
 
 // checkSlots 校验每个被引用文件的**形状**（不跑单建校验，见 Parse 的说明）。
-//
 // 槽位由清单决定：`capabilities[]` 里的文件必须是 Capability 文档，`sources[]` 里的必须是 Source 文档——放错槽位 = `invalid_playbook`（消息指向路径）。
 func checkSlots(pkg *Package) error {
 	for _, p := range pkg.CapabilityPaths {
@@ -300,7 +299,6 @@ func checkSlots(pkg *Package) error {
 }
 
 // checkDocShell 校验被引用文档的公共外壳：metadata.name 存在、metadata.namespace 禁止、spec 是映射。
-//
 // 这些是"与 values 无关"的形状：name 可以是模板（`{{values.project}}-review`）， 所以这里只要求"有个非空字符串"，不判正则（正则属于渲染期）。
 func checkDocShell(tree map[string]any, where string) error {
 	meta, err := mappingField(tree, "metadata", where)
@@ -331,16 +329,46 @@ func checkDocShell(tree map[string]any, where string) error {
 }
 
 // decodeDoc 把一份 YAML 正文解成 `map[string]any`（顶层必须是映射）。
+// 一个文件只能一份文档（与 yamldoc.singleDocument 同口径）：`---` 之后的正文不许静默丢弃。
 func decodeDoc(body, where string) (map[string]any, error) {
-	var raw any
-	if err := yaml.Unmarshal([]byte(body), &raw); err != nil {
-		return nil, errf(CodeInvalidPlaybook, "%s 不是合法 YAML: %v", where, err)
+	raw, err := decodeSingleDocument(body, where)
+	if err != nil {
+		return nil, err
 	}
 	tree, ok := normalizeTree(raw).(map[string]any)
 	if !ok {
 		return nil, errf(CodeInvalidPlaybook, "%s 的顶层必须是映射（apiVersion/kind/metadata/spec）", where)
 	}
 	return tree, nil
+}
+
+// decodeSingleDocument 用 Decoder 而不是 Unmarshal：只有再 Decode 一次才看得见第二份文档。
+// 空正文（空串 / 只有注释）返回 nil，由调用方按「顶层必须是映射」拒绝（与空包入口同措辞）。
+func decodeSingleDocument(body, where string) (any, error) {
+	dec := yaml.NewDecoder(strings.NewReader(body))
+	var raw any
+	switch err := dec.Decode(&raw); {
+	case errors.Is(err, io.EOF):
+		return nil, nil
+	case err != nil:
+		return nil, errf(CodeInvalidPlaybook, "%s 不是合法 YAML: %v", where, err)
+	}
+	var extra yaml.Node
+	switch err := dec.Decode(&extra); {
+	case err == nil:
+		// 尾部分隔符（`---` 后无正文）也算多文档：与 yamldoc 同口径，行号取第二份起点。
+		at := ""
+		if extra.Line > 0 {
+			at = fmt.Sprintf("第 %d 行起", extra.Line)
+		}
+		return nil, errf(CodeInvalidPlaybook,
+			"%s %s含多份 YAML 文档：一个文件只能一份文档（`---` 之后的正文会被静默丢弃，比报错更糟；"+
+				"多个资源请拆成多个文件，在 spec.capabilities / spec.sources 里引用）", where, at)
+	case errors.Is(err, io.EOF):
+		return raw, nil
+	default:
+		return nil, errf(CodeInvalidPlaybook, "%s 不是合法 YAML: %v", where, err)
+	}
 }
 
 // normalizeTree 把 yaml.v3 可能产出的 `map[any]any` 递归换成 `map[string]any`。
@@ -370,7 +398,6 @@ func normalizeTree(v any) any {
 }
 
 // checkDocKind 校验 kind / apiVersion（**写了就必须对**；没写不看——被引用文档允许省略）。
-//
 // 值是模板（含 `{{`）时跳过：`kind: '{{values.k}}'` 在渲染期才知道是什么。
 func checkDocKind(tree map[string]any, wantKind, where string) error {
 	if v, ok := tree["apiVersion"]; ok {
@@ -490,7 +517,6 @@ func toInt(v any) (int, bool) {
 }
 
 // pathProblem 校验引用路径的形状，返回空串表示合法。
-//
 // 规则照 §1.3：相对包根、`/` 分隔、不以 `/` 开头、不含 `..` 段、≤255 字符、不含 NUL。
 // 另外拒反斜杠、空段与 `.` 段——它们在不同操作系统上会指向同一个名字以外的东西， 让"包里有哪几个文件"这件事变得不可审计（D27：路径是寻址）。
 func pathProblem(p string) string {

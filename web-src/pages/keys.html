@@ -681,7 +681,7 @@
       let KEYS = [];
       let LOAD_ERROR = null; // 载入失败原因（有值就渲染错误态，绝不伪造数据）
       let NEW_KEY_PLAIN = "";
-      let PENDING_KEY = null;
+      let CREATED_IN_MODAL = false;
       let LAST_FOCUS = null; // 弹层关闭后焦点归还到这个元素
       let FETCH_ERROR = null; // 最近一次请求失败的原因（渲染错误态用，不伪造数据）
       /* #377：首屏只拉一页（≤20 条），DOM 不随总条数线性增长；
@@ -816,10 +816,8 @@
       }
 
       // ==================== 渲染 ====================
-      // 摘要句：keys.summary 历史上带一个 `{demo}` 占位符，而演示数据是 /mock.js
-      // 在 fetch 层注入的——页面本身没有 demo 分支。这里按「非演示」分支把它渲染成
-      // 空串，绝不把字面量 {demo} 印到用户眼前（locale 的修正句见 keys.fixes.json，
-      // 模板侧这段是兜底：locale 还没合并时也不会漏字面量）。
+      // 摘要句的 `{demo}` 是历史占位符（演示数据只由 /mock.js 在 fetch 层注入，页面没有 demo 分支）：
+      // 这里渲染成空串，绝不把字面量印给用户（locale 修正句见 keys.fixes.json，模板侧只是兜底）。
       function summaryLine() {
         const rows = visibleKeys();
         const active = rows.filter((k) => k.enabled).length;
@@ -1040,7 +1038,7 @@
           .querySelectorAll('input[name="key-scope"]')
           .forEach((c, i) => (c.checked = i === 0));
         NEW_KEY_PLAIN = "";
-        PENDING_KEY = null;
+        CREATED_IN_MODAL = false;
         setStep(1);
         Anotify.openModal(modal);
         document.body.style.overflow = "hidden";
@@ -1054,7 +1052,7 @@
         document.body.style.overflow = "";
         document.getElementById("new-key-value").textContent = "";
         NEW_KEY_PLAIN = "";
-        PENDING_KEY = null;
+        CREATED_IN_MODAL = false;
         setStep(1);
         // 焦点归还：否则键盘用户关掉弹层后焦点掉回 <body>，得从头 Tab 一遍
         const back = LAST_FOCUS;
@@ -1070,6 +1068,10 @@
       }
 
       async function generateKey() {
+        const btn = document.getElementById("create-submit");
+        // #616：disabled 必须在第一个 await 之前置上（双击的第二下就不再派发 click）；
+        // POST /v1/keys 不幂等 —— 多建的那把只展示后到的明文，先到的那把用户永远拿不到。
+        if (btn && btn.disabled) return;
         const name =
           document.getElementById("new-key-name").value.trim() ||
           t("keys.unnamed_key", "未命名 Key");
@@ -1082,6 +1084,11 @@
         }
         errEl.classList.add("hidden");
 
+        const idleLabel = btn ? btn.textContent : "";
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = t("keys.create.generating", "生成中…");
+        }
         try {
           const res = await fetch(API + "/keys", {
             method: "POST",
@@ -1097,15 +1104,7 @@
           NEW_KEY_PLAIN = data.key || data.plaintext || "";
           if (!NEW_KEY_PLAIN)
             throw new Error(t("keys.error.no_plaintext", "服务端未返回 Key 明文"));
-          PENDING_KEY = {
-            id: data.id || "k_" + Date.now(),
-            name: data.name || name,
-            prefix: data.prefix || NEW_KEY_PLAIN.slice(0, 13),
-            scopes: data.scopes || scopes,
-            lastUsed: t("common.time.never", "从未使用"),
-            enabled: true,
-            created: new Date().toISOString().slice(0, 10),
-          };
+          CREATED_IN_MODAL = true;
           document.getElementById("new-key-value").textContent = NEW_KEY_PLAIN;
           setStep(2);
           const done = document.getElementById("create-done");
@@ -1116,6 +1115,11 @@
             e.message,
           );
           errEl.classList.remove("hidden");
+        } finally {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = idleLabel;
+          }
         }
       }
 
@@ -1135,19 +1139,17 @@
           );
       }
 
-      function finishCreate() {
-        if (PENDING_KEY) {
-          KEYS.unshift(PENDING_KEY);
-          renderKeys();
-        }
-        PENDING_KEY = null;
+      async function finishCreate() {
+        if (!CREATED_IN_MODAL) return;
+        CREATED_IN_MODAL = false;
         closeCreate();
         window.Anotify.toast(t("keys.toast.created", "Key 已创建"));
+        // #616：列表以服务端为准（只 unshift 一条本地行，会在别处创建后与服务端漂移）。
+        await loadKeys();
       }
 
       // ==================== 事件绑定 ====================
-      // 弹层挂到 document.body 上：页面内容外层带 .reveal 的 transform，
-      // position:fixed 的后代会被裁在那层容器里（真的会裁，不是理论问题）。
+      // 弹层挂到 document.body 上：页面内容外层 .reveal 有 transform，position:fixed 的后代会被真的裁在那层容器里。
       const MODAL_EL = modalEl();
       if (MODAL_EL && MODAL_EL.parentNode !== document.body)
         document.body.appendChild(MODAL_EL);

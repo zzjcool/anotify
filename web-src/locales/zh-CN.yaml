@@ -523,6 +523,7 @@ keys:
     scope_hint: 权限最小化：上报与接收分开，泄露一个 Key 不会波及另一头。
     cancel: 取消
     generate: 生成 Key
+    generating: 生成中…
   save:
     title: 保存你的 Key
     subtitle_prefix: 这是它

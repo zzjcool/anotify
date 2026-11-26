@@ -523,6 +523,7 @@ keys:
     scope_hint: 最小権限：送信と受信は分離され、Key 漏洩時の影響は片側のみ。
     cancel: キャンセル
     generate: Key を生成
+    generating: 生成中…
   save:
     title: Key を保存
     subtitle_prefix: これは
