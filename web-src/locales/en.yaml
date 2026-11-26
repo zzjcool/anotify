@@ -523,6 +523,7 @@ keys:
     scope_hint: 'Least privilege: send and receive are separate, so a leaked Key only affects one side.'
     cancel: Cancel
     generate: Generate Key
+    generating: Generating…
   save:
     title: Save your Key
     subtitle_prefix: 'This is its '
