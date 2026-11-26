@@ -3,9 +3,9 @@
 // 它只消费 **store 的真实入口**（RecoverLostLeases / RunRetention / MaintainStats /
 // FreeSlotsByNode / InstanceStatsByNode / TaskStats），没有旧 v3 的别名层：
 //
-//   - 租约过期只吊销授权，**不释放物理槽**（reaped 事实由 cancel.ack 或明确的
-//     实例观测给出）；非幂等能力的过期执行直接 abandoned，不自动重跑；
-//   - 保留期只删 store 里的事件/任务/投递去重记录（TTL=0 永久），不碰用户目录；
+//   - 租约过期只吊销授权，**不释放物理槽**（reaped 由 cancel.ack 或实例观测给出）；
+//     例外是 abandoned 终局：它同事务收敛两本账（#660），绝不自动重跑非幂等能力；
+//   - 保留期只删 store 里的事件/任务/投递去重记录（TTL=0 永久）；
 //   - 统计/占用是读投影：Total/Busy/Free 都来自真实账本，不按 phase 推断空闲。
 package lease
 
@@ -27,7 +27,8 @@ type Report struct {
 	// LeasesRequeued 是因短暂基础设施失败/幂等重试而回到 pending 的条数。
 	LeasesRequeued int `json:"leasesRequeued"`
 	// LeasesAbandoned 是直接进入终态的条数（非幂等或取消在飞）。
-	LeasesAbandoned int `json:"leasesAbandoned"`
+	LeasesAbandoned  int                     `json:"leasesAbandoned"`
+	LedgersConverged store.LedgerConvergence `json:"ledgersConverged"`
 	// Retention 是本轮保留期清理的计数（含各 TTL 与是否被跳过/截断）。
 	Retention store.RetentionStats `json:"retention"`
 	// StatsRefreshed 是本轮重建了 SQLite 统计的表名（空 = 统计新鲜）。
@@ -69,6 +70,15 @@ func (s *Sweeper) RunOnce(ctx context.Context, now int64) (Report, error) {
 		s.log.Info("lease sweep recovered lost leases",
 			"requeued", requeued, "abandoned", abandoned)
 	}
+	converged, cerr := s.db.ConvergeAbandonedLedgers(ctx, now)
+	report.LedgersConverged = converged
+	if cerr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("lease: 存量账本收敛: %w", cerr))
+	}
+	if converged.AttemptsReaped > 0 || converged.SlotsReleased > 0 {
+		s.log.Info("lease sweep converged abandoned ledgers",
+			"attemptsReaped", converged.AttemptsReaped, "slotsReleased", converged.SlotsReleased)
+	}
 
 	retention, err := s.db.RunRetention(ctx, now)
 	report.Retention = retention
@@ -89,7 +99,6 @@ func (s *Sweeper) RunOnce(ctx context.Context, now int64) (Report, error) {
 	return report, runErr
 }
 
-// Run 按 interval 周期巡检，直到 ctx 结束。
 func (s *Sweeper) Run(ctx context.Context, interval time.Duration) error {
 	if interval <= 0 {
 		interval = DefaultInterval
