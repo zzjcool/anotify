@@ -227,10 +227,9 @@ ok  	github.com/zzjcool/anotify/internal/store	0.608s
 
 ```
 $ go test ./cmd/anode/internal/hub -run TestHeartbeatClosesSilentlyDeadLink -count=1
---- FAIL: TestHeartbeatClosesSilentlyDeadLink (0.30s)
-    client_test.go:225: 静默断连未被判定：300ms 内没有重连（连接数 1）
+    client_test.go:215: 静默断连未被判定：300ms 内没有重连（连接数 1）
 FAIL
-FAIL	github.com/zzjcool/anotify/cmd/anode/internal/hub	0.398s
+FAIL	github.com/zzjcool/anotify/cmd/anode/internal/hub	0.747s
 ```
 
 **变异 ②：去掉 TTL 下限校验**（删 `Config.Validate` 里的 `protocol.ValidateLeaseTTL` 调用，
@@ -238,12 +237,10 @@ FAIL	github.com/zzjcool/anotify/cmd/anode/internal/hub	0.398s
 
 ```
 $ go test ./internal/server -run TestLeaseTTLValidate -count=1
-        config_test.go:261: LeaseTTL=59s 必须被 Validate 拒绝
-    --- FAIL: TestLeaseTTLValidate/负数 (0.00s)
-        config_test.go:261: LeaseTTL=-1m0s 必须被 Validate 拒绝
     --- FAIL: TestLeaseTTLValidate/恰好差一点到_3_个续租周期 (0.00s)
-        config_test.go:261: LeaseTTL=59s 必须被 Validate 拒绝
+        config_test.go:256: LeaseTTL=59s 必须被 Validate 拒绝
 FAIL
+FAIL	github.com/zzjcool/anotify/internal/server	0.443s
 ```
 
 ## 7. 门禁
