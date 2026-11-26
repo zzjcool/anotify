@@ -87,8 +87,8 @@ spec:
         fi
         reason=$(sed -n 's/.*"reason": *"\([^"]*\)".*/\1/p' "$verdict" | head -1)
         anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"stuck\",\"findings\":\"${reason:-fix 没做成}\"}"
-            env:
-              REPO_DIR: '{{values.repoDir}}'
-              AGENT_CMD: '{{values.agentCmd}}'
-              AGENT_ARGS: '{{values.agentArgs}}'
-              BASE_BRANCH: '{{values.baseBranch}}'
+    env:
+      REPO_DIR: '{{values.repoDir}}'
+      AGENT_CMD: '{{values.agentCmd}}'
+      AGENT_ARGS: '{{values.agentArgs}}'
+      BASE_BRANCH: '{{values.baseBranch}}'

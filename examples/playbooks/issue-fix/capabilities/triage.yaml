@@ -93,8 +93,8 @@ spec:
         fi
 
         anode emit '{{values.project}}-implement' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"round\":1}"
-            env:
-              REPO_DIR: '{{values.repoDir}}'
-              AGENT_CMD: '{{values.agentCmd}}'
-              AGENT_ARGS: '{{values.agentArgs}}'
-              BASE_BRANCH: '{{values.baseBranch}}'
+    env:
+      REPO_DIR: '{{values.repoDir}}'
+      AGENT_CMD: '{{values.agentCmd}}'
+      AGENT_ARGS: '{{values.agentArgs}}'
+      BASE_BRANCH: '{{values.baseBranch}}'
