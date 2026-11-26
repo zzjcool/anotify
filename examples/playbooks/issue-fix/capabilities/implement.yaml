@@ -1,0 +1,96 @@
+apiVersion: anotify/v1
+kind: Capability
+
+metadata:
+  name: '{{values.project}}-implement'
+  displayName: '{{values.project}} 修复并提 PR'
+
+spec:
+  params:
+    type: object
+    required: [repo, issue]
+    properties:
+      repo:    { type: string }
+      issue:   { type: integer }
+      round:   { type: integer }
+      pr:      { type: string }
+      branch:  { type: string }
+      findings: { type: string }
+      outcome: { type: string }
+  next:
+    - '{{values.project}}-review'
+    - '{{values.project}}-record'
+  requires:
+    commands: [pi, git, gh]
+  lifecycle:
+    idempotent: false
+    timeoutSec: 3600
+  run:
+    entrypoint: run.sh
+    files:
+      run.sh: |
+        #!/bin/sh
+        set -eu
+
+        repo=${ANOTIFY_PARAM_REPO:?}
+        issue=${ANOTIFY_PARAM_ISSUE:?}
+        round=${ANOTIFY_PARAM_ROUND:-1}
+        findings=${ANOTIFY_PARAM_FINDINGS:-}
+        art_dir=${ANOTIFY_ARTIFACT_DIR}
+        mkdir -p "$art_dir"
+
+        prompt="你要修复仓库 $repo 的 issue #$issue（第 $round 轮）。
+
+        硬性要求：
+        1. 先 gh issue view $issue --repo $repo 读全文，再读相关代码。
+        2. 在**新分支**上改：分支名 pi-subagent/issue-$issue-r$round（基线是 $BASE_BRANCH，先 git fetch）。
+        3. 改完必须自己跑门禁（至少构建/单测/相关测试），把真实输出留在提交说明或日志里。
+        4. 提交并推送，开一个 PR（base $BASE_BRANCH），PR 正文写清：改了什么、为什么、怎么验证。
+        5. 不许手工合并、不许 force push 到共享分支、不许改无关文件。
+
+        上一轮 review 的意见（若有，逐条处理）：
+
+        $findings
+
+        把你自己的裁决**只**写成 JSON 文件：$art_dir/agent-verdict.json
+        格式（严格）：
+        {\"ok\": true 或 false, \"pr\": \"PR 链接或空\", \"branch\": \"分支名\", \"reason\": \"一句话\"}
+
+        "
+
+        repo_dir=${REPO_DIR:?REPO_DIR 未注入}
+        agent=${AGENT_CMD:-pi}
+        agent_args=${AGENT_ARGS:--p}
+        art_dir=${ANOTIFY_ARTIFACT_DIR}
+        verdict="$art_dir/agent-verdict.json"
+        log_file="$art_dir/agent.log"
+        mkdir -p "$art_dir"
+        rm -f "$verdict"
+
+        cd "$repo_dir"
+
+        set +e
+        $agent $agent_args "$prompt" >"$log_file" 2>&1
+        agent_code=$?
+        set -e
+        echo "agent exit=$agent_code（日志见 artifacts/agent.log）"
+
+        if [ ! -f "$verdict" ]; then
+          echo "agent 没有写出裁决文件 $verdict —— 按未完成处理（不猜结果）" >&2
+          exit 1
+        fi
+        cat "$verdict"
+
+        if grep -q '"ok": *true' "$verdict"; then
+          pr=$(sed -n 's/.*"pr": *"\([^"]*\)".*/\1/p' "$verdict" | head -1)
+          branch=$(sed -n 's/.*"branch": *"\([^"]*\)".*/\1/p' "$verdict" | head -1)
+          anode emit '{{values.project}}-review' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"round\":$round,\"pr\":\"$pr\",\"branch\":\"$branch\"}"
+        else
+          reason=$(sed -n 's/.*"reason": *"\([^"]*\)".*/\1/p' "$verdict" | head -1)
+          anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"stuck\",\"findings\":\"${reason:-implement 没做成}\"}"
+        fi
+            env:
+              REPO_DIR: '{{values.repoDir}}'
+              AGENT_CMD: '{{values.agentCmd}}'
+              AGENT_ARGS: '{{values.agentArgs}}'
+              BASE_BRANCH: '{{values.baseBranch}}'
