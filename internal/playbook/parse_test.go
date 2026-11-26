@@ -307,6 +307,50 @@ func TestParseCapabilityNameMayBeTemplate(t *testing.T) {
 }
 
 // assertCode 断言错误的领域码（并打印真实错误，便于排查）。
+func TestParseRejectsInvalidValuesSchema(t *testing.T) {
+	cases := []struct {
+		name   string
+		values string
+		path   string
+	}{
+		{"嵌套 type 笔误", "type: object\nproperties:\n  a: {type: str}\n", "spec.values.properties.a.type"},
+		{"根 type 笔误", "type: str\n", "spec.values.type"},
+		{"required 非数组", "type: object\nrequired: a\n", "spec.values.required"},
+		{"pattern 编译不过", "type: object\nproperties:\n  a: {type: string, pattern: '['}\n", "spec.values.properties.a.pattern"},
+		{"minimum 非数字", "type: object\nproperties:\n  a: {type: integer, minimum: '1'}\n", "spec.values.properties.a.minimum"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := newBundle().withStandard().setValues(tc.values).pkgErr(t)
+			assertCode(t, err, CodeInvalidPlaybook)
+			if !strings.Contains(err.Error(), tc.path) {
+				t.Fatalf("错误信息应含 JSON 路径 %q，实际 %q", tc.path, err.Error())
+			}
+		})
+	}
+}
+
+func TestParseAcceptsSupportedValuesSchema(t *testing.T) {
+	values := `type: object
+required: [project]
+properties:
+  project: {type: string, pattern: '^[a-z]+$'}
+  note: {type: [string, 'null']}
+  tags:
+    type: array
+    prefixItems: [{type: string}]
+    items: {type: string}
+  any: true
+  nested:
+    type: object
+    additionalProperties: {type: integer}
+`
+	pkg := newBundle().withStandard().setValues(values).pkg(t)
+	if !strings.Contains(string(pkg.Values), `"prefixItems"`) {
+		t.Fatalf("合法 values schema 应原样进 Package.Values，实际 %s", pkg.Values)
+	}
+}
+
 func assertCode(t *testing.T, err error, want string) {
 	t.Helper()
 	if err == nil {

@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/zzjcool/anotify/internal/schema"
 )
 
 // slugPattern 是包名（metadata.name）的正则（playbook.md §1.1：命名空间内唯一、URL 里那段）。
@@ -179,6 +181,13 @@ func applyEntry(pkg *Package, tree map[string]any) error {
 		if err := json.Unmarshal(canon, &probe); err != nil || probe == nil {
 			return errf(CodeInvalidPlaybook,
 				"%s 的 spec.values 必须是 JSON Schema 对象（{type: object, properties: …}）", EntryFile)
+		}
+		if probs := schema.ValidateSchema(probe); len(probs) > 0 {
+			parts := make([]string, 0, len(probs))
+			for _, p := range probs {
+				parts = append(parts, "spec.values."+p.Path+": "+p.Msg)
+			}
+			return errf(CodeInvalidPlaybook, "%s 的 values schema 不合法：%s", EntryFile, strings.Join(parts, "；"))
 		}
 		values = canon
 	}
