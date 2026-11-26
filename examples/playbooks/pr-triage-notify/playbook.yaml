@@ -1,24 +1,17 @@
-# pr-triage-notify · 一个可安装的 playbook 示例（入口清单）
-# 这个文件只回答两件事：这次安装要哪些参数（spec.values）、包由哪些文件组成；它自己不渲染。
-#   事件进来（sources/push.yaml，webhook）
-#     → 判定（capabilities/triage.yaml，按 changedLines 分流）
-#       → 高危：page（capabilities/page.yaml，POST 到你的告警端点）
-#       → 常规：audit（capabilities/audit.yaml，只留证据文件）
+# pr-triage-notify · 入口清单：安装要哪些参数、包由哪些文件组成（流程图见 README）
 apiVersion: anotify/v1
 kind: Playbook
 
 metadata:
-  name: pr-triage-notify          # 包名 = slug，创建后不可改；必须与 POST 的 metadata.name、URL 里的 slug 一致
+  name: pr-triage-notify
   displayName: PR 判定 → 告警链
-  version: 1                      # 只做展示与溯源，不参与 digest / 幂等 / 任何解析
+  version: 1
   description: |
     webhook 事件 → 改动量判定 → 高危走告警、常规走留证。
     装 N 次就是 N 套互不影响的链：能力名与源名全部由 values.project 决定。
 
 spec:
   # spec.values 就是一份 JSON Schema，同时承担三件事：校验输入、提供默认值、生成前端表单。
-  # 支持的关键字是仓库的受控子集：type / required / properties / default / enum /
-  # pattern / minLength / maxLength / minimum / maximum / additionalProperties。
   values:
     type: object
     additionalProperties: false
