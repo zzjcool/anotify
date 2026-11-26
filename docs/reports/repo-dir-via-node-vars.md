@@ -1,5 +1,8 @@
 # 机器路径回归节点变量：`repoDir` 从安装 values 里出去
 
+> snapshot-doc: 2026-11-23 一次验证运行的原始输出定格（文中的数字是那一刻的实测值，
+> 不是「现在是多少」的承诺；要可重跑的判据请跑文末那些命令）
+
 ## 问题
 
 `examples/playbooks/issue-fix` 把仓库检出目录做成**安装参数** `values.repoDir`。
