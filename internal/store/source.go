@@ -29,7 +29,6 @@ const (
 // SourceKinds 返回全部合法种类（拷贝；供校验与前端下拉复用）。
 func SourceKinds() []string { return sourcespec.Kinds() }
 
-// IsValidSourceKind 判断种类是否合法。
 func IsValidSourceKind(k string) bool { return sourcespec.IsKind(k) }
 
 // 源相关的哨兵错误。前两个别名到 sourcespec 的同名错误：校验只有一份实现，
@@ -54,12 +53,10 @@ var (
 	ErrSourceTargetInvalid = errors.New("invalid source target")
 )
 
-// 写路径的错误前缀：既是日志/调试用的定位信息，也是 server 错误投影要剪掉的串。
+// 写路径的错误前缀：既是日志定位信息，也是 server 错误投影要剪掉的串。
 //
-// 为什么是常量而不是各写各的字面量：server 侧的剪裁表曾经手抄过 `create source: `，
-// 前缀改一个空格（`create source:`）剪裁表就静默失配，用户又开始看到内部前缀而测试仍绿（#644 第 4 条）。
-// 现在两侧引用同一组常量，`SourceWritePrefixes` 给 server 遍历、`source_write_prefix_test.go`
-// 反向枚举 store 真实包装串，改前缀只可能改一处。
+// 做成常量而不是各写各的字面量：剪裁表手抄过它们，改一个空格（`create source:`）就静默失配、
+// 用户重新看到前缀而测试仍绿（#644 第 4 条）；`source_write_prefix_test.go` 反向枚举真实包装串。
 const (
 	SourceWritePrefixCreate = "create source: "
 	SourceWritePrefixUpdate = "update source: "
@@ -67,8 +64,7 @@ const (
 	SourceWritePrefixInsert = "insert source: "
 )
 
-// SourceWritePrefixes 是写路径前缀的全量表（server 的 `sourceConfigMessage` 按它剪裁）。
-// 新增写操作前缀时**必须**同时加进这里，否则用户会在 message 里看到它。
+// SourceWritePrefixes 是写路径前缀全量表（server 的 `sourceConfigMessage` 按它剪裁）：新增前缀必须同时加进这里。
 var SourceWritePrefixes = []string{
 	SourceWritePrefixCreate,
 	SourceWritePrefixUpdate,
@@ -114,7 +110,6 @@ const sourceColumns = `id, namespace_id, name, display_name, kind, config, targe
 	last_fired_at, next_fire_at, installed_from, resource_version, created_at,
 	poll_cursor, last_poll_at, consecutive_failures, skipped_overlaps, last_error`
 
-// scanSource 从一行结果解析 Source（targets 列在这里解成结构化声明）。
 func scanSource(rows scanner) (*Source, error) {
 	var (
 		s       Source
@@ -349,7 +344,6 @@ func outcomesNotDeclared(outcomes map[string][]sourcespec.OutcomeAction, next []
 	return causes
 }
 
-// targetRefs 取 targets 里的引用列表（入口边右端）。
 func targetRefs(s *Source) []string {
 	refs := make([]string, 0, len(s.Targets))
 	for _, t := range s.Targets {
@@ -389,7 +383,6 @@ func sourceNextFire(s *Source, after int64) (*int64, error) {
 	return &unix, nil
 }
 
-// nullableUnix 把 *int64 转成 SQL 参数（nil → NULL）。
 func nullableUnix(v *int64) any {
 	if v == nil {
 		return nil
@@ -454,7 +447,6 @@ func (d *DB) ListSourcesPage(ctx context.Context, namespaceID string, afterAt in
 	return out, rows.Err()
 }
 
-// GetSource 按 (namespaceID, id) 取源；未命中返回 ErrSourceNotFound。
 func (d *DB) GetSource(ctx context.Context, namespaceID, id string) (*Source, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -474,8 +466,6 @@ func (d *DB) GetSource(ctx context.Context, namespaceID, id string) (*Source, er
 	return scanSource(rows)
 }
 
-// GetSourceByName 按 (namespaceID, name) 取源；未命中返回 ErrSourceNotFound。
-//
 // 入口边的左端是**源名**（没有 source_id 可 join），所以按名字取是触发路径的常态。
 func (d *DB) GetSourceByName(ctx context.Context, namespaceID, name string) (*Source, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
@@ -732,8 +722,6 @@ func (d *DB) ListDueSourcesOfKind(ctx context.Context, kind string, now int64, l
 	return out, rows.Err()
 }
 
-// MarkSourceFired 记录一次触发，并把下次触发时间推到后面。
-//
 // 用 nextFire 作为参数而不是「从现在算」：调度器可能延迟醒来，
 // 从「上次计划时刻」往后推才不会漏掉或堆积。
 func (d *DB) MarkSourceFired(ctx context.Context, id string, firedAt, nextFire int64) error {

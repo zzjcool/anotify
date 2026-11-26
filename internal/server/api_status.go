@@ -186,9 +186,8 @@ func writeAPIError(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrSourceKindImmutable):
 		writeStatus(w, http.StatusBadRequest, "source_kind_immutable", "spec.kind is immutable", nil)
 	case errors.Is(err, store.ErrInvalidSourceKind):
-		// #644：这条分支以前直接 `err.Error()`，把 store 写路径的 `create source: ` 吐给用户。
-		// 只剪写操作前缀，**保留** `invalid source kind: "pollz"（可选：cron / webhook / manual / poll）`：
-		// 那句里的可选值清单正是用户要看的，去掉就没法改对了。
+		// #644：以前直接 `err.Error()`，把 store 的 `create source: ` 一起吐给用户。只剪写操作前缀，
+		// **保留** `invalid source kind: "pollz"（可选：…）`：可选值清单是用户改对的唯一线索。
 		writeStatus(w, http.StatusBadRequest, "invalid_source_kind", sourceConfigMessage(err), nil)
 	case errors.Is(err, store.ErrInvalidSourceConfig):
 		// #519：带路径校验失败逐条落进 details.causes[]（红点点到具体那行配置）。
@@ -302,7 +301,6 @@ func sourceConfigCauses(err error) *statusDetails {
 	return &statusDetails{Causes: out}
 }
 
-// sourceConfigCauseList 取出 sourcespec 的结构化结论。
 func sourceConfigCauseList(err error) []sourcespec.Cause {
 	var causes *sourcespec.CausesError
 	if !errors.As(err, &causes) {
@@ -311,18 +309,10 @@ func sourceConfigCauseList(err error) []sourcespec.Cause {
 	return causes.Causes
 }
 
-// sourceConfigMessage 只把「最后一段原因」交给用户（#644）。
-//
-// store 写路径在包装时逐层给错误文本加上了定位前缀——`create source: ` / `update source: ` /
-// `delete source: ` / `insert source: `（操作）与 `invalid source config: ` / `invalid source target: `
-// （错误域）——那是日志/调试用的信息，`reason` 已经把分类给全了。三层前缀叠在 message 上，
-// 真正要改的那句（`config.schedule：cron 表达式需要 5 段…`）就被推到一屏之外。
-//
-// 只做前缀剪裁、不重建文本：`CausesError` 的 `field：原因` 拼接仍然只有一处实现。
-// 层数不写死（循环到没前缀可剪），所以「包装层数变了」不会把前缀又漏出来。
-//
-// 前缀表不手抄：写操作前缀直接引用 `store.SourceWritePrefixes`（同一组常量，store 改前缀
-// 这里自动跟着改；手抄字面量的版本曾经因为少一个空格静默失配，见 #644 第 4 条）。
+// sourceConfigMessage 只把「最后一段原因」交给用户（#644）：前缀是 store 的定位信息，`reason` 已把
+// 分类说全，三层叠上去会把用户要改的那句推到一屏之外。只剪前缀、不重建文本：`CausesError` 的
+// `field：原因` 拼接仍只有一处实现。层数不写死；前缀表引用 `store.SourceWritePrefixes`
+// （手抄字面量时改一个空格就静默失配，见 #644 第 4 条）。
 func sourceConfigMessage(err error) string {
 	if err == nil {
 		return ""

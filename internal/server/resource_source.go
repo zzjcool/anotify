@@ -73,7 +73,6 @@ type sourceAPI struct {
 	d *serverDeps
 }
 
-// newSourceAPI 构造 Source 资源域。
 func newSourceAPI(d *serverDeps) *sourceAPI { return &sourceAPI{d: d} }
 
 // register 把 Source 资源域挂到 mux 上。两条与中间件有关的纪律：
@@ -1132,8 +1131,6 @@ type srcInlinePreviewBody struct {
 	Type    string          `json:"type,omitempty"`
 }
 
-// srcDecodeAction 解动作端点的请求体。
-//
 // 空 body 合法（payload 可省 → 用源配置的打底值）。strict=true 时未知字段 →
 // 400 unknown_field（我们自己的写请求）；strict=false 只要求是合法 JSON（外部投递）。
 func srcDecodeAction(r *http.Request, dst any, limit int64, strict bool) error {
@@ -1203,7 +1200,6 @@ func srcPathName(r *http.Request) string {
 	return strings.TrimSpace(r.PathValue("name"))
 }
 
-// srcSpecKind 取 spec.kind（去空白）。
 func srcSpecKind(kind *string) string {
 	if kind == nil {
 		return ""
@@ -1238,7 +1234,6 @@ func srcPayloadBytes(raw json.RawMessage) json.RawMessage {
 	return append(json.RawMessage(nil), raw...)
 }
 
-// srcIsNullJSON 判断 raw 是否就是 JSON 的 null。
 func srcIsNullJSON(raw json.RawMessage) bool {
 	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }

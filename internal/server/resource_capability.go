@@ -55,7 +55,6 @@ const (
 // CAS 令牌走 api_cas.go —— 三件共享判据都不在这里再抄一份。
 type capabilityAPI struct{ d *serverDeps }
 
-// newCapabilityAPI 构造 Capability 资源域。
 func newCapabilityAPI(d *serverDeps) *capabilityAPI { return &capabilityAPI{d: d} }
 
 // register 注册全部 Capability 路由（session + noStore 包裹；未登录直 401，
@@ -1543,7 +1542,6 @@ type capabilityStatus struct {
 	InstalledFrom    string                      `json:"installedFrom,omitempty"`
 }
 
-// capabilityNameFromPath 取 `{name}` 路径段。
 func capabilityNameFromPath(r *http.Request) string {
 	return strings.TrimSpace(r.PathValue("name"))
 }
@@ -1706,8 +1704,7 @@ func decodeCapabilityDeployBody(r *http.Request) (capabilityDeployRequest, error
 		return body, unknownFieldError(err)
 	}
 	if body.Version < 0 {
-		// #644：deploy 的 0 与省略同义（handleDeploy 的 `version <= 0` 走 ResolveRef = live），
-		// 拒的只是负数。旧文案写 `≥ 1`，与试跑的 `≥ 0 (0 = live version)` 相互矛盾。
+		// #644：0 与省略同义（`version <= 0` 走 ResolveRef = live），拒的只是负数；旧文案 `≥ 1` 与试跑的 `≥ 0` 自相矛盾。
 		return body, errStatus(http.StatusBadRequest, reasonBadRequest, "version must be ≥ 0 (0 = live version)")
 	}
 	return body, nil
@@ -1770,7 +1767,6 @@ func versionsOf(rows []*store.CapabilityVersion, name string) []*store.Capabilit
 	return out
 }
 
-// newestVersionOf 返回某 name 的最大版本行；没有返回 nil。
 func newestVersionOf(rows []*store.CapabilityVersion, name string) *store.CapabilityVersion {
 	var newest *store.CapabilityVersion
 	for _, row := range rows {

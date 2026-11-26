@@ -30,8 +30,6 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// newCapLifecycleEnv 在 capTestEnv 之上把 taskAPI 也挂进同一个 mux。
-//
 // 为什么必须同一个 mux：试跑建的**事件**要经由 `GET …/events` 读回来（origin 口径），
 // 两个域各自起一套夹具就会把「同一个 store 的两条读路径」测成两件无关的事。
 func newCapLifecycleEnv(t *testing.T) *capTestEnv {
@@ -53,7 +51,6 @@ func (e *capTestEnv) setClock(sec int64) {
 	e.deps.Now = func() int64 { return sec * 1000 }
 }
 
-// capEnabled 读 `GET …/{name}` 的 status.enabled。
 func (e *capTestEnv) capEnabled(t *testing.T, ns, name string) bool {
 	t.Helper()
 	status := e.capabilityStatus(t, ns, name)
@@ -64,7 +61,6 @@ func (e *capTestEnv) capEnabled(t *testing.T, ns, name string) bool {
 	return enabled
 }
 
-// testReceipt 发一次 `POST …/{name}/test` 并解出回执（状态码由用例先断言）。
 func (e *capTestEnv) testReceipt(t *testing.T, ns, name string, body any) (int, map[string]any) {
 	t.Helper()
 	rec := e.do(t, http.MethodPost, e.capPath(ns, name, "test"), body)
@@ -74,7 +70,6 @@ func (e *capTestEnv) testReceipt(t *testing.T, ns, name string, body any) (int, 
 	return rec.Code, decodeCapJSON(t, rec)
 }
 
-// auditItems 读审计列表（`limit` 为空 = 不带参数）。
 func (e *capTestEnv) auditItems(t *testing.T, ns, name, query string) []any {
 	t.Helper()
 	rec := e.do(t, http.MethodGet, e.capPath(ns, name, "audit")+query, nil)
@@ -601,13 +596,8 @@ func TestCapabilityTestEventOriginInEventStream(t *testing.T) {
 
 // TestCapabilityTestVersionZeroIsLive 钉住「省略 / 0 = 当前 live 版本」与代码一致。
 //
-// 契约（api/resource.yaml `CapabilityTestRequest.version`）一直写的是「省略 / 0 = 当前
-// live 版本」，schema 却写着 `minimum: 1`：严格按 schema 生成的客户端**永远发不出 0**
-// （本地就拒），描述与 schema 自相矛盾。handler 的判据本来就是 `< 0` 才拒，所以这里把
-// 三条一起钉住，防止有人反过来把 0 当非法：
-//   - 显式 0 → 200，且回执版本就是 live 那一版；
-//   - 省略（= zero value）→ 200，与显式 0 同一个版本（两条路径不许分叉）；
-//   - 负数 → 400（0 合法不代表负数合法）。
+// schema 曾写 `minimum: 1` 而 description 写「省略 / 0 = live」：按 schema 生成的客户端永远发不出 0，
+// 而 handler 的判据本来就是 `< 0` 才拒。别反过来把 0 当非法。
 func TestCapabilityTestVersionZeroIsLive(t *testing.T) {
 	env := newCapTestEnv(t)
 	env.createCapability(t, env.nsA, "live-version", "#!/bin/sh\necho live\n")
@@ -621,7 +611,6 @@ func TestCapabilityTestVersionZeroIsLive(t *testing.T) {
 		return capNumber(t, capObject(t, tasks[0], "tasks[0]"), "version")
 	}
 
-	// ① 显式 0。
 	code, zero := env.testReceipt(t, env.nsA, "live-version", map[string]any{"version": 0})
 	if code != http.StatusOK {
 		t.Fatalf("version: 0 应解析成 live（200），实际 %d: %#v", code, zero)
@@ -630,7 +619,6 @@ func TestCapabilityTestVersionZeroIsLive(t *testing.T) {
 		t.Fatalf("version: 0 落到的版本 = %d，want 1（live）", got)
 	}
 
-	// ② 省略：与 ① 同一个版本。
 	code, omitted := env.testReceipt(t, env.nsA, "live-version", nil)
 	if code != http.StatusOK {
 		t.Fatalf("省略 version 应为 200，实际 %d: %#v", code, omitted)
@@ -639,7 +627,6 @@ func TestCapabilityTestVersionZeroIsLive(t *testing.T) {
 		t.Fatalf("省略 version 落到 %d，显式 0 落到 %d（两条解析必须同一条）", got, want)
 	}
 
-	// ③ 负数仍然 400（不是 500，也不是被当成 live）。
 	rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "live-version", "test"),
 		map[string]any{"version": -1})
 	if rec.Code != http.StatusBadRequest {
@@ -652,10 +639,9 @@ func TestCapabilityTestVersionZeroIsLive(t *testing.T) {
 
 // TestCapabilityDeployVersionZeroIsLive 把同一个不变量钉在 deploy 上（review 第 1 轮第 3 条）。
 //
-// 修前：schema `CapabilityDeployRequest.version` 是 `minimum: 1` + 双“省略 = 最新版本”，
-// handler 拒的却只是 `< 0`（`handleDeploy` 的 `version <= 0` 走 ResolveRef = live），
-// 而且 400 文案回的是 `version must be ≥ 1`——同一语义的 test 回 `≥ 0 (0 = live version)`，
-// 两个动作 body 互相矛盾。自后三处同向：schema 下界 0、文案 `≥ 0`、0 与省略同一版。
+// 修前三处不同向：schema `minimum: 1`、400 文案 `≥ 1`、handler 却只拒 `< 0`（`version <= 0`
+// 走 ResolveRef = live）—— 0 被 schema 说成非法、被判据当成 live。修后三处同向：
+// schema 下界 0、文案 `≥ 0 (0 = live version)`、0 与省略同一版。
 func TestCapabilityDeployVersionZeroIsLive(t *testing.T) {
 	env := newCapTestEnv(t)
 	env.createCapability(t, env.nsA, "deploy-live", "#!/bin/sh\necho live\n")
@@ -665,7 +651,6 @@ func TestCapabilityDeployVersionZeroIsLive(t *testing.T) {
 		return env.do(t, http.MethodPost, env.capPath(env.nsA, "deploy-live", "deploy"), body)
 	}
 
-	// ① 省略 = live（基线）：没有节点 → 诚实的空结果，版本依旧是 live 那一版。
 	rec := deploy(t, map[string]any{})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("deploy 省略 version: status=%d body=%s", rec.Code, rec.Body.String())
@@ -675,7 +660,6 @@ func TestCapabilityDeployVersionZeroIsLive(t *testing.T) {
 		t.Fatalf("deploy 省略 version 落到 %d，want 1（live）", omitted)
 	}
 
-	// ② 显式 0：与省略同一条解析（不许分叉成“没有这个版本”）。
 	rec = deploy(t, map[string]any{"version": 0})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("deploy version: 0: status=%d body=%s", rec.Code, rec.Body.String())
@@ -684,7 +668,7 @@ func TestCapabilityDeployVersionZeroIsLive(t *testing.T) {
 		t.Fatalf("deploy version: 0 落到 %d，省略落到 %d（两条解析必须同一条）", zero, omitted)
 	}
 
-	// ③ 负数 → 400，且文案与试跑共用一条（不许再把 0 说成非法）。
+	// 负数 → 400，且文案与试跑共用一条（不许再把 0 说成非法）。
 	rec = deploy(t, map[string]any{"version": -1})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("deploy version: -1: status=%d body=%s", rec.Code, rec.Body.String())
@@ -701,7 +685,6 @@ func TestCapabilityDeployVersionZeroIsLive(t *testing.T) {
 		t.Fatalf("deploy version: -1 的 message = %q：不得再出现把 0 说成非法的 “≥ 1”", msg)
 	}
 
-	// ④ 显式不存在的版本 → 404（不是静默回 live）。schema 描述里的这句跟这里同源。
 	rec = deploy(t, map[string]any{"version": 99})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("deploy version: 99 应 404，实际 %d body=%s", rec.Code, rec.Body.String())

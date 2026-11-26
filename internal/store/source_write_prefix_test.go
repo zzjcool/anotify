@@ -1,13 +1,7 @@
 package store
 
-// source_write_prefix_test.go 守住 #644 第 4 条的「前缀只有一处定义」。
-//
-// 背景：server 的错误投影要剪掉写路径前缀（`create source: ` 这类定位信息），曾经是**手抄
-// 字面量**——store 把 `create source: ` 改成 `create source:`（少一个空格）或新增
-// `replace source: `，剪裁表静默失配，用户又开始看到内部前缀而测试仍绿。
-//
-// 现在两侧引用同一组常量，于是这里只需要守一件事：**source.go 的写路径包装不许再出现字面量**。
-// 出现即说明有人新写了 `fmt.Errorf("xxx source: …")` 而绕过了 `SourceWritePrefixes`。
+// source_write_prefix_test.go 守 #644 第 4 条：store 的写路径包装不许再出现字面量。出现即说明有人
+// 新写了 `fmt.Errorf("xxx source: …")` 绕过 `SourceWritePrefixes`，剪裁表就此静默失配（改一个空格就够）。
 
 import (
 	"os"
@@ -20,8 +14,7 @@ func TestSourceWritePrefixWrapsUseConstants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读不了 source.go：%v", err)
 	}
-	// `<动词> source: ` 形式的字面量包装。读路径（get/scan/list）不进入用户可见的错误体
-	// （它们的错误最终都落在 `not found` / 500），所以只要求**写路径**走常量。
+	// `<动词> source: ` 形式的字面量包装。读路径（get/scan/list）的错误最终都落在 `not found` / 500，不要求走常量。
 	literal := regexp.MustCompile(`fmt\.Errorf\("([a-z]+ source: )`)
 	readOnly := map[string]bool{"get source: ": true, "scan source: ": true, "list source: ": true}
 	var offenders []string
