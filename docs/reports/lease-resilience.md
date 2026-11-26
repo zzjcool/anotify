@@ -291,7 +291,8 @@ ok  	github.com/zzjcool/anotify/cmd/anode/internal/app
 
 ## 9. 交付（提交 + PR）
 
-分支 `wt/leaseres`，基于 `origin/main` `04c5e22e`，共 7 个提交（第一个是开工空提交）：
+分支 `wt/leaseres`，基于 `origin/main` `04c5e22e`，共 9 个提交（第一个是开工空提交，其余成对：
+功能 2 个 + 注释/基线 3 个 + 报告 2 个）：
 
 ```
 73a1c617 chore(lease): 开工标记：长任务租约韧性（TTL 可配/硬心跳/abandoned 可恢复）
@@ -301,6 +302,8 @@ ok  	github.com/zzjcool/anotify/cmd/anode/internal/app
 d5ba02f8 test(store): TTL 生效往返用例 + 交付报告（docs/reports/lease-resilience.md）
 0fea5df1 chore(store): 新用例不留注释预算（store 目录回落到基线）
 f591d023 chore(lease): 注释收紧时保住契约级信息（Check 诊断约定/runner 硬不变量）+ 修掉压缩残留行
+a7d2365f docs(reports): 补交付章节（分支/提交清单/PR 建议标题）
+c7283387 docs(reports): 变异证据更新为最终代码上的真跑输出
 ```
 
 PR（base `main`，**不手工 merge**）由收队的 centurion 创建；建议标题与正文：
