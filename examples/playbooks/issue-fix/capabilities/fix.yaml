@@ -37,7 +37,6 @@ spec:
         round=${ANOTIFY_PARAM_ROUND:-1}
         pr=${ANOTIFY_PARAM_PR:-}
         branch=${ANOTIFY_PARAM_BRANCH:-}
-        findings=${ANOTIFY_PARAM_FINDINGS:-}
         art_dir=${ANOTIFY_ARTIFACT_DIR}
         mkdir -p "$art_dir"
 

@@ -71,6 +71,9 @@ func TestExamplePackagesRender(t *testing.T) {
 				}
 			}
 			for _, ln := range strings.Split(body, "\n") {
+				if strings.Contains(ln, "anode emit") && strings.Contains(ln, "${findings") {
+					t.Fatalf("%s/%s 把自由文本 ${findings} 拼进了 emit 的 JSON（引号/换行会打爆 JSON）：请通过 issue 评论或文件传递", dir, c.Metadata.Name)
+				}
 				if strings.TrimSpace(ln) == "env:" {
 					t.Fatalf("%s/%s 的脚本里出现了被吞掉的 YAML 键 %q：run.env 缩进错了，整块会变成脚本文本", dir, c.Metadata.Name, "env:")
 				}
