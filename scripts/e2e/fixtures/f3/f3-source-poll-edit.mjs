@@ -207,3 +207,123 @@ export async function sourcePollEdit(d) {
   const gone = await response(PATH + NEW_SOURCE + '?resourceVersion=' + encodeURIComponent(fresh.body.metadata.resourceVersion), null, 'DELETE');
   assert.equal(gone.status, 204, '清理新建的源必须 204，实际 ' + gone.status);
 }
+
+const UNREADABLE = 'poll-edit-unreadable';
+
+export async function sourcePollEditUnreadable(d) {
+  const { page, goto, api, response, calls, check } = d;
+  assert.ok(!d.mock, 'source-poll-edit-unreadable 只在真实权威下有意义（要真服务端回读原始 config）');
+  const visible = (sel, timeout = 15000) => page.locator(sel).waitFor({ state: 'visible', timeout });
+  const path = PATH + UNREADABLE;
+  const post = (body) => ({ method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
+  const cfgOf = async (r) => r.body.spec.config;
+
+  await goto('sources');
+  const stale = await api(path);
+  if (stale.status === 200) {
+    const removed = await response(path + '?resourceVersion=' + encodeURIComponent(stale.body.metadata.resourceVersion), null, 'DELETE');
+    assert.equal(removed.status, 204, '上一次尝试留下的同名源必须先删掉，实际 ' + removed.status);
+  }
+  const created = await api(BASE, post({ apiVersion: 'anotify/v1', kind: 'Source', metadata: { name: UNREADABLE }, spec: { kind: 'poll', config: CONFIG, targets: [] } }));
+  assert.equal(created.status, 201, '建 poll 源必须 201，实际 ' + created.status + ' ' + JSON.stringify(created.body).slice(0, 300));
+  const before = await cfgOf(await api(path));
+  assert.deepEqual(before.headers, CONFIG.headers, '夹具前提：表单从不渲染的 headers 必须在存储里');
+  assert.equal(before.allowInsecure, true, '夹具前提：表单从不渲染的 allowInsecure 必须在存储里（否则下面「不丢配置」什么都没证）');
+  assert.deepEqual(before.envelope, CONFIG.envelope, '夹具前提：表单只渲染一部分 envelope 键，存储里必须有完整那份');
+  check('POLL-EDIT-10 a poll source whose stored config carries keys the form never renders (headers / allowInsecure / envelope) exists');
+
+  await goto('sources');
+  await page.evaluate((p) => { window.__f3Fault = p; }, path);
+  await goto('sources', 'namespace=default&edit=' + UNREADABLE);
+  await visible('#src-modal:not(.hidden)');
+  await visible('#form-result .source-error');
+  const opened = await calls();
+  const read = opened.filter((c) => c.method === 'GET' && c.url === path);
+  assert.equal(read.length, 1, '打开编辑器必须恰好发一次原始 config 读，实际 ' + JSON.stringify(opened.map((c) => c.method + ' ' + c.url + ' (' + (c.httpStatus || c.error) + ')')));
+  assert.equal(read[0].httpStatus, undefined, '这次读必须是失败的（注入的传输层故障真的打到了那一次读），实际 ' + read[0].httpStatus);
+  const msg = (await page.locator('#form-result').innerText()).trim();
+  assert.ok(msg.includes('读取源配置失败'), '读失败必须有看得见的提示（原来这条提示被紧随其后的 replaceChildren 立刻擦掉），实际 ' + JSON.stringify(msg));
+  assert.ok(msg.includes('F3 deliberate disconnected transport'), '提示必须带上真实原因，实际 ' + JSON.stringify(msg));
+  assert.equal(await page.locator('#f-poll-url').inputValue(), '', '读失败时表单只剩默认值 —— 这正是「保存一次就丢配置」的入口');
+  assert.equal(await page.locator('#modal-save').isDisabled(), true, '源配置没读到时保存必须禁用，实际可用');
+  assert.equal(await page.locator('#btn-dry').isDisabled(), true, '试运行用的是同一份半成品 config，同样必须禁用');
+  assert.equal(await page.locator('#poll-reload').count(), 1, '必须给出重试入口');
+  const geom = await page.evaluate(() => { // 「看得见」不能只证明元素有盒子：#form-result 在可滚动 .modal-body 末尾，poll 表单比视口高
+    const msg = document.querySelector('#form-result .source-error');
+    const body = document.getElementById('src-modal-body');
+    const b = msg.getBoundingClientRect(), v = body.getBoundingClientRect();
+    return {
+      top: Math.round(b.top), bottom: Math.round(b.bottom),
+      viewTop: Math.round(v.top), viewBottom: Math.round(v.bottom),
+      scrollTop: Math.round(body.scrollTop), scrollHeight: body.scrollHeight, clientHeight: body.clientHeight,
+    };
+  });
+  assert.equal(geom.scrollHeight > geom.clientHeight, true, '夹具前提：poll 表单必须高于弹层视口，否则下面「在视口内」测不到东西，实际 ' + JSON.stringify(geom));
+  assert.equal(geom.scrollTop > 0, true, '修复必须把失败原因滚进视口（原来它停在折叠下方），实际 ' + JSON.stringify(geom));
+  assert.equal(geom.top >= geom.viewTop && geom.bottom <= geom.viewBottom, true, '失败原因必须落在弹层可视区内，实际 ' + JSON.stringify(geom));
+  await page.waitForFunction(() => (document.querySelector('#anotify-toast-host [data-error-bar]')?.textContent || '').includes('读取源配置失败'), null, { timeout: 15000 });
+  const bar = (await page.locator('#anotify-toast-host [data-error-bar]').last().innerText()).trim();
+  assert.ok(bar.includes('F3 deliberate disconnected transport'), '错误条也必须带上真实原因（它不随滚动位置消失），实际 ' + JSON.stringify(bar));
+  assert.equal(await page.locator('#f-poll-url').isDisabled(), true, '读失败期间 poll 表单必须锁死：否则用户先填一份、再点重试，fillPollForm 会把刚填的静默覆盖');
+  assert.equal(await page.locator('#f-expr').isDisabled(), true, '排期输入同样要锁（它也是保存时会写进 config 的键）');
+  check('POLL-EDIT-11 a failed config read keeps the modal open with a *viewport-visible* error bar + in-form reason, an empty and locked form, disabled save/dry-run and a retry entry');
+
+  await page.evaluate(() => { const b = document.getElementById('modal-save'); b.disabled = false; b.click(); });
+  await page.waitForFunction(() => [...document.querySelectorAll('#anotify-toast-host [data-error-bar]')].some((n) => n.textContent.includes('已阻止')), null, { timeout: 15000 }); // 读失败时已有常驻错误条，必须扫全部而不是只看第一条
+  assert.equal((await page.locator('#anotify-toast-host [data-error-bar]').last().innerText()).includes('已阻止'), true, '被拦下的保存必须给出看得见的原因');
+  const writes = (await calls()).filter((c) => c.method !== 'GET' && c.url === path);
+  assert.deepEqual(writes.map((c) => c.method), [], '即使按钮被强行启用，pollConfig() 也必须拦下这次写（防御层不能只有 disabled），实际 ' + JSON.stringify(writes.map((c) => c.method + ' ' + c.httpStatus)));
+  assert.equal((await page.locator('#form-result').innerText()).includes('读取源配置失败'), true, '被拦下之后「为什么不能存」必须还看得见（不能被技术错误盖掉），实际 ' + JSON.stringify((await page.locator('#form-result').innerText()).trim()));
+  assert.equal(await page.locator('#poll-reload').count(), 1, '被拦下之后重试入口必须还在');
+  assert.equal(await page.locator('#src-modal').isVisible(), true, '被拦下的保存不许关弹层');
+  const barsBefore = await page.locator('#anotify-toast-host [data-error-bar]').count(); // 只锁保存、不锁试运行的 catch 会把重试入口盖成通用错误
+  await page.evaluate(() => { const b = document.getElementById('btn-dry'); b.disabled = false; b.click(); });
+  await page.waitForFunction((n) => document.querySelectorAll('#anotify-toast-host [data-error-bar]').length > n, barsBefore, { timeout: 15000 });
+  const dry = (await calls()).filter((c) => c.url === BASE + '/dry-run');
+  assert.deepEqual(dry.map((c) => c.method), [], '试运行同样只拿得到半成品 config，强行启用也必须被拦下，实际 ' + JSON.stringify(dry.map((c) => c.method + ' ' + c.httpStatus)));
+  assert.equal((await page.locator('#anotify-toast-host [data-error-bar]').last().innerText()).includes('已阻止'), true, '被拦下的试运行也必须说明原因，实际 ' + JSON.stringify((await page.locator('#anotify-toast-host [data-error-bar]').last().innerText()).trim()));
+  assert.equal((await page.locator('#form-result').innerText()).includes('读取源配置失败'), true, '被拦下的试运行不能把重试入口盖成通用错误');
+  assert.equal(await page.locator('#poll-reload').count(), 1, '被拦下的试运行之后重试入口必须还在');
+  assert.equal(await page.locator('#src-modal').isVisible(), true, '被拦下的试运行不许关弹层');
+  check('POLL-EDIT-12 saving *and* dry-run are refused even when force-enabled, the modal stays open and the retry entry survives both refusals');
+
+  await page.evaluate(() => { window.__f3Fault = ''; });
+  await page.locator('#poll-reload').click();
+  await page.waitForFunction((want) => document.querySelector('#f-poll-url')?.value === want, CONFIG.url, { timeout: 20000 });
+  assert.equal(await page.locator('#modal-save').isDisabled(), false, '重试成功后保存必须恢复可用');
+  assert.equal(await page.locator('#f-poll-url').isDisabled(), false, '重试成功后表单必须解锁（否则读到配置也改不了）');
+  assert.equal(await page.locator('#f-expr').isDisabled(), false, '重试成功后排期输入必须解锁');
+  assert.equal(await page.locator('#form-result .source-error').count(), 0, '重试成功必须清掉错误提示');
+  assert.equal(await page.locator('#f-expr').inputValue(), QUIET_EXPR, '重试成功必须回填存储的排期（不是 cron 默认值）');
+  assert.equal(await page.locator('#f-tz').inputValue(), CONFIG.schedule.tz);
+  assert.equal(await page.locator('#f-poll-cred-name').inputValue(), CONFIG.secretRef.name);
+  assert.equal(await page.locator('#f-poll-cred-header').inputValue(), CONFIG.secretRef.header);
+  const flat = await page.$$eval('#f-poll-headers .source-target input', (ns) => ns.map((n) => n.value));
+  const heads = [];
+  for (let i = 0; i < flat.length; i += 2) heads.push(flat[i] + '=' + flat[i + 1]);
+  assert.deepEqual(heads.sort(), ['Accept=application/json', 'X-F3-Trace=poll-edit'], '重试成功必须把 headers 回填成可编辑行，实际 ' + JSON.stringify(flat));
+  check('POLL-EDIT-13 retry clears the error, re-enables save and refills the stored url / schedule / headers / secretRef');
+
+  await page.locator('#f-poll-maxitems').fill('43');
+  const patchP = page.waitForRequest((r) => r.method() === 'PATCH' && r.url().includes(path), { timeout: 20000 });
+  const patchRespP = page.waitForResponse((r) => r.request().method() === 'PATCH' && r.url().includes(path), { timeout: 20000 });
+  await page.locator('#modal-save').click();
+  const [patchReq, patchResp] = await Promise.all([patchP, patchRespP]);
+  assert.equal(patchResp.status(), 200, '重试之后保存必须成功，实际 ' + patchResp.status());
+  await page.locator('#src-modal').waitFor({ state: 'hidden', timeout: 20000 });
+  const sent = JSON.parse(patchReq.postData() || '{}');
+  assert.deepEqual(sent.spec.config.headers, CONFIG.headers, '保存必须带上 headers（只有拿到服务器基底才做得到），实际 ' + JSON.stringify(sent.spec.config.headers));
+  assert.equal(sent.spec.config.allowInsecure, true, '表单不提供的 allowInsecure 必须原样留着');
+  assert.deepEqual(sent.spec.config.envelope, CONFIG.envelope, 'envelope 必须原样留着');
+  assert.deepEqual(sent.spec.config.schedule, CONFIG.schedule, '排期只能是存储的那份（改都没改）');
+  assert.equal(sent.spec.config.maxItems, 43);
+  assert.equal('secret' in sent.spec.config, false, '凭据框留空 = 不改动');
+  const after = await cfgOf(await api(path));
+  const want = clone(before);
+  want.maxItems = 43;
+  assert.deepEqual(after, want, '整份 config 只能差 maxItems 一项，实际 ' + JSON.stringify(after));
+  check('POLL-EDIT-14 after the retry the saved config deep-equals the stored one except maxItems — headers / allowInsecure / envelope survive the trip through a failed read');
+
+  const gone = await response(path + '?resourceVersion=' + encodeURIComponent((await api(path)).body.metadata.resourceVersion), null, 'DELETE');
+  assert.equal(gone.status, 204, '清理必须 204，实际 ' + gone.status);
+}

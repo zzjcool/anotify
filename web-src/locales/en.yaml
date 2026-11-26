@@ -527,6 +527,7 @@ keys:
     scope_hint: 'Least privilege: send and receive are separate, so a leaked Key only affects one side.'
     cancel: Cancel
     generate: Generate Key
+    generating: Generating…
   save:
     title: Save your Key
     subtitle_prefix: 'This is its '
@@ -1724,6 +1725,9 @@ sources:
     poll_transport_hint: 'The server pulls this address on the schedule'
     poll_url_hint: 'Must be https; local or .test test addresses need an explicit opt-in in YAML'
     poll_url_required: 'A pull address is required'
+    poll_load_failed: 'Could not read the source config, so editing it is unsafe: {reason}'
+    poll_load_blocked: 'The source config was never read; saving now would overwrite it, so it was blocked'
+    poll_load_retry: 'Retry'
     poll_headers: 'Request headers'
     poll_headers_hint: 'Up to 10; names take no spaces or colons, values take no line breaks'
     poll_header_add: 'Add a header'

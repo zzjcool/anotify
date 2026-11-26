@@ -527,6 +527,7 @@ keys:
     scope_hint: 'Mínimo privilegio: enviar y recibir van separados, así una Key filtrada solo compromete un lado.'
     cancel: Cancelar
     generate: Generar Key
+    generating: Generando…
   save:
     title: Guarda tu Key
     subtitle_prefix: 'Esta es su '
@@ -1724,6 +1725,9 @@ sources:
     poll_transport_hint: 'El servidor consulta esta dirección según la programación'
     poll_url_hint: 'Debe ser https; las direcciones de prueba locales o .test requieren habilitación explícita en YAML'
     poll_url_required: 'La dirección de consulta es obligatoria'
+    poll_load_failed: 'No se pudo leer la configuración del recurso, así que editarlo no es seguro: {reason}'
+    poll_load_blocked: 'La configuración del recurso nunca se leyó; guardar ahora la sobrescribiría, así que se bloqueó'
+    poll_load_retry: 'Reintentar'
     poll_headers: 'Cabeceras de la petición'
     poll_headers_hint: 'Máximo 10; el nombre no lleva espacios ni dos puntos, el valor no lleva saltos de línea'
     poll_header_add: 'Añadir una cabecera'

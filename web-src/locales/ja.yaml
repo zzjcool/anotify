@@ -527,6 +527,7 @@ keys:
     scope_hint: 最小権限：送信と受信は分離され、Key 漏洩時の影響は片側のみ。
     cancel: キャンセル
     generate: Key を生成
+    generating: 生成中…
   save:
     title: Key を保存
     subtitle_prefix: これは
@@ -1724,6 +1725,9 @@ sources:
     poll_transport_hint: 'スケジュールに従ってこの URL をサーバーが取得します'
     poll_url_hint: 'https のみ。ローカルや .test のテスト用アドレスは YAML で明示的な許可が必要です'
     poll_url_required: '取得先の URL は必須です'
+    poll_load_failed: 'ソース設定を読み込めなかったため、安全に編集できません：{reason}'
+    poll_load_blocked: 'ソース設定を読み込めていないため、保存すると既存の設定を上書きします。保存を中止しました'
+    poll_load_retry: '再試行'
     poll_headers: 'リクエストヘッダー'
     poll_headers_hint: '最大 10 件。名前に空白とコロンは使えず、値に改行は使えません'
     poll_header_add: 'ヘッダーを追加'

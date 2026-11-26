@@ -527,6 +527,7 @@ keys:
     scope_hint: 权限最小化：上报与接收分开，泄露一个 Key 不会波及另一头。
     cancel: 取消
     generate: 生成 Key
+    generating: 生成中…
   save:
     title: 保存你的 Key
     subtitle_prefix: 这是它
@@ -1726,6 +1727,9 @@ sources:
     poll_transport_hint: '服务端按排期主动拉取这个地址'
     poll_url_hint: '必须 https；本机或 .test 的测试地址需在 YAML 里显式放行'
     poll_url_required: '拉取地址必须有'
+    poll_load_failed: '读取源配置失败，无法安全编辑：{reason}'
+    poll_load_blocked: '源配置没读到，现在保存会覆盖已有配置，已阻止'
+    poll_load_retry: '重试'
     poll_headers: '请求头'
     poll_headers_hint: '最多 10 项；名称不含空格与冒号，值里不许有换行'
     poll_header_add: '加一项请求头'

@@ -76,9 +76,8 @@
         <p class="c2-note">{{t "namespace.v4.effective_source_hint"}}</p>
       </section>
     </div>
-    <!-- Namespace YAML（IA ③ / #476）：服务端按当前事实重建的规范化文档。
-         这里刻意不放编辑框 —— 写入口只有一条：左侧原始 JSON 与右侧 vars 表的编辑都
-         序列化进同一份文档后 PUT …/yaml（CAS = metadata.resourceVersion）。
+    <!-- Namespace YAML（IA ③ / #476）：服务端按当前事实重建的规范化文档，只读。
+         写入口只有一条：两个编辑器都序列化进同一份文档后 PUT …/yaml（CAS = resourceVersion）；
          同一个事实不提供第二条写路径（`/config` 只剩 GET 读投影）。 -->
     <section class="card card-pad">
       <div class="card-title">{{t "namespace.v4.yaml_title"}}</div>
@@ -108,27 +107,22 @@
   const write = (path, body) => A.api(path, { method: 'PUT', body: JSON.stringify(body) });
   const unk = () => A.t('common.unknown');
 
-  // 布局必须挂：页头/侧栏/语言切换器都在 mountLayout 里生成（漏了它页面只有裸内容，
-  // i18n 矩阵的「四个真实语言链接」会直接 0 !== 4）。
-  // scopeParam: 'name' —— 本页的范围由 `?name=` 表达（不是全站约定的 `?namespace=`）：
-  // 顶栏切 ns 时必须跳 `namespace.html?name=<新ns>`，否则顶栏显示 B、表单还在写 A（#455）。
+  // 布局必须挂：页头/侧栏/语言切换器都在 mountLayout 里生成（漏了它页面只有裸内容，i18n 矩阵的「四个真实语言链接」会 0 !== 4）。
+  // scopeParam: 'name' —— 本页范围由 `?name=` 表达；顶栏切 ns 必须跳 `namespace.html?name=<新ns>`，否则顶栏显示 B、表单还在写 A（#455）。
   A.mountLayout({ active: 'namespaces', title: t('title'), subtitle: t('subtitle'), scopeParam: 'name' });
   let selectedNamespace = new URLSearchParams(location.search).get('name') || '';
   let nsConfig = null, nsOriginal = '', nsLoaded = '';
   // 命名空间配置的「当前编辑器身份」：请求代号 + 真正加载进来的范围（与节点页同一套
   // ABA 判据：并发切 ns 不能让「最后返回的响应」决定显示，也不能拿当前选择拼保存路径）。
   let nsLoadSeq = 0, nsEditEpoch = 0;
-  // `/config` 只是**读投影**（GET）：拿 CAS 令牌与当前 vars。编辑的唯一写入口是
-  // `PUT …/yaml`（#476：YAML 是唯一编辑面；/config 的 PUT 不再被页面使用）。
+  // `/config` 只是**读投影**（GET，拿 CAS 令牌与当前 vars）；编辑的唯一写入口是 `PUT …/yaml`（#476：YAML 是唯一编辑面）。
   const nsPath = ns => '/v1/namespaces/' + encodeURIComponent(ns) + '/config';
   const YD = window.AnotifyYamlDoc;
   const VT = window.AnotifyVars;
   let varsRows = [], varsEditing = null, nsRequired = {}, varsDirty = false, varsSeq = 0;
-  /* 本页编辑的是**同一份 Namespace 文档**：`nsDocText` 是 `GET …/yaml` 的原文
-   * （`YD.edit`：读原文 → 只替换 `spec.vars` 与 CAS 令牌 → 重新序列化），原始编辑器与
-   * vars 表格走的是同一个动作。所以表单不认识的字段（含服务端以后加的）不会被保存丢掉。
-   * 原文读不懂 → 保存前拒绝（`yaml_unparsable`）；原文还没拿到 → 保存前先读一次。
-   * 这两条都不允许「从 vars 重建一份最小文档」：那正是 #454 丢字段的形状。 */
+  /* 两个编辑器改的是**同一份 Namespace 文档**：`nsDocText` 是 `GET …/yaml` 原文，`YD.edit` 只替换
+   * `spec.vars` 与 CAS 令牌，所以表单不认识的字段不会被保存丢掉。原文读不懂/没拿到 → 保存前拒绝
+   * 或先读一次；不允许「从 vars 重建一份最小文档」（#454 丢字段的形状）。 */
   let nsDocText = '', nsDocScope = '';
   function adoptNamespaceYAML(scope, text) {
     if (scope !== selectedNamespace) return;
@@ -171,7 +165,14 @@
     nsEditEpoch++;
     if (nsConfig && nsLoaded === selectedNamespace) $('namespace-save').disabled = false;
   });
-  async function loadNamespace(scope = selectedNamespace) {
+  /* #639：编辑框与 `nsOriginal` 不同、或右侧表格有未保存的行（`varsTableDraft`）都算草稿。
+   * 页头刷新会重画两者 → 先确认（文案与「重新加载」同一份）；`loadNamespace` 自己也守一道（#546 就这么漏的）。*/
+  const varsTextDraft = () => $('namespace-vars').value !== nsOriginal;
+  const varsTableDraft = () => varsDirty || !!varsEditing;
+  const confirmDiscardDrafts = async () => (!varsTextDraft() && !varsTableDraft()) || A.confirmDanger({ body: n('reload_confirm') });
+  async function loadNamespace(scope = selectedNamespace, { force = false } = {}) {
+    // 最后一道闸：没被问过的调用（今后新加的入口）自己问，已问过的入口与保存后回读传 force。
+    if (!force && scope === selectedNamespace && varsTextDraft() && !(await A.confirmDanger({ body: n('reload_confirm') }))) return { ok: false, guarded: true };
     const seq = ++nsLoadSeq, editEpoch = nsEditEpoch;
     $('namespace-save').disabled = true; msg('namespace-state', n('loading'));
     try {
@@ -189,7 +190,7 @@
       return { ok: false, error: e };
     }
   }
-  $('namespace-reload').onclick = async () => { if ($('namespace-vars').value !== nsOriginal && !(await A.confirmDanger({ body: n('reload_confirm') }))) return; loadNamespace(); };
+  $('namespace-reload').onclick = async () => { if (varsTextDraft() && !(await A.confirmDanger({ body: n('reload_confirm') }))) return; loadNamespace(selectedNamespace, { force: true }); };
   $('namespace-save').onclick = async () => {
     // 只写编辑器里真正加载出来的那个范围；切换中/过期的配置一律不保存。
     if (!nsConfig || !nsLoaded || nsLoaded !== selectedNamespace) return;
@@ -205,7 +206,8 @@
       await saveNamespaceVars(saveScope, vars, saveRV);
       // 同名 namespace 的新加载（ABA）或新草稿不是这次提交的编辑器。
       if (!current() || $('namespace-vars').value !== saveDraft) return;
-      const refresh = loadNamespace(saveScope); saveSeq = nsLoadSeq;
+      // 刚写成功的草稿与旧 `nsOriginal` 必然不同：这次回读是「读自己刚写的」，不是覆盖输入。
+      const refresh = loadNamespace(saveScope, { force: true }); saveSeq = nsLoadSeq;
       const refreshed = await refresh;
       if (!current()) return;
       if (refreshed.ok) { msg('namespace-state', n('saved')); await loadNamespaceYAML(saveScope); await loadEffective(); }
@@ -216,12 +218,10 @@
   };
 
   /* ---------- #476：命名空间 vars 表格（值 / 来源 / 谁要 / 缺） ----------
-   * 值/来源按**所选节点**解析（data source = `GET /v1/nodes/{name}?namespace=`），
-   * 需求侧 = 本 ns 能力读面的 `spec.requires.values`。
-   * 这张表写的是**命名空间默认层**（Namespace.spec.vars）：保存把文档序列化成
-   * YAML 文本，走 `PUT /v1/namespaces/{name}/yaml` —— 唯一写入口。
-   * 别的层（local / node）提供的值不会被抄进命名空间默认值（row.owned 判据在
-   * web/vars-table.js 里，单测钉住）。 */
+   * 值/来源按**所选节点**解析（`GET /v1/nodes/{name}?namespace=`），需求侧 = 本 ns 能力读面的
+   * `spec.requires.values`。写的是**命名空间默认层**（Namespace.spec.vars），保存序列化成 YAML
+   * 走 `PUT /v1/namespaces/{name}/yaml`（唯一写入口）；别的层（local/node）的值不会被抄进来
+   * （row.owned 判据在 web/vars-table.js 里，单测钉住）。 */
   const varsSourceLabel = src => src === 'local' ? n('vars_source_local') : src === 'node' ? n('vars_source_node') : src === 'namespace' ? n('vars_source_namespace') : '—';
   const varsErrText = code => n('vars_err_' + code);
   const varsSetState = (text, error = false) => msg('namespace-vars-state', text, error);
@@ -352,7 +352,7 @@
     try {
       await saveNamespaceVars(saveScope, vars, saveRV);
       if (saveScope !== selectedNamespace || saveEpoch !== nsEditEpoch) return;
-      await loadNamespace(saveScope);
+      await loadNamespace(saveScope, { force: true });
       await loadNamespaceYAML(saveScope);
       await loadEffective();
       varsSetState(n('vars_saved'));
@@ -500,7 +500,7 @@
     } catch (e) { if (scope === selectedNamespace) msg('namespace-yaml-state', errorText(e), true); }
   }
   $('namespace-yaml-copy').onclick = () => A.copyText($('namespace-yaml-copy'), () => $('namespace-yaml-text').textContent);
-  async function loadAll() {
+  async function loadAll(force = false) {
     if (!selectedNamespace) {
       $('ns-body').hidden = true;
       $('ns-load-state').replaceChildren(t('no_param'));
@@ -519,16 +519,18 @@
       paintPickers(namespaces);
       renderCounts(namespaces.find(row => row.metadata.name === selectedNamespace));
       $('ns-body').hidden = false; $('ns-load-state').textContent = '';
-      await loadNamespace();
+      await loadNamespace(selectedNamespace, { force });
       await loadNodes();
       await loadNamespaceYAML();
     } catch (e) {
       $('ns-body').hidden = true;
-      $('ns-load-state').replaceChildren(A.loadErrorNode(e, loadAll));
+      // 不直接把 `loadAll` 当回调：点击事件会被当成 `force` 传进去，绕过上面那道守卫。
+      $('ns-load-state').replaceChildren(A.loadErrorNode(e, () => loadAll()));
     }
   }
   $('config-namespace').onchange = async () => {
-    if ($('namespace-vars').value !== nsOriginal && !(await A.confirmDanger({ body: n('reload_confirm') }))) { $('config-namespace').value = selectedNamespace; return; }
+    // 切 ns 会重画两个编辑器（loadAll → loadEffective），两类草稿都要问。
+    if (!(await confirmDiscardDrafts())) { $('config-namespace').value = selectedNamespace; return; }
     selectedNamespace = $('config-namespace').value;
     // URL 跟着走（可收藏、可分享），但不重新导航：编辑器身份由上面那套代号判定。
     // `?namespace=`（其他页面的跳页深链约定）若在就同步成同一个值，URL 里不留两种读法。
@@ -538,10 +540,12 @@
     // 顶栏（面包屑 + 切换器勾选）跟着走：同一页不允许「显示 A、实际改 B」（#455）。
     A.setScope(selectedNamespace);
     nsConfig = null; nsLoaded = ''; paintHead();
-    $('namespace-vars').value = ''; $('namespace-vars').disabled = true;
-    await loadAll();
+    // nsOriginal 一起清空：否则空框相对上一个 ns 的原始值会被判成脏，新 ns 首次加载会卡在自己的守卫上。
+    $('namespace-vars').value = ''; $('namespace-vars').disabled = true; nsOriginal = '';
+    await loadAll(true);
   };
-  $('ns-refresh').onclick = loadAll;
+  /* #639：页头「刷新」原来直连 `loadAll`，静默覆盖未保存的草稿（同页另两个入口都先确认）—— 先问再刷。 */
+  $('ns-refresh').onclick = async () => { if (!(await confirmDiscardDrafts())) return; await loadAll(true); };
   loadAll();
 })();
 </script>
