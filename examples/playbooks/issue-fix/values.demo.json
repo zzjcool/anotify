@@ -1,0 +1,9 @@
+{
+  "project": "anotify",
+  "repo": "zzjcool/anotify",
+  "repoDir": "/home/zzjcool/code/anotify-agent",
+  "baseBranch": "main",
+  "agentCmd": "pi",
+  "agentArgs": "-p",
+  "roundLimit": "2"
+}

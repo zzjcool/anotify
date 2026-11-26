@@ -87,12 +87,13 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
  * 的挡箭牌。
  */
 export const BASELINE = {
-	// grep -rn 'waitForTimeout(' scripts/e2e --include='*.mjs' | wc -l  → 21
-	waitForTimeout: 21,
+	// grep -rn 'waitForTimeout(' scripts/e2e --include='*.mjs' | wc -l  → 21；
+	// V4-D7 删掉 receivers 页用例后为 19（真实减少，同批下调）
+	waitForTimeout: 19,
 	// grep -rn 'catch(() => {})' → 33，'catch(() => null)' → 7，共 40；其中 3 条出现在
 	// 注释里（harness.mjs:285 的 `.catch(() => {})`，f3-ui-cases.mjs:854/859 的
-	// `.catch(()=>{})`）都在解释反例 —— 剥注释后 32 + 7 = 39
-	swallowCatch: 38,
+	// `.catch(()=>{})`）都在解释反例 —— 剥注释后 32 + 7 = 39；V4-D7 删页面用例后为 34
+	swallowCatch: 34,
 	// grep -rnE 't\.Skipf?\(' internal --include='*_test.go' | wc -l → 3
 	testSkip: 3,
 	// grep -rn 'time.Sleep(' internal --include='*_test.go' | wc -l → 38，剥掉

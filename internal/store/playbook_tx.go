@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/zzjcool/anotify/internal/artifact"
@@ -13,10 +14,7 @@ import (
 	"github.com/zzjcool/anotify/internal/sourcespec"
 )
 
-// 本文件是 Playbook 安装的**事务内实现细节**（playbook.go 是公开面）。 为什么单独一个文件：安装路径上所有读都必须走当前事务（txExec），而 store 里「事务外读」的既有方法是 `*DB` 方法（走 per-DB 语句缓存）。
-// 混用会读到**另一个快照**：① 看不到本事务刚写的行（新源 targets 指向同包刚建的能力）；
-// ② 与提交之间出现「检查时成立、提交后不成立」的窗口（把读错当空库 → 多建一批行）。
-// 所以这里的每个查询都只经 ex，且把 error 交给调用方裁决（installSnapshot）。
+// 本文件是 Playbook 安装的**事务内实现细节**（playbook.go 是公开面）。 为什么单独一个文件：安装路径上所有读都必须走当前事务（txExec），而 store 里「事务外读」的既有方法是 `*DB` 方法（走 per-DB 语句缓存）。 混用会读到**另一个快照**：① 看不到本事务刚写的行（新源 targets 指向同包刚建的能力）； ② 与提交之间出现「检查时成立、提交后不成立」的窗口（把读错当空库 → 多建一批行）。 所以这里的每个查询都只经 ex，且把 error 交给调用方裁决（installSnapshot）。
 
 // getPlaybookOn 是事务内按 (namespace, slug) 取包（GetPlaybook 的 ex 版）。
 func getPlaybookOn(ctx context.Context, ex queryExec, namespaceID, slug string) (*PlaybookRow, error) {
@@ -70,9 +68,7 @@ type sourceTargetRow struct {
 	targets []sourcespec.Target
 }
 
-// listSourceTargetsOn 读出命名空间内所有源的 targets（只读两列，不碰调度字段）。
-//
-// 坏 JSON 是**读错误**（不是空列表）：调用方（installSnapshot）必须让安装失败， 而不是把一条损坏的源当成「没有 targets」继续装。
+// listSourceTargetsOn 读出命名空间内所有源的 targets（只读两列，不碰调度字段）。 坏 JSON 是**读错误**（不是空列表）：调用方（installSnapshot）必须让安装失败， 而不是把一条损坏的源当成「没有 targets」继续装。
 func listSourceTargetsOn(ctx context.Context, ex queryExec, namespaceID string) ([]sourceTargetRow, error) {
 	rows, err := ex.queryContext(ctx,
 		`SELECT id, targets FROM sources WHERE namespace_id = ?`, namespaceID)
@@ -103,9 +99,7 @@ func listSourceTargetsOn(ctx context.Context, ex queryExec, namespaceID string) 
 	return out, rows.Err()
 }
 
-// installSnapshot 是 `playbook.Existing` 的**事务内**实现：六个只读查询 + 错误账本。
-//
-// 接口本身没有 error（纯包要保持纯），所以这里把每个查询的错误记下来；Plan 结束后 调用方先看 snap.err：读失败时 Plan 得到的「空库」判断不可信，整次安装必须回滚失败。
+// installSnapshot 是 `playbook.Existing` 的**事务内**实现：六个只读查询 + 错误账本。 接口本身没有 error（纯包要保持纯），所以这里把每个查询的错误记下来；Plan 结束后 调用方先看 snap.err：读失败时 Plan 得到的「空库」判断不可信，整次安装必须回滚失败。
 type installSnapshot struct {
 	ctx         context.Context
 	ex          queryExec
@@ -170,10 +164,7 @@ func (s *installSnapshot) fail(err error) {
 	}
 }
 
-// getCapabilityByFoldKeyLatestOn 按 foldKey 取**最高版本**那一行（安装快照专用）。
-// 为什么必须 ORDER BY version DESC：同一个 foldKey 可以有多行（显式 v1 与 v3 正文相同）。
-// 省略 version 的安装（12 格第 2 行）必须确定性地复用最高版本——否则「复用哪一行」 取决于 SQLite 的返回顺序，skipped 的版本号与 unapplied 的比较对象都会漂移。
-// 直写路径的 getCapabilityByFoldKeyOn 保持原样（本函数只服务安装快照）。
+// getCapabilityByFoldKeyLatestOn 按 foldKey 取**最高版本**那一行（安装快照专用）。 为什么必须 ORDER BY version DESC：同一个 foldKey 可以有多行（显式 v1 与 v3 正文相同）。 省略 version 的安装（12 格第 2 行）必须确定性地复用最高版本——否则「复用哪一行」 取决于 SQLite 的返回顺序，skipped 的版本号与 unapplied 的比较对象都会漂移。 直写路径的 getCapabilityByFoldKeyOn 保持原样（本函数只服务安装快照）。
 func getCapabilityByFoldKeyLatestOn(ctx context.Context, ex queryExec, namespaceID, name, foldKey string) (*CapabilityVersion, error) {
 	return scanCapabilityOn(ctx, ex,
 		`SELECT `+capabilityColumns+` FROM capability_versions
@@ -351,11 +342,7 @@ func (s *installSnapshot) HasUpstream(name string) bool {
 	return false
 }
 
-// insertInstalledCapabilityOn 落一条**本次新建**的能力行（计划已定 version / digest）。
-// 只处理 Action=create：reuse（skipped）条目一行都不写，也不调用任何「折叠更新」入口（CreateCapability / UpdateNext /
-// SetCapabilityDisplayName）——那些会改已存行的 next / displayName，违反只加不改（I-P1）。所以这里不复用 insertCapabilityOn
-// （它的唯一冲突分支会回查复用），而是严格 INSERT：撞唯一约束就是错误。
-// 边投影只属于**该名字的 latest**：显式低版本新建（已有 v3，再装 v1）不改变裸名解析到的版本，因此也**不能**重建这个名字的边。
+// insertInstalledCapabilityOn 落一条**本次新建**的能力行（计划已定 version / digest）。 只处理 Action=create：reuse（skipped）条目一行都不写，也不调用任何「折叠更新」入口（CreateCapability / UpdateNext / SetCapabilityDisplayName）——那些会改已存行的 next / displayName，违反只加不改（I-P1）。所以这里不复用 insertCapabilityOn （它的唯一冲突分支会回查复用），而是严格 INSERT：撞唯一约束就是错误。 边投影只属于**该名字的 latest**：显式低版本新建（已有 v3，再装 v1）不改变裸名解析到的版本，因此也**不能**重建这个名字的边。
 func insertInstalledCapabilityOn(ctx context.Context, ex queryExec, namespaceID, installID string, pc playbook.PlannedCapability) error {
 	if pc.Artifact == nil {
 		return fmt.Errorf("planned capability is nil")
@@ -447,6 +434,35 @@ func (d *DB) createInstalledSourceOn(ctx context.Context, ex queryExec, namespac
 	return nil
 }
 
+// pinnedRefsOn 组装回执的 created.pinned（#551）：能力按 name 升序在前、源在后；读的是**本事务刚写的行**（不是新算 digest），所以「digest 与版本行一致」是构造出来的事实。
+func pinnedRefsOn(ctx context.Context, ex queryExec, namespaceID string, created playbook.Created) ([]playbook.PinnedRef, error) {
+	caps := make([]playbook.PinnedRef, 0, len(created.Capabilities))
+	for _, ref := range created.Capabilities {
+		name, version, ok := SplitRef(ref)
+		if !ok {
+			return nil, fmt.Errorf("安装快照：created.capabilities 的 %q 缺少版本", ref)
+		}
+		cv, err := getCapabilityOn(ctx, ex, namespaceID, name, version)
+		if err != nil {
+			return nil, fmt.Errorf("安装快照：读能力 %s: %w", ref, err)
+		}
+		caps = append(caps, playbook.PinnedRef{Kind: "capability", Name: name, Version: version, Digest: cv.Digest})
+	}
+	sort.Slice(caps, func(i, j int) bool { return caps[i].Name < caps[j].Name })
+
+	srcs := make([]playbook.PinnedRef, 0, len(created.Sources))
+	for _, name := range created.Sources {
+		src, err := getSourceByNameOn(ctx, ex, namespaceID, name)
+		if err != nil {
+			return nil, fmt.Errorf("安装快照：读源 %s: %w", name, err)
+		}
+		srcs = append(srcs, playbook.PinnedRef{Kind: "source", Name: src.Name, KindOf: src.Kind})
+	}
+	sort.Slice(srcs, func(i, j int) bool { return srcs[i].Name < srcs[j].Name })
+
+	return append(caps, srcs...), nil
+}
+
 // insertPlaybookInstallOn 写一行安装回执（dryRun 也会走到这里，然后随事务回滚）。落库内容（§4.5 / D21）：
 // `values` 是**打码后**的有效 values（writeOnly → "***"，digest 对打码前算），`receipt` 是回执原文（响应文档，不是资源信封），
 // `namespace_slug` / `playbook_slug` / `playbook_id` 是快照：删包之后回执仍可读，同 slug 重建的新包也不会把旧回执认成自己的实例。
@@ -479,6 +495,20 @@ func insertPlaybookInstallOn(ctx context.Context, ex queryExec, namespaceID stri
 			 VALUES (?,?,?,?)`,
 			namespaceID, receipt.Install.ID, dep.Capability, dep.Version); err != nil {
 			return fmt.Errorf("insert install requirement %s: %w", dep.Capability, err)
+		}
+	}
+	// 安装时快照的 SQL 侧索引（#551）：与回执 JSON 同一份切片、同一事务（seq = 切片下标）。
+	seq := 0
+	for _, list := range [][]playbook.PinnedRef{receipt.Created.Pinned, receipt.Skipped.Pinned} {
+		for _, pin := range list {
+			if _, err := ex.execContext(ctx,
+				`INSERT INTO playbook_install_pinned
+				   (install_id, namespace_id, seq, ref_kind, name, obj_kind, version, digest)
+				 VALUES (?,?,?,?,?,?,?,?)`,
+				receipt.Install.ID, namespaceID, seq, pin.Kind, pin.Name, pin.KindOf, pin.Version, pin.Digest); err != nil {
+				return fmt.Errorf("insert install pinned %s %s: %w", pin.Kind, pin.Name, err)
+			}
+			seq++
 		}
 	}
 	return nil

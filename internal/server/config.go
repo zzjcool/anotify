@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/zzjcool/anotify/internal/route"
 )
 
 // 保留期 / 背压的默认值（#229 / #228）。
@@ -49,36 +51,24 @@ const (
 	maxEventRetentionDays = 36500     // 100 年：再长就等于永久保留，不如显式配 0
 	maxPendingMaxAgeSec   = 7 * 86400 // 7 天：超过这个量级已经不是「背压」，是「长期停机」
 
-	// defaultMaxHops / defaultTraceTaskBudget 是派发预算的默认值（v3 契约 §2）。
-	//
-	// v4 起 `route` 包不再导出这两个默认值：v3 的 Dispatcher（带 Publisher / MaxHops /
-	// TraceTaskBudget 的那个结构）已被 `route.Router` 取代，Router 只有 db/now ——
-	// 环与扇出的兜底挪进了 store 的派发事实（见 route 包注释与 capability.md §8.5），
-	// 中枢侧不再有「跳数预算」这个运行时旋钮。
-	//
-	// Config 字段与 Validate 行为**保留**（运维脚本 / 兼容面：非法值仍然启动即失败），
-	// 但默认值必须落在本包：继续引 route 会变成引一个已不存在的常量。两个数字与 v3
-	// 的 route.DefaultMaxHops / route.DefaultTraceTaskBudget 逐字相同，避免「同一个
-	// env 在升级前后给出两个不同的默认值」。
-	defaultMaxHops         = 16
-	defaultTraceTaskBudget = 512
+	// 派发预算的默认值（CONTRACT.md A7）：直接引 route 的两个常量——同一个 env
+	// 出现两个默认值就是「升级前后行为不一致」的来源。
+	defaultMaxHops         = route.DefaultMaxHops
+	defaultTraceTaskBudget = route.DefaultTraceTaskBudget
 )
 
 // Config 服务配置（全部可用环境变量覆盖）。
 type Config struct {
-	Addr        string // 监听地址，默认 :8080
-	DBPath      string // SQLite 路径，默认 ./anotify.db
-	CDNPrefix   string // 静态资源 CDN 前缀（如 https://cdn.trycloudflare.com）；空=本地 embed
-	StaticDir   string // 本地静态目录（开发期），默认 ./dist
-	VAPIDPublic string // VAPID 公钥
-	VAPIDPriv   string // VAPID 私钥（仅服务端）
-	VAPIDSub    string // VAPID subject（mailto:）
-	RPDisplay   string // WebAuthn Relying Party 显示名
-	RPID        string // WebAuthn RP ID（域名）
-	RPOrigin    string // WebAuthn Origin（含协议）
-	TrustProxy  bool   // 信任 X-Forwarded-For（仅在反代 cloudflared/nginx 后开启）
-	LogLevel    string // 日志级别：debug/info/warn/error，默认 info
-	LogFormat   string // 日志格式：json/text，默认 json
+	Addr       string // 监听地址，默认 :8080
+	DBPath     string // SQLite 路径，默认 ./anotify.db
+	CDNPrefix  string // 静态资源 CDN 前缀（如 https://cdn.trycloudflare.com）；空=本地 embed
+	StaticDir  string // 本地静态目录（开发期），默认 ./dist
+	RPDisplay  string // WebAuthn Relying Party 显示名
+	RPID       string // WebAuthn RP ID（域名）
+	RPOrigin   string // WebAuthn Origin（含协议）
+	TrustProxy bool   // 信任 X-Forwarded-For（仅在反代 cloudflared/nginx 后开启）
+	LogLevel   string // 日志级别：debug/info/warn/error，默认 info
+	LogFormat  string // 日志格式：json/text，默认 json
 
 	// Pprof 打开 /debug/pprof/*（性能评估用，默认关闭）。
 	//
@@ -172,20 +162,13 @@ type Config struct {
 	// 漂移，跨部署不可比；「最老的 pending 等了多久」才与部署规模无关。
 	PendingMaxAgeSec int
 
-	// MaxHops / TraceTaskBudget 是派发的两个预算（v3 契约 §2）。
+	// MaxHops / TraceTaskBudget 是派发的两个预算（CONTRACT.md A7），由 route.Router
+	// 每次派发消耗。
 	//
-	// v4 状态：**保留配置面与 Validate 行为，但中枢侧已不再消费**（route.Router 没有
-	// 跳数预算；环与扇出的兜底在 store 的派发事实上）。保留而不是删：env 是已发布的
-	// 运维接口，删掉会让「配了却静默无效」变成「启动直接报错」+ 需要改所有部署脚本；
-	// 而且非法值继续在启动那一刻失败仍然是想要的行为。
-	//
-	// 语义（解析见 positiveIntFromEnv）：
-	//   - 未设置 / 空 → 默认（hop 16 / trace 512）；
-	//   - 正整数     → 原值；
-	//   - 其它（0 / 负数 / 非数字）→ **启动即失败**（Validate 报错），
-	//     不像保留期那样回落默认。理由：预算是一条防线（环 + 无限扇出的兜底），
-	//     一个写错的 env 把防线悄悄换回默认值，比拒绝启动更难查——
-	//     而拒绝启动在这里没有代价（改对再起）。
+	// 语义（解析见 positiveIntFromEnv）：未设置 / 空 → 默认（hop 16 / trace 512）；
+	// 正整数 → 原值；其它（0 / 负数 / 非数字）→ **启动即失败**（Validate 报错），
+	// 不像保留期那样回落默认：预算是一条防线（环 + 无限扇出的兜底），一个写错的
+	// env 把防线悄悄换回默认值，比拒绝启动更难查。
 	MaxHops         int
 	TraceTaskBudget int
 
@@ -551,18 +534,15 @@ func FromEnv() Config {
 		CDNPrefix: get("ANOTIFY_CDN_PREFIX", ""),
 		// 默认空 → 使用 embed 内嵌前端（生产单二进制）；
 		// 开发期显式设 ANOTIFY_STATIC=./web 走本地目录。
-		StaticDir:   get("ANOTIFY_STATIC", ""),
-		VAPIDPublic: get("ANOTIFY_VAPID_PUBLIC_KEY", ""),
-		VAPIDPriv:   get("ANOTIFY_VAPID_PRIVATE_KEY", ""),
-		VAPIDSub:    get("ANOTIFY_VAPID_SUBJECT", "mailto:notify@example.com"),
-		RPDisplay:   get("ANOTIFY_RP_DISPLAY", "Anotify"),
-		RPID:        get("ANOTIFY_RP_ID", "localhost"),
-		RPOrigin:    get("ANOTIFY_RP_ORIGIN", "http://localhost:8080"),
-		TrustProxy:  get("ANOTIFY_TRUST_PROXY", "") != "",
-		LogLevel:    get("ANOTIFY_LOG_LEVEL", "info"),
-		LogFormat:   get("ANOTIFY_LOG_FORMAT", "json"),
-		BootID:      bootIDFromEnv(),
-		Pprof:       get("ANOTIFY_PPROF", "") != "",
+		StaticDir:  get("ANOTIFY_STATIC", ""),
+		RPDisplay:  get("ANOTIFY_RP_DISPLAY", "Anotify"),
+		RPID:       get("ANOTIFY_RP_ID", "localhost"),
+		RPOrigin:   get("ANOTIFY_RP_ORIGIN", "http://localhost:8080"),
+		TrustProxy: get("ANOTIFY_TRUST_PROXY", "") != "",
+		LogLevel:   get("ANOTIFY_LOG_LEVEL", "info"),
+		LogFormat:  get("ANOTIFY_LOG_FORMAT", "json"),
+		BootID:     bootIDFromEnv(),
+		Pprof:      get("ANOTIFY_PPROF", "") != "",
 
 		// hooks 入口双维度限流（issue #245）：每 token 600/min、每 IP 1200/min 为默认。
 		HookRatePerMin:      hookRateFromEnv("ANOTIFY_HOOK_RATE_PER_MIN", defaultHookRatePerMin),
@@ -639,9 +619,6 @@ func bootIDFromEnv() string {
 
 // Validate 校验关键配置。
 func (c Config) Validate() error {
-	if c.VAPIDPublic == "" || c.VAPIDPriv == "" {
-		return fmt.Errorf("缺少 VAPID 配置（ANOTIFY_VAPID_PUBLIC_KEY / ANOTIFY_VAPID_PRIVATE_KEY）")
-	}
 	// 派发预算必须是正整数（契约 §2）：非法值**启动即失败**，不静默用默认。
 	// 报错带上 env 里的原值，否则运维只会看到「必须是正整数」却不知道自己配了什么。
 	for _, it := range []struct {

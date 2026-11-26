@@ -607,34 +607,6 @@
                 <span class="kx-scope-desc">{{t "keys.create.scope_send_desc"}}</span>
               </span>
             </label>
-            <label class="kx-scope kx-scope-receive cursor-pointer">
-              <input
-                type="checkbox"
-                class="kx-check"
-                name="key-scope"
-                value="notify:receive"
-              />
-              <span class="kx-scope-main">
-                <span class="kx-scope-title"
-                  >{{t "keys.create.scope_receive_label"}}<code class="kx-scope-code">notify:receive</code></span
-                >
-                <span class="kx-scope-desc">{{t "keys.create.scope_receive_desc"}}</span>
-              </span>
-            </label>
-            <label class="kx-scope kx-scope-read cursor-pointer">
-              <input
-                type="checkbox"
-                class="kx-check"
-                name="key-scope"
-                value="devices:read"
-              />
-              <span class="kx-scope-main">
-                <span class="kx-scope-title"
-                  >{{t "keys.create.scope_read_label"}}<code class="kx-scope-code">devices:read</code></span
-                >
-                <span class="kx-scope-desc">{{t "keys.create.scope_read_desc"}}</span>
-              </span>
-            </label>
           </div>
           <p class="field-hint">{{t "keys.create.scope_hint"}}</p>
           <p id="create-error" class="field-error hidden"></p>
@@ -704,11 +676,6 @@
       // 权限 → 表格 chip 的类（颜色全在页内样式里走 token）
       const SCOPE_META = {
         "notify:send": { labelKey: "keys.scope.send", cls: "kx-chip kx-chip-send" },
-        "notify:receive": {
-          labelKey: "keys.scope.receive",
-          cls: "kx-chip kx-chip-receive",
-        },
-        "devices:read": { labelKey: "keys.scope.read", cls: "kx-chip kx-chip-read" },
       };
 
       let KEYS = [];

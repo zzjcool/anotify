@@ -824,9 +824,6 @@
           <a class="doc-chip" href="#events" data-toc="#events"
             >{{t "docs.toc.events"}}</a
           >
-          <a class="doc-chip" href="#webpush" data-toc="#webpush" data-push-doc
-            >{{t "docs.toc.webpush"}}</a
-          >
           <a class="doc-chip" href="#node" data-toc="#node"
             >{{t "docs.toc.node"}}</a
           >
@@ -948,26 +945,6 @@
                       <td>{{t "docs.api.map.tasks"}}</td>
                     </tr>
                     <tr>
-                      <td><span class="method m-get">GET</span></td>
-                      <td class="mono">/v1/devices</td>
-                      <td>{{t "docs.api.map.devices_list"}}</td>
-                    </tr>
-                    <tr>
-                      <td><span class="method m-post">POST</span></td>
-                      <td class="mono">/v1/devices</td>
-                      <td>{{t "docs.api.map.devices_sub"}}</td>
-                    </tr>
-                    <tr>
-                      <td><span class="method m-patch">PATCH</span></td>
-                      <td class="mono">/v1/devices/:id</td>
-                      <td>{{t "docs.api.map.devices_update"}}</td>
-                    </tr>
-                    <tr>
-                      <td><span class="method m-delete">DEL</span></td>
-                      <td class="mono">/v1/devices/:id</td>
-                      <td>{{t "docs.api.map.devices_delete"}}</td>
-                    </tr>
-                    <tr>
                       <td><span class="method m-ws">WS</span></td>
                       <td class="mono">/v1/node/stream</td>
                       <td>{{t "docs.api.map.stream"}}</td>
@@ -986,11 +963,6 @@
                       <td><span class="method m-post">POST</span></td>
                       <td class="mono">/v1/auth/register · login</td>
                       <td>{{t "docs.api.map.passkey"}}</td>
-                    </tr>
-                    <tr>
-                      <td><span class="method m-get">GET</span></td>
-                      <td class="mono">/v1/vapid-public-key</td>
-                      <td>{{t "docs.api.map.vapid"}}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -1190,98 +1162,6 @@
           <div class="doc-note">{{t "sources.v4.dedup"}}</div>
         </section>
 
-        <!-- ===== Web Push subscription ===== -->
-        <!-- #381：推送未开放期间整段 push 文档隐藏（data-push-doc），但「为什么没有」
-             要留一句真话，否则读者会把缺页当成文档缺陷。这条 note 只在关闭时显示。 -->
-        <div class="doc-note" id="webpush-off-note" hidden>
-          {{t "docs.webpush.off_note"}}
-        </div>
-        <section
-          id="webpush"
-          class="doc-anchor doc-sec reveal visible hidden"
-          data-push-doc
-        >
-          <h2 class="doc-h2">{{t "docs.webpush.title"}}</h2>
-          <p class="doc-lede">{{tHTML "docs.webpush.intro"}}</p>
-
-          <ol class="doc-steps">
-            <li>{{tHTML "docs.webpush.step1"}}</li>
-            <li>{{tHTML "docs.webpush.step2"}}</li>
-            <li>{{tHTML "docs.webpush.step3"}}</li>
-            <li>{{tHTML "docs.webpush.step4"}}</li>
-          </ol>
-
-          <details class="doc-fold">
-            <summary>
-              {{t "docs.webpush.code.title"}}
-            </summary>
-            <div class="doc-fold-body">
-              <div class="code-block">
-                <div class="code-head">
-                  <span>{{t "docs.webpush.code.title"}}</span
-                  ><button class="copy-btn" onclick="copyBlock(this)">
-                    {{t "docs.copy"}}
-                  </button>
-                </div>
-                <div class="code-body">
-                  <span class="tk-comment"
-                    >{{t "docs.webpush.code.comment1"}}</span
-                  >
-                  <span class="tk-key">const</span> reg =
-                  <span class="tk-key">await</span>
-                  navigator.serviceWorker.register(<span class="tk-str"
-                    >"/sw.js"</span
-                  >); <span class="tk-key">const</span> { publicKey } =
-                  <span class="tk-key">await</span> fetch(<span class="tk-str"
-                    >"/v1/vapid-public-key"</span
-                  >).then(r =&gt; r.json());
-
-                  <span class="tk-comment"
-                    >{{t "docs.webpush.code.comment2"}}</span
-                  >
-                  <span class="tk-key">const</span> sub =
-                  <span class="tk-key">await</span> reg.pushManager.subscribe({
-                  userVisibleOnly: <span class="tk-num">true</span>,
-                  applicationServerKey: urlBase64ToUint8Array(publicKey), });
-
-                  <span class="tk-comment"
-                    >{{t "docs.webpush.code.comment3"}}</span
-                  >
-                  <span class="tk-key">await</span> fetch(<span class="tk-str"
-                    >"/v1/devices"</span
-                  >, { method: <span class="tk-str">"POST"</span>, headers: {
-                  <span class="tk-str">"Content-Type"</span>:
-                  <span class="tk-str">"application/json"</span> }, body:
-                  JSON.stringify({ endpoint: sub.endpoint, keys: sub.toJSON().keys,
-                  <span class="tk-comment"
-                    >{{t "docs.webpush.code.comment_p256dh"}}</span
-                  >
-                  platform: <span class="tk-str">"ios"</span>,
-                  <span class="tk-comment"
-                    >{{t "docs.webpush.code.comment_platform"}}</span
-                  >
-                  userAgent: navigator.userAgent, }), });
-                </div>
-              </div>
-            </div>
-          </details>
-
-          <div class="doc-grid-3">
-            <div class="doc-hint doc-hint-warn">
-              <b>{{t "docs.webpush.ios.title"}}</b>
-              <span>{{t "docs.webpush.ios.desc"}}</span>
-            </div>
-            <div class="doc-hint doc-hint-ok">
-              <b>{{t "docs.webpush.android.title"}}</b>
-              <span>{{t "docs.webpush.android.desc"}}</span>
-            </div>
-            <div class="doc-hint">
-              <b>{{t "docs.webpush.e2e.title"}}</b>
-              <span>{{t "docs.webpush.e2e.desc"}}</span>
-            </div>
-          </div>
-        </section>
-
         <section id="node" class="doc-anchor doc-sec reveal visible">
           <h2 class="doc-h2">{{t "docs.v4.node"}}</h2>
           <p class="doc-lede">{{t "docs.v4.node_note"}}</p>
@@ -1352,9 +1232,6 @@ GET /v1/system/config</pre>
           >
           <a class="toc-link" href="#events" data-toc="#events"
             >{{t "docs.toc.events"}}</a
-          >
-          <a class="toc-link" href="#webpush" data-toc="#webpush" data-push-doc
-            >{{t "docs.toc.webpush"}}</a
           >
           <a class="toc-link" href="#node" data-toc="#node"
             >{{t "docs.toc.node"}}</a
@@ -1527,16 +1404,5 @@ GET /v1/system/config</pre>
     });
   }
 
-  // 手机推送（Web Push）文档暂未开放：开关在 web/partials.js（PUSH_UI_ENABLED）。
-  // 章节与目录里的那一条一起隐藏 —— 否则目录里留一个点了跳不动的死链；
-  // 同时把「暂未开放」的实话留在原位（#381：隐藏不等于假装没这功能）。
-  document.querySelectorAll("[data-push-doc]").forEach((el) => {
-    const off = !window.Anotify.pushUIEnabled;
-    el.classList.toggle("hidden", off);
-    if (off) el.setAttribute("hidden", "");
-    else el.removeAttribute("hidden");
-  });
-  const webpushOffNote = document.getElementById("webpush-off-note");
-  if (webpushOffNote) webpushOffNote.hidden = !!window.Anotify.pushUIEnabled;
 </script>
 {{end}}

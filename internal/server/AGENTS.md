@@ -6,7 +6,7 @@ as_of: 2026-11-16 · area: server · 门禁: `go test ./internal/server/... -cou
 
 - **负责**：HTTP 路由装配（`mux.go`）、中间件（会话/限流/背压/访问日志）、静态资源与 CDN 缓存分级、
   embed 产物、资源域 handler（`resource_*.go`）、产物上传下载端点。
-- **不负责**：业务规则（`store` / `route` / `source`）、执行（`cmd/anode`）、推送（`push`）。
+- **不负责**：业务规则（`store` / `route` / `source`）、执行（`cmd/anode`）。
 - 判据：**server 只做投影** —— 从 store 拿事实，按 `api/` 五份 spec 投影成信封，
   不自己发明状态、不在读路径上写库（GC 等后台写者是例外，且必须能被 `WaitBackground` 收尾）。
 
@@ -26,7 +26,7 @@ as_of: 2026-11-16 · area: server · 门禁: `go test ./internal/server/... -cou
 3. **鉴权只有一份**：`serverDeps.Session`。各域不许自己再包一层 —— 两份实现迟早对「未登录」给不同状态码。
 4. 中枢侧不得 import `os/exec`（`make contract` 的 A5 机检）。执行只发生在节点。
 5. 信封纪律：四顶层键 + 可选 `warnings`；`status` 恒存在（无事实 `{}`）；空列表 `[]`；
-   错误体统一走 `writeErr`（`handlers.go:21`）/ `writeStatus`（`api_status.go:83`），不要手拼 JSON。
+   错误体统一走 `writeErr`（`handlers.go:19`）/ `writeStatus`（`api_status.go:82`），不要手拼 JSON。
 6. 静态资源三分级（`static.go` 的 `cacheClass`）：指纹资源 `immutable` 1 年 / 入口 HTML 短缓存 + ETag /
    API `no-store`。改前端产物后必须 `make fe`，否则 embed 里还是旧指纹。
 7. 产物字节只走 `resultspool`：spool 为 nil 时回 503，**绝不 fallback** 到节点/用户目录（A1 禁止）。

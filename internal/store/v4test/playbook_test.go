@@ -1185,7 +1185,7 @@ func TestInstallValuesWriteOnlyMaskedDigestOnRaw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal receipt: %v", err)
 	}
-	if !strings.Contains(string(raw2), `"created":{"capabilities":[],"sources":[]}`) {
+	if !strings.Contains(string(raw2), `"created":{"capabilities":[],"sources":[],"pinned":[]}`) {
 		t.Fatalf("全 skipped 的 created 应为空数组对象：%s", raw2)
 	}
 	if strings.Contains(string(raw2), secret) {

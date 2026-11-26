@@ -1,0 +1,48 @@
+apiVersion: anotify/v1
+kind: Playbook
+
+metadata:
+  name: issue-solve
+  displayName: issue 收单 → 判断 → 下单
+  version: 1
+  description: |
+    手动投一个 issue 号：先判断该不该动手（关闭/重复/需裁决），再把可动手的活
+    整理成一张工单交给执行体。装 N 次就是 N 套互不影响的链。
+
+spec:
+  values:
+    type: object
+    additionalProperties: false
+    required: [project, repo, dispatchUrl]
+    properties:
+      project:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]{0,20}$'
+        description: 前缀 slug，会拼进能力名与源名（例如 anotify）
+      repo:
+        type: string
+        pattern: '^[A-Za-z0-9][A-Za-z0-9.-]*/[A-Za-z0-9][A-Za-z0-9._-]*$'
+        description: 要处理的仓库（owner/name）。装包时填一次，之后每次触发只给 issue 号
+      ghTokenFile:
+        type: string
+        default: ''
+        description: 可读的 token 文件路径（不是 token 本身）；留空走匿名 API（有速率限制）
+      dispatchUrl:
+        type: string
+        pattern: '^https://|^http://(localhost|127\.0\.0\.1)(:[0-9]+)?'
+        description: 执行体入口，dispatch 会把工单 POST 到这里
+      notifyUrl:
+        type: string
+        default: ''
+        description: 可选。gate（需人裁决）时把问题 POST 到这里；留空只落证据文件
+      branchPrefix:
+        type: string
+        default: pi-subagent/
+        description: 判"已有疑似分支"时用的分支名前缀
+
+  capabilities:
+    - capabilities/claim.yaml
+    - capabilities/dispatch.yaml
+    - capabilities/gate.yaml
+  sources:
+    - sources/issue-hook.yaml

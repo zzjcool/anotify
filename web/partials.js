@@ -2308,7 +2308,6 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		const PAGES = [
 			"index.html",
 			"message.html",
-			"receivers.html",
 			"keys.html",
 			"events.html",
 			// trace 页 (#107)：同样是带查询串的深层链接
@@ -2864,31 +2863,6 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		if (o.withVersion && cap.version != null) out += "@" + cap.version;
 		if (o.withRaw) out += "（" + raw + "）";
 		return out;
-	}
-
-	/**
-	 * PUSH_UI_ENABLED 控制「手机推送」这套能力的 UI 可见性。
-	 *
-	 * 产品节奏：推送还没到上线时候——能力 `notify.phone`（通知消息，kind=end）
-	 * 和「接收设备」页（receivers.html）先对用户隐藏。后端能力、边、历史任务**都不受影响**，
-	 * 所以放行时把这里改成 true 即可，不需要改后端、不需要数据迁移。
-	 *
-	 * 隐藏是**在 UI 层做**（不是删能力）：一旦某个命名空间已经建了指向 notify.phone 的边，
-	 * 后端照常派发；这里只是不把它列出来、也不让新的入口出现。
-	 */
-	const PUSH_UI_ENABLED = false;
-
-	const HIDDEN_CAP_NAMES = new Set(["notify.phone"]);
-
-	// filterCaps 过滤掉「暂未开放」的能力，**只在"发现/选择"的地方调用**
-	// （能力页列表、各处的目标/出口选择器）。
-	//
-	// 为什么不做成 api() 的全局过滤：边、源、预案里可能**已经引用**了被隐藏的能力，
-	// 那些页面要拿它的 paramsSchema 渲染参数表单；全局过滤会让它们渲染成"未知能力"
-	// 甚至直接崩（source 详情就是这么炸的）。隐藏的是"入口"，不是"数据"。
-	function filterCaps(list) {
-		if (PUSH_UI_ENABLED || !Array.isArray(list)) return list;
-		return list.filter((c) => !(c && HIDDEN_CAP_NAMES.has(c.name)));
 	}
 
 	/* ---------- 错误分级（#378） ----------
@@ -4663,8 +4637,6 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		undoBar,
 		loginHref,
 		listHref,
-		pushUIEnabled: PUSH_UI_ENABLED,
-		filterCaps,
 		icon,
 		capLabel,
 		sourceKindLabel,

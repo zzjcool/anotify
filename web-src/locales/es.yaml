@@ -68,7 +68,6 @@ common:
     playbooks: "Playbooks"
     nodes: Nodos
     namespaces: Espacios de nombres
-    receivers: Destinatarios
     keys: API Keys
     api: Docs API
     account: Cuenta
@@ -183,14 +182,8 @@ index:
   kpi:
     total: Eventos totales
     all_time: Histórico
-    rate: Tasa de entrega
     today: Eventos de hoy
     today_sub: Recibidos hoy
-    devices: Dispositivos receptores
-    devices_enabled: Activos
-    devices_sub: '{n} dispositivos · cifrado de extremo a extremo'
-    devices_sub2: Suscripciones push + WebSocket
-    rate_na: Sin receptores — tasa de entrega no disponible
     trend_live: En vivo
     running: En curso
     running_sub: "Todas las tareas del espacio"
@@ -198,7 +191,6 @@ index:
     failed: Tareas con error
     failed_sub: "Todas las tareas del espacio"
     failed_sub_all: Todas las tareas de todos los espacios
-    devices_sub_all: Los dispositivos son por usuario y no cambian al cambiar de espacio de nombres
   aggregate:
     unsupported: Esta métrica aún no se puede agregar entre espacios de nombres
   heatmap:
@@ -322,11 +314,6 @@ message:
   body_label: Cuerpo
   open_link: Abrir sesión del Agent
   fields_title: Todos los campos
-  deliveries_title: Entregas
-  delivery:
-    delivered_count: '{ok}/{n} entregados'
-    empty: Sin registros de entrega (sin dispositivos habilitados coincidentes)
-    attempt_info: '{channel} · {n} intentos · {time}'
   error:
     missing_id: Falta el ID de mensaje (URL debe tener ?id=ntf_…)
     not_found: Mensaje no encontrado o ha sido eliminado
@@ -494,118 +481,6 @@ login:
     login_success_short: Sesión iniciada — entrando al workspace…
     signup_success_short: ¡Cuenta creada! — entrando al workspace…
     need_username_short: Por favor elige un usuario primero.
-receivers:
-  back_home: 'Volver al resumen'
-  docs_link: "Guía de integración"
-  unavailable: 'Las notificaciones push aún no están disponibles. Tus dispositivos aparecerán aquí cuando se publiquen.'
-  title: Destinatarios
-  channel:
-    push: Suscripciones push
-    ws: Conexiones WebSocket
-  push:
-    title: Suscripciones push del navegador
-    subtitle_prefix: 'Entregado vía servicios Push del sistema (APNs / FCM). '
-    subtitle_highlight: Recibe aunque el navegador esté cerrado.
-    subtitle_suffix: ''
-    add_device: Añadir este dispositivo
-  ws:
-    title: Recepción por conexión larga · para plugins y cualquier dispositivo
-    desc: Cualquier dispositivo / plugin con una API Key de permiso notify:receive puede abrir una conexión WebSocket larga para push en tiempo real. Ideal para widgets de escritorio, daemons CLI, puentes de domótica. Funciona junto al push del navegador.
-    connection_method: Conexión
-    copy: Copiar
-    active_title: Conexiones activas
-    active_subtitle: Conexiones WebSocket establecidas actualmente
-    online: ' en línea'
-    empty_hint: Al conectar el backend, aparecerán aquí las conexiones en vivo (nombre / prefijo de Key / tiempo activo / etiquetas / último mensaje).
-  tags:
-    title: Enrutado por etiquetas · qué dispositivo recibe qué notificación
-    desc: Incluye deviceTags al reportar. Solo los dispositivos con etiquetas en común (o sin etiquetas = receptores totales) la recibirán. Sin etiqueta en la notificación = difusión a todos los dispositivos activos; sin etiqueta en el dispositivo = recibe todo.
-  pair:
-    title: Añadir este dispositivo
-    subtitle: Tras suscribirse, este navegador recibirá notificaciones push
-    device_name: Nombre del dispositivo
-    device_placeholder: ej. Móvil principal / Mac de la oficina
-    submit: Solicitar permiso y suscribir
-    hint: El navegador pedirá permiso de notificaciones. iOS requiere añadir este sitio a la pantalla de inicio primero y luego abrirlo como app independiente.
-    unsupported: Este entorno no soporta Web Push. En iOS, añade este sitio a la pantalla de inicio primero.
-    requesting_perm: Solicitando permiso de notificaciones…
-    perm_denied: Permiso de notificaciones no concedido ({perm}). Permite en la configuración del navegador y reintenta.
-    registering_sw: Registrando Service Worker…
-    getting_vapid: Obteniendo clave pública VAPID…
-    no_backend: Backend no conectado — no se puede obtener la clave VAPID. Comprueba que el servidor esté activo y vuelve a intentarlo.
-    empty_vapid: La clave pública VAPID está vacía
-    subscribing: Suscribiendo a push…
-    reporting: Reportando suscripción…
-    success: ¡Suscrito! Este dispositivo recibirá notificaciones push.
-    failed: 'Error de suscripción: {msg}'
-  scope:
-    all: Ciclo de vida completo
-    final: Solo resultados finales
-  local:
-    enabled: Notificaciones activadas en este dispositivo
-    disabled: Notificaciones no activadas en este dispositivo
-    receiving: Recibiendo
-    not_receiving: No recibe
-    unsupported: Este navegador no soporta Web Push (iOS requiere añadir a la pantalla de inicio).
-    subscribed: Este navegador ({browser}) está suscrito a push y puede recibir notificaciones.
-    permission_denied: El permiso de notificaciones fue denegado — vuelve a permitirlo en la configuración del navegador.
-    not_subscribed: Este navegador ({browser}) no se ha suscrito a push — este dispositivo no recibirá notificaciones.
-    turn_off: Desactivar notificaciones
-    turn_on: Activar notificaciones
-    view_settings: Cómo activarlas
-    perm_denied_toast: El permiso de notificaciones está denegado. Permite este sitio en la configuración del navegador e inténtalo de nuevo.
-  troubleshoot:
-    title: Lista de verificación por dispositivo
-    local_check: Verificación local
-    perm_granted: 'Permiso de notificaciones: Concedido ✓'
-    perm_denied: 'Permiso de notificaciones: Denegado ✗ (reinicia en la configuración y vuelve a suscribirte)'
-    perm_default: 'Permiso de notificaciones: Sin solicitar (se pide al hacer clic en "Añadir dispositivo")'
-    expand: ¿No recibes? Revisa esto →
-  empty: Aún no hay dispositivos receptores. Haz clic en "Añadir dispositivo" arriba a la derecha para empezar.
-  device:
-    switch_aria: Interruptor de recepción
-    tags: Etiquetas
-    add_tag: + Etiqueta
-    this_device: Este dispositivo
-    receiving: Recibiendo
-    paused: Pausado
-    last_delivered: Última entrega {time}
-    level: Nivel de notificación
-    rename: Renombrar
-    unbind: Desvincular
-  prompt:
-    tag: 'Añadir etiqueta (ej: móvil / trabajo / alerta)'
-    rename: Nombre del dispositivo
-  confirm:
-    unbind: ¿Desvincular "{name}"? Ya no recibirá notificaciones.
-  toast:
-    saved: Guardado
-    save_failed: 'Error al guardar: {msg}'
-    unbound: Desvinculado
-    unbind_failed: 'Error al desvincular: {msg}'
-    local_off: Notificaciones locales desactivadas
-    added: Dispositivo añadido
-  checklist:
-    ios_1: Debe abrirse desde el icono de la pantalla de inicio (standalone) — las pestañas normales de Safari no soportan notificaciones
-    ios_2: Ajustes de iOS → Notificaciones → Safari/PWA → Permitir notificaciones
-    ios_3: 'No recibe tras suscribirse: desactiva el modo No Molestar, confirma que el permiso del sitio sea «Permitir»'
-    mac_1: Ajustes del sistema macOS → Notificaciones → busca tu navegador (ej. Google Chrome) → Permitir
-    mac_2: Icono de candado en la barra del navegador → Notificaciones → «Permitir» (no por defecto/bloquear)
-    mac_3: Push requiere el proceso del navegador activo con la pestaña de este sitio abierta; cerrar el navegador detiene el push en tiempo real
-    mac_4: Las pestañas en primer plano pueden procesar push silenciosamente — cambia a segundo plano o minimiza para probar
-    win_1: Ajustes de Windows → Sistema → Notificaciones → confirma que el navegador tiene notificaciones activadas
-    win_2: Icono de candado en la barra del navegador → Notificaciones → «Permitir»
-    win_3: El Asistente de concentración (No Molestar) silencia las notificaciones cuando está activo
-    android_1: Ajustes de Android → Aplicaciones → Navegador → Notificaciones → Permitir
-    android_2: El navegador integrado de WeChat y algunos navegadores chinos no soportan Web Push — usa Chrome
-    other_1: Confirma que el permiso de notificaciones del navegador sea «Permitir» (icono de candado en la barra)
-    other_2: Confirma que el proceso del navegador está activo
-  subtitle: Controla notificaciones por dispositivo
-  refresh: 'Actualizar'
-  unavailableTitle: 'Las notificaciones push aún no están disponibles'
-  emptyTitle: 'Aún no hay dispositivos de recepción'
-  emptyDesc: 'Añade este dispositivo y recibirá las notificaciones que confirmes.'
-  wsEmptyTitle: 'Aún no hay conexiones activas'
 keys:
   title: API Keys
   subtitle: Los agentes las usan para reportar notificaciones
@@ -645,10 +520,6 @@ keys:
     scope_label: Permisos (selección múltiple, mínimo privilegio)
     scope_send_label: Enviar
     scope_send_desc: Para que Agents / CI hagan POST de notificaciones. Prefijo ant_live_
-    scope_receive_label: Recibir
-    scope_receive_desc: Para que plugins / dispositivos abran conexiones WebSocket. Prefijo ant_recv_
-    scope_read_label: Leer dispositivos
-    scope_read_desc: Listado de solo lectura para inspección con scripts
     scope_hint: 'Mínimo privilegio: enviar y recibir van separados, así una Key filtrada solo compromete un lado.'
     cancel: Cancelar
     generate: Generar Key
@@ -661,8 +532,6 @@ keys:
     done: La he guardado
   scope:
     send: Enviar
-    receive: Recibir
-    read: Lectura de dispositivos
   unnamed: Sin nombre
   unnamed_key: Key sin nombre
   summary: '{total} Keys · {active} activos'
@@ -689,7 +558,7 @@ keys:
 security:
   title: Seguridad y acceso
   subtitle: Passkey · Contraseña · Sesiones · Códigos de recuperación
-  intro: 'Gestiona todo sobre quién eres: credenciales Passkey, contraseña, sesiones de acceso y códigos de recuperación. Son independientes de a dónde van las notificaciones (dispositivos receptores).'
+  intro: 'Gestiona todo sobre quién eres: credenciales Passkey, contraseña, sesiones de acceso y códigos de recuperación. Es un eje distinto de a dónde van los eventos (capacidades y fuentes).'
   add_passkey: Añadir Passkey
   passkey:
     title: Credenciales Passkey
@@ -795,7 +664,7 @@ security:
     revoke_failed: 'Error al revocar: {msg}'
 docs:
   title: Documentación de integración
-  subtitle: Reportes de Agent · Web Push · WebSocket
+  subtitle: Reportes de Agent · eventos · cadenas de tareas
   toc_heading: En esta página
   table:
     method: Método
@@ -806,7 +675,6 @@ docs:
     agent: Conectar Agent
     api: Resumen de API
     auth: Autenticación
-    webpush: Suscripción Web Push
     stream: Recepción WebSocket
     events: POST /v1/namespaces/{namespace}/events
     node: Protocolo de nodo
@@ -838,7 +706,6 @@ docs:
       passkey-enroll: Registro de passkeys
       cli-auth: Autorización CLI
       admin: Administración
-      devices: Web Push
       resource: "Recursos"
       agent: "Protocolo del nodo"
       ingress: "Entrada"
@@ -901,16 +768,11 @@ docs:
       notify: El Agent reporta una notificación (núcleo)
       tasks: 'Lista de tareas (flujo de eventos)'
       notifications: Lista del historial de notificaciones
-      devices_list: Lista de dispositivos
-      devices_sub: Suscribir (registrar) un dispositivo
-      devices_update: Actualizar dispositivo (interruptor / filtro / tags)
-      devices_delete: Desvincular dispositivo
       node_stream: Protocolo WebSocket de nodo
       stream: Recepción por WebSocket long-poll
       keys_list: Lista de API Keys
       keys_create: Crear API Key
       passkey: Registro / login con Passkey
-      vapid: Clave pública VAPID (para suscripción)
   auth:
     title: Autenticación
     intro: 'Dos tipos de credenciales, para dos tipos de llamadores. <b class="doc-em">Mínimo privilegio</b>: envío y recepción están separados, por lo que una Key filtrada solo afecta a un lado.'
@@ -918,7 +780,7 @@ docs:
       title: API Key (Bearer)
       li1: · Para reportes del Agent / conexiones long-poll del receptor
       li2: '· Header: <code class="doc-code">Authorization: Bearer ant_…</code>'
-      li3: '· scope: <code class="doc-code">notify:send</code> reportar · <code class="doc-code">notify:receive</code> recibir · <code class="doc-code">devices:read</code> solo lectura'
+      li3: '· scope: <code class="doc-code">notify:send</code> (entrada de eventos <code class="doc-code">POST /v1/namespaces/{ns}/events</code>)'
       li4: · El servidor solo guarda un hash argon2id; el texto plano se muestra una vez al crear
     passkey:
       title: Cookie de sesión
@@ -926,81 +788,6 @@ docs:
       li2: · Login sin contraseña con WebAuthn, biometría o clave de dispositivo
       li3: · Cookie httpOnly; las sesiones multi-dispositivo son independientes y revocables individualmente
       li4: '· Multi-dispositivo: sincronización de plataforma / guía de conexión / código de recuperación'
-  notify:
-    core: Núcleo
-    intro: Un Agent llama a este endpoint para reportar una notificación al terminar una tarea. El servidor valida la API Key, localiza al usuario y envía la notificación <b class="doc-em">cifrada de extremo a extremo</b> a todos los dispositivos "habilitados y que coincidan en nivel/tag".
-    params:
-      title: Parámetros del cuerpo de la petición
-      title_desc: Título de la notificación, p. ej. <code>"Despliegue completado"</code>, se muestra como título principal de la notificación del sistema.
-      agent_state_desc: 'Estado del agente: <code>working</code> en ejecución · <code>blocked</code> en espera · <code>done</code> completado · <code>interrupted</code> interrumpido · <code>error</code> fallido. Determina el color del icono y el filtrado de dispositivos.'
-      body_desc: Cuerpo de la notificación, detalle complementario.
-      tags_desc: Tags de enrutamiento. Vacío = difundir a todos los dispositivos habilitados; no vacío = solo se entrega a dispositivos con tag en común o sin tags (catch-all). ≤10 tags, cada uno ≤32 caracteres.
-      link_desc: Deep link que se abre al tocar la notificación, p. ej. <code>pi://session/sess_8f3a2c</code>.
-      meta_desc: Metadatos de contexto para trazabilidad y estadísticas, almacenados en el historial.
-      ttl_desc: <code>ttl</code> validez en segundos (por defecto 86400); <code>priority</code> prioridad (por defecto normal).
-    required: Obligatorio
-    optional: Opcional
-    curl:
-      title: cURL · petición completa
-      title_val: Despliegue completado
-      body_val: Build exitoso, desplegado a producción
-      tag_val: trabajo
-    resp200: Aceptado y enviado
-    resp200_dev1: Teléfono principal
-    resp200_dev2: Mac de oficina
-    resp400: Sin dispositivo coincidente / error de parámetros
-    resp400_err: No hay dispositivos suscritos; suscríbase primero en el workspace
-    resp400_comment: // 401 · Key ausente o inválida (403 si scope insuficiente)
-    rules:
-      title: Reglas de entrega (enrutamiento por tags + filtrado por nivel)
-  webpush:
-    off_note: "Las notificaciones push móviles (Web Push) aún no están disponibles; los pasos de suscripción aparecerán aquí cuando lo estén. Los eventos se registran igualmente: consulta la página de eventos."
-    title: Suscripción Web Push (recepción en navegador)
-    intro: El navegador se suscribe vía Service Worker + PushManager; el backend envía con firma VAPID. <b class="doc-em">Se recibe incluso con la página cerrada.</b> iOS requiere "Añadir a pantalla de inicio" y modo standalone (iOS 16.4+).
-    step1: <b class="doc-em">① Obtener clave pública VAPID</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
-    step2: <b class="doc-em">② Registrar Service Worker</b> · <code class="doc-code">navigator.serviceWorker.register('/sw.js')</code>
-    step3: <b class="doc-em">③ Solicitar permiso y suscribir</b> · <code class="doc-code">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
-    step4: <b class="doc-em">④ Reportar suscripción</b> · enviar endpoint + keys vía <code class="doc-code">POST /v1/devices</code>
-    code:
-      title: Suscripción frontend · código central
-      comment1: // 1. Registrar SW + obtener clave pública VAPID
-      comment2: // 2. Suscribir (requiere permiso de notificaciones)
-      comment3: // 3. Reportar al backend (auth por Cookie de sesión)
-      comment_p256dh: // { p256dh, auth }
-      comment_platform: // ios|mac|win|android|other
-    ios:
-      title: ⚠️ Requisito de iOS
-      desc: Debe "Añadir a pantalla de inicio" y ejecutar en modo standalone, de lo contrario Safari no proporciona Notification / Push API.
-    android:
-      title: ✅ Android es más fácil
-      desc: Chrome/Edge puede suscribirse desde una pestaña normal vía FCM; no necesita añadir a pantalla de inicio.
-    e2e:
-      title: 🔒 Cifrado de extremo a extremo
-      desc: El payload se cifra con las claves p256dh/auth de la suscripción; el servicio de push no puede leer el contenido.
-  ws:
-    channel2: Segundo canal de recepción
-    intro: Además del push del navegador, cualquier dispositivo / plugin puede usar una Key con permiso <code class="doc-code">notify:receive</code> para establecer una conexión WebSocket long-poll y recibir en tiempo real. Ideal para widgets de escritorio, daemons CLI, puentes de domótica. Funciona junto al push del navegador.
-    connect:
-      title: Establecer conexión
-      comment: '# requiere permiso notify:receive'
-      comment2: '# opcional, para reanudar tras reconectar'
-    s2c:
-      title: Servidor → Cliente
-      comment1: // primer frame tras conectar
-      comment2: // nueva notificación recibida
-      title_val: Despliegue completado
-      body_val: Desplegado a prod
-      tag_val: trabajo
-      comment3: // fin de replay / heartbeat / error
-    c2s:
-      title: Cliente → Servidor
-      comment1: // suscribir / cancelar tags (vacío = todos)
-      comment2: // confirmar procesado (at-least-once)
-      comment3: // heartbeat (cada heartbeat_sec; 2 perdidos = desconectar)
-      comment4: // tras reconectar, usar frame resume (reemplaza header Last-Event-Id)
-    reconnect:
-      title: Reconectar y reanudar
-      desc: Al reconectar, envíe el header <code class="doc-code">Last-Event-Id</code> (o un primer frame <code class="doc-code">resume</code>). El servidor reenvía las notificaciones no confirmadas de las últimas 24h (ventana de replay), luego entra al stream en vivo. Si supera la ventana de retención, devuelve error <code class="doc-code">resume_expired</code>; el cliente debe obtener el historial completo.
   v4:
     five_specs: 'Lista de endpoints: agrupada por recurso, con método y ruta.'
     missing: "Lista de endpoints no disponible"
@@ -1177,10 +964,7 @@ admin:
     active: '{n} activos (7d)'
     messages: Mensajes totales
     today: Hoy {n}
-    devices: Dispositivos
-    enabled: '{n} habilitados'
-    keys: '{n} keys'
-    delivery_rate: Tasa de entrega
+    task_success_rate: Tasa de éxito de tareas
   tab:
     users: Usuarios
     messages: Mensajes
@@ -1190,7 +974,6 @@ admin:
     role: Rol
     status: Estado
     messages: Msgs
-    devices: Dispositivos
     keys: Keys
     created: Creado
     actions: Acciones
@@ -1216,7 +999,6 @@ admin:
     empty: Sin sesiones activas
   top:
     messages: mensajes
-    devices: '{n} dispositivos'
   confirm:
     title: Confirmar
     cancel: Cancelar
@@ -2418,10 +2200,16 @@ pb:
     release_group: "{release} · {n} grupos"
     single_receipt: "Leer recibo individual completo"
     no_installs: "Todavía no hay instancias. La primera instalación crea una."
+    no_active_installs: "Ahora mismo no hay nada activo; el historial está debajo."
+    uninstalled_group: "Desinstaladas · {n}"
+    expand_rest: "Mostrar {n} más"
     view_yaml: "Ver YAML"
     release_active: "Activa"
+    release_uninstalled: "Desinstalada"
+    release_uninstalled_at: "Desinstalada {at}"
     release_objects: "{c} capacidades / {s} fuentes"
     release_last_install: "instalada {at}"
+    restore_highlight: "Instancia nueva creada al restaurar desde una instantánea"
     yaml_title: "YAML de la instancia"
     yaml_empty: "Esta instancia no tiene objetos que mostrar"
     yaml_load_failed: "No se pudo cargar el YAML"
@@ -2442,6 +2230,7 @@ pb:
     delete_stale: 'La versión está desactualizada. Actualiza para obtener la actual; volver a eliminar requiere otra confirmación.'
     uninstall: "Desinstalar instancia"
     uninstall_confirm: "¿Desinstalar la instancia «{release}»? Se eliminan las capacidades y los orígenes que creó esta instalación; los objetos que pertenecen a otras se conservan y el registro de instalación sigue visible."
+    uninstall_row: "Desinstalar"
     uninstalled_n: "Se desinstaló «{release}»: {c} capacidades / {s} orígenes eliminados."
     uninstall_kept_n: "Se conservaron {n} objetos que no le pertenecen (detalle abajo)."
     uninstall_already: "Esta instancia ya estaba desinstalada; ahora no hubo cambios."
@@ -2565,9 +2354,6 @@ uxaudit:
       resolved_yes: 'targets resueltos'
       resolved_no: 'targets sin resolver'
       hook_url: 'URL del hook'
-    receivers:
-      to_ws: 'Ver el canal WebSocket'
-      docs: 'Ver la documentación de la API'
     admin:
       role_admin: 'Superadmin'
       role_member: 'Miembro'
@@ -2681,6 +2467,20 @@ source_detail:
   poll_cursor: 'Cursor'
   poll_cursor_none: 'Aún no hay cursor (se guarda tras la primera ronda correcta)'
   poll_error_none: 'Sin fallos registrados'
+  poll_now: 'Obtener ahora'
+  poll_now_running: 'Obteniendo…'
+  poll_now_done: 'Una ronda obtenida'
+  poll_now_busy: 'Ya hay una encuesta en curso, inténtalo en un momento'
+  poll_result_items: 'Elementos'
+  poll_result_created: 'Creados'
+  poll_result_duplicates: 'Duplicados'
+  poll_result_duration: 'Duración'
+  secret_name: 'Nombre de la credencial'
+  secret_used_by: 'Referenciada por'
+  secret_loading: 'Cargando…'
+  secret_missing: 'La credencial no existe'
+  secret_only_self: 'Solo este origen la referencia'
+  secret_used_by_failed: 'No se pudieron cargar los orígenes que la referencian'
   hook_url: 'Hook URL'
   secret_set_yes: 'La firma HMAC está configurada (solo escritura)'
   secret_set_no: 'Sin firma HMAC'
@@ -2693,6 +2493,24 @@ source_detail:
   recent_error: 'No se pudieron cargar los recibos recientes'
   view_trace: 'Ver traza'
   no_name_hint: 'Abre un origen desde la lista, o pon ?namespace=<ns>&name=<name> en la dirección.'
+  audit_title: 'Actividad reciente'
+  audit_empty: 'Todavía no hay registros de auditoría. Los sondeos manuales aparecen aquí.'
+  audit_loading: 'Cargando la actividad reciente…'
+  audit_error: 'No se pudo cargar la actividad reciente'
+  audit_actor_none: 'No es un principal de sesión'
+  audit_action_source_polled_manually: 'Sondeo manual'
+  secret_history: 'Historial de la credencial'
+  secret_history_title: 'Historial de la credencial'
+  secret_history_empty: 'Esta credencial todavía no tiene historial.'
+  secret_history_loading: 'Cargando el historial de la credencial…'
+  secret_history_error: 'No se pudo cargar el historial de la credencial'
+  secret_history_col_action: 'Acción'
+  secret_history_col_at: 'Fecha'
+  secret_history_col_actor: 'Responsable'
+  secret_history_close: 'Cerrar'
+  secret_action_created: 'Creación'
+  secret_action_rotated: 'Rotación'
+  secret_action_deleted: 'Eliminación'
 namespaces:
   v4:
     title: "Espacios de nombres"
@@ -2767,14 +2585,32 @@ release:
   yaml_title: YAML de la instancia
   yaml_empty: Esta instancia no tiene objetos para exportar.
   yaml_failed: La exportación falló
+  as_current: Vigente
+  as_installed: Al instalar
+  as_no_snapshot: Esta instalación no guardó una instantánea, así que solo se muestra la versión vigente.
+  as_current_gone: "La instancia está desinstalada, así que no hay una versión vigente que mostrar."
   uninstall: Desinstalar esta instancia
   uninstall_confirm: 'Desinstalar «{release}»: elimina las capacidades y fuentes que instaló; los recibos se conservan.'
   uninstalled: Desinstalada
-  gone_title: Esta instancia fue desinstalada o no existe
-  gone_hint: 'Sus objetos ya no están; la página del paquete muestra las instancias activas.'
+  uninstalled_notice: "Esta instancia se desinstaló el {at}; sus objetos ya no están y lo que sigue es la instantánea tomada al instalar."
+  objects_gone: "Los objetos ya no están (la instancia se desinstaló el {at}). La vista «Al instalar» de YAML exporta la instantánea de entonces."
+  gone_title: Esta instancia no existe
+  gone_hint: 'Nunca se instaló, o su paquete se ha eliminado.'
   gone_back: Volver al paquete
   no_target_badge: Sin instancia
   missing_hint: 'Ábralo desde la lista de instancias del paquete o añada el nombre del paquete y de la instancia al enlace.'
   missing_back: Volver a paquetes
   missing_target: Al enlace le falta el nombre del paquete o de la instancia.
   invalid_detail: El servidor no devolvió un detalle de instancia válido.
+  restore: Restaurar desde instantánea
+  restore_confirm_title: Restaurar esta instancia desde su instantánea
+  restore_confirm_body: "Se reconstruirán estas capacidades desde la instantánea: {caps}. Fuentes implicadas: {sources}."
+  restore_confirm_note: "Las fuentes no se reconstruyen: si falta alguna, la restauración se rechaza (409)."
+  restore_confirm_ok: Restaurar desde instantánea
+  restore_list_sep: ", "
+  restore_more: "…{n} en total"
+  restore_no_snapshot: Esta instalación no dejó instantánea, así que no se puede restaurar desde ella.
+  restore_already_installed: Esta instancia sigue vigente, así que no hace falta restaurar.
+  restore_pinned_gone: Se eliminó una versión de capacidad de la instantánea, así que no se puede restaurar.
+  restore_pin_missing_source: Una fuente de la instantánea no existe en este espacio de nombres; cree la fuente y vuelva a restaurar.
+  restore_conflict: Ya existe una capacidad con el mismo nombre y versión pero con otro contenido, así que no se puede restaurar.

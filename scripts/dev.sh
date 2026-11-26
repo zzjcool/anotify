@@ -7,7 +7,7 @@
 #   NO_TUNNEL=1 ./scripts/dev.sh   # 只起 server，不起 tunnel
 #
 # 环境文件（.gitignore，不入库）：
-#   .env.local  —— 本地开发配置（VAPID 密钥、RP_ID=dev.openaaas.org 等）
+#   .env.local  —— 本地开发配置（RP_ID=dev.openaaas.org 等）
 #                 缺失时自动用 .env.example 作模板提示用户复制
 #
 # 行为：
@@ -47,9 +47,9 @@ ENV_EXAMPLE="$ROOT/.env.example"
 if [ ! -f "$ENV_FILE" ]; then
 	echo "⚠️  .env.local 不存在。"
 	if [ -f "$ENV_EXAMPLE" ]; then
-		echo "   复制模板：cp .env.example .env.local  然后填入 VAPID 密钥"
+		echo "   复制模板：cp .env.example .env.local  然后按需修改（RP 域名等）"
 	else
-		echo "   请创建 .env.local（至少含 ANOTIFY_VAPID_PUBLIC_KEY / ANOTIFY_VAPID_PRIVATE_KEY）"
+		echo "   请创建 .env.local（至少含 ANOTIFY_RP_ID / ANOTIFY_RP_ORIGIN）"
 	fi
 	echo ""
 fi
@@ -394,7 +394,7 @@ if [ "${NO_DEMO_DATA:-0}" != "1" ]; then
 	echo "▶ 造示例数据（能力图 + 节点 + 事件链）…"
 	# 等 server 真能应答，别抢跑
 	for _ in $(seq 1 25); do
-		curl -fsS -o /dev/null --max-time 2 "http://localhost:${PORT_NUM}/v1/vapid-public-key" 2>/dev/null && break
+		curl -fsS -o /dev/null --max-time 2 "http://localhost:${PORT_NUM}/health" 2>/dev/null && break
 		sleep 1
 	done
 	if go run ./cmd/devseed \

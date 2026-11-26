@@ -11,8 +11,7 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// v4 baseline 的结构门禁：表/列/索引/唯一约束的**终态形状**。 这些断言是「库长什么样」的唯一验收：schema.sql 是唯一事实源，任何一处漏建 / 多建 / 列名漂移
-// 都会让后续 store 代码在运行期才炸（而且是业务路径上）。 所以这里逐条写死，不靠「跑起来没报错」当证据。
+// v4 baseline 的结构门禁：表/列/索引/唯一约束的**终态形状**。 这些断言是「库长什么样」的唯一验收：schema.sql 是唯一事实源，任何一处漏建 / 多建 / 列名漂移 都会让后续 store 代码在运行期才炸（而且是业务路径上）。 所以这里逐条写死，不靠「跑起来没报错」当证据。
 
 // baselineTables 是 v4 baseline 的完整表集合（一个不多一个不少）。
 var baselineTables = []string{
@@ -22,24 +21,27 @@ var baselineTables = []string{
 	"capability_versions",
 	"cli_auth_sessions",
 	"deployments",
-	"devices",
 	"event_deliveries",
 	"edges",
 	"emits",
 	"events",
 	"namespace_configs",
+	"namespace_secret_audit",
 	"namespace_secrets",
 	"namespaces",
 	"node_configs",
 	"node_instances",
 	"nodes",
 	"passkeys",
+	"playbook_install_audit",
+	"playbook_install_pinned",
 	"playbook_install_requires",
 	"playbook_installs",
 	"playbook_versions",
 	"playbooks",
 	"recovery_codes",
 	"sessions",
+	"source_audit",
 	"sources",
 	"system_config",
 	"task_artifact_manifests",
@@ -194,6 +196,14 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 			// digest 与回执的 playbook.filesDigest 同一算法，current 版本仍以 playbooks.files 为准。
 			"playbook_id", "version", "files", "digest", "created_at", "created_by",
 		},
+		"playbook_install_audit": {
+			"id", "namespace_id", "playbook_id", "playbook_slug", "release", "install_id",
+			"action", "actor_id", "detail", "created_at",
+		},
+		"playbook_install_pinned": {
+			// 安装时快照（#551）：与回执 created.pinned 同一事务双写；seq 保序，ref_kind ∈ capability/source。 列名不用 kind（I3 只放行 sources / cli_auth_sessions 的 kind 列）。
+			"install_id", "namespace_id", "seq", "ref_kind", "name", "obj_kind", "version", "digest",
+		},
 		"playbook_install_requires": {
 			"namespace_id", "install_id", "capability", "version",
 		},
@@ -203,6 +213,10 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 			// release 是安装级身份（一个预案可并存多份实例）；uninstalled_at 是卸载标记（回执不删，已卸载的实例不进清单）。
 			"id", "namespace_id", "namespace_slug", "playbook_id", "playbook_slug",
 			"values", "values_digest", "receipt", "source", "release", "uninstalled_at", "created_at",
+		},
+		// 手动拉取审计（#555）：只增不删，detail 只存计数摘要。
+		"source_audit": {
+			"id", "namespace_id", "source_id", "action", "actor_id", "detail", "created_at",
 		},
 		"sources": {
 			"id", "namespace_id", "name", "display_name", "kind", "config", "targets", "enabled",
@@ -256,7 +270,6 @@ func TestSchemaBaselineIndexes(t *testing.T) {
 		{name: "idx_users_role", table: "users", cols: []string{"role"}},
 		{name: "idx_sessions_user", table: "sessions", cols: []string{"user_id"}},
 		{name: "idx_apikeys_user", table: "api_keys", cols: []string{"user_id"}},
-		{name: "idx_devices_user", table: "devices", cols: []string{"user_id"}},
 		{name: "idx_cli_auth_expires", table: "cli_auth_sessions", cols: []string{"expires_at"}},
 		{name: "idx_recovery_codes_user", table: "recovery_codes", cols: []string{"user_id"}},
 		{name: "idx_recovery_codes_prefix", table: "recovery_codes", cols: []string{"prefix"}},
@@ -286,6 +299,9 @@ func TestSchemaBaselineIndexes(t *testing.T) {
 		{name: "idx_deploy_capability", table: "deployments", cols: []string{"capability_id"}},
 		{name: "idx_playbooks_ns", table: "playbooks", cols: []string{"namespace_id", "created_at"}},
 		{name: "idx_playbook_installs_lookup", table: "playbook_installs", cols: []string{"namespace_id", "playbook_id", "values_digest", "created_at"}},
+		{name: "idx_playbook_install_audit_release", table: "playbook_install_audit", cols: []string{"namespace_id", "playbook_slug", "release", "created_at", "id"}},
+		{name: "idx_playbook_pinned_lookup", table: "playbook_install_pinned", cols: []string{"namespace_id", "ref_kind", "name", "version"}},
+		{name: "idx_source_audit_source", table: "source_audit", cols: []string{"namespace_id", "source_id", "created_at", "id"}},
 		{name: "idx_sources_ns", table: "sources", cols: []string{"namespace_id", "created_at"}},
 		{name: "idx_sources_due", table: "sources", cols: []string{"enabled", "next_fire_at"}},
 		{name: "idx_task_artifact_objects", table: "task_artifact_manifests", cols: []string{"object_id"}},
@@ -340,6 +356,7 @@ func TestSchemaBaselineUniqueConstraints(t *testing.T) {
 		{"emits", []string{"task_id", "emit_id"}},
 		{"deployments", []string{"node_id", "capability_id", "digest"}},
 		{"task_artifact_manifests", []string{"task_id", "attempt", "path"}},
+		{"playbook_install_pinned", []string{"install_id", "ref_kind", "name"}},
 	} {
 		if !hasUniqueIndex(t, db, tc.table, tc.cols) {
 			t.Errorf("%s 缺唯一索引 %v", tc.table, tc.cols)
@@ -593,15 +610,15 @@ func TestSchemaBaselineLayoutMarkerIsSeparateFromLedger(t *testing.T) {
 	if got := rawUserVersion(t, path); got != 4 {
 		t.Fatalf("新库 PRAGMA user_version = %d, want 4（v4 布局格式标记）", got)
 	}
-	if v, err := db.SchemaVersion(); err != nil || v != 7 {
-		t.Fatalf("SchemaVersion = %d, %v; want 7（记账 = 块数，不是布局标记）", v, err)
+	if v, err := db.SchemaVersion(); err != nil || v != 11 {
+		t.Fatalf("SchemaVersion = %d, %v; want 11（记账 = 块数，不是布局标记）", v, err)
 	}
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&n); err != nil {
 		t.Fatalf("count schema_version: %v", err)
 	}
-	if n != 7 {
-		t.Fatalf("schema_version 行数 = %d, want 7（baseline + release + 卸载标记 + 包版本历史 + router 结局表 + 轮询状态 + 依赖索引）", n)
+	if n != 11 {
+		t.Fatalf("schema_version 行数 = %d, want 11（baseline + release + 卸载标记 + 包版本历史 + router 结局表 + 轮询状态 + 依赖索引 + 安装时快照 + 凭据审计 + 手动拉取审计 + 复原审计）", n)
 	}
 }
 

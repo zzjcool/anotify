@@ -137,7 +137,7 @@ func TestEventOriginListFilters(t *testing.T) {
 func TestStatsExcludeTestOrigin(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	nsID, userID := newTestNS(t, db)
+	nsID, _ := newTestNS(t, db)
 	now := time.Now()
 	since := startOfLocalDayUnix(now)
 
@@ -155,7 +155,7 @@ func TestStatsExcludeTestOrigin(t *testing.T) {
 		}
 	}
 
-	stats, err := db.messageStats(ctx, nsID, userID, since, now)
+	stats, err := db.messageStats(ctx, nsID, since, now)
 	if err != nil {
 		t.Fatalf("stats: %v", err)
 	}

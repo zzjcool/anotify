@@ -6,7 +6,7 @@
 #     默认只监听 127.0.0.1（避免和已部署实例/他人服务抢端口）
 #
 # 用法：
-#   make dev-env            # 一次性：生成 .env.dev（含真实 VAPID 密钥）
+#   make dev-env            # 一次性：生成 .env.dev（RP/域名等配置）
 #   make dev-up             # 构建并启动（本地 8080）
 #   make dev-up TUNNEL=1    # 同时启动 cloudflared 命名隧道 → anotify-dev.openaaas.org
 #   make dev-seed           # 播种 demo 用户（幂等）
@@ -38,7 +38,7 @@ services:
     ports:
       - "${ANOTIFY_DEV_BIND:-127.0.0.1}:${ANOTIFY_DEV_PORT:-8080}:8080"
     env_file:
-      - .env.dev # VAPID / RP 等（由 make dev-env 生成，已在 .gitignore）
+      - .env.dev # RP / 域名等（由 make dev-env 生成，已在 .gitignore）
     environment:
       ANOTIFY_ADDR: :8080
       ANOTIFY_DB: /data/anotify.db

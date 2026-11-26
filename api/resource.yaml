@@ -475,6 +475,110 @@ paths:
         '404': {$ref: '#/components/responses/Status404'}
         '500': {$ref: '#/components/responses/Status500'}
 
+  /v1/namespaces/{namespace}/sources/{name}/audit:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: name
+        in: path
+        required: true
+        description: "源名（同命名空间内唯一；与共享的来源名校验器同口径）"
+        schema: {type: string}
+    get:
+      operationId: listSourceAudit
+      tags: [sources]
+      security: [{session: []}]
+      summary: "该源的最近操作（立即拉取，最新在前）"
+      description: |
+        非信封（与 `GET …/edges`、能力审计同类）：这是一份派生观察，不是可寻址资源。
+
+        `items` 按 `created_at DESC, id DESC`（最新在前），空为 `[]`（不是 `null`）。
+        `action` 闭集是 `source.polled_manually`；`actor` 空串 = 非会话主体（CLI/系统），
+        不做伪造；`at` 是 RFC3339（UTC）；`detail` 恒为对象（这一轮拉取的计数摘要，
+        不存响应正文）。
+
+        未知 `name` **或**「跨命名空间同名」一律 `404`：handler 先按 `(namespace, name)`
+        解析实体再读审计，所以这里不像能力审计那样回 `200 {"items":[]}` ——
+        两者是同一条 404，不泄露存在性。
+
+        `limit` 缺省 50、范围 1..200（越界 → 400，服务端不夹取）；非整数 → 400。
+        `before` 是 RFC3339 时间戳（就是上一条的 `at`），取**严格早于**它的一页；
+        精度 = 秒（同一秒内的记录不会重复返回，可能一并略过）。
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: "最近多少条（1..200，缺省 50）"
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+        - name: before
+          in: query
+          required: false
+          description: "RFC3339 时间戳：只回严格早于它的记录（精度 = 秒）"
+          schema: {type: string}
+      responses:
+        '200':
+          description: "审计列表"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SourceAuditList'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '403': {$ref: '#/components/responses/Status403'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/secrets/{name}/audit:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: name
+        in: path
+        required: true
+        description: "凭据名（与 `config.secretRef.name` 同一规则：字母数字与 `. _ -`，首字符字母数字，≤64 字节）"
+        schema: {type: string}
+    get:
+      operationId: listNamespaceSecretAudit
+      tags: [sources]
+      security: [{session: []}]
+      summary: "该凭据的最近操作（created / rotated / deleted，最新在前）"
+      description: |
+        非信封：派生观察，不是可寻址资源。
+
+        `items` 按 `created_at DESC, rowid DESC`（最新在前），空为 `[]`（不是 `null`）。
+        `action` 闭集是 `created` / `rotated` / `deleted`；`actor` 空串 = 非会话主体
+        （CLI/系统），不做伪造；`at` 是 RFC3339（UTC）。
+
+        审计**只有**名字、动作、actor 与时间：表里没有值列，端点也不补 ——
+        `value` 与 `detail` 都不在这个 DTO 里（凭据值只写不读）。
+
+        未知 `name` **或**「跨命名空间同名」一律 `404 secret_not_found`：handler 先按
+        `(namespace, name)` 解析实体再读审计，不像能力审计那样回 `200 {"items":[]}`
+        （不泄露存在性）。
+
+        `limit` 缺省 50、范围 1..200（越界 → 400，服务端不夹取）；非整数 → 400。
+        `before` 是 RFC3339 时间戳（就是上一条的 `at`），取**严格早于**它的一页；
+        精度 = 秒（同一秒内的记录不会重复返回，可能一并略过）。
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: "最近多少条（1..200，缺省 50）"
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+        - name: before
+          in: query
+          required: false
+          description: "RFC3339 时间戳：只回严格早于它的记录（精度 = 秒）"
+          schema: {type: string}
+      responses:
+        '200':
+          description: "审计列表"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NamespaceSecretAuditList'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '403': {$ref: '#/components/responses/Status403'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
   /v1/namespaces/{namespace}/edges:
     parameters:
       - $ref: '#/components/parameters/NamespacePath'
@@ -513,6 +617,98 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/CapabilityTemplateList'}
         '401': {$ref: '#/components/responses/AuthError401'}
+
+  /v1/namespaces/{namespace}/secrets:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+    get:
+      operationId: listNamespaceSecrets
+      tags: [sources]
+      security: [{session: []}]
+      summary: "列出命名空间凭据（值永不回显）"
+      description: |
+        非信封文档 `{items: [...]}`，按 `name` 升序；空列表是 `[]` 不是 `null`。
+
+        `usedBy` 是引用该凭据的源名（本命名空间内，按名字排序）：它回答「删之前要先改谁」，
+        与 `DELETE` 的 409 causes 同源。
+      responses:
+        '200':
+          description: "NamespaceSecretList"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NamespaceSecretList'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/secrets/{name}:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: name
+        in: path
+        required: true
+        description: "凭据名（与 `config.secretRef.name` 同一规则：字母数字与 `. _ -`，首字符字母数字，≤64 字节）"
+        schema: {type: string}
+    get:
+      operationId: getNamespaceSecret
+      tags: [sources]
+      security: [{session: []}]
+      summary: "读取单条凭据（同样不含值）"
+      responses:
+        '200':
+          description: "NamespaceSecret（只有 name/updatedAt/usedBy）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NamespaceSecret'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+    put:
+      operationId: putNamespaceSecret
+      tags: [sources]
+      security: [{session: []}]
+      summary: "新建或轮换凭据（只写；轮换下一轮 poll 即生效）"
+      description: |
+        `value` 是**唯一**可写字段，且永不回显（响应只给读投影）。同名再 PUT = 轮换，
+        只保留最新值（不做版本历史）；每一轮 poll 都在取用时重读，所以轮换对
+        「下一次 poll」立即生效，不需要改源。
+
+        动作留一条审计（`created` / `rotated`）：只记名字与 actor，**不记值**。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NamespaceSecretWrite'}
+      responses:
+        '200':
+          description: "写入后的读投影（不含值）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NamespaceSecret'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+    delete:
+      operationId: deleteNamespaceSecret
+      tags: [sources]
+      security: [{session: []}]
+      summary: "删除凭据（被源引用 → 409 secret_in_use）"
+      description: |
+        被任一源引用时不删：409 `secret_in_use`，`details.causes[]` 逐条列引用它的源名
+        （`field: source`）。先改那些源的 `secretRef`，再删。
+
+        成功是 `204`（无响应体）；留一条 `deleted` 审计（只记名字与 actor）。
+      responses:
+        '204':
+          description: "已删除（无响应体）"
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
 
   # -------------------------------------------------------------------- sources
   /v1/namespaces/{namespace}/sources:
@@ -929,12 +1125,25 @@ paths:
       tags: [playbooks]
       security: [{session: []}]
       summary: "实例清单（按 valuesDigest 折叠的读模型）"
+      description: |
+        按 `(release, valuesDigest)` 折叠的实例清单：默认只列**生效中**的实例（已卸载的回执不进清单）。
+
+        传 `include=uninstalled` 时连带已卸载的实例（#553）：已卸载的组多一个 `uninstalledAt`
+        （组内回执全部已卸载才给），`lastInstallId` 仍指向最后一次安装的回执（可用来取安装时快照）。
+        折叠键不变，已卸载的组不参与生效中计数。
+      parameters:
+        - name: include
+          in: query
+          required: false
+          description: "传 `uninstalled` 时连带已卸载的实例；缺省只列生效中的。其它值 → 400 value_invalid"
+          schema: {type: string, enum: [uninstalled]}
       responses:
         '200':
           description: "折叠组清单（total 可能大于返回条数）"
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PlaybookInstallList'}
+        '400': {$ref: '#/components/responses/Status400'}
         '401': {$ref: '#/components/responses/AuthError401'}
         '404': {$ref: '#/components/responses/Status404'}
         '500': {$ref: '#/components/responses/Status500'}
@@ -1033,6 +1242,18 @@ paths:
 
         release 从未存在、或该 release 已卸载（对象已删）→ `404` `release_not_found`
         （与导出 / 卸载同一口径）。只读：不写库、不产生回执。
+
+        传 `include=uninstalled` 时已卸载的实例仍可读（#553）：`200`，`objects` 如实为空
+        （对象已删；同名对象被别的实例重装也不进这份视图），并多三个键 —— `uninstalledAt`（卸载时刻）、
+        `objectsGone: true`（告诉调用方「不是没装过」）、`pinned`（安装时的对象快照，与
+        `…/yaml?as=installed` 同口径；老回执没有快照时该键不出现）。生效中的实例带不带这个参数
+        响应完全相同。
+      parameters:
+        - name: include
+          in: query
+          required: false
+          description: "传 `uninstalled` 时已卸载的实例也返回 200（多 uninstalledAt / objectsGone / pinned）；缺省已卸载仍 404。其它值 → 400 value_invalid"
+          schema: {type: string, enum: [uninstalled]}
       responses:
         '200':
           description: "实例详情"
@@ -1042,6 +1263,73 @@ paths:
         '400': {$ref: '#/components/responses/Status400'}
         '401': {$ref: '#/components/responses/AuthError401'}
         '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/playbooks/{slug}/releases/{release}/restore:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: slug
+        in: path
+        required: true
+        schema: {type: string}
+      - name: release
+        in: path
+        required: true
+        description: "实例身份（`^(a-z0-9)[a-z0-9._-]{0,62}$`）"
+        schema: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,62}$'}
+    post:
+      operationId: restorePlaybookRelease
+      tags: [playbooks]
+      security: [{session: []}]
+      summary: "按安装时快照重装（照 pinned 版本复原已卸载的实例）"
+      description: |
+        照**安装时快照**（回执 `created.pinned` / `skipped.pinned`，#551）把一个已卸载的实例装回去。
+        与首次安装的差别只有两点，其余（单事务、整包原子、回执形状）逐字相同：
+
+        1. 正文来源是 **pinned 版本**，不是「包当前版本」也不是「当前生效版本」：能力取
+           `(name, pinned.version)` 那一行的正文（卸载只打 `deleted_at` 标记，正文还在）。
+           那一版已被物理回收（GC）→ `409` `pinned_gone`，`details.causes[]` 逐条列出
+           `{kind,name,version}`；**绝不静默降级成最新版**。
+        2. 源只能**复用**：源没有版本，正文也不在回执里。同名源已存在 → 记进 `reused.sources`；
+           不存在 → `409` `pin_missing_source`（不假装能重建源，先把源建起来）。
+
+        `valuesDigest` 选「复原哪一组参数」：同一 release 用两套 values 装过是两组实例，
+        复原只复原选中的那组（该组不存在与 release 不存在同一个落点：`404 release_not_found`）。
+
+        `200` 的响应是**完整回执**（与首次安装同形），多一个 `restoredFrom`（被复原的那次 install id）：
+        `created` 是本次重建的对象、`skipped` 是复用到的对象（两边都带 `pinned`），
+        `install.id` 是新回执、`install.release` 与原回执相同，`values` / `valuesDigest` /
+        `playbook` 身份沿用原回执（复原不重新渲染，不存在第二份 values 真相）。
+        每次成功复原另记一行审计 `install.restored`（`playbook_install_audit`），
+        并出现在详情端点 `GET …/releases/{release}` 的 `restores[]` 里。
+
+        四种 409 的判定顺序固定（都在写之前返回，**整包 0 写**）：
+
+        - `already_installed`：该组参数当前仍在生效（回执未卸载）——那是「再装一遍」，用 install 端点；
+        - `no_snapshot`：该组最新回执没有快照（迁移 8 之前装的），`details.causes[0].field = "release"`；
+        - `pinned_gone`：某个 pinned 能力版本的正文已被回收；
+        - `pin_missing_source`：某个 pinned 源不存在；
+        - `restore_conflict`：同名**同版本**的能力已存在且正文不同（可见行 digest ≠ 快照 digest）。
+
+        `details.causes[]` 的 `field` 形如 `pinned.capabilities[0]` / `pinned.sources[1]`：
+        下标是该对象在**这一类 pinned 序列**里的槽位（坏的是第二个对象就报 `[1]`，不是「第几条失败」）；
+        对象身份（`kind` / `name` / `version`）与两边 digest 写在 `message` 字面里。
+        `already_installed` 是整请求级条件（不是某个对象坏了），不带 `causes`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PlaybookRestoreRequest'}
+      responses:
+        '200':
+          description: "复原回执（完整回执 + `restoredFrom`；values 沿用原回执的打码后形态）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PlaybookReceipt'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
         '500': {$ref: '#/components/responses/Status500'}
 
   /v1/namespaces/{namespace}/playbooks/{slug}/releases/{release}/yaml:
@@ -1063,22 +1351,47 @@ paths:
       summary: "导出一个实例装出的对象（多文档 YAML）"
       description: |
         响应体**是 YAML 正文本身，不是 JSON**（`Content-Type: application/yaml; charset=utf-8`）：
-        三行头注释（包@版本 / release / valuesDigest，安装 id / 时间 / 对象数，
-        以及「以下对象为当前生效版本，不是安装时快照」的说明）之后，是一串 `---` 分隔的文档。
+        头注释之后，是一串 `---` 分隔的文档。头注释的行数由 `as` 决定（见下）。
+
+        `as` 选视图（#551）：
+
+        - **省略 / `as=current`**（缺省）：按名字取**当前生效版本**；头注释 3 行
+          （包@版本 / release / valuesDigest，安装 id / 时间 / 对象数，以及
+          「以下对象为当前生效版本，不是安装时快照」的说明）。**不带 `as` 与 `as=current` 逐字节相同**，
+          这个视图与 #551 之前的行为完全一致（含已卸载 → `404` `release_not_found`）。
+        - `as=installed`：按安装回执的 **`created.pinned`（安装时快照）** 渲染——能力给
+          **安装那一刻记下的那一版**正文（即使之后已升级），源按回执记的名字取**当前**正文
+          （源没有版本概念）。头注释固定 4 行（第 3 行说「以下对象为安装时快照」、第 4 行说明源无版本），
+          安装时记下的对象已不存在时多一行「快照缺失: N 个对象」并**跳过它**（不编造、不回退成最新版）。
+          **已卸载的实例仍 `200`**：卸载只软删能力行（正文还在）、物理删源行（源计入缺失）。
+          选中的回执都没有 pinned（安装发生在记录快照之前）→ `409` `no_snapshot`，
+          `details.causes[0].field = "release"`。
+        - 其它值 → `400` `value_invalid`。
 
         对象集合**只由安装回执的 `created` 决定**（能力 `name@version` 按名字去重、源按名字），
         **不做名字前缀匹配**，也不从 `installedFrom` 反查 —— 否则会把别人的对象算进「这个实例装出了什么」。
+        `as=installed` 进一步按回执 pinned 的 `(kind,name)` 合并：同一对象在后续安装里被重新钉过就以新的为准。
+        输出顺序两种视图一致：能力按名字升序在前，源按名字升序在后。
 
         每个文档与对应单对象端点（`GET …/capabilities/{name}/yaml`、`GET …/sources/{name}/yaml`）
-        的输出逐字节相同（同一份读投影与脱敏），顺序固定：能力按名字升序，再源按名字升序。
-        回执记过、但对象已被删除的引用不会出现在导出里（导出给的是当前生效版本）。
+        的输出逐字节相同（同一份读投影与脱敏）。
+        `as=current` 里回执记过、但对象已被删除的引用不会出现在导出里（导出给的是当前生效版本）；
+        `as=installed` 里取不到的快照版本同样不出现，但会计入头注释的「快照缺失」。
 
         `valuesDigest` 可选：把导出钉在某个参数组上（同一 release 用两套 values 装过时，
-        不带筛选的导出是两组的并集；按组导出只给这一组装出的对象）。该组不存在 → `404` `release_not_found`。
+        不带筛选的导出是两组的并集；按组导出只给这一组装出的对象）。两种 `as` 都先生效
+        （先按参数组选回执，再取快照 / 当前）。该组不存在 → `404` `release_not_found`。
 
-        release 从未存在、或该 release 已卸载（对象已删）→ `404` `release_not_found`；
+        release 从未存在 → `404` `release_not_found`（`as=current` 下已卸载也是 404，与卸载同一口径）；
         已存在但 `created` 为空 → `200` 且 `objects: 0`（只有头注释）。只读：不写库、不产生回执。
       parameters:
+        - name: as
+          in: query
+          required: false
+          description: |
+            视图：`current`（缺省 = 当前生效版本；省略与它逐字节相同）/ `installed`
+            （安装时快照，#551）/ 其它值 → `400` `value_invalid`
+          schema: {type: string}
         - name: valuesDigest
           in: query
           required: false
@@ -1093,6 +1406,7 @@ paths:
         '400': {$ref: '#/components/responses/Status400'}
         '401': {$ref: '#/components/responses/AuthError401'}
         '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
         '500': {$ref: '#/components/responses/Status500'}
 
   # ----------------------------------------------------------------- namespaces
@@ -2157,7 +2471,7 @@ components:
     AuthError:
       type: object
       description: |
-        身份域（auth / admin / devices / keys / passkey-enroll / cli-auth）的**唯一**
+        身份域（auth / admin / keys / passkey-enroll / cli-auth）的**唯一**
         错误体：`{"error": "<人话或机器码>"}`。它**不是** Status 信封。
         两种产生点形状相同、`Content-Type` 不同：
         - 中间件（`internal/auth/*`）用 `http.Error` → `text/plain` 且正文带换行；
@@ -2476,7 +2790,7 @@ components:
           description: "没被派发出去的那个下游"
         reason:
           type: string
-          description: "剪枝码（`param_missing` / `param_schema` / `param_type` / `no_target` / `event_schema`）"
+          description: "剪枝码（`param_missing` / `param_schema` / `param_type` / `no_target` / `event_schema` / `max_hops` / `budget`）"
         detail:
           type: string
           description: "人话补充，可为空串；不参与任何判断"
@@ -2688,6 +3002,59 @@ components:
         items:
           type: array
           items: {$ref: '#/components/schemas/CapabilityAuditEntry'}
+    SourceAuditEntry:
+      type: object
+      description: "该源的一次操作（append-only；没有删除/修改入口）"
+      required: [id, action, actor, at, detail]
+      properties:
+        id: {type: string}
+        action:
+          type: string
+          enum: [source.polled_manually]
+        actor:
+          type: string
+          description: "发起操作的用户 id；空串 = 非会话主体（CLI / 系统），不做伪造"
+        at:
+          type: string
+          description: "RFC3339（UTC）"
+        detail:
+          type: object
+          additionalProperties: true
+          description: |
+            这一轮拉取的计数摘要（`{ok, items, created, duplicates}`）；
+            响应正文不落审计（里面可能有业务数据）。
+    SourceAuditList:
+      type: object
+      description: "审计列表（非信封，与 CapabilityAuditList 同类）：`items` 最新在前，空为 `[]`"
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/SourceAuditEntry'}
+    NamespaceSecretAuditEntry:
+      type: object
+      description: "该凭据的一次操作（append-only；只有名字/动作/actor/时间，没有值）"
+      required: [id, action, actor, at]
+      properties:
+        id: {type: string}
+        action:
+          type: string
+          enum: [created, rotated, deleted]
+        actor:
+          type: string
+          description: "发起操作的用户 id；空串 = 非会话主体（CLI / 系统），不做伪造"
+        at:
+          type: string
+          description: "RFC3339（UTC）"
+    NamespaceSecretAuditList:
+      type: object
+      description: "审计列表（非信封，与 CapabilityAuditList 同类）：`items` 最新在前，空为 `[]`"
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/NamespaceSecretAuditEntry'}
+
     CapabilityEdge:
       type: object
       required: [from, to, kind]
@@ -3078,6 +3445,23 @@ components:
           type: array
           items: {$ref: '#/components/schemas/PruneFact'}
 
+    SourcePollResult:
+      type: object
+      description: |
+        一轮「立即拉取」的可观测事实（**不是**资源信封）。
+        `items` 是 `config.envelope.items` 取到的条数；`created`/`duplicates` 按入库回执的
+        去重位分（同 `deliveryId` 命中窗口 → duplicates）。本轮失败不给这个文档：回
+        502 `poll_failed`（`message` 是错误原文），且游标不动。
+      required: [items, created, duplicates, durationMs, cursorAdvanced]
+      properties:
+        items: {type: integer, description: "envelope.items 取到的条数"}
+        created: {type: integer, description: "本轮新建的事件数"}
+        duplicates: {type: integer, description: "命中去重窗口（未新建）的事件数"}
+        durationMs: {type: integer, description: "整轮耗时（毫秒）"}
+        cursorAdvanced:
+          type: boolean
+          description: "这一轮是否推进了游标（304 Not Modified / 与旧游标相同 → false）"
+
     # -------------------------------------------------------------- playbook
     PlaybookSpec:
       type: object
@@ -3339,6 +3723,36 @@ components:
         sources:
           type: array
           items: {type: string}
+        pinned:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookPinnedRef'}
+          description: |
+            安装时快照（#551）：能力 `{kind,name,version,digest}`，源 `{kind,name,kindOf}`
+            （**源没有 `version`**：源无版本概念）。
+            **不在 `required` 里**：这个键是 #551 才加的，更早的回执读出来是 `[]` ——
+            客户端按「缺省 = 空数组」处理（这种老回执导出 `as=installed` 会给 `409` `no_snapshot`）。
+            `skipped.pinned` 同口径：本次安装**复用**到的对象也记（版本与摘要来自复用到的版本行）。
+    PlaybookPinnedRef:
+      type: object
+      description: |
+        安装时快照的一条（`playbook.PinnedRef`，#551）：安装那一刻钉住的一个对象。
+        能力记 `{kind,name,version,digest}`，用于导出 `as=installed` 时取**那一版**正文；
+        源记 `{kind,name,kindOf}`，导出时按名字取当前正文。
+      required: [kind, name]
+      properties:
+        kind:
+          type: string
+          description: "对象种类：`capability`（能力）/ `source`（源）"
+        name: {type: string}
+        kindOf:
+          type: string
+          description: "仅源：源的 kind（`webhook` / `cron` / `poll` / `manual`）"
+        version:
+          type: integer
+          description: "仅能力：安装时钉住的版本号"
+        digest:
+          type: string
+          description: "仅能力：该版本行的内容摘要（`sha256:…`，与版本行同源，不重算）"
     PlaybookUpgradedEntry:
       type: object
       description: "「已存在且被本次安装升级」的一条"
@@ -3395,6 +3809,20 @@ components:
         notes:
           type: array
           items: {$ref: '#/components/schemas/PlaybookNote'}
+        restoredFrom:
+          type: string
+          description: |
+            只有「按快照重装」（#561）的回执才有：被复原的那次 install id。
+            首次安装 / dryRun 的回执没有这个键（与 #561 之前逐字节相同）。
+    PlaybookRestoreRequest:
+      type: object
+      required: [valuesDigest]
+      properties:
+        valuesDigest:
+          type: string
+          description: |
+            要复原哪一组参数（`GET …/releases/{release}` 的 `params.digest` / `groups[].valuesDigest`）。
+            该组不存在 → `404 release_not_found`；空串 → `400 value_invalid`。
     RenderedCapability:
       type: object
       description: "归一化后的能力文档（默认值已补齐；与手工创建逐字节等价）"
@@ -3438,6 +3866,10 @@ components:
         lastAt: {type: string, format: date-time}
         attempts: {type: integer}
         lastInstallId: {type: string}
+        uninstalledAt:
+          type: string
+          format: date-time
+          description: "这组已卸载的时刻（#553）：只有组内回执全部已卸载才出现；生效中的组没有这个键"
         capabilities:
           type: array
           items: {type: string}
@@ -3476,6 +3908,51 @@ components:
           type: array
           description: "参数组明细（按最近安装降序）"
           items: {$ref: '#/components/schemas/PlaybookReleaseParamGroup'}
+        uninstalledAt:
+          type: string
+          format: date-time
+          description: "已卸载视图（#553）：这个实例全部回执都已卸载时的最新卸载时刻；生效中的响应里没有这个键"
+        objectsGone:
+          type: boolean
+          description: "已卸载视图（#553）：`true` 表示对象已被卸载删除（`objects` 因此为空）。用来区分「对象没了」与「当初就没装出东西」"
+        pinned:
+          type: array
+          description: |
+            已卸载视图（#553）：安装时的对象快照，与 `…/yaml?as=installed` 同口径
+            （同一 `(kind,name)` 取最后一条回执；能力按 name 升序在前、源按 name 升序在后）。
+            老回执没有记录快照时该键不出现。
+          items: {$ref: '#/components/schemas/PlaybookPinnedRef'}
+        restores:
+          type: array
+          description: |
+            按快照重装的审计行（#561，`install.restored`），按时间正序；**没复原过时该键不出现**
+            （生效中实例的响应因此逐字节不变）。actor 为空串 = 非会话主体（命令行/系统）。
+          items: {$ref: '#/components/schemas/PlaybookRestoreEntry'}
+    PlaybookRestoreEntry:
+      type: object
+      required: [action, installId, restoredFrom, recreated, reused, at]
+      description: "一次 `install.restored` 的审计投影：谁、哪次回执、重建/复用了多少对象"
+      properties:
+        action: {type: string, enum: [install.restored]}
+        installId:
+          type: string
+          description: "这次复原产生的新回执 id"
+        restoredFrom:
+          type: string
+          description: "被复原的那次 install id"
+        actor:
+          type: string
+          description: "操作者 user id；空串 = 非会话主体（命令行/系统）"
+        recreated: {$ref: '#/components/schemas/PlaybookRestoreCounts'}
+        reused: {$ref: '#/components/schemas/PlaybookRestoreCounts'}
+        at: {type: string, format: date-time}
+    PlaybookRestoreCounts:
+      type: object
+      required: [capabilities, sources]
+      description: "对象计数（能力 + 源），不是名单：名单在回执的 `created` / `skipped` 里"
+      properties:
+        capabilities: {type: integer}
+        sources: {type: integer}
     PlaybookReleaseRef:
       type: object
       required: [name, version]
@@ -3689,6 +4166,43 @@ components:
         status:
           type: object
           description: "非空 → 400 `status_not_writable`"
+      additionalProperties: false
+    NamespaceSecret:
+      type: object
+      description: |
+        命名空间凭据的**读投影**（#554）：没有 `value` —— 值只写不读，
+        任何响应/日志/审计里都不出现。`updatedAt` 是最后一次写入（创建或轮换）的时间。
+      required: [name, updatedAt, usedBy]
+      properties:
+        name: {type: string}
+        updatedAt:
+          type: string
+          description: "RFC3339（UTC）"
+        usedBy:
+          type: array
+          description: "引用它的源名（本命名空间内，按名字排序）；空为 `[]` 不是 `null`"
+          items: {type: string}
+      additionalProperties: false
+    NamespaceSecretList:
+      type: object
+      description: "凭据列表（非信封，与 `EdgeList` 同类）：`items` 按 name 升序，空为 `[]`"
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/NamespaceSecret'}
+      additionalProperties: false
+    NamespaceSecretWrite:
+      type: object
+      description: "PUT 请求体：`value` 是唯一可写字段"
+      required: [value]
+      properties:
+        value:
+          type: string
+          writeOnly: true
+          description: |
+            凭据值（只写不读）。非空、不含 CR/LF（它会被塞进 `secretRef.header` 指定的
+            请求头），最长 8192 字节。轮换 = 用同一个名字再 PUT 一次。
       additionalProperties: false
     Retention:
       type: object
@@ -4259,7 +4773,12 @@ components:
         冲突：`resource_version_conflict`（带 `details.current.resourceVersion`）、
         `AlreadyExists`、`Conflict`、`slug_taken`、`source_name_used`、`node_offline`、
         `dependency_missing`（`spec.requires` 的能力没有可见版本 / 版本不够）、
-        `dependency_locked`（能力被已生效的安装依赖着）等
+        `dependency_locked`（能力被已生效的安装依赖着）、
+        `no_snapshot`（该实例安装于未记录快照的版本：导出 `as=installed` 没有安装时快照可给，
+        `details.causes[0].field = "release"`，可改用 `as=current`）、
+        `poll_in_progress`（该源已有一轮拉取在飞：手动与定时共用同一把锁，不排队）、
+        `not_poll_source`（`spec.kind` 不是 `poll`，没有可拉取的东西）、
+        `source_disabled`（源已停用：立即拉取是写入口，与 `fire` 同口径）等
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Status'}
@@ -4295,7 +4814,9 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/Status'}
     Status502:
-      description: "上游（节点）返回不可用响应（透传节点错误码）"
+      description: |
+        上游返回不可用响应（透传节点错误码），或 `poll_failed`（一轮拉取失败：
+        `message` 是错误原文，游标不前进、退避与失败计数照常记）
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Status'}

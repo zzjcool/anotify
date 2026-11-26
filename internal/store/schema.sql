@@ -81,26 +81,6 @@ CREATE TABLE IF NOT EXISTS api_keys (
 
 CREATE INDEX IF NOT EXISTS idx_apikeys_user ON api_keys(user_id);
 
--- 接收设备（Web Push 订阅）——属于用户，不属于命名空间。
-CREATE TABLE IF NOT EXISTS devices (
-    id             TEXT PRIMARY KEY,
-    user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name           TEXT NOT NULL DEFAULT '',
-    platform       TEXT NOT NULL DEFAULT '',
-    enabled        INTEGER NOT NULL DEFAULT 1,
-    event_scope    TEXT NOT NULL DEFAULT 'final',
-    tags           TEXT NOT NULL DEFAULT '[]',
-    endpoint       TEXT NOT NULL UNIQUE,
-    p256dh         TEXT NOT NULL,
-    auth           TEXT NOT NULL,
-    user_agent     TEXT NOT NULL DEFAULT '',
-    created_at     INTEGER NOT NULL,
-    last_active    INTEGER,
-    last_delivered INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
-
 -- CLI 设备授权会话（device authorization flow）。
 CREATE TABLE IF NOT EXISTS cli_auth_sessions (
     id               TEXT PRIMARY KEY,
@@ -293,7 +273,6 @@ CREATE TABLE IF NOT EXISTS capability_switches (
     enabled      INTEGER NOT NULL DEFAULT 1,
     reason       TEXT NOT NULL DEFAULT '',
     updated_at   INTEGER NOT NULL,
-    -- users.id；空串 = 非会话主体（命令行/系统），不伪造 system 用户。
     updated_by   TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (namespace_id, name)
 );
@@ -755,7 +734,7 @@ ALTER TABLE sources ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sources ADD COLUMN skipped_overlaps INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sources ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 
--- 命名空间凭据（#532 的 secretRef 指向它）：值只写不读，写入口只有 poll 的 config.secret。
+-- 命名空间凭据（#532 的 secretRef 指向它）：值只写不读；写入口是 poll 的 config.secret 与 PUT …/secrets/{name}。
 CREATE TABLE IF NOT EXISTS namespace_secrets (
     namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
     name         TEXT NOT NULL,
@@ -777,3 +756,61 @@ CREATE TABLE IF NOT EXISTS playbook_install_requires (
 
 CREATE INDEX IF NOT EXISTS idx_playbook_requires_capability
     ON playbook_install_requires(namespace_id, capability);
+
+-- 安装时快照（#551）：回执里的 pinned 在 SQL 侧也要能查，与回执 JSON 同一事务双写；ref_kind ∈ capability / source，
+-- obj_kind 只对源有意义、version / digest 只对能力有意义，seq 保住回执顺序；列名不用 kind（I3 只放行 sources / cli_auth_sessions）。
+-- +migration 8 install_pinned
+CREATE TABLE IF NOT EXISTS playbook_install_pinned (
+    install_id   TEXT NOT NULL REFERENCES playbook_installs(id) ON DELETE CASCADE,
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    seq          INTEGER NOT NULL,
+    ref_kind     TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    obj_kind     TEXT NOT NULL DEFAULT '',
+    version      INTEGER NOT NULL DEFAULT 0,
+    digest       TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (install_id, ref_kind, name)
+);
+CREATE INDEX IF NOT EXISTS idx_playbook_pinned_lookup
+    ON playbook_install_pinned(namespace_id, ref_kind, name, version);
+
+-- +migration 9 secret_audit
+CREATE TABLE IF NOT EXISTS namespace_secret_audit (
+    id           TEXT PRIMARY KEY,
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    action       TEXT NOT NULL CHECK (action IN ('created', 'rotated', 'deleted')),
+    -- users.id；空串 = 非会话主体（命令行/系统），不伪造 system 用户。
+    actor_id     TEXT NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_namespace_secret_audit_ns
+    ON namespace_secret_audit(namespace_id, name, created_at);
+-- +migration 10 source_audit
+CREATE TABLE IF NOT EXISTS source_audit (
+    id           TEXT PRIMARY KEY,
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    source_id    TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    action       TEXT NOT NULL CHECK (action IN ('source.polled_manually')),
+    actor_id     TEXT NOT NULL DEFAULT '',
+    detail       TEXT NOT NULL DEFAULT '{}',
+    created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_audit_source
+    ON source_audit(namespace_id, source_id, created_at DESC, id DESC);
+
+-- +migration 11 playbook_restore_audit
+CREATE TABLE IF NOT EXISTS playbook_install_audit (
+    id            TEXT PRIMARY KEY,
+    namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    playbook_id   TEXT NOT NULL DEFAULT '',
+    playbook_slug TEXT NOT NULL DEFAULT '',
+    release       TEXT NOT NULL DEFAULT '',
+    install_id    TEXT NOT NULL DEFAULT '',
+    action        TEXT NOT NULL CHECK (action IN ('install.restored')),
+    actor_id      TEXT NOT NULL DEFAULT '',
+    detail        TEXT NOT NULL DEFAULT '{}',
+    created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_playbook_install_audit_release
+    ON playbook_install_audit(namespace_id, playbook_slug, release, created_at DESC, id DESC);

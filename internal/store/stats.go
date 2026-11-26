@@ -17,12 +17,10 @@ type DayCount struct {
 type Stats struct {
 	Total int `json:"total"` // 事件总数
 	Today int `json:"today"` // 今日事件数
-	// Delivered / DeliveryTotal 是任务口径：成功数 / 已结束（终态）数。
-	Delivered     int `json:"delivered"`
-	DeliveryTotal int `json:"deliveryTotal"`
-	// DeviceCount 是已启用推送设备数（设备仍按用户维度）。
-	DeviceCount int        `json:"deviceCount"`
-	Daily       []DayCount `json:"daily"`
+	// SucceededTasks / FinishedTasks 是任务口径：终态里成功数 / 终态数。
+	SucceededTasks int        `json:"succeededTasks"`
+	FinishedTasks  int        `json:"finishedTasks"`
+	Daily          []DayCount `json:"daily"`
 }
 
 // PhaseCount 是「相位 → 任务数」一行（按 PhaseCounts 的固定顺序出现）。
@@ -156,7 +154,6 @@ const (
 		   COUNT(*)
 		 FROM tasks
 		 WHERE namespace_id=? AND phase IN (?,?,?,?)`
-	statsDevicesSQL = `SELECT COUNT(*) FROM devices WHERE user_id=? AND enabled=1`
 	// 近 N 天每天数量：日界与 Today 用同一个本地时区。
 	//
 	// SQLite 的 'localtime' 修饰符读进程 TZ，结果不确定（同一次请求里 Today 与 Daily
@@ -175,12 +172,11 @@ const (
 // 口径：#80 之后「发生了什么」是 events、「做完没有」是 tasks：
 //
 //	Total/Today/Daily = 事件数（今日与日桶用**服务端本地时区**的日界）
-//	Delivered/DeliveryTotal = 终态任务里 succeeded 的占比
-//	DeviceCount = 该用户启用的推送设备数（设备仍按 user 维度）
+//	SucceededTasks/FinishedTasks = 终态任务里 succeeded 的占比
 //
 // 字段名与 JSON key 沿用旧契约：改名会让前端变成破坏性变更，而收益只是语义更贴切。
-func (d *DB) MessageStats(ctx context.Context, namespaceID, userID string, sinceSec int64) (*Stats, error) {
-	return d.messageStats(ctx, namespaceID, userID, sinceSec, time.Now())
+func (d *DB) MessageStats(ctx context.Context, namespaceID string, sinceSec int64) (*Stats, error) {
+	return d.messageStats(ctx, namespaceID, sinceSec, time.Now())
 }
 
 // MessageStatsAll 把**显式给定**的一组命名空间的统计求和（「全部命名空间」视图）。
@@ -190,12 +186,11 @@ func (d *DB) MessageStats(ctx context.Context, namespaceID, userID string, since
 // 接受确定的命名空间；收到空串或 `*` 一律 ErrNamespaceRequired（防御，不是可选项）。
 //
 // 口径与单 ns **完全一致**（共用 accumulateMessageStats 里那一份 SQL）：
-//   - Total/Today/Delivered/DeliveryTotal 逐 ns 相加；
+//   - Total/Today/SucceededTasks/FinishedTasks 逐 ns 相加；
 //   - Daily 按 day 合并（不同 ns 的同一天合成一行，不重复计同一天），升序；
-//   - DeviceCount 是用户维度，只查一次、**不**乘 ns 数量；
 //   - 空列表 = 全零 + `daily: []`（**不报错**：没有命名空间是合法的空集合，不是调用错误）。
-func (d *DB) MessageStatsAll(ctx context.Context, namespaceIDs []string, userID string, sinceSec int64) (*Stats, error) {
-	return d.messageStatsAll(ctx, namespaceIDs, userID, sinceSec, time.Now())
+func (d *DB) MessageStatsAll(ctx context.Context, namespaceIDs []string, sinceSec int64) (*Stats, error) {
+	return d.messageStatsAll(ctx, namespaceIDs, sinceSec, time.Now())
 }
 
 // startOfLocalDayUnix 返回 now 所在时区当天 00:00:00 的 Unix 秒。
@@ -209,41 +204,36 @@ func startOfLocalDayUnix(now time.Time) int64 {
 
 // messageStats 是 MessageStats 的可注入时间版本（now 由调用方给，测试才能不依赖
 // 机器时区/真实时钟地验证「今日」与日桶口径）。
-func (d *DB) messageStats(ctx context.Context, namespaceID, userID string, sinceSec int64, now time.Time) (*Stats, error) {
+func (d *DB) messageStats(ctx context.Context, namespaceID string, sinceSec int64, now time.Time) (*Stats, error) {
 	s := &Stats{Daily: []DayCount{}}
-	if err := d.accumulateMessageStats(ctx, s, namespaceID, userID, sinceSec, now, true); err != nil {
+	if err := d.accumulateMessageStats(ctx, s, namespaceID, sinceSec, now); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
 // messageStatsAll 是 MessageStatsAll 的可注入时间版本（理由同 messageStats）。
-func (d *DB) messageStatsAll(ctx context.Context, namespaceIDs []string, userID string, sinceSec int64, now time.Time) (*Stats, error) {
+func (d *DB) messageStatsAll(ctx context.Context, namespaceIDs []string, sinceSec int64, now time.Time) (*Stats, error) {
 	s := &Stats{Daily: []DayCount{}}
 	for _, namespaceID := range namespaceIDs {
-		if err := d.accumulateMessageStats(ctx, s, namespaceID, userID, sinceSec, now, false); err != nil {
+		if err := d.accumulateMessageStats(ctx, s, namespaceID, sinceSec, now); err != nil {
 			return nil, err
 		}
-	}
-	// 设备是**用户维度**的：只查一次，不参与逐 ns 求和（否则会被乘上 ns 数量）。
-	if err := d.QueryRowContext(ctx, statsDevicesSQL, userID).Scan(&s.DeviceCount); err != nil {
-		return nil, fmt.Errorf("stats devices: %w", err)
 	}
 	return s, nil
 }
 
 // accumulateMessageStats 把**一个**命名空间的聚合叠加进 s。
 //
-// 这是两条读路径唯一的事实来源：单 ns（MessageStats）只调一次且带设备计数，跨 ns
-// 汇总（MessageStatsAll）对每个 ns 调一次、设备计数由调用方单独查一次。任何口径
-// 改动都只发生在这里，不存在「第二份 SQL 漂了」的可能。
-func (d *DB) accumulateMessageStats(ctx context.Context, s *Stats, namespaceID, userID string,
-	sinceSec int64, now time.Time, withDevices bool) error {
+// 这是两条读路径唯一的事实来源：单 ns（MessageStats）与跨 ns 汇总（MessageStatsAll）
+// 都对每个 ns 调一次。任何口径改动都只发生在这里，不存在「第二份 SQL 漂了」的可能。
+func (d *DB) accumulateMessageStats(ctx context.Context, s *Stats, namespaceID string,
+	sinceSec int64, now time.Time) error {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return ErrNamespaceRequired
 	}
 
-	var total, today, delivered, deliveryTotal int
+	var total, today, succeeded, finished int
 	if err := d.QueryRowContext(ctx, statsTotalSQL, namespaceID).Scan(&total); err != nil {
 		return fmt.Errorf("stats total: %w", err)
 	}
@@ -252,19 +242,13 @@ func (d *DB) accumulateMessageStats(ctx context.Context, s *Stats, namespaceID, 
 	}
 	if err := d.QueryRowContext(ctx, statsTasksSQL,
 		TaskSucceeded, namespaceID, TaskSucceeded, TaskFailed, TaskCancelled, TaskAbandoned).
-		Scan(&delivered, &deliveryTotal); err != nil {
+		Scan(&succeeded, &finished); err != nil {
 		return fmt.Errorf("stats tasks: %w", err)
 	}
 	s.Total += total
 	s.Today += today
-	s.Delivered += delivered
-	s.DeliveryTotal += deliveryTotal
-
-	if withDevices {
-		if err := d.QueryRowContext(ctx, statsDevicesSQL, userID).Scan(&s.DeviceCount); err != nil {
-			return fmt.Errorf("stats devices: %w", err)
-		}
-	}
+	s.SucceededTasks += succeeded
+	s.FinishedTasks += finished
 
 	_, offset := now.Zone()
 	rows, err := d.QueryContext(ctx, statsDailySQL, offset, namespaceID, sinceSec)

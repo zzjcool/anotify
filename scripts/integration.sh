@@ -38,10 +38,6 @@ check "无 Key 上报 → 401/403" "401" "$code"
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/notify" -H 'Authorization: Bearer ant_live_wrong' -H 'Content-Type: application/json' -d '{"status":"success","title":"t"}')
 check "错误 Key 上报 → 401" "401" "$code"
 
-echo "=== 5. VAPID 公钥 ==="
-code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/vapid-public-key")
-check "GET /v1/vapid-public-key → 200" "200" "$code"
-
 echo ""
 echo "=========================================="
 echo "结果：$PASS 通过 / $FAIL 失败"

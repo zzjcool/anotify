@@ -260,7 +260,7 @@ export function implWordHit(text, ranges = codeRanges(text)) {
  * 页面数留了删页的余量（真实删页就同步下调）；文本节点数同理，但不允许归零 ——
  * 「扫出空集却报绿」正是这个检查最怕的假绿形态。
  */
-const FLOORS = { files: 4, values: 9000, pages: 20, pageNodes: 160, implNodes: 90, proseNodes: 70 };
+const FLOORS = { files: 4, values: 9000, pages: 20, pageNodes: 160, implNodes: 88, proseNodes: 69 }; // 88/69：V4-D7 删推送章节与设备 KPI 卡，扫描面真实缩小
 
 export function blankLiterals(text) { // 把字面量区间抹成等长空格：命中下标仍对得上原文，句子里剩下的才算散文
 	const ranges = codeRanges(text);

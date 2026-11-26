@@ -147,13 +147,11 @@ async function main() {
 		for (const name of cssClassNames(src)) defined.add(name);
 		collectFromSource(src, tokens);
 	}
-	for (const rel of ["web/partials.js", "web/sw.js"]) {
-		try {
-			const src = await fs.readFile(path.join(root, rel), "utf8");
-			collectFromSource(src, tokens);
-		} catch {
-			/* sw.js 可选 */
-		}
+	try {
+		const src = await fs.readFile(path.join(root, "web/partials.js"), "utf8");
+		collectFromSource(src, tokens);
+	} catch {
+		/* partials.js 可能尚未生成（sitegen 之前） */
 	}
 
 	const missing = [];

@@ -3,7 +3,6 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import * as H from "../../lib/harness.mjs";
 import {
   ANCHORS, DATA_PAGES, KEY_PAGES, LANGS, MATRIX_VIEWS, PAGES, STANDALONE, TABLET_VIEW, THEMES, VIEWPORTS,
   auditPage, fixtures, gotoPage, matrixCases, openDriver, shoot, viewUrl, greetGuest, greetMember, passiveUiProbe,
@@ -25,7 +24,7 @@ const SUITES = Object.freeze({
     { id: "interact-error-403", kind: "interact", lang: "zh-CN", views: 1 },
     { id: "retained-auth-shell", kind: "retained", lang: "en", views: 1 },
     { id: "retained-graph", kind: "retained", lang: "en", views: 1 },
-    { id: "guards-guest", kind: "guard", lang: "zh-CN", views: 6 },
+    { id: "guards-guest", kind: "guard", lang: "zh-CN", views: 5 },
     /* #369（覆盖 #384 的旧方案）：390 视口下四类主内容（keys/admin 表 / 链路图 /
        热力图 / docs 代码块）必须「不用横滚就能读完」，但**不许靠折叠**：
        链路图要画出完整链路（节点数/连线数与 1440 档一致），热力图要画出完整
@@ -71,12 +70,10 @@ const SUITES = Object.freeze({
   ]),
   ux_regression_19_23: Object.freeze([
     { id: "ux19-member-admin", kind: "ux", views: 1 },
-    { id: "ux20-notification-denied", kind: "ux", views: 1 },
     { id: "ux21-authme-identity", kind: "ux", views: 1 },
     { id: "ux22-passkey-empty-enrollment", kind: "ux", views: 1 },
-    { id: "ux23-zero-devices-honest", kind: "ux", views: 1 },
-    { id: "retained-device-patch", kind: "ux", views: 1 },
-    { id: "retained-guards", kind: "guard", views: 6 },
+    { id: "ux23-no-push-surface", kind: "ux", views: 1 },
+    { id: "retained-guards", kind: "guard", views: 5 },
     { id: "retained-login-form", kind: "guard", views: 1 },
   ]),
 });
@@ -816,7 +813,7 @@ async function retainedAuthShell(c) {
     assert.ok(shell.greeting.includes(me.displayName) && shell.user.includes(me.displayName), "identity comes from /auth/me: " + JSON.stringify({ greeting: shell.greeting, user: shell.user, expect: me.displayName }));
     assert.equal(shell.scope, true, "namespace switcher retained on the authenticated shell");
     count.inc();
-    for (const page of ["capabilities", "nodes", "playbooks", "security", "receivers", "events"]) {
+    for (const page of ["capabilities", "nodes", "playbooks", "security", "events"]) {
       const errorsFrom = d.report.errors.length;
       await gotoPage(d, page, f, "en");
       const state = await d.page.evaluate(sel => ({ anchor: !!document.querySelector(sel), text: (document.getElementById("page-main")?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 80) }), ANCHORS[page]);
@@ -826,7 +823,7 @@ async function retainedAuthShell(c) {
       count.inc();
     }
     await d.finish();
-    return ok(count.n, [{ page: "index+6", lang: "en", theme: "light", viewport: "desktop", attempted: true, ok: true }]);
+    return ok(count.n, [{ page: "index+5", lang: "en", theme: "light", viewport: "desktop", attempted: true, ok: true }]);
   });
 }
 async function retainedGraph(c) {
@@ -852,8 +849,8 @@ async function retainedGraph(c) {
   });
 }
 
-const GUARDED = ["index", "keys", "security", "receivers", "capabilities", "nodes"];
-// 匿名视图的**真实就绪条件**（#338 flake：全量 3/3 假失败于 guest index/keys/receivers）。
+const GUARDED = ["index", "keys", "security", "capabilities", "nodes"];
+// 匿名视图的**真实就绪条件**（#338 flake：全量 3/3 假失败于 guest index/keys）。
 // 旧写法 `waitForFunction(login 路径匹配 || login-panel 存在)` + `.catch(()=>{})` 有两处错：
 //   ① 条件里有 `||`，URL 一变到 login.html 就立刻返回，而页面控制器还没把密码表单挂上来
 //      —— 紧接着 evaluate 读到 {panel:false,fields:0}，断言假失败（报文恒 panel:false,fields:0）；
@@ -939,7 +936,7 @@ async function ux19(c) {
     await d.page.waitForFunction(() => { const m = document.getElementById("page-main"); return !!m && /无权|Forbidden|not an admin|无权限/.test(m.innerText || ""); }, null, { timeout: 10000 }).catch(() => {});
     const state = await d.page.evaluate(() => {
       const main = document.getElementById("page-main");
-      return { text: (main?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 200), back: !!main?.querySelector('a[href="index.html"]'), kpi: !!document.getElementById("kpi-devices"), role: window.Anotify?.me?.role || null };
+      return { text: (main?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 200), back: !!main?.querySelector('a[href="index.html"]'), kpi: !!document.getElementById("kpi-messages"), role: window.Anotify?.me?.role || null };
     });
     assert.match(state.text, /无权|Forbidden|not an admin|无权限/, "#19 member sees the explicit forbidden page: " + state.text);
     assert.equal(state.back, true, "#19 forbidden page links back to the overview");
@@ -953,72 +950,33 @@ async function ux19(c) {
     return ok(count.n, [{ page: "admin", lang: "zh-CN", theme: "light", viewport: "desktop", attempted: true, ok: true, member: true }]);
   });
 }
-async function ux20(c) {
-  return withDriver(c.id, { lang: "zh-CN", theme: "light" }, async (d, count) => {
-    await d.context.addInitScript(() => {
-      Object.defineProperty(window, "Notification", { configurable: true, writable: true, value: class Notification { static get permission() { return "denied"; } static requestPermission() { return Promise.resolve("denied"); } } });
-      window.__swRegister = 0;
-      if (navigator.serviceWorker) { const base = navigator.serviceWorker.register ? navigator.serviceWorker.register.bind(navigator.serviceWorker) : null; if (base) navigator.serviceWorker.register = (...args) => { window.__swRegister++; return base(...args); }; }
-    });
-    await d.archive();
-    await d.page.goto(d.base + "/receivers.html?namespace=default", { waitUntil: "domcontentloaded" });
-    await d.page.waitForFunction(() => !!window.Anotify && !document.querySelector('[aria-busy="true"]'), null, { timeout: 9000 }).catch(() => {});
-    await d.page.waitForTimeout(800);
-    const card = await d.page.evaluate(() => {
-      const c = document.getElementById("current-device-card");
-      const main = document.getElementById("page-main");
-      return {
-        pushUI: !!(window.Anotify && window.Anotify.pushUIEnabled),
-        card: !!c,
-        text: ((c || main)?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 240),
-        buttons: Array.from((c || document.body).querySelectorAll("button")).map(b => (b.textContent || "").trim()).slice(0, 6),
-        register: window.__swRegister || 0,
-        permission: Notification.permission,
-      };
-    });
-    if (!card.pushUI) {
-      assert.match(card.text, /暂未开放|not available|未公開|no disponibles/i, "#20 push UI honestly reported unavailable: " + card.text);
-      assert.equal(card.card, false, "#20 no half-built device card while push is unavailable");
-    } else {
-      assert.ok(/查看如何开启|how to enable|cómo/i.test(card.buttons.join(" ") + " " + card.text), "#20 denied permission surfaces enable-guidance: " + JSON.stringify({ buttons: card.buttons, text: card.text }));
-      const button = d.page.locator("#current-device-card button").first();
-      if (await button.count()) {
-        await button.click();
-        await d.page.waitForSelector("#anotify-toast-host", { timeout: 5000 }).catch(() => {});
-        const toast = await d.page.evaluate(() => (document.getElementById("anotify-toast-host")?.textContent || "").trim());
-        assert.ok(toast.length > 0, "#20 the real click produces visible feedback: " + toast.slice(0, 80));
-      }
-    }
-    assert.equal(card.permission, "denied", "#20 the page really observed the denied permission");
-    assert.equal(card.register, 0, "#20 denied permission never registers a push subscription");
-    assert.deepEqual((await writeWrites(d)).filter(x => /\/v1\/devices/.test(x.url)), [], "#20 denied permission performs zero device/notification write");
-    await d.finish(); count.inc();
-    return ok(count.n, [{ page: "receivers", lang: "zh-CN", theme: "light", viewport: "desktop", attempted: true, ok: true, pushUI: card.pushUI }]);
-  });
-}
 async function ux21(c) {
   return withDriver(c.id, { lang: "zh-CN", theme: "light" }, async (d, count) => {
     await d.archive();
     await d.page.goto(d.base + "/index.html?namespace=default&u=zheng", { waitUntil: "domcontentloaded" });
-    // 就绪条件必须是**真实事实**（#338 flake，全量第 1 轮复现 ["usr_mock_demo|demo","|"]）：
-    //   ① `#greeting` / `#sidebar-username` 的模板占位文本本身就非空（sidebar 默认 "…"），
-    //      旧的就绪条件等于什么都没等；
-    //   ② window.__f3Calls 里**在飞的请求**也占一行（只有 url/method，没有 result/httpStatus），
-    //      index 页有两处 /auth/me（layout 的 loadMe + 页面控制器的 loadMe），并发下读到
-    //      「A 已落定、B 还在飞」的中间态，身份集合里就多出一个空条目。
-    // 所以先等**所有 /auth/me 都落定**（在飞的请求不是 response，不参与身份比对），
-    // 再等同一个身份真的渲染进 DOM（不是模板占位），最后照旧断言。
-    const pendingOf = calls => calls.filter(x => x.httpStatus === undefined && x.error === undefined);
+    // 每条 /auth/me 的原始事实：驱动在 fetch 发起时就占一行，`httpStatus` 早于 body 解析落盘，
+    // 只有 `settled` 才同时代表两者（f3-driver 的 #483 注释）。旧判据只等 `httpStatus`，于是把
+    // 半条记录的空身份读成「另一份身份」（#338 → #563 同一个 flake）。
+    const factsOf = calls => calls.map((x, i) => ({
+      call: (i + 1) + "/" + calls.length, url: x.url, hs: x.httpStatus, contentType: x.contentType,
+      bodyBytes: x.bodyBytes, hasBody: x.result !== undefined, err: x.error, settled: x.settled === true,
+      id: x.result?.id, username: x.result?.username, displayName: x.result?.displayName,
+    }));
     const deadline = Date.now() + 9000;
     let meCalls = [];
     for (;;) {
       meCalls = (await d.calls()).filter(x => x.method === "GET" && /\/v1\/auth\/me$/.test(x.url));
-      if (meCalls.length >= 1 && pendingOf(meCalls).length === 0) break;
+      if (meCalls.length >= 1 && meCalls.every(x => x.settled === true)) break;
       if (Date.now() > deadline) break;
       await new Promise(r => setTimeout(r, 50));
     }
-    assert.deepEqual(pendingOf(meCalls).map(x => x.url), [], "#21 every recorded /auth/me call settled (in-flight is not a response), no blank identity: " + JSON.stringify(meCalls.map(x => ({ hs: x.httpStatus, err: x.error, keys: Object.keys(x).join(",") }))).slice(0, 300));
-    const me = meCalls[0]?.result || {};
+    const facts = factsOf(meCalls);
+    assert.ok(meCalls.length >= 1, "#21 the identity is backed by GET /auth/me: " + meCalls.length + " call(s)");
+    assert.deepEqual(facts.filter(f => !f.settled), [], "#21 every recorded /auth/me call settled (httpStatus + parsed body; a half record is not a response): " + JSON.stringify(facts));
+    assert.deepEqual(facts.filter(f => !f.id || !f.username), [], "#21 every /auth/me call carries the full identity (id + username): " + JSON.stringify(facts));
+    const diverging = facts.filter(f => f.id + "|" + f.username !== facts[0].id + "|" + facts[0].username);
+    assert.deepEqual(diverging, [], "#21 all " + facts.length + " recorded /auth/me responses agree on one identity: call(s) " + JSON.stringify(diverging) + " diverge from " + JSON.stringify(facts[0]));
+    const me = meCalls[0].result;
     assert.ok(me.displayName, "#21 the identity comes from the recorded /auth/me response: " + JSON.stringify(me).slice(0, 160));
     let names = { greeting: "", sidebar: "" };
     for (;;) {
@@ -1030,11 +988,8 @@ async function ux21(c) {
     assert.ok(names.greeting.includes(me.displayName), "#21 greeting matches the /auth/me identity: " + JSON.stringify({ ...names, expect: me.displayName }));
     assert.ok(names.sidebar.includes(me.displayName), "#21 sidebar identity matches the same /auth/me response");
     assert.ok(!/zheng/.test(names.greeting) || me.displayName.includes("zheng"), "#21 the query-string fake user cannot replace the identity: " + names.greeting);
-    assert.ok(meCalls.length >= 1, "#21 the identity is backed by GET /auth/me: " + meCalls.length + " call(s)");
-    const identities = new Set(meCalls.map(x => (x.result?.id || "") + "|" + (x.result?.username || "")));
-    assert.equal(identities.size, 1, "#21 every /auth/me response is the same identity, no divergent/fake user: " + JSON.stringify([...identities]) + " " + JSON.stringify(meCalls.map(x => ({ hs: x.httpStatus, err: x.error, id: x.result?.id, user: x.result?.username, code: x.result?.code }))).slice(0, 300));
     await d.finish(); count.inc();
-    return ok(count.n, [{ page: "index", lang: "zh-CN", theme: "light", viewport: "desktop", attempted: true, ok: true, authMe: meCalls.length }]);
+    return ok(count.n, [{ page: "index", lang: "zh-CN", theme: "light", viewport: "desktop", attempted: true, ok: true, authMe: meCalls.length, identities: facts.map(f => f.id + "|" + f.username) }]);
   });
 }
 async function ux22(c) {
@@ -1073,80 +1028,25 @@ async function ux22(c) {
 async function ux23(c) {
   return withDriver(c.id, { lang: "zh-CN", theme: "light" }, async (d, count) => {
     await d.goto("index");
-    const devices = await d.req("/v1/devices");
-    assert.equal(devices.devices.length, 0, "#23 fixture has zero devices — the honest denominator");
     const f = await fixtures(d);
     await gotoPage(d, "index", f, "zh-CN");
     await d.page.waitForTimeout(600);
     const state = await d.page.evaluate(() => ({
-      pushUI: !!(window.Anotify && window.Anotify.pushUIEnabled),
-      tiles: Array.from(document.querySelectorAll("[data-push-tile]")).map(el => ({ hidden: el.classList.contains("hidden"), text: (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 40) })),
-      rate: (document.getElementById("kpi-rate")?.textContent || "").trim(),
-      sub: (document.getElementById("kpi-rate-sub")?.textContent || "").trim(),
-      deviceKpi: (document.getElementById("kpi-devices")?.textContent || "").trim(),
+      pushSwitch: !!(window.Anotify && "pushUIEnabled" in window.Anotify),
+      tiles: document.querySelectorAll("[data-push-tile]").length,
+      rate: document.getElementById("kpi-rate") !== null,
+      deviceKpi: document.getElementById("kpi-devices") !== null,
       testNotify: !!document.getElementById("test-notify") || !!document.getElementById("tn-form") || !!document.getElementById("tn-toggle"),
       percent: /(^|\D)100\s*%/.test(document.body.innerText || ""),
     }));
-    if (!state.pushUI) assert.ok(state.tiles.length === 0 || state.tiles.every(t => t.hidden), "#23 push tiles honestly hidden while push UI is off: " + JSON.stringify(state.tiles));
-    else {
-      assert.ok(!/^100/.test(state.rate), "#23 zero devices never shows a fake 100% delivery rate: " + state.rate);
-      assert.ok(/–|-|—/.test(state.rate) || /暂无|不可用|no device|N\/A|unavailable/i.test(state.sub), "#23 the rate shows an honest empty state: " + JSON.stringify({ rate: state.rate, sub: state.sub }));
-    }
+    assert.equal(state.pushSwitch, false, "V4-D7 推送开关 pushUIEnabled 必须不存在");
+    assert.equal(state.tiles, 0, "V4-D7 首页不再有 [data-push-tile]");
+    assert.equal(state.rate, false, "V4-D7 送达率 KPI 卡已删");
+    assert.equal(state.deviceKpi, false, "V4-D7 接收设备 KPI 卡已删");
     assert.equal(state.testNotify, false, "#23 the obsolete test-notification panel stays deleted");
     assert.equal(state.percent, false, "#23 no fabricated 100% claim anywhere on the page");
     await d.finish(); count.inc();
     return ok(count.n, [{ page: "index", lang: "zh-CN", theme: "light", viewport: "desktop", attempted: true, ok: true, devices: 0 }]);
-  });
-}
-async function retainedDevicePatch(c) {
-  return withDriver(c.id, { lang: "zh-CN", theme: "light" }, async (d, count) => {
-    const id = "f3b2b-toggle-device";
-    await d.goto("index");
-    if (d.mock) {
-      await d.goto("receivers");
-      const me = await d.req("/v1/auth/me");
-      assert.ok(me.id, "actual current me.id owns the flat device fixture");
-      await d.page.evaluate(([deviceId, userId]) => {
-        const device = { id: deviceId, userId, name: "Toggle Receiver", platform: "web", enabled: true, eventScope: "all", tags: [], endpoint: "https://push.example.invalid/f3b2b" };
-        window.MockApi.state.devices = [device];
-        const facts = JSON.parse(sessionStorage.getItem("f3-facts") || "{}");
-        sessionStorage.setItem("f3-facts", JSON.stringify({ ...facts, devices: [device] }));
-      }, [id, me.id]);
-    } else {
-      const created = await d.response("/v1/devices", H.makeDevice({ id, name: "Toggle Receiver", enabled: true }), "POST");
-      assert.ok([200, 201].includes(created.status), "real device registration answered: " + created.status + " " + JSON.stringify(created.body).slice(0, 160));
-    }
-    await d.archive();
-    await d.page.goto(d.base + "/receivers.html?namespace=default", { waitUntil: "domcontentloaded" });
-    await d.page.waitForFunction(() => !!window.Anotify && !document.querySelector('[aria-busy="true"]'), null, { timeout: 9000 }).catch(() => {});
-    await d.page.waitForFunction(() => (document.body.innerText || "").includes("Toggle Receiver"), null, { timeout: 9000 }).catch(() => {});
-    const row = await d.page.evaluate(() => {
-      const rows = Array.from(document.querySelectorAll(".rc-dev-row"));
-      const scope = rows.find(el => (el.textContent || "").includes("Toggle Receiver")) || null;
-      return { found: !!scope, rows: rows.length, toggles: scope ? scope.querySelectorAll("button.switch, button[aria-pressed]").length : 0, pressed: scope ? Array.from(scope.querySelectorAll("button.switch, button[aria-pressed]")).map(b => b.getAttribute("aria-pressed")) : [] };
-    });
-    assert.equal(row.found, true, "the device row renders in the real list: " + JSON.stringify(row));
-    assert.ok(row.toggles > 0, "the device row exposes a real enable switch: " + JSON.stringify(row));
-    await d.archive();
-    const toggle = d.page.locator(".rc-dev-row").filter({ hasText: "Toggle Receiver" }).locator("button.switch, button[aria-pressed]");
-    assert.equal(await toggle.count(), 1, "one enable switch for the exact owned fixture row");
-    await toggle.click();
-    await d.page.waitForTimeout(1400);
-    const writes = await writeWrites(d);
-    assert.equal(writes.length, 1, "the device toggle issues exactly one write: " + JSON.stringify(writes.map(x => x.method + " " + x.url)).slice(0, 200));
-    assert.equal(writes[0].method, "PATCH", "the device toggle uses PATCH: " + writes[0].method);
-    assert.ok(writes[0].url.endsWith("/v1/devices/" + id), "PATCH targets the exact device id in the path, not a body id: " + writes[0].url);
-    assert.deepEqual(Object.keys(writes[0].body || {}), ["enabled"], "the PATCH body carries only the enabled fact: " + JSON.stringify(writes[0].body));
-    assert.equal(writes[0].body.enabled, false, "the toggle sends enabled=false");
-    assert.equal(writes[0].httpStatus, 200, "the success response is consumed from the wire: " + writes[0].httpStatus);
-    assert.equal(writes[0].response.device.id, id, "wrapped device response has exact retained id");
-    assert.equal(writes[0].response.device.enabled, false, "wrapped response persists false");
-    const paused = await d.page.evaluate(() => (document.getElementById("page-main")?.innerText || "").replace(/\s+/g, " "));
-    assert.match(paused, /暂停|已停用|Paused|pausado|Desactiv/i, "the paused state is reflected in the live UI: " + paused.slice(0, 180));
-    const state = await d.req("/v1/devices");
-    assert.equal(state.devices.find(x => x.id === id)?.enabled, false, "a follow-up GET /v1/devices confirms the paused device");
-    await d.finish(); count.inc();
-    return ok(count.n, [{ page: "receivers", lang: "zh-CN", theme: "light", viewport: "desktop", attempted: true, ok: true, patch: writes[0].url }]);
   });
 }
 async function retainedLoginForm(c) {
@@ -1211,9 +1111,8 @@ export async function runUiCase(suite, id) {
     "interact-namespace-switch": () => interactNamespaceSwitch(c), "interact-dialogs": () => interactDialogs(c), "interact-error-states": () => interactErrorStates(c),
     "interact-error-403": () => interactError403(c),
     "retained-auth-shell": () => retainedAuthShell(c), "retained-graph": () => retainedGraph(c),
-    "ux19-member-admin": () => ux19(c), "ux20-notification-denied": () => ux20(c), "ux21-authme-identity": () => ux21(c),
-    "ux22-passkey-empty-enrollment": () => ux22(c), "ux23-zero-devices-honest": () => ux23(c),
-    "retained-device-patch": () => retainedDevicePatch(c),
+    "ux19-member-admin": () => ux19(c), "ux21-authme-identity": () => ux21(c),
+    "ux22-passkey-empty-enrollment": () => ux22(c), "ux23-no-push-surface": () => ux23(c),
   }[id];
   assert.ok(single, "case " + id + " has a registered body");
   return single();

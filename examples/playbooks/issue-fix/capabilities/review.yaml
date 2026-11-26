@@ -1,0 +1,101 @@
+apiVersion: anotify/v1
+kind: Capability
+
+metadata:
+  name: '{{values.project}}-review'
+  displayName: '{{values.project}} review 修复 PR'
+
+spec:
+  params:
+    type: object
+    required: [repo, issue]
+    properties:
+      repo:    { type: string }
+      issue:   { type: integer }
+      round:   { type: integer }
+      pr:      { type: string }
+      branch:  { type: string }
+      findings: { type: string }
+      outcome: { type: string }
+  next:
+    - '{{values.project}}-record'
+    - '{{values.project}}-fix'
+  requires:
+    commands: [pi, git, gh]
+  lifecycle:
+    idempotent: false
+    timeoutSec: 3600
+  run:
+    entrypoint: run.sh
+    files:
+      run.sh: |
+        #!/bin/sh
+        set -eu
+
+        repo=${ANOTIFY_PARAM_REPO:?}
+        issue=${ANOTIFY_PARAM_ISSUE:?}
+        round=${ANOTIFY_PARAM_ROUND:-1}
+        pr=${ANOTIFY_PARAM_PR:-}
+        branch=${ANOTIFY_PARAM_BRANCH:-}
+        art_dir=${ANOTIFY_ARTIFACT_DIR}
+        mkdir -p "$art_dir"
+
+        prompt="你在 review 仓库 $repo 上 issue #$issue 的修复 PR${pr:+（$pr）}${branch:+，分支 $branch}。这是第一轮 review。
+
+        要求：
+        1. 先 gh pr diff 读全部改动，再读被改函数周围的代码与既有测试；不要只看 diff 表面。
+        2. **真的跑**相关测试（不要只看 CI 状态）：改了什么就跑到什么；失败就贴真实输出。
+        3. 重点看四类问题：正确性/回归（边界、错误处理、状态机）、测试是否真的覆盖了这次改动、
+           有没有改无关文件、有没有把调试代码或临时开关留下。
+        4. 不许自己动手改代码、不许合并 PR。
+
+        裁决**只**写成 JSON 文件：$art_dir/agent-verdict.json
+        格式（严格）：
+        {\"approved\": true 或 false, \"findings\": \"逐条列出问题；通过则写空串\"}
+
+        "
+
+        repo_dir=${REPO_DIR:?REPO_DIR 未注入}
+        agent=${AGENT_CMD:-pi}
+        agent_args=${AGENT_ARGS:--p}
+        art_dir=${ANOTIFY_ARTIFACT_DIR}
+        verdict="$art_dir/agent-verdict.json"
+        log_file="$art_dir/agent.log"
+        mkdir -p "$art_dir"
+        rm -f "$verdict"
+
+        cd "$repo_dir"
+
+        set +e
+        $agent $agent_args "$prompt" >"$log_file" 2>&1
+        agent_code=$?
+        set -e
+        echo "agent exit=$agent_code（日志见 artifacts/agent.log）"
+
+        if [ ! -f "$verdict" ]; then
+          echo "agent 没有写出裁决文件 $verdict —— 按未完成处理（不猜结果）" >&2
+          exit 1
+        fi
+        cat "$verdict"
+
+        if grep -q '"approved": *true' "$verdict"; then
+          anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"approved\",\"pr\":\"$pr\"}"
+          exit 0
+        fi
+        if ! grep -q '"approved": *false' "$verdict"; then
+          echo "裁决文件里没有 approved 字段：不猜结果" >&2
+          exit 1
+        fi
+
+        findings=$(sed -n 's/.*"findings": *"\([^"]*\)".*/\1/p' "$verdict" | head -1)
+        if [ "$round" -lt 2 ]; then
+          gh issue comment "$issue" --repo "$repo" --body "review（第 $round 轮）未通过，findings 见上一条评论或本条：${findings:-review 未通过}"
+          anode emit '{{values.project}}-fix' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"round\":$round,\"pr\":\"$pr\",\"branch\":\"$branch\"}"
+          exit 0
+        fi
+        anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"escalate\",\"pr\":\"$pr\"}"
+    env:
+      REPO_DIR: '{{values.repoDir}}'
+      AGENT_CMD: '{{values.agentCmd}}'
+      AGENT_ARGS: '{{values.agentArgs}}'
+      BASE_BRANCH: '{{values.baseBranch}}'

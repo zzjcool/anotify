@@ -1,0 +1,52 @@
+apiVersion: anotify/v1
+kind: Capability
+
+metadata:
+  name: '{{values.project}}-record'
+  displayName: '{{values.project}} 收尾'
+
+spec:
+  params:
+    type: object
+    required: [repo, issue]
+    properties:
+      repo:     { type: string }
+      issue:    { type: integer }
+      outcome:  { type: string }
+      pr:       { type: string }
+      findings: { type: string }
+  next: []
+  requires:
+    commands: [gh]
+  lifecycle:
+    idempotent: true
+    timeoutSec: 120
+  run:
+    entrypoint: run.sh
+    files:
+      run.sh: |
+        #!/bin/sh
+        set -eu
+
+        repo=${ANOTIFY_PARAM_REPO:?}
+        issue=${ANOTIFY_PARAM_ISSUE:?}
+        outcome=${ANOTIFY_PARAM_OUTCOME:-unknown}
+        pr=${ANOTIFY_PARAM_PR:-}
+        findings=${ANOTIFY_PARAM_FINDINGS:-}
+        art_dir=${ANOTIFY_ARTIFACT_DIR}
+        mkdir -p "$art_dir"
+
+        case "$outcome" in
+          closed)   line="按自动判定关闭：不成立" ;;
+          approved) line="修复完成，review 通过${pr:+：$pr}（未自动合并，等人看）" ;;
+          escalate) line="第二轮 review 仍未通过，需要人接手${pr:+：$pr}" ;;
+          stuck)    line="执行体没能完成：$findings" ;;
+          *)        line="流程结束：$outcome" ;;
+        esac
+
+        printf '{"repo":"%s","issue":%s,"outcome":"%s","pr":"%s","line":"%s"}\n' \
+          "$repo" "$issue" "$outcome" "$pr" "$line" > "$art_dir/record.json"
+
+        gh issue comment "$issue" --repo "$repo" --body "$line" || echo "写回 issue 失败（不改变结论）" >&2
+        echo "record: $outcome — $line"
+

@@ -264,7 +264,8 @@ export const ANCHOR_MIN = ANNOTATION_MIN.anchors;
 // 2026-11-21（#495 B 阶段前置）：下限改成「扫描面覆盖 + 解析器存活」，删掉写死四个实测快照的那段注释、
 // 也压掉了两段历史校准流水账，所以 C 299→298、D 312→311（均为本树实测；不是判据放宽）。
 // B1（删 docs/v4 五份清单）后 D 311→248、B2（删 docs/research + docs/perf）后 210：它们整篇落在规则 D 的扫描面里，删掉即降（C 不动）。
-export const CLAIM_UNBACKED_BASELINE = 297;
+// V4-D7 删掉 f3 夹具里的推送页用例块（连带其注释），实测 C 296→295 —— 同批下调。
+export const CLAIM_UNBACKED_BASELINE = 295;
 export const COUNT_UNMARKED_BASELINE = 209;
 
 /* ---------- 判据 ---------- */

@@ -2,18 +2,14 @@
 # CLI 设备授权 · 端到端冒烟脚本（手动可复跑，不注册进 run_all.sh）
 #
 # 用途：验证 CLI 设备授权全链路 + web/agent-login.sh 的幂等自检与输出安全。
-# 前置：make build + go build -o .e2e-bin/devseed ./cmd/devseed；VAPID 环境变量已设置。
+# 前置：make build + go build -o .e2e-bin/devseed ./cmd/devseed。
 #
-# 说明：login.sh 是阻塞式交互脚本（建会话后等用户批准），无法在非交互冒烟里
-#       驱动 approve 时序。故本冒烟用 curl 走全链路（建会话→批准→领证→Key 可用），
-#       再用预先写入的凭证跑 login.sh 的幂等自检路径，并扫描其输出无明文 Key/secret。
+# 说明：login.sh 是阻塞式交互脚本，无法在非交互冒烟里驱动 approve 时序，
+#       故改用 curl 走全链路（建会话→批准→领证→Key 可用），再跑幂等自检并扫描输出无明文。
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-
-: "${ANOTIFY_VAPID_PUBLIC_KEY:?需要设置}"
-: "${ANOTIFY_VAPID_PRIVATE_KEY:?需要设置}"
 
 BIN="$ROOT/anotify"
 DEVSEED="$ROOT/.e2e-bin/devseed"
@@ -38,8 +34,6 @@ ANOTIFY_DB="$DB" \
 ANOTIFY_STATIC="" \
 ANOTIFY_RP_ID=localhost \
 ANOTIFY_RP_ORIGIN="$BASE" \
-ANOTIFY_VAPID_PUBLIC_KEY="$ANOTIFY_VAPID_PUBLIC_KEY" \
-ANOTIFY_VAPID_PRIVATE_KEY="$ANOTIFY_VAPID_PRIVATE_KEY" \
 "$BIN" >"$TMP/srv.log" 2>&1 &
 SRV_PID=$!
 

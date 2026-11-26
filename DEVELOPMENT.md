@@ -9,7 +9,7 @@ v4 把「中枢」和「节点」做成**两个独立产品**；v3 的 `cmd/agen
 
 | 进程 | 入口 | 职责 |
 | --- | --- | --- |
-| 中枢 `anotify` | `cmd/server` | HTTP/WS 资源面 + 派发 + 推送；**不执行任何能力** |
+| 中枢 `anotify` | `cmd/server` | HTTP/WS 资源面 + 派发；**不执行任何能力** |
 | 节点 `anode` | `cmd/anode` | `serve`（连中枢、跑能力）/ `install`（落盘）/ `emit`（出口） |
 | 播种 `devseed` | `cmd/devseed` | 开发/测试辅助：真实资源 + 真实事件链（见 `make dev-demo`） |
 
@@ -31,7 +31,12 @@ v3 的 `skill.md` / `--skill` / `anotify-agent <sub>` 命令全部退役。
 
 ## 1. 项目是什么
 
-Anotify 是「Agent 完成即通知」平台：Agent 任务结束后通过事件 Hook 上报，后端用 Web Push 把结果推送到用户所有设备（iOS/Mac/PC/Android）。Passkey 无密码登录（可选密码登录作为第二套模型），单 Go 二进制 + SQLite，易自托管。
+Anotify 是「Agent 完成即通知」平台：Agent 任务结束后通过事件 Hook 上报，中枢按你定义的链路在节点上执行后续能力（分析、留证、告警脚本……），全过程在控制台可查（事件 → 任务链 → 日志）。Passkey 无密码登录（可选密码登录作为第二套模型），单 Go 二进制 + SQLite，易自托管。
+
+> **推送域已整体退役**（决策 V4-D7，`docs/contracts/v4/CONTRACT.md`）：中枢不再向手机推送，
+> `internal/push`、`devices` 表、`/v1/devices*`、`/v1/vapid-public-key`、`ANOTIFY_VAPID_*`、
+> `notify:receive` / `devices:read` 两个 scope 与 `receivers` 页都已删除。不要把这条产品线当成
+> 「暂时隐藏」再加回来；"设备"只剩**设备授权**（CLI 登录 / Passkey 补建）这一义。
 
 完整设计见 `docs/contracts/CONTRACT.md`，文档入口见 `docs/README.md`，产品定位见 `README.md`。
 
@@ -42,7 +47,6 @@ Anotify 是「Agent 完成即通知」平台：Agent 任务结束后通过事件
 | 后端 | **Go 单二进制** + `go:embed` 内嵌前端 | 自托管首要价值是「单文件分发」，不引入运行时依赖 |
 | 存储 | **SQLite**（纯 Go `modernc.org/sqlite`，无 CGO） | 单库自托管；v4 的派发/结果由 store + lease + resultspool 表达（v3 的 Broker 抽象已退役） |
 | 认证 | **Passkey (WebAuthn)** + 密码登录（可选） + API Key (argon2id) | Passkey 为主路径；密码是第二套模型（可移除）；Key 仅存哈希带 scope |
-| 推送 | **Web Push (VAPID)**，FCM + APNs 双链路 | 标准 Web Push，按 endpoint 自动路由 |
 | 前端 | **纯静态 HTML + Tailwind CDN + tokens.css** | 无构建框架；用指纹脚本实现 content-hash（不引入 Vite 等重型链） |
 | 测试 | Go 单测 + Node E2E（Playwright 虚拟认证器） | Passkey 全流程无头自动化；除 iOS 真机外全自动 |
 
@@ -51,8 +55,7 @@ Anotify 是「Agent 完成即通知」平台：Agent 任务结束后通过事件
 ```
 外部系统 ─HTTP/WS─▶ 中枢 anotify（cmd/server）─▶ SQLite（namespace/capability/source/node/event/task/lease）
                          │
-                         ├─ 派发（lease + resultspool）──WS──▶ 节点 anode（cmd/anode）──▶ 执行能力脚本
-                         └─ Web Push ──▶ 设备
+                         └─ 派发（lease + resultspool）──WS──▶ 节点 anode（cmd/anode）──▶ 执行能力脚本
 
 能力脚本出口：anode emit（ANOTIFY_EMIT_ENDPOINT + ANOTIFY_TASK_TOKEN）→ 中枢生成下游任务
 ```
@@ -96,9 +99,6 @@ Anotify 是「Agent 完成即通知」平台：Agent 任务结束后通过事件
 # Go（自动补 go1.25 工具链）
 export GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto
 
-# VAPID 密钥（首次，推送功能必需）
-make keys  # 输出 ANOTIFY_VAPID_PUBLIC_KEY / ANOTIFY_VAPID_PRIVATE_KEY
-
 # 依赖（前端测试用）
 npm install  # playwright-core + web-push
 
@@ -118,7 +118,7 @@ docker info  # 确认 daemon 在跑
   - `pages/*.html`：每页 `{{define "content"}}` / `{{define "title"}}` / 可选 `style`/`script`/`fonts-extra`。首行 `<!-- layout: login -->` 指定非默认布局
   - `locales/{zh-CN,en}.yaml`：i18n 翻译（嵌套 YAML，扁平化为 `page.key`）
 - **生成产物（勿手改，已 gitignore）**：`web/*.html`（zh 根路径）、`web/en/*.html`、`web/i18n.{lang}.js`
-- **静态资源（保持跟踪）**：`web/ui.css` `tokens.css` `tailwind.css` `partials.js` `fonts/` `assets/` `sw.js` `manifest.webmanifest`
+- **静态资源（保持跟踪）**：`web/ui.css` `tokens.css` `tailwind.css` `partials.js` `fonts/` `assets/` `manifest.webmanifest`
 
 ### Tailwind（构建期 CSS，不用 Play CDN）
 
@@ -380,14 +380,14 @@ INPUT 链，ufw 的 `DEFAULT_INPUT_POLICY=DROP` 拦不到它。所以那个测�
 
 - JS/CSS/字体/图片加内容哈希（`app.a1b2c3.js`）→ CDN 可 immutable 长缓存
 - HTML 引用改写为哈希文件名
-- `sw.js` / `manifest.webmanifest` 不指纹（路径必须固定）
+- `manifest.webmanifest` 不指纹（路径必须固定）
 - **CSS 内 url() 引用也会改写**（fonts.css 引用的 .woff2）
 - 生成 `manifest.json`（原始名 → 哈希名映射）
 
 缓存分级（`internal/server/static.go` classify）：
 
 - 哈希文件 → `Cache-Control: public, max-age=31536000, immutable`
-- index.html / sw.js → `public, max-age=60`
+- index.html / manifest → `public, max-age=60`
 - `/v1/*` → `no-store`
 
 ### 改前端后必须重新指纹 + 重建
@@ -564,7 +564,7 @@ make ci
 
 | 层 | 位置 | 覆盖 |
 | --- | --- | --- |
-| Go 单测 | `internal/*_test.go` + `cmd/anode/**/*_test.go` | store/auth/api/push/ws/server/lease/source + 节点侧 runner/ops/resultstore 包级逻辑 |
+| Go 单测 | `internal/*_test.go` + `cmd/anode/**/*_test.go` | store/auth/api/route/ws/server/lease/source + 节点侧 runner/ops/resultstore 包级逻辑 |
 | API 契约 | `scripts/e2e/suites/api_contract.mjs` | 全端点状态码/鉴权/校验 |
 | Passkey 认证 | `scripts/e2e/suites/auth_flow.mjs` | **虚拟认证器无头跑注册/登录/登出/会话** |
 | 密码登录 | `scripts/e2e/suites/password_login.mjs` | 用密码注册、设置/修改/移除密码、密码登录、两套模型并存、最后一种登录方式护栏 |
@@ -588,7 +588,7 @@ Playwright CDP 虚拟认证器（`WebAuthn.addVirtualAuthenticator`）让 WebAut
 
 ### 唯一人工环节
 
-iOS 真机 APNs 推送（需真实 iPhone，见 `IOS_TESTING.md`）。其余全自动。
+无（Passkey 用 CDP 虚拟认证器全自动；真机推送已随推送域退役）。
 
 ### 视觉微调快速回路（2026-11 起）
 
@@ -622,9 +622,8 @@ internal/
   store/           SQLite 数据访问 + schema.sql（v4 baseline）+ 迁移 runner
   auth/            Passkey(WebAuthn)/密码注册 + 密码登录(argon2id) + API Key(argon2id) + 会话
   authn/           Key 校验接口（解耦 auth 与 api/ws）
-  api/             HTTP handler（资源面 / 事件 / 认证 / 推送）
+  api/             HTTP handler（资源面 / 事件 / 认证）
   ws/              WebSocket hub（节点长连接 / 派发帧）
-  push/            Web Push 派发器（VAPID）
   lease/           任务租约（派发/回收的原子性）
   resultspool/     结果池（节点回报的产物/日志登记）
   source/          源（webhook / cron / manual）与触发
@@ -635,7 +634,6 @@ web/               前端产物（*.html 由 sitegen 生成已 gitignore；css/j
 scripts/
   hash.mjs         指纹脚本（支持根绝对路径指纹化）
   gen-icons.mjs    图标生成器（Sacramento 字体 → 各尺寸 PNG）
-  genkeys.go       VAPID 密钥生成
   e2e/             E2E 测试体系（run_all.sh + lib/ + suites/）
 ```
 
@@ -649,17 +647,9 @@ scripts/
 
 ## 8. 踩过的坑（避免重蹈）
 
-### VAPID subject 双重 mailto: 前缀
-
-`webpush-go` 会自动给非 https 的 subscriber 加 `mailto:`，若配置已带则变 `mailto:mailto:` → Apple APNs 返回 `BadJwtToken`。修复：`options()` 里 `TrimPrefix(sub, "mailto:")`。**教训**：库差异要逐字段 diff 实际请求，别过早下"库不兼容"结论。
-
 ### BackupEligible flag 未持久化
 
 go-webauthn 登录校验"注册存的 BackupEligible"与"登录返回的"必须一致。saveCredential 漏存这个 flag → 读回恒 false → 真实同步型 Passkey（true）登录报错。**教训**：store 层必测"字段往返一致性"（存什么读什么），不只测 CRUD；虚拟认证器默认行为覆盖不到真实设备的 flag 组合。
-
-### PATCH /v1/devices 不落库
-
-`UpsertDevice` 的 `ON CONFLICT(endpoint)` 只更新订阅密钥，不更新 name/enabled/status_filter/tags → 路由功能生产失效。修复：新增 `UpdateDevice`（按 id 全字段 UPDATE）。**教训**：Upsert 与 Update 语义要分离——Upsert 是"订阅刷新"（只更新密钥），Update 是"用户改配置"。
 
 ### 空列表返回 null 被误判为未连接
 
@@ -693,7 +683,7 @@ Go nil slice 序列化成 `null`，前端 `Array.isArray(null)` 为 false → �
 
 ### 改了 web/ 源码后跑 make e2e 用的是旧产物（run_all.sh 脏检测）
 
-`scripts/e2e/run_all.sh` 只在 `internal/server/dist` 不存在或 `web/partials.js` 缺失时才跑 `make fe`，否则直接用现有 dist 编译二进制。改了 `web/`（partials.js/sw.js/tokens.css 等）或 `web-src/`（layouts/pages/locales，sitegen 会重新渲染进 `web/*.html` + i18n JS）后直接 `make e2e`，跑的是陈旧 embed，表现为“改的逻辑像没生效、新断言莫名挂、旧行为还在”。修复：跑门禁前先 `rm -rf internal/server/dist`（让 run_all.sh 强制重建），或先 `make fe` 再 `make e2e`。验证产物链路是否新：`grep -c <新特征字符串> internal/server/dist/*` 应 >0。**教训**：改任何会被 embed 的前端源后，跑门禁前必须确认 dist 产物是新的，别信 run_all.sh 的“已存在就跳过”；这是源→指纹→embed 三段链路里最易断的一环。
+`scripts/e2e/run_all.sh` 只在 `internal/server/dist` 不存在或 `web/partials.js` 缺失时才跑 `make fe`，否则直接用现有 dist 编译二进制。改了 `web/`（partials.js/tokens.css 等）或 `web-src/`（layouts/pages/locales，sitegen 会重新渲染进 `web/*.html` + i18n JS）后直接 `make e2e`，跑的是陈旧 embed，表现为“改的逻辑像没生效、新断言莫名挂、旧行为还在”。修复：跑门禁前先 `rm -rf internal/server/dist`（让 run_all.sh 强制重建），或先 `make fe` 再 `make e2e`。验证产物链路是否新：`grep -c <新特征字符串> internal/server/dist/*` 应 >0。**教训**：改任何会被 embed 的前端源后，跑门禁前必须确认 dist 产物是新的，别信 run_all.sh 的“已存在就跳过”；这是源→指纹→embed 三段链路里最易断的一环。
 
 ### `auto_vacuum=0`：删了不等于变小，且「开保留期」不等于「跟得上写入」
 
@@ -755,10 +745,11 @@ server.backpressure.stuck`），信号回落自动复位且**重新具备**拒�
 - 页面**不得**直接读 `window.AnotifyGraphs` —— `scripts/check-graph-access.mjs`
   （挂在 `make sitegen` 上）会拦：@guard scripts/check-graph-access.mjs#no-direct-graph-lib
   / #missing-expect-graphics。
-- 回归用例写在 `scripts/v4-frontend.test.mjs`（TRACE-STARTUP / SOURCE-STARTUP），但它**尚未接线**：
-  `make ci` 里不跑，只能手工 `node --test scripts/v4-frontend.test.mjs`；它已经带一批基线红
-  （不是全绿）——判据是「失败集合与 base 逐条相同」，清单见 `docs/history/UI-EPIC-369/CONTRACT.md`
-  的基线小节。别把它当门禁（这条此前写成「回归测试是…」，误导过人）。
+- 回归用例写在 `scripts/v4-frontend.test.mjs`（TRACE-STARTUP / SOURCE-STARTUP / 命名空间 CAS-ABA），
+  已接进 `make ci`（`make test-frontend-v4`，全绿）。发现红就修（或改成断言语义），
+  别把基线红加回来 —— 它上一次「未接线 + 带基线红」的代价是
+  从一批基线红烂到更多，还长出静默假绿（`getElementById` 自动造节点让「不存在」断言恒真、
+  探针盯着页面已不再调用的函数、假 DOM 缺 `lastChild` 把渲染异常吞成空列表）。
 
 **教训**：「defer 一定在页面用到它之前跑完」是伪命题；只靠注释论证的时序假设，
 迟早会在页面重构成 await 续体后失效。要么用结构保证（解析期挂门闩），要么用门禁拦住。
@@ -781,7 +772,6 @@ make docker-anode    # 构建节点镜像（anode）
 make check-anode-skill  # 节点 CLI 防漂移门禁（手册/安装脚本 ↔ 真二进制）
 make up              # compose 部署（先 cp .env.compose.example .env 填好密钥/域名）
 make down            # compose 停止（数据卷保留）
-make keys            # 生成 VAPID 密钥
 make tunnel          # Cloudflare 临时隧道（公网暴露，iOS 验证用）
 
 go run ./cmd/devseed -db ./anotify.db -username demo  # 播种测试用户
@@ -793,7 +783,7 @@ go run ./cmd/devseed -db ./anotify.db -username demo -demo -demo-url http://loca
 
 ## 10. 环境变量
 
-见 `README.md` 的环境变量表。关键：`ANOTIFY_VAPID_*_KEY`（推送必需）、`ANOTIFY_RP_ID`/`ANOTIFY_RP_ORIGIN`（Passkey，必须=访问域名）、`ANOTIFY_STATIC`（空=embed，`./web`=开发）。
+见 `README.md` 的环境变量表。关键：`ANOTIFY_RP_ID`/`ANOTIFY_RP_ORIGIN`（Passkey，必须=访问域名）、`ANOTIFY_STATIC`（空=embed，`./web`=开发）。
 
 容量相关（#229 / #228，详见 `docs/reports/capacity-and-backpressure.md`）：
 

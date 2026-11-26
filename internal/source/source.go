@@ -50,7 +50,6 @@ func NewWithClock(db *store.DB, router *route.Router, now Clock) *Service {
 // Router 返回共享的路由器（编排层复用同一份解析）。
 func (s *Service) Router() *route.Router { return s.router }
 
-// Now 返回当前时刻（秒）。
 func (s *Service) Now() int64 {
 	if s.now == nil {
 		return store.Now()
@@ -67,8 +66,7 @@ type Input struct {
 	Payload    json.RawMessage
 }
 
-// TaskRef 是回执里的一条已建任务（含未解析失败任务：真实请求名 + 明确声明的 version；
-// 没有 digest 事实就不携带 digest 字段）。
+// TaskRef 是回执里的一条已建任务（含未解析失败任务：真实请求名 + 明确声明的 version）。
 type TaskRef struct {
 	TaskID     string `json:"taskId"`
 	Capability string `json:"capability"`
@@ -76,8 +74,7 @@ type TaskRef struct {
 	Version int `json:"version,omitempty"`
 }
 
-// Receipt 是三个入口共用的接收回执（§5.1，不是资源信封）。空列表一律 `[]`（不是 null）：
-// `tasks: []` / `pruned: []` 是「确实没有」，前端与脚本据此区分「没派发」与「字段缺失」。
+// Receipt 是三个入口共用的接收回执（§5.1，不是资源信封）；空列表一律 `[]`（不是 null）。
 type Receipt struct {
 	EventID   string        `json:"eventId"`
 	TraceID   string        `json:"traceId"`
@@ -86,12 +83,9 @@ type Receipt struct {
 	Pruned    []route.Prune `json:"pruned"`
 }
 
-// Ingest 接收一次事件：单次 store.AcceptSourceEvent 原子落「事件 + 投递窗 + 任务 + 未解析失败
-// Task/错误事件 + 剪枝留痕 + 回执」，返回统一回执。
-//
-// 关键边界：预编译事实与「源 resource_version CAS + namespaceVarsRevision pin」同事务校验
-// （源或 ns 输入被改 → 明确错误 + 0 写）；窗口内重复投递返回第一次持久化的**同一份** receipt
-// 字节，不建任务、不重算；downstream_missing 是失败 Task（不是剪枝）；无 deliveryId 同样原子。
+// Ingest 接收一次事件：单次 store.AcceptSourceEvent 原子落「事件 + 投递窗 + 任务 + 剪枝留痕 + 回执」。
+// 预编译事实与「源 resource_version CAS + varsRevision pin」同事务校验；窗口内重复投递返回
+// 第一次持久化的**同一份** receipt 字节，不建任务、不重算。
 func (s *Service) Ingest(ctx context.Context, in Input) (*Receipt, error) {
 	if in.Source == nil {
 		return nil, fmt.Errorf("source: 缺少源行")
@@ -156,9 +150,8 @@ func (s *Service) Ingest(ctx context.Context, in Input) (*Receipt, error) {
 	return receiptFromStore(receiptJSON, first)
 }
 
-// receiptFromStore 把 store 的持久 receipt 投影为公共回执（W6 原字段）。tasks 列**全部真实
-// 建立的任务**（正常 + 未解析失败：真实请求名/声明 version，没有 digest 事实就不提）；
-// pruned 只含真实纯剪枝，store 内部的 failure 事实不新增 Resource、也不当成剪枝。
+// receiptFromStore 把 store 的持久 receipt 投影为公共回执（W6 原字段）；tasks 列全部真实建立的
+// 任务（含未解析失败），pruned 只含真实纯剪枝。
 func receiptFromStore(raw json.RawMessage, first bool) (*Receipt, error) {
 	var stored store.SourceEventReceipt
 	if err := json.Unmarshal(raw, &stored); err != nil {
@@ -205,9 +198,8 @@ func (s *Service) Fire(ctx context.Context, namespaceID, name string, payload js
 // ErrSourceDisabled 表示源已停用（webhook 对外 404，fire 拒绝触发）。
 var ErrSourceDisabled = errors.New("source: 源已停用")
 
-// HookBody 是 webhook 投递体（§3.3）。Raw / Header 不是投递体字段，而是 handler 带进来的
-// **原始事实**（`json:"-"`）：`payload: {whole: true}` 要整个投递体、`header` 来源要请求头，
-// 两者都无法从解完的三段里还原（只有配了 envelope 时才必填）。
+// HookBody 是 webhook 投递体（§3.3）。Raw / Header 是 handler 带进来的**原始事实**
+// （`json:"-"`）：`payload: {whole: true}` 与 `header` 来源都无法从解完的三段里还原。
 type HookBody struct {
 	Type    string          `json:"type"`
 	ID      string          `json:"id"`
@@ -235,16 +227,13 @@ func (s *Service) Hook(ctx context.Context, token string, body HookBody) (*Recei
 	return s.HookSource(ctx, src, body)
 }
 
-// LookupHook 按 token 定位源（停用 / 不存在都是 store.ErrSourceNotFound，不区分）。
-// 单独暴露是因为 handler 必须**先知道 secret 再验签**（§3.3），而定源与接收拆开后
-// 一次投递只查一次表。
+// LookupHook 按 token 定位源（停用 / 不存在都是 store.ErrSourceNotFound，不区分）；
+// 单独暴露是因为 handler 必须**先知道 secret 再验签**，拆开后一次投递只查一次表。
 func (s *Service) LookupHook(ctx context.Context, token string) (*store.Source, error) {
 	return s.db.LookupHook(ctx, token)
 }
 
-// HookSource 用**已定位**的源接收一次投递（handler 验签通过后走这里）。
-// 验签不在本函数里：签名要对着原始字节算，而到这里时 body 已解成结构体——把校验留在
-// 传输层是有意的分工，两条入口共用同一份装配与落库逻辑。
+// HookSource 用**已定位**的源接收一次投递（验签在 handler：签名要对着原始字节算）。
 func (s *Service) HookSource(ctx context.Context, src *store.Source, body HookBody) (*Receipt, error) {
 	if src == nil {
 		return nil, fmt.Errorf("source: 缺少源行")
@@ -256,9 +245,8 @@ func (s *Service) HookSource(ctx context.Context, src *store.Source, body HookBo
 	return s.Ingest(ctx, in)
 }
 
-// HookSecret 返回该 webhook 源的签名 secret（非 webhook / 未配置 → 空 = 不校验）。
-// 「secret 是什么」只有一处解释（sourcespec 的归一化形态），handler 不自己解 config：
-// 两处解析迟早分叉，后果是「验签看得见 A、接收用得着 B」。
+// HookSecret 返回该 webhook 源的签名 secret（非 webhook / 未配置 → 空 = 不校验）；
+// 「secret 是什么」只有 sourcespec 一处解释（两处解析迟早分叉成「验签 A、接收 B」）。
 func HookSecret(src *store.Source) string {
 	if src == nil || src.Kind != sourcespec.KindWebhook {
 		return ""
@@ -282,8 +270,7 @@ type Preview struct {
 	Pruned  []route.Prune   `json:"pruned"`
 }
 
-// Preview 对一个**已保存**的源做试运行（0 持久写入）。eventType 用于 match 求值
-// （空 = 源名，与 ingest 的回落一致）。
+// Preview 对一个**已保存**的源做试运行（0 持久写入；eventType 空 = 源名）。
 func (s *Service) Preview(ctx context.Context, namespaceID, name, eventType string, payload json.RawMessage) (*Preview, error) {
 	src, err := s.db.GetSourceByName(ctx, namespaceID, name)
 	if err != nil {
@@ -326,11 +313,8 @@ func (s *Service) PreviewSource(ctx context.Context, src *store.Source, eventTyp
 	return preview, nil
 }
 
-// assemblePayload 装配载荷：以 `config.payload` 打底、入站载荷一层覆盖。
-//
-// 三个 kind 同语义（#513 修掉了 webhook“接受但不合并”的坑）：深合并不做（source.md §5：
-// 一层覆盖），冲突时**入站覆盖静态**。投递体不是 JSON 对象 → ErrBadPayload
-// （400，不产生事件）。
+// assemblePayload 装配载荷：以 `config.payload` 打底、入站载荷一层覆盖（不深合并，冲突时
+// **入站覆盖静态**，source.md §5）；投递体不是 JSON 对象 → ErrBadPayload。
 func (s *Service) assemblePayload(src *store.Source, incoming json.RawMessage) (map[string]any, error) {
 	base := map[string]any{}
 	for name, value := range sourcespec.ParseConfig(src.Kind, src.Config).Payload {

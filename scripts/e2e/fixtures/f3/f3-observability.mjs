@@ -114,9 +114,6 @@ export async function observability(d, mode) {
       assert.equal(await page.locator('#kpi-today').innerText(), '4');
       assert.equal(await page.locator('#kpi-running').innerText(), '3');
       assert.equal(await page.locator('#kpi-failed').innerText(), '1');
-      assert.equal(await page.locator('#kpi-devices').textContent(), '0');
-      assert.equal(await page.locator('#kpi-rate').textContent(), '–');
-      assert.equal(await count('[data-push-tile]'), 2);
       assert.equal(await count('#index-events [data-uid]'), 4);
       assert.equal(await count('#hm .hm-cell'), 371);
       assert.equal(await count('#flow-host.flograph--silk'), 1);
@@ -164,8 +161,6 @@ export async function observability(d, mode) {
     assert.equal(await page.locator('#kpi-today').innerText(), String(stats.body.today));
     assert.equal(await page.locator('#kpi-running').innerText(), String(working));
     assert.equal(await page.locator('#kpi-failed').innerText(), String(failed));
-    assert.equal(await page.locator('#kpi-devices').textContent(), '0');
-    assert.equal(await page.locator('#kpi-rate').textContent(), '–');
     /* C-1（结构性）：已经有事件 ⇒ 「从 0 到第一条事件」与「接入你的 Agent」两块都收起。
        两块留在 DOM 里只切 hidden（排版/锚点不变），标记照旧置上——收起不等于没渲染过。 */
     assert.ok(stats.body.total > 0, '夹具必须让这个命名空间真的有事件（实际 total=' + stats.body.total + '）');
@@ -187,7 +182,6 @@ export async function observability(d, mode) {
     const trendText = (await trend.textContent()).trim();
     if (trendHidden) assert.equal(trendText, '', '趋势药丸收起时不得留文字（实际：' + trendText + '）');
     else assert.match(trendText, /[0-9]/, '趋势药丸要么收起，要么是真实数字（不得写「暂无对比」）：' + trendText);
-    assert.equal(await count('[data-push-tile]'), 2);
     assert.equal(await count('#index-events [data-uid]'), eventPage.body.items.length);
     assert.equal(await count('#hm .hm-cell'), 371);
     assert.equal(await count('#flow-host.flograph--silk'), 1);

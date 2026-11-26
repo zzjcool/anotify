@@ -71,6 +71,7 @@ export const P = {
 	sources: (ns) => nsPath(ns, "/sources"),
 	source: (ns, name) => nsPath(ns, `/sources/${seg(name)}`),
 	sourceFire: (ns, name) => nsPath(ns, `/sources/${seg(name)}/fire`),
+	sourcePoll: (ns, name) => nsPath(ns, `/sources/${seg(name)}/poll`),
 	sourceDryRun: (ns, name) => nsPath(ns, `/sources/${seg(name)}/dry-run`),
 	sourcesDryRun: (ns) => nsPath(ns, "/sources/dry-run"),
 	hook: (token) => `/v1/hooks/${seg(token)}`,

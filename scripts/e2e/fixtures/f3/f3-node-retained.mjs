@@ -381,47 +381,21 @@ export async function nodeRetained(d,mode){
     await page.waitForFunction(message => document.getElementById('create-error').textContent.includes(message), d.mock?'Actual retained rejection sentinel':'F3 deliberate disconnected transport');
     assert.equal(await page.locator('#new-key-name').inputValue(),'retained-form-draft');
     await shot('keys-actual-error-draft-anchors');
-    await goto('receivers');
-    if (d.mock) {
-      await page.locator('#current-device-card button').waitFor();
-      assert.equal(await page.evaluate(() => Notification.permission), 'denied');
-      assert.equal(await page.locator('#push-count').innerText(), '0'); await page.locator('#current-device-card button').click();
-      await page.waitForFunction(() => document.body.textContent.includes(Anotify.t('receivers.local.perm_denied_toast')));
-      assert.ok(!(await calls()).some(c => c.method === 'POST' && c.url === '/v1/devices')); await shot('receivers-denied-visible-feedback-zero');
-    } else {
-      /* 手机推送 UI 在产品里是**隐藏中**（web-src/partials.js·PUSH_UI_ENABLED=false）：
-       * 真实现场没有 #current-device-card、也没有 #push-count，receivers 页只在
-       * #push-unavailable 里给一句「暂未开放」。这一屏要断言的真实事实是：
-       *   ① 未开放分支真的渲染了提示（不是空白）；
-       *   ② 浏览器确实没有通知权限（harness 语境）；
-       *   ③ 页面**没有**发起任何设备订阅（POST /v1/devices）—— 这才是「不会偷偷注册」。 */
-      assert.equal(await page.evaluate(() => window.Anotify.pushUIEnabled), false);
-      assert.equal(await page.locator('#current-device-card').count(), 0);
-      await page.locator('#push-unavailable').waitFor();
-      assert.ok((await page.locator('#push-unavailable').innerText()).trim().length > 0, '未开放分支必须给明确提示');
-      assert.equal(await page.evaluate(() => Notification.permission), 'denied');
-      await new Promise(resolve => setTimeout(resolve, 300));
-      assert.ok(!(await calls()).some(c => c.method === 'POST' && c.url === '/v1/devices'));
-      await shot('receivers-push-hidden-no-subscribe');
-    }
     await goto('admin');
     if (d.mock) {
-      await page.waitForFunction(() => document.getElementById('kpi-devices')?.textContent === '0');
       assert.equal(await page.locator('#kpi-rate').innerText(), '0%'); assert.equal(await page.locator('#kpi-rate-sub').innerText(), '0 / 0');
     } else {
-      // 真实零设备 + 真实投递账：速率与分子分母都按 /v1/admin/stats 的同一份事实算。
+      // 真实投递账：速率与分子分母都按 /v1/admin/stats 的同一份事实算。
       const stats = (await calls()).findLast(c => c.url === '/v1/admin/stats')?.response;
       assert.ok(stats, 'admin 页必须真的请求 /v1/admin/stats');
-      await page.waitForFunction(() => document.getElementById('kpi-devices')?.textContent === '0');
-      const expectedRate = (stats.deliveryTotal > 0 ? Math.round((stats.deliveredCount / stats.deliveryTotal) * 100) : 0) + '%';
+      const expectedRate = (stats.finishedTasks > 0 ? Math.round((stats.succeededTasks / stats.finishedTasks) * 100) : 0) + '%';
       assert.equal(await page.locator('#kpi-rate').innerText(), expectedRate);
-      assert.equal(await page.locator('#kpi-rate-sub').innerText(), stats.deliveredCount + ' / ' + stats.deliveryTotal);
-      assert.equal(stats.deviceCount, 0);
+      assert.equal(await page.locator('#kpi-rate-sub').innerText(), stats.succeededTasks + ' / ' + stats.finishedTasks);
     }
     await shot('admin-actual-zero-device-delivery');
     if(d.mock) await page.evaluate(() => sessionStorage.setItem('f3-member','1')); else { assert.ok(process.env.E2E_V4_MEMBER_SESSION,'T1 seam: retained member session required, never fake real role'); await d.context.addCookies([{name:'anotify_session',value:process.env.E2E_V4_MEMBER_SESSION,url:d.base}]); }
     await goto('admin');
-    assert.equal(await page.locator('#kpi-devices').count(), 0, 'member has no misleading admin KPI shell');
+    assert.equal(await page.locator('#kpi-messages').count(), 0, 'member has no misleading admin KPI shell');
     assert.ok((await page.locator('#page-main').innerText()).includes(await page.evaluate(() => Anotify.t('admin.forbidden.title'))));
     await shot('admin-member-real-permission-anchor');
     if(d.mock) await page.evaluate(() => sessionStorage.removeItem('f3-member')); else await d.context.clearCookies();
@@ -441,7 +415,7 @@ export async function nodeRetained(d,mode){
     if(d.mock) await waitState('status-box', 'Actual retained rejection sentinel');
     else { await page.waitForFunction(()=>__f3Calls.some(c=>c.url==='/v1/auth/password/login'&&c.httpStatus>=400)); const rejected=(await calls()).findLast(c=>c.url==='/v1/auth/password/login'); assert.deepEqual(Object.keys(rejected.result),['error']); await waitState('status-box',rejected.result.error); }
     await shot('login-actual400-status-message');
-    check('Retained password/passkey empty anchor + real400; API-key error preserves draft and CLI/docs anchors; receivers denied gives visible feedback/no subscribe; actual zero-device0/0 admin; CLI/passkey-enroll DOM retained; login AUTH1 identity.error is not swallowed');
+    check('Retained password/passkey empty anchor + real400; API-key error preserves draft and CLI/docs anchors; actual delivery-rate admin facts; CLI/passkey-enroll DOM retained; login AUTH1 identity.error is not swallowed');
   }
   if (mode === 'namespace-detail') {
     /* IA ③④：列表 → 详情这条路必须真的通（导航入口在共享侧栏 web/partials.js 的 NAV，

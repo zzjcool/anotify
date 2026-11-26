@@ -11,17 +11,15 @@
  *   1. 扫描 <srcDir> 下的 .js/.css/.png/.svg/.woff2 等资源（不含 .html）
  *   2. 计算内容 hash，重命名为 name.<hash8>.ext 复制到 <outDir>
  *   3. 复制 .html 到 <outDir>，并把其中对资源的引用改写为哈希文件名
- *   4. 生成 <outDir>/manifest.json（原始名 → 哈希名 映射）
+ *   4. 清掉 <outDir> 里本轮没有产出的文件（只删多出来的，不整目录删）—— #649：生成物
+ *      只写不删时，「源页面已删、产物还在」会静默活下来并被 go:embed 进二进制
+ *   5. 写 <outDir>/manifest.json（原始名 → 哈希名 映射）
  */
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-const [srcDir, outDir] = process.argv.slice(2);
-if (!srcDir || !outDir) {
-	console.error("用法: node scripts/hash.mjs <srcDir> <outDir>");
-	process.exit(1);
-}
+import { runsAsMain } from "./lib/direct-run.mjs";
 
 const FINGERPRINT_EXT = new Set([
 	".js",
@@ -37,25 +35,50 @@ const FINGERPRINT_EXT = new Set([
 	".webmanifest",
 ]);
 const HTML_EXT = new Set([".html"]);
-// 不指纹的文件：
-//  - manifest.json：指纹脚本自身产物
-//  - sw.js：Service Worker 注册路径必须固定（/sw.js），不能哈希
-//  - manifest.webmanifest：PWA 清单路径被 HTML 固定引用
+// 不指纹的文件：manifest.json 是自身产物；manifest.webmanifest 被 HTML 固定引用
+// （PWA 清单路径写死，改指纹名 Android 图标会 404）。
 const NO_FINGERPRINT = new Set([
 	"manifest.json",
-	"sw.js",
 	"manifest.webmanifest",
 ]);
 
-// 只给开发用的文件：**不进生产产物**。
-//
-// mock.js 是 make fe-preview 用的 API 拦截层，塞满假数据。
-// 它被打进二进制本身不算漏洞（要浏览器的 /mock.js 才生效），
-// 但没有任何理由让它存在 —— 一旦有人手工请求就打开了"假数据模式"，
-// 排查真问题时会浪费时间。
+// mock.js 是 make fe-preview 用的 API 拦截层（假数据），进了产物就多了个"假数据模式"入口。
 const DEV_ONLY = new Set([
 	"mock.js",
 ]);
+
+export const MANIFEST_NAME = "manifest.json";
+
+/** 由其它阶段写进 <outDir> 的产物：本脚本既不认识、也不许删。 */
+export const OWNED_BY_OTHER_STAGES = new Set([".source-stamp"]);
+
+/** 源文件在 outDir 里会变成什么样。writer 与 scripts/dist-stamp.mjs 的期望集共用这份判据。 */
+export function classify(rel) {
+	const base = path.basename(rel);
+	if (DEV_ONLY.has(base)) return "drop";
+	if (NO_FINGERPRINT.has(base)) return "copy";
+	if (FINGERPRINT_EXT.has(path.extname(rel).toLowerCase())) return "fingerprint";
+	return "copy";
+}
+
+/** 纯函数：srcRels + manifest ⇒ outDir 应当含的路径；unresolved = 该指纹却无 manifest 条目。 */
+export function expectedDistPaths({ srcRels, manifest }) {
+	const files = new Set([MANIFEST_NAME, ...OWNED_BY_OTHER_STAGES]);
+	const unresolved = [];
+	for (const rel of srcRels) {
+		const p = rel.split(path.sep).join("/");
+		const kind = classify(p);
+		if (kind === "drop") continue;
+		if (kind === "fingerprint") {
+			const hashed = manifest[p];
+			if (hashed) files.add(hashed);
+			else unresolved.push(p);
+			continue;
+		}
+		files.add(p);
+	}
+	return { files: [...files].sort(), unresolved: unresolved.sort() };
+}
 
 async function* walk(dir) {
 	for (const e of await fs.readdir(dir, { withFileTypes: true })) {
@@ -69,51 +92,66 @@ function hash8(buf) {
 	return createHash("sha256").update(buf).digest("hex").slice(0, 8);
 }
 
-async function main() {
+/** 删掉 outDir 里 produced 之外的残留（自底向上，顺带收掉空目录），返回删掉的路径。 */
+async function pruneStaleOutputs(out, produced) {
+	const removed = [];
+	async function rec(dir, rel) {
+		for (const e of await fs.readdir(dir, { withFileTypes: true })) {
+			const childRel = rel ? `${rel}/${e.name}` : e.name;
+			const full = path.join(dir, e.name);
+			if (e.isDirectory()) {
+				await rec(full, childRel);
+				if ((await fs.readdir(full)).length === 0) {
+					await fs.rmdir(full);
+					removed.push(`${childRel}/`);
+				}
+				continue;
+			}
+			if (produced.has(childRel)) continue;
+			await fs.rm(full, { force: true });
+			removed.push(childRel);
+		}
+	}
+	await rec(out, "");
+	return removed.sort();
+}
+
+export async function buildInto(srcDir, outDir) {
 	const src = path.resolve(srcDir);
 	const out = path.resolve(outDir);
-	await fs.rm(out, { recursive: true, force: true });
+	if (src === out) throw new Error(`hash.mjs: 源与目标是同一个目录（${src}），prune 会删掉源文件`);
 	await fs.mkdir(out, { recursive: true });
 
 	const manifest = {}; // 相对路径(原) → 相对路径(哈希)
 	const htmlFiles = [];
+	const produced = new Set([MANIFEST_NAME]);
 
 	for await (const file of walk(src)) {
 		const rel = path.relative(src, file);
-		const ext = path.extname(file).toLowerCase();
-		const base = path.basename(file);
-		if (DEV_ONLY.has(base)) {
-			// 开发专用：直接跳过，不复制、不指纹
-			continue;
-		}
-		if (NO_FINGERPRINT.has(base)) {
-			// 原样复制（不指纹）
-			const target = path.join(out, rel);
-			await fs.mkdir(path.dirname(target), { recursive: true });
-			await fs.copyFile(file, target);
-			continue;
-		}
-
-		if (FINGERPRINT_EXT.has(ext)) {
+		const relPosix = rel.split(path.sep).join("/");
+		const kind = classify(relPosix);
+		if (kind === "drop") continue;
+		if (kind === "fingerprint") {
 			const buf = await fs.readFile(file);
 			const h = hash8(buf);
-			const dir = path.dirname(rel);
+			const ext = path.extname(rel).toLowerCase();
 			const stem = path.basename(rel, ext);
-			const hashedRel = path.join(dir, `${stem}.${h}${ext}`);
+			const hashedRel = path
+				.join(path.dirname(rel), `${stem}.${h}${ext}`)
+				.split(path.sep)
+				.join("/");
 			const target = path.join(out, hashedRel);
 			await fs.mkdir(path.dirname(target), { recursive: true });
 			await fs.writeFile(target, buf);
-			manifest[rel.split(path.sep).join("/")] = hashedRel
-				.split(path.sep)
-				.join("/");
-		} else if (HTML_EXT.has(ext)) {
-			htmlFiles.push({ file, rel });
-		} else {
-			// 其它文件原样复制
-			const target = path.join(out, rel);
-			await fs.mkdir(path.dirname(target), { recursive: true });
-			await fs.copyFile(file, target);
+			manifest[relPosix] = hashedRel;
+			produced.add(hashedRel);
+			continue;
 		}
+		produced.add(relPosix);
+		const target = path.join(out, rel);
+		await fs.mkdir(path.dirname(target), { recursive: true });
+		await fs.copyFile(file, target);
+		if (HTML_EXT.has(path.extname(rel).toLowerCase())) htmlFiles.push({ file, rel });
 	}
 
 	// 改写 HTML 中的引用：捕获 src/href 的完整值，按 manifest 精确映射为哈希名。
@@ -183,57 +221,15 @@ async function main() {
 		/* 无 manifest.webmanifest 时忽略 */
 	}
 
-	// 改写 sw.js 里对静态资源的引用（#268）。
-	//
-	// sw.js 自己不能指纹（注册路径必须固定 /sw.js），但它**引用**的资源会被指纹：
-	//   icon: "assets/icon.png"  →  dist 里只有 assets/icon.d3e0cc82.png
-	// 不改写的话生产环境推送通知的 icon/badge 直接 404，而且只在真实构建产物里才看得出来
-	// （dev/mock 走的是 web/ 源目录，未指纹，永远不会暴露）。
-	//
-	// 顺带在这里做一次**硬校验**：改完之后 sw.js 里任何指向静态资源的相对路径都必须
-	// 在 dist 里真实存在，否则构建失败。理由很直接——这份文件的引用出错没有任何运行时
-	// 报错，只会静默 404，靠人肉 review 是守不住的。
-	const swPath = path.join(out, "sw.js");
-	let sw = null;
-	try {
-		sw = await fs.readFile(swPath, "utf8");
-	} catch {
-		sw = null; // 没有 sw.js 的项目不受影响
-	}
-	if (sw !== null) {
-		const assetRe = /(["'])(\/?[^"'\s]+\.(?:png|svg|jpg|jpeg|ico|webp|woff2?|ttf|css|js))\1/g;
-		const rewritten = sw.replace(assetRe, (match, q, value) => {
-			const key = value.replace(/^\//, "");
-			const hashed = manifest[key];
-			if (!hashed) return match;
-			return `${q}${value.startsWith("/") ? "/" : ""}${hashed}${q}`;
-		});
 
-		// 校验：提取所有「看起来是本地静态资源」的路径，逐个确认存在于 dist。
-		const missing = [];
-		for (const m of rewritten.matchAll(assetRe)) {
-			const value = m[2];
-			if (/^(https?:|data:|blob:)/.test(value)) continue;
-			const rel = value.replace(/^\//, "");
-			// sw.js 里允许引用"自己的路由"这类不以文件形式存在的东西吗？
-			// 不允许——这份文件只该引用真实资源，写错就是静默 404。
-			try {
-				await fs.access(path.join(out, rel));
-			} catch {
-				missing.push(value);
-			}
-		}
-		if (missing.length) {
-			throw new Error(
-				`sw.js 引用了 dist 里不存在的静态资源：${missing.join(", ")}` +
-					`（指纹脚本会改写已知资源；若是新资源，检查它是否被复制进 dist）`,
-			);
-		}
-		await fs.writeFile(swPath, rewritten);
-	}
+	const stale = await pruneStaleOutputs(
+		out,
+		new Set([...produced, ...OWNED_BY_OTHER_STAGES]),
+	);
+	for (const rel of stale) console.log(`   · 清掉无源残留：${rel}`);
 
 	await fs.writeFile(
-		path.join(out, "manifest.json"),
+		path.join(out, MANIFEST_NAME),
 		JSON.stringify(manifest, null, 2),
 	);
 	console.log(
@@ -241,7 +237,14 @@ async function main() {
 	);
 }
 
-main().catch((e) => {
-	console.error(e);
-	process.exit(1);
-});
+if (runsAsMain(import.meta.url)) {
+	const [srcDir, outDir] = process.argv.slice(2);
+	if (!srcDir || !outDir) {
+		console.error("用法: node scripts/hash.mjs <srcDir> <outDir>");
+		process.exit(1);
+	}
+	buildInto(srcDir, outDir).catch((e) => {
+		console.error(e);
+		process.exit(1);
+	});
+}

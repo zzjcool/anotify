@@ -11,12 +11,11 @@
  * 而 404 是「路径不存在」，**不是**「权限不够」——拿它当鉴权断言会让「鉴权整体
  * 失效」也照样变绿。所以本套件的每条负向用例都断言**具体状态码 + Status.reason**：
  *   401 Unauthorized  没带凭据 / 凭据无效（该换一个）
- *   403 Forbidden     凭据有效但 scope 不够（该加权限）
  *   404 NotFound      不存在，或不属于这个命名空间（不泄露存在性）
  *
  * 覆盖：
  *   A. 会话端点：未登录 401、伪造会话 401、节点令牌不能当会话用
- *   B. 事件入口鉴权矩阵：send 200 / recv 403 / 无凭据 401 / 篡改 401 / 换前缀 401 / Basic 401
+ *   B. 事件入口鉴权矩阵：send 200 / 退役 scope 签发 400 / 无凭据 401 / 篡改 401 / 换前缀 401 / Basic 401
  *   C. 错误体卫生：任何拒绝都不回显呈上的凭据（token / key / session 明文）
  *   D. 命名空间隔离：资源按 ns 作用域，跨 ns 不可见（404，不泄露存在性）
  *   E. 内容通道（节点令牌）：401 无凭据 / 404 未知 digest（含形状不对的也算 404）
@@ -137,9 +136,18 @@ async function partIngressMatrix(base, seeded) {
 	V.expectReason("send Key 投递 → 200", ok, 200);
 	H.check("投递回执带真 eventId", typeof ok.json?.eventId === "string" && ok.json.eventId.length > 0, JSON.stringify(ok.json).slice(0, 200));
 
-	const forbidden = await postEvent(base, seeded.recvKey);
-	V.expectReason("recv Key 投递 → 403（scope 不够，不是 401）", forbidden, 403, "Forbidden");
-	echoCheck("recv Key 403", forbidden, [seeded.recvKey]);
+	// V4-D7 后 scope 只剩 notify:send 且空列表被拒，「403」在公开 API 上不可构造 → 改钉签发端。
+	const retired = await H.req(base, "/v1/keys", {
+		session: seeded.session,
+		method: "POST",
+		body: { name: "sec-retired-scope", scopes: ["notify:receive"] },
+	});
+	H.eq("退役 scope 建 Key → 400（签不出来，因此到不了 403）", retired.status, 400);
+	H.check(
+		"退役 scope 的报错点名 scope",
+		String(retired.json?.error || "").includes("scope"),
+		`${retired.status} ${String(retired.text).slice(0, 160)}`,
+	);
 
 	const anon = await postEvent(base, undefined);
 	V.expectReason("无 Authorization 头 → 401", anon, 401, "Unauthorized");
@@ -274,7 +282,6 @@ function partCredentialAtRest(server, seeded) {
 		.map((f) => readFileSync(path.join(dir, f)));
 	const contains = (needle) => bufs.some((b) => b.includes(needle));
 	H.check("DB（含 -wal/-shm）不含明文 send Key", !contains(seeded.sendKey), "明文 send Key 出现在库里");
-	H.check("DB 不含明文 recv Key", !contains(seeded.recvKey), "明文 recv Key 出现在库里");
 	// 注：会话 id 是**服务端会话表**的主键（明文存），它是 v3 起的既有设计，不是
 	// v4 迁移的一部分；本套件只钉「API Key 这类长期凭据必须不可逆」。
 	H.check("DB 含 argon2id PHC 标记（key 用慢哈希存）", contains("$argon2id$"), "未找到 $argon2id$");

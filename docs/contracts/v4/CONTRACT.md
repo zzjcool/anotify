@@ -24,12 +24,13 @@ rev2（父会话实施编排修订）：在 T1 的纯协议/产物已稳定后�
 | V4-D4 | 安全执行：重试 / 租约 / 尝试 / emit 幂等 | `internal/lease/lease.go`、`internal/route`、`internal/protocol/emit.go` |
 | V4-D5 | 运行环境与凭证：中枢只下发变量名，值留本机 | `cmd/anode/internal/execenv/execenv.go`；`internal/protocol/env.go` |
 | V4-D6 | 有限保留与引用完整性：tombstone 物理回收 + 保留窗口 | `internal/server/capability_gc.go`；`internal/store` 的 prune 路径 |
+| V4-D7 | **推送域整体退役**（用户决定，2026-11-25）：不再做「中枢把结果推送到手机」这件事。删除 `internal/push` 包、`devices` 表、`/v1/devices*`、`/v1/vapid-public-key`、`ANOTIFY_VAPID_*`、`notify:receive` / `devices:read` 两个 scope、`web-src/pages/receivers.html` 与其文案，以及所有把「推送到所有设备」当作产品承诺的文档与测试。**不保留 dormant 形态**：没有 `PUSH_UI_ENABLED` 开关、没有死代码 Sender、没有「以后翻成 true 即可」的注释 | 见 `docs/reports/retire-push.md`（删除清单 + 验证方式）；唯一残留 scope 是 `notify:send`（它护的是事件入口 `POST /v1/namespaces/{ns}/events`，与推送无关） |
 
 
 ## 1. 交付范围与非目标
 
 - 全量切到 v4，不提供 v3 API/字段/端口/WS 帧/旧数据库迁移兼容分支。`schema.sql` 直建 v4 baseline，旧库明确拒绝，绝不自动删用户库。
-- 能力只有脚本实现；删旧 handler/outputs/ports/priority/sticky/中枢能力 executor/notify-phone。认证、passkey、设备、VAPID、消息/推送等未被设计退役的独立域不得误删。
+- 能力只有脚本实现；删旧 handler/outputs/ports/priority/sticky/中枢能力 executor/notify-phone。认证、passkey、**设备授权（CLI / Passkey 补建）**等未被设计退役的独立域不得误删；推送域（VAPID / `devices` 订阅 / `receivers` 页）已由 V4-D7 整体退役，不得以「恢复误删」为名加回来——要重启必须新开决策。
 - 保留 spec/status 信封与统一错误，status 读取时从事实派生，保留 resolved/observed 明细。不造持久化派生 status、reconciler、generation/独立 CapabilityRevision、labels/selectors、finalizer/级联卸载。
 - 不加多中枢、RBAC、sandbox、中枢凭证模型、replay API，不擅自扩大功能。
 - `.pi/settings.json` 是用户既有改动；禁止修改、暂存或提交它。禁止改 `.env*`、`.git`、`node_modules`。没有自动重置用户修改、删除用户目录的权限。
@@ -97,7 +98,7 @@ G1后产出可读的 `EXPORTED-INTERFACES.md`（团队自己的进度目录）�
 ## 5. 测试/验收与防伪绿灯
 
 - 每个 writer 必带verify数组。阶段验收只跑该阶段闭包，但整体交付必须 `go test ./... -count=1`、`make contract`、E2E quick（T1）及 `make fe`、sitegen测试、新前端单测、页面检查（T2）。
-- 可删除纯旧语义专属ports/priority/迁移测试，但必须在团队测试映射表列旧用例→新契约用例；不全删测试、不skip、不弱化断言迁就产品bug。认证/passkey/设备等保留功能回归不得丢。
+- 可删除纯旧语义专属ports/priority/迁移测试，但必须在团队测试映射表列旧用例→新契约用例；不全删测试、不skip、不弱化断言迁就产品bug。认证/passkey/设备授权等保留功能回归不得丢（推送域已退役，见 V4-D7）。
 - 必测：digest/next不出版本；字段往返；ns授权+三层配置+CAS；12格安装+dryRun+源targets差异+token省略；重复delivery/id不同payload/过窗；emit跨attempt幂等和剪枝；stale无attempt/grant唯一授权/旧attempt拒绝；取消回收；非幂等不重跑；干净环境/凭证白名单；files_escape/用户目录GC安全；raw包体/实例溯源/派生status。
 - 父会话交叉集成后重建 `make fe` 和 `make build`，跑全量 `make e2e`、`make ci`、目标页面dark/light及桌面/手机 `web_verify`。全量E2E只在最终集成门禁跑，不让每个小阶段重复全量。
 - 中间Go依赖编译失败是阶段状态，不是完成；不得用legacy structs/stubs/fallback接口掩盖。团队交付须真实v4闭环，不得自行缩减核心范围/以时间不足宣布全量完成。

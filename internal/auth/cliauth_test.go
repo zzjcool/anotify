@@ -116,7 +116,7 @@ func TestCliAuth_StateMachine_AllTransitions(t *testing.T) {
 	m := newCliAuthManagerWithClock(db, clock)
 
 	// pending → approved → consumed
-	created, _ := m.CreateSession("dev1", []string{ScopeNotifySend, ScopeNotifyReceive})
+	created, _ := m.CreateSession("dev1", []string{ScopeNotifySend})
 	if err := m.Approve(created.SessionID, userID, []string{ScopeNotifySend}); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestCliAuth_ScopeSubsetValidation(t *testing.T) {
 	m := newCliAuthManagerWithClock(db, clock)
 
 	// 申请 send + receive
-	created, _ := m.CreateSession("dev8", []string{ScopeNotifySend, ScopeNotifyReceive})
+	created, _ := m.CreateSession("dev8", []string{ScopeNotifySend})
 
 	// 批准时减量（只 send）→ 成功
 	if err := m.Approve(created.SessionID, userID, []string{ScopeNotifySend}); err != nil {
@@ -332,10 +332,10 @@ func TestCliAuth_ScopeSubsetValidation(t *testing.T) {
 		t.Errorf("Key scope got %v want [notify:send]", res.Scopes)
 	}
 
-	// 未申请的 scope 被拒
+	// 未申请的 scope 被拒：用已退役的 devices:read 表达（它既没申请也不合法）。
 	created2, _ := m.CreateSession("dev9", []string{ScopeNotifySend})
-	if err := m.Approve(created2.SessionID, userID, []string{ScopeDevicesRead}); !errors.Is(err, ErrInvalidParam) {
-		t.Errorf("未申请 scope 应 ErrInvalidParam, got %v", err)
+	if err := m.Approve(created2.SessionID, userID, []string{"devices:read"}); !errors.Is(err, ErrInvalidParam) {
+		t.Errorf("未申请/已退役 scope 应 ErrInvalidParam, got %v", err)
 	}
 
 	// 空 grantedScopes 被拒

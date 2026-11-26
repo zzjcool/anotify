@@ -148,7 +148,6 @@
 		prunes: [],
 		taskLogs: [],
 		keys: [],
-		devices: [],
 		// passkey 设备注册会话（保留域；F2c 的 passkey-enroll 页消费）
 		passkeyEnroll: [],
 		auth: { passwordHash: mockDigest("mock-only-password"), passwordUpdatedAt: now() - 86400, loggedOut: typeof sessionStorage !== "undefined" && sessionStorage.getItem("anotify.mock.loggedOut") === "1" },
@@ -2188,9 +2187,8 @@
 				return !Number.isNaN(d.getTime()) && dayKey(d) === today;
 			}).length,
 			// No device delivery facts in this preview, never count terminal tasks as push success.
-			delivered: 0,
-			deliveryTotal: 0,
-			deviceCount: (state.devices || []).filter((d) => d.enabled !== false).length,
+			succeededTasks: 0,
+			finishedTasks: 0,
 			totalEvents: evs.length,
 			succeeded: byPhase("succeeded"),
 			failed: byPhase("failed"),
@@ -3019,10 +3017,6 @@
 		if (typeof sessionStorage !== "undefined") sessionStorage.setItem("anotify.mock.loggedOut", "1");
 		const res = authResponse({ ok: true }); res.headers.set("Set-Cookie", sessionCookie(true)); return res;
 	});
-	on("GET", /^\/v1\/vapid-public-key$/, () =>
-		json({ publicKey: "BMockPublicKeyForPreviewOnly_NotARealVapidKey" }),
-	);
-
 	// ===== 命名空间（cluster，读 + 建）=====
 	//
 	// 读要 `NamespaceList` 信封（`ensureScope` 靠 items[].metadata.name 选默认范围），
@@ -3491,16 +3485,6 @@
 				documents[slot].push(rendered); files[path] = JSON.stringify(rendered, null, 2);
 			}
 		}
-		const byName = new Map(documents.capabilities.map(d => [d.metadata.name, d]));
-		const visiting = new Set(); const done = new Set();
-		const visit = name => {
-			if (visiting.has(name)) pbFail("cycle", "Package next cycle at " + name);
-			if (done.has(name)) return;
-			visiting.add(name);
-			for (const ref of byName.get(name)?.spec.next || []) if (byName.has(splitRef(ref).name)) visit(splitRef(ref).name);
-			visiting.delete(name); done.add(name);
-		};
-		for (const name of byName.keys()) visit(name);
 		return { values, valuesDigest: mockDigest(stableStringify(values)), files, documents, release: rel };
 		} catch (error) { if (error.reason) error.message = pbMask(error.message, errorSecrets); throw error; }
 	}
@@ -4725,6 +4709,67 @@
 		return json(out);
 	});
 
+	on("POST", /^\/v1\/namespaces\/([^/]+)\/sources\/([^/]+)\/poll$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findSource(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("源 ");
+		if (row.kind !== "poll") return statusErr(409, "not_poll_source", "only kind=poll sources can be polled on demand");
+		if (!row.enabled) return statusErr(409, "source_disabled", "source is disabled");
+		const started = Date.now();
+		const receipt = deliver(row, { payload: clone(row.config.sample || {}) });
+		row.lastPollAt = isoNow();
+		row.cursor = 'W/"mock-poll-round-' + (state.events.length + 1) + '"';
+		row.consecutiveFailures = 0;
+		row.lastError = null;
+		return json({
+			items: receipt.duplicate ? 0 : 1,
+			created: receipt.tasks.length,
+			duplicates: receipt.duplicate ? 1 : 0,
+			durationMs: Date.now() - started,
+			cursorAdvanced: receipt.duplicate !== true,
+		});
+	});
+
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/sources\/([^/]+)\/audit$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findSource(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("源 ");
+		const raw = ctx.query.get("limit");
+		if (raw != null && raw !== "") {
+			const n = Number(raw);
+			if (!Number.isInteger(n) || n < 1 || n > 200) return badRequest("BadRequest", "limit 必须是 1..200 的整数");
+		}
+		const limit = Math.min(Number(raw) || 50, 200);
+		const items = [
+			{
+				id: "sraudit_mock_1",
+				action: "source.polled_manually",
+				actor: ME.username,
+				at: isoNow(),
+				detail: { ok: true, items: 3, created: 1, duplicates: 0 },
+			},
+		];
+		return json({ items: items.slice(0, limit) });
+	});
+
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/secrets\/([^/]+)\/audit$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const raw = ctx.query.get("limit");
+		if (raw != null && raw !== "") {
+			const n = Number(raw);
+			if (!Number.isInteger(n) || n < 1 || n > 200) return badRequest("BadRequest", "limit 必须是 1..200 的整数");
+		}
+		const limit = Math.min(Number(raw) || 50, 200);
+		const items = [{ id: "secrait_mock_1", action: "rotated", actor: ME.username, at: isoNow() }];
+		return json({ items: items.slice(0, limit) });
+	});
+
 	// 试运行：算出「会派发什么、会剪什么」，**不落库**（草稿也能先验一遍）。
 	on("POST", /^\/v1\/namespaces\/([^/]+)\/sources\/dry-run$/, (ctx) => {
 		const ns = decodeURIComponent(ctx.m[1]);
@@ -5091,22 +5136,6 @@
 		return json({ deleted: ctx.m[1] });
 	});
 
-	// ===== 设备（推送订阅，保留域）=====
-	on("GET", /^\/v1\/devices$/, () => json({ devices: clone(state.devices) }));
-	on("PATCH", /^\/v1\/devices\/([^/]+)$/, ctx => {
-		if (!hasSession()) return anonymous();
-		const device = state.devices.find(d => d.id === decodeURIComponent(ctx.m[1]) && d.userId === ME.id);
-		if (!device) return identityError(404, "Device not found");
-		const patch = ctx.body;
-		if (!pbObject(patch) || Object.keys(patch).some(k => !["enabled", "name", "eventScope", "tags"].includes(k)) ||
-			(patch.enabled != null && typeof patch.enabled !== "boolean") ||
-			(patch.name != null && typeof patch.name !== "string") ||
-			(patch.eventScope != null && typeof patch.eventScope !== "string") ||
-			(patch.tags != null && (!Array.isArray(patch.tags) || patch.tags.some(t => typeof t !== "string")))) return identityError(400, "Invalid device update");
-		for (const key of ["enabled", "name", "eventScope", "tags"]) if (patch[key] != null) device[key] = clone(patch[key]);
-		return json({ ok: true, device: clone(device) });
-	});
-
 	// ===== 安全 / passkey / 会话（保留域）=====
 	on("GET", /^\/v1\/auth\/passkeys$/, () => json({ passkeys: [] }));
 	on("GET", /^\/v1\/auth\/password$/, () => json({ hasPassword: !!state.auth.passwordHash, updatedAt: state.auth.passwordUpdatedAt }));
@@ -5155,8 +5184,7 @@
 			tasks: state.tasks.length,
 			userCount: 3, adminCount: 1, activeUserCount: 3, disabledUsers: 0,
 			messageCount: 0, todayMessages: 0,
-			deviceCount: state.devices.length, enabledDevices: state.devices.filter(d => d.enabled).length,
-			keyCount: state.keys.length, deliveredCount: 0, deliveryTotal: 0, topUsers: [],
+			keyCount: state.keys.length, succeededTasks: 0, finishedTasks: 0, topUsers: [],
 		}),
 	);
 	on("GET", /^\/v1\/admin\/users$/, () =>

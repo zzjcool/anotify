@@ -67,19 +67,12 @@ if [ -n "${E2E_LOCK_PROBE:-}" ]; then
 	exit 0
 fi
 
-# VAPID（推送相关套件需要）；优先环境变量，否则读原型 vapid.json
-if [ -z "${ANOTIFY_VAPID_PUBLIC_KEY:-}" ] && [ -f vapid.json ]; then
-	ANOTIFY_VAPID_PUBLIC_KEY=$(python3 -c "import json;print(json.load(open('vapid.json'))['publicKey'])" 2>/dev/null || true)
-	ANOTIFY_VAPID_PRIVATE_KEY=$(python3 -c "import json;print(json.load(open('vapid.json'))['privateKey'])" 2>/dev/null || true)
-fi
-export ANOTIFY_VAPID_PUBLIC_KEY ANOTIFY_VAPID_PRIVATE_KEY
-
 echo "=========================================="
 echo " Anotify E2E 全量测试"
 echo "=========================================="
 
 # 1. 前置：dist 缺失就重建（embed 依赖，gitignore 产物）；手动删过 web/ 时先恢复
-#    git 追踪的源文件（partials.js/sw.js/tokens.css 等，sitegen 不生成它们）。
+#    git 追踪的源文件（partials.js/tokens.css 等，sitegen 不生成它们）。
 NEED_FE=0
 if [ ! -d "internal/server/dist" ] || [ -z "$(ls -A internal/server/dist 2>/dev/null)" ]; then
 	NEED_FE=1

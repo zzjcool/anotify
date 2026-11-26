@@ -6,14 +6,14 @@
 #     POST /v1/namespaces/{namespace}/events                        投递入口（Bearer consoleKey，scope notify:send）
 #     POST /v1/hooks/{token}                                        外部 webhook 投递（**匿名**，token 即凭据）
 #     POST /v1/namespaces/{namespace}/sources/{name}/fire           手动触发一次（会话）→ 接收回执
+#     POST /v1/namespaces/{namespace}/sources/{name}/poll           立即拉取一次（会话，kind=poll）→ 计数回执
 #     POST /v1/namespaces/{namespace}/sources/dry-run              未保存草稿试运行（会话）→ 预览文档
 #     POST /v1/namespaces/{namespace}/sources/{name}/dry-run       已保存源试运行（会话）→ 预览文档
 #
 # 三条纪律（与 check_openapi.py 的机械断言一一对应）：
 #
 #   1. `GET /v1/namespaces/{namespace}/events`（事件流）**不在这里**，它在 `events.yaml`
-#      的 `components.pathItems.NamespaceEvents` 里。同 path 不同 method 不互相覆盖：
-#      本文件只写 POST，绝不可把 GET 抄过来（归属键是 method+path）。
+#      的 `components.pathItems.NamespaceEvents` 里：本文件只写 POST（归属键是 method+path）。
 #   2. 共享组件只在 `resource.yaml` 定义，这里用相对 `$ref` 引用
 #      （`SourceReceipt` / `SourcePreview` / `PruneFact` / `SourceTarget` / `Status` 族）。
 #      securitySchemes 不可跨文件：本文件用到 `consoleKey` 与 `session`，都自己定义且逐字一致。
@@ -21,7 +21,7 @@
 #      都 `$ref` 具名错误组件，名字与状态码对齐。本文件用到两套**非 Status** 错误族：
 #        - `AuthError429`：`POST /v1/hooks/{token}` 的双维度限流（IP 维 + token 维）；
 #        - `Backpressure503`：派发积压时的 503（snake_case 的 `BackpressureError`，
-#          带 `Retry-After` 头）。三个写入口（events / hooks / fire）都在背压中间件内侧。
+#          带 `Retry-After` 头）。写入口（events / hooks / fire / poll）都在背压中间件内侧。
 #        其余错误（handler 内产生）是 `Status<code>`。
 #
 # 代码是权威（基线 issue/333-five-openapi @ 289896f）：
@@ -292,6 +292,51 @@ paths:
           $ref: './resource.yaml#/components/responses/Status500'
         '503':
           $ref: './resource.yaml#/components/responses/Status503'
+  /v1/namespaces/{namespace}/sources/{name}/poll:
+    post:
+      operationId: pollSourceNow
+      tags: [source-actions]
+      security: [{session: []}]
+      summary: 立即拉取一次（kind=poll）→ 本轮计数回执
+      description: |
+        建完 `kind: poll` 的源**立刻**验一次配置：不必等排期的 cron 边界，也不必只看
+        `status.lastError`。成功/失败的判定与定时轮询是**同一份代码路径**，所以这里给的是
+        那一轮真的发生了什么（取到几条、新建几条、命中去重几条、耗时）。
+
+        四条语义：
+
+        - **同一把锁**：该源已有一轮在飞（后台排期或另一次手动触发）→ 409 `poll_in_progress`，
+          不排队、不并发。
+        - **失败不前进游标**（与定时轮询同一条不变量）→ 502 `poll_failed`，`message` 是错误原文，
+          `status.cursor` 不动；`status.consecutiveFailures` / `status.lastError` 照常记。
+        - **不改变排期**：`nextFireAt` 原样保留（手动触发不是「重排」，失败退避也不写它）。
+        - **SSRF 三道闸照常生效**：手动触发不是绕过口，走的是同一个 fetch。
+        - 非 `kind: poll` → 409 `not_poll_source`；已停用 → 409 `source_disabled`。
+
+        审计：每次触发记一行 `source.polled_manually`（actor + 本轮计数）。
+      parameters:
+        - $ref: './resource.yaml#/components/parameters/NamespacePath'
+        - $ref: '#/components/parameters/SourceNamePath'
+      responses:
+        '200':
+          description: 本轮计数回执（计数字段恒存在）
+          content:
+            application/json:
+              schema:
+                $ref: './resource.yaml#/components/schemas/SourcePollResult'
+        '401':
+          $ref: './resource.yaml#/components/responses/AuthError401'
+        '404':
+          $ref: './resource.yaml#/components/responses/Status404'
+        '409':
+          $ref: './resource.yaml#/components/responses/Status409'
+        '500':
+          $ref: './resource.yaml#/components/responses/Status500'
+        '502':
+          $ref: './resource.yaml#/components/responses/Status502'
+        '503':
+          $ref: './resource.yaml#/components/responses/Backpressure503'
+
 components:
   securitySchemes:
     # 逐字与 resource.yaml / events.yaml / auth.yaml 一致：`description` 也是定义的一部分

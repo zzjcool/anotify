@@ -150,8 +150,6 @@ var enWhitelist = map[string]string{
 	// 「no edge symbols」是在说用户名首尾不能有符号，这里的 edge 是「边缘」，
 	// 与 Edge（下游）无关。
 	"login.signup.username_hint": "edge = 首尾边缘符号，不是 Edge 概念",
-	// 浏览器名字 Edge。改不了。
-	"docs.webpush.android.desc": "Microsoft Edge 浏览器名",
 }
 
 // vocabPin 把关键标签的期望值写死（§13.4 的钉桩表）。

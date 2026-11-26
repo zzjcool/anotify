@@ -618,6 +618,7 @@ export const SUITE_PORTS = {
 	// 接在 live_agent 段之后：固定段避免与其他 worktree 的同名套件抢端口。
 	vars_ui: 7450,
 	playbook_release: 7500,
+	namespace_credentials: 7550,
 };
 
 // findFreePort(base): 用 net.listen 探测端口是否可用，冲突 +1 重试（最多 50 次）。
@@ -736,8 +737,6 @@ export async function startServer({
 				ANOTIFY_STATIC: "",
 				ANOTIFY_RP_ID: rpId || "localhost",
 				ANOTIFY_RP_ORIGIN: origin,
-				ANOTIFY_VAPID_PUBLIC_KEY: process.env.ANOTIFY_VAPID_PUBLIC_KEY || "",
-				ANOTIFY_VAPID_PRIVATE_KEY: process.env.ANOTIFY_VAPID_PRIVATE_KEY || "",
 				// 服务端会在 /health 里回显它（见 Config.BootID / issue #215）
 				ANOTIFY_BOOT_ID: expectBoot,
 			},
@@ -861,23 +860,8 @@ export function seed(dbPath, username = "e2e", opts = {}) {
 	return {
 		uid: get("UID"),
 		sendKey: get("SEND_KEY"),
-		recvKey: get("RECV_KEY"),
 		session,
 	};
 }
 
 // ---------- 常用构造 ----------
-export function makeDevice(over = {}) {
-	return Object.assign(
-		{
-			name: "测试设备",
-			platform: "mac",
-			tags: [],
-			endpoint:
-				"https://push.example.com/" + Math.random().toString(36).slice(2),
-			keys: { p256dh: "BPxTest", auth: "authTest" },
-			userAgent: "e2e-test",
-		},
-		over,
-	);
-}

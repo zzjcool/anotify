@@ -15,7 +15,6 @@ import (
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/lease"
 	"github.com/zzjcool/anotify/internal/protocol"
-	"github.com/zzjcool/anotify/internal/push"
 	"github.com/zzjcool/anotify/internal/resultspool"
 	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/source"
@@ -72,12 +71,12 @@ func NewMux(cfg Config) http.Handler {
 //
 // v4 的装配顺序（本文件是唯一的 mux 写入者，别在别处再挂路由）：
 //
-//	store → auth → cli-auth / passkey-enroll → VAPID → 保留域 handler →
+//	store → auth → cli-auth / passkey-enroll → 保留域 handler →
 //	背压 → 会话中间件 → 限流 → route.Router / ws.Hub / source.Service / trigger / lease.Sweeper
 //	→ 资源域 register(mux) → 节点协议 → 健康检查 / pprof / 静态兜底
 //
 // 刻意**不**再装配的东西（v4 退役，见 331 卡 D0.2 / D0.3）：旧中枢执行器包（连带
-// notify.phone / push.CentralNotifier 的接线）、`ws.NewNodeHandler`（hub 自己
+// notify.phone 的接线）、`ws.NewNodeHandler`（hub 自己
 // 就是 /v1/node/stream 的 handler）、`db.BackfillBuiltinCapabilities`（内置能力播种随
 // 中央执行域一起退役）、`source.Trigger` / `source.Scheduler`（换成 source.Service +
 // trigger.Scheduler）、`lease.New` + Redispatch/Nudge/SetNotBefore 那一套重派回调
@@ -150,28 +149,11 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 3.6 Passkey 设备授权管理器（复用 cli_auth_sessions 表，kind=passkey）
 	enrollMgr := auth.NewPasskeyEnrollManager(db, authSvc, 0)
 
-	// 4. Web Push（P-256 VAPID 密钥）
-	//
-	// v4 只保留**密钥的装载与公钥下发**（GET /v1/vapid-public-key）：随旧中枢执行器包
-	// 退役的 `push.CentralNotifier`（notify.phone 的内置执行者）带走了「谁发推送」这件事，
-	// v4 里推送由节点的能力进程自己发（能力正文带它需要的密钥材料），中枢不再构造 Sender。
-	// VAPID 缺失仍然只 WARN：绝大多数开发/裸机部署本来就没配推送，那不是启动错误。
-	var vapidCfg *push.VAPIDConfig
-	vapidCfg, vapidErr := push.LoadVAPID()
-	if vapidErr != nil {
-		vapidCfg = nil
-		slog.Warn("VAPID not configured, push disabled",
-			"event", "push.vapid.missing",
-			"error", vapidErr.Error(),
-		)
-	}
-
-	// 5. 保留域 HTTP 处理器（auth / admin / devices / keys / cli-auth / passkey-enroll）
+	// 5. 保留域 HTTP 处理器（auth / admin / keys / cli-auth / passkey-enroll）
 	//
 	// 这些域**不**走资源信封（api-conventions §8.3「保持现有路径与请求体」），所以它们
 	// 的 handler 仍在各自的文件里，本函数只负责挂路由与中间件。
 	authH := &authHandler{svc: authSvc, db: db}
-	devicesH := &devicesHandler{db: db}
 	keysH := &keysHandler{keys: authSvc.Keys(), db: db}
 	cliAuthStaticFS := resolveStaticFS(cfg)
 	cliAuthH := &cliAuthHandler{
@@ -247,7 +229,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 四个组件互相引用但都不持有对方的后台循环：Router 只做投影、Hub 做会话与派发、
 	// source.Service 做入口归一化、trigger.Scheduler 只把 cron 到期的源喂给 Service。
 	// 依赖方向单向（scheduler → service → router → store），所以可以在一个地方一次装好。
-	router := route.New(db)
+	router := route.New(db).WithBudget(route.Budget{MaxHops: cfg.MaxHops, TraceTaskBudget: cfg.TraceTaskBudget})
 	hub := ws.NewHub(db, router, ws.WithLogger(slog.Default()))
 	sources := source.New(db, router)
 	sched := trigger.New(db, sources, slog.Default())
@@ -278,7 +260,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	}
 
 	deps := &serverDeps{
-		DB: db, Router: router, Sources: sources, Hub: hub, Sweeper: sweeper,
+		DB: db, Router: router, Sources: sources, Poller: poller, Hub: hub, Sweeper: sweeper,
 		// Now 是**毫秒**时钟（api_deps.go 的契约）：store.Now 是秒，不能直接注入，
 		// 否则 stats 的 371 天窗口与 cancel_requested_at 会按 1970 年算（#340 r2 M-1）。
 		// #332 的产物端点同样按这个契约取值（下载用 taskNowSeconds 折算成 store 的秒）。
@@ -367,13 +349,11 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	app.runBackgroundLoop(ctx, "lease", func(loopCtx context.Context) error {
 		return sweeper.Run(loopCtx, lease.DefaultInterval)
 	})
-	// 派发预算（v3 契约 §2）在 v4 只有配置面（route.Router 不再消费），但启动日志仍要
-	// 把它写出来：运维改了 env 却没生效时，至少要能在日志里看到「配的是多少」。
+	// 派发预算（CONTRACT.md A7）：route.Router 每次派发都判，这里把生效值写进启动日志。
 	slog.Info("dispatch budgets configured",
 		"event", "server.budget.configured",
 		"max_hops", cfg.MaxHops,
 		"trace_task_budget", cfg.TraceTaskBudget,
-		"note", "v4 保留配置与校验；中枢侧派发（route.Router + ws.Hub）不再消费这两个预算",
 	)
 
 	mux := http.NewServeMux()
@@ -399,17 +379,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("/v1/auth/recovery/regenerate", noStore(sessMW(http.HandlerFunc(authH.recoveryRegenerate))))
 	mux.Handle("/v1/auth/recovery/status", noStore(sessMW(http.HandlerFunc(authH.recoveryStatus))))
 	mux.Handle("/v1/auth/", noStore(http.HandlerFunc(authH.ServeHTTP)))
-	// VAPID 公钥（前端订阅用，无需登录也可读；单一事实源 = push.LoadVAPID）
-	mux.Handle("/v1/vapid-public-key", noStore(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		pub := ""
-		if vapidCfg != nil {
-			pub = vapidCfg.PublicKey
-		}
-		writeJSON(w, 200, map[string]string{"publicKey": pub})
-	})))
 	// 以下需登录会话（Cookie）
-	mux.Handle("/v1/devices", noStore(sessMW(devicesH)))
-	mux.Handle("/v1/devices/", noStore(sessMW(devicesH)))
 	mux.Handle("/v1/keys", noStore(sessMW(keysH)))
 	mux.Handle("/v1/keys/", noStore(sessMW(keysH)))
 
@@ -423,6 +393,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	newPlaybookAPI(deps).register(mux)
 	newNamespaceAPI(deps).register(mux)
 	newTaskAPI(deps).register(mux)
+	newSecretAPI(deps).register(mux)
 	// 保留域读模型（§8.4）：stats / orphans / deployments。不是资源，也不套信封。
 	newRetainedReadAPI(deps).register(mux)
 	// Node 域多一步注入：它是升级源（agent 二进制）的消费方。
@@ -449,7 +420,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 响应是 artifact JSON 原文（不套信封、不带 status），见 node_capability.go 的文件头。
 	//
 	// 两条 pattern（GET 本体 + 非 GET 的显式 405）由 registerNodeCapabilityContent 一起注册：
-	// 405 兜底不能写在 mux.go 里（会让 parity 的裸挂载判据把 /v1/vapid-public-key 也判红），
+	// 405 兜底不能写在 mux.go 里（会让 parity 的裸挂载判据把 /v1/keys/self 这类手写路由也判红），
 	// 理由写在那个函数上。
 	registerNodeCapabilityContent(mux, db, slog.Default())
 	// 运行产物上行（#332 / A1）：同样是 **node token**（不是会话），所以刻意挂在

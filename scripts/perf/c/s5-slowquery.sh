@@ -103,8 +103,6 @@ svc_up() {
 		ANOTIFY_LOG_LEVEL="${PC_LOG_LEVEL:-warn}" \
 		ANOTIFY_RP_ID=localhost \
 		ANOTIFY_RP_ORIGIN="http://localhost:$port" \
-		ANOTIFY_VAPID_PUBLIC_KEY=dummy \
-		ANOTIFY_VAPID_PRIVATE_KEY=dummy \
 		ANOTIFY_BOOT_ID="perf-c-$name" \
 		"$PC_BIN" >>"$dbdir/server.log" 2>&1 &
 	local pid=$!
@@ -161,7 +159,7 @@ U_CEV1000="$PC_BASE/v1/console/events?namespaceId=$PC_NS&limit=1000"
 U_TASKS200="$PC_BASE/v1/tasks?namespaceId=$PC_NS&limit=200"
 U_TRACE="$PC_BASE/v1/traces/trace_bulk_0001?namespaceId=$PC_NS"
 # GET /v1/events（机器入口）要求的是 **ScopeNotifySend**（internal/api/events.go:77），
-# 所以这里必须用 SEND_KEY；用 RECV_KEY 会拿到 403 forbidden: insufficient scope（证据见 §附）。
+# 所以这里必须用 SEND_KEY（v3 时代的 notify:receive 第二个 scope 已随推送域退役）。
 AUTH_BEARER="Authorization: Bearer $PC_SEND_KEY"
 AUTH_COOKIE="Cookie: anotify_session=$PC_SESSION"
 
@@ -202,9 +200,6 @@ PC_TEE=1
 {
 	log ""
 	log "--- 附：GET /v1/events 的鉴权口径（internal/api/events.go:77 要求 ScopeNotifySend）---"
-	log "  $(${CURL[@]} -s -o /dev/null -w 'RECV_KEY(notify:receive) → code=%{http_code} bytes=%{size_download}' \
-		-H "Authorization: Bearer $PC_RECV_KEY" "$U_MEV500")"
-	log "  RECV_KEY 响应体: $(${CURL[@]} -s -H "Authorization: Bearer $PC_RECV_KEY" "$U_MEV500" | tr -d '\n' | tr -s ' ')"
 	log "  $(${CURL[@]} -s -o /dev/null -w 'SEND_KEY(notify:send)    → code=%{http_code} bytes=%{size_download}' \
 		-H "$AUTH_BEARER" "$U_MEV500")"
 } 2>&1 | tee -a "$LOG"
@@ -684,7 +679,7 @@ put_var INDEXLIST "$(sed -n '/\[ANALYZE-on\] sqlite_master 索引清单/,/^$/p' 
 put_var SQLIDX "$(grep -n 'idx_edges_lookup' "$PC_REPO/internal/store/schema.sql" | sed 's/^/    /')"
 put_var EDGECOLS "$(${SQL3[@]} "$PC_DB" "SELECT group_concat(name, ', ') FROM pragma_table_info('edges');")"
 put_var QTIME "$(cat "$RAW"/qtime-*.txt 2>/dev/null | grep -E 'Run Time' | sed 's/^/    /')"
-put_var PROBE_SCOPE "$(grep -A3 '附：GET /v1/events 的鉴权口径' "$LOG" | grep -E 'RECV_KEY|SEND_KEY' | awk '!seen[$0]++')"
+put_var PROBE_SCOPE "$(grep -A3 '附：GET /v1/events 的鉴权口径' "$LOG" | grep -E 'SEND_KEY' | awk '!seen[$0]++')"
 put_var EXTRAP_TASKS "$(awk -F'\t' '
 	$1==2000 { a=$2 } $1==20000 { b=$2 }
 	END {

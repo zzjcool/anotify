@@ -2,10 +2,13 @@
 
 **[中文](README.md)** | [English](README.en.md)
 
-Agent 完成任务后，把通知自动推送到你的所有设备（iOS / Mac / PC / Android）。
-Passkey 无密码登录（也可选用密码登录）、无需轮询、单二进制易自托管。
+Agent 完成任务后上报一条事件，中枢按你定义的链路在节点上执行后续能力
+（分析、留证、告警脚本……），全过程在控制台可查：事件 → 任务链 → 日志。
+Passkey 无密码登录（也可选用密码登录）、单二进制易自托管。
 
-> 本仓库由原型（iOS Web Push 机制验证）演进为完整实现。
+> 本仓库由原型演进为完整实现。**Web Push 推送域已整体退役**（决策 V4-D7，见
+> [`docs/contracts/v4/CONTRACT.md`](docs/contracts/v4/CONTRACT.md)）——本仓库不再把
+> 通知推送到手机；「通知」的落点是事件流与任务链，接哪里由你自己的能力脚本决定。
 > 行为的唯一权威是**代码 + 测试 + `docs/contracts/`**；文档入口见 [`docs/README.md`](docs/README.md)。
 
 ## 📚 文档导航
@@ -16,17 +19,16 @@ Passkey 无密码登录（也可选用密码登录）、无需轮询、单二进
 | **[AGENTS.md](AGENTS.md)** | 子 Agent | 工作约定、规范、陷阱 |
 | **[docs/README.md](docs/README.md)** | 所有人 | 文档入口：权威在哪、哪些文档是快照、改行为的规矩 |
 | **[E2E_TESTING.md](E2E_TESTING.md)** | 开发者 | 端到端测试体系（`make e2e` 固化门禁） |
-| **[IOS_TESTING.md](IOS_TESTING.md)** | 验证者 | iOS 真机推送验证清单（唯一人工环节） |
 | **[examples/playbooks/](examples/playbooks/)** | 使用者 | 可直接安装的 playbook 示例（事件 → 判定 → 告警/留证），含空环境落地步骤 |
 
 ## 架构
 
 ```
-外部系统 ─HTTP/WS─▶ 中枢 anotify（单二进制）─┬─▶ WS 派发 ─▶ 节点 anode ─▶ 执行能力脚本
-                             SQLite         └─▶ Web Push ─▶ 设备
+外部系统 ─HTTP/WS─▶ 中枢 anotify（单二进制）─▶ WS 派发 ─▶ 节点 anode ─▶ 执行能力脚本
+                             SQLite
 ```
 
-- **两个产品**：中枢 `anotify`（`cmd/server`：资源面 + 派发 + 推送，**不执行能力**）
+- **两个产品**：中枢 `anotify`（`cmd/server`：资源面 + 派发，**不执行能力**）
   与节点 `anode`（`cmd/anode`：`serve` / `install` / `emit`，真正跑能力的机器）
 - **单二进制**：Go + `go:embed` 内嵌前端 + SQLite（纯 Go，无 CGO）
 - **中枢不执行**：执行只发生在节点（契约机检：中枢侧不得 `os/exec`）
@@ -45,10 +47,9 @@ brew install go node@22 cloudflared
 # 2. 克隆
 git clone git@github.com:zzjcool/anotify.git && cd anotify
 
-# 3. 配置本地环境（.env.local 不入库，含密钥）
+# 3. 配置本地环境（.env.local 不入库）
 cp .env.example .env.local
-make keys                                   # 生成 VAPID 密钥对
-# 把输出的 public/private key 填进 .env.local 的 ANOTIFY_VAPID_PUBLIC_KEY / _PRIVATE_KEY
+# 按需改 ANOTIFY_RP_ID / ANOTIFY_RP_ORIGIN（Passkey 的 RP 必须=访问域名）
 ```
 
 `.env.local` 关键字段（已预配 dev.openaaas.org）：
@@ -58,8 +59,6 @@ ANOTIFY_ADDR=:8080
 ANOTIFY_STATIC=./web
 ANOTIFY_RP_ID=dev.openaaas.org
 ANOTIFY_RP_ORIGIN=https://dev.openaaas.org
-ANOTIFY_VAPID_PUBLIC_KEY=<make keys 生成>
-ANOTIFY_VAPID_PRIVATE_KEY=<make keys 生成>
 ```
 
 ### Cloudflare 命名隧道（dev.openaaas.org，可选但推荐）
@@ -116,14 +115,13 @@ make dev          # 起 server + cloudflared tunnel，Ctrl-C 一起停
 | `make ci` | PR 门禁：gofmt / vet / build / 单元测试（与 GitHub Actions 相同，不含 e2e） |
 | `make e2e` | 全量端到端测试（~57s，968 断言） |
 | `make e2e-one S=auth_flow` | 只跑某个套件 |
-| `make keys` | 生成 VAPID 密钥对 |
 
 ## Docker
 
 方式一：docker compose（推荐，首次配置好后后续一条命令部署）：
 
 ```bash
-cp .env.compose.example .env   # 填入 make keys 生成的 VAPID 密钥 + 访问域名
+cp .env.compose.example .env   # 填入访问域名（RP_ID / RP_ORIGIN）
 make up                        # = docker compose up -d（从 GHCR 拉官方镜像）
 make down                      # 停止并移除容器（SQLite 数据卷保留）
 ```
@@ -135,8 +133,6 @@ make down                      # 停止并移除容器（SQLite 数据卷保留�
 ```bash
 make docker                              # 构建中枢镜像（自带节点升级源 /app/anode）
 docker run -p 8080:8080 \
-  -e ANOTIFY_VAPID_PUBLIC_KEY=$ANOTIFY_VAPID_PUBLIC_KEY \
-  -e ANOTIFY_VAPID_PRIVATE_KEY=$ANOTIFY_VAPID_PRIVATE_KEY \
   -e ANOTIFY_RP_ID=你的域名 \
   -e ANOTIFY_RP_ORIGIN=https://你的域名 \
   anotify
@@ -189,13 +185,21 @@ make ci                  # 与 CI 相同：gofmt + 前端 embed 产物 + vet + b
 make test                # Go 单元测试（独立于 e2e；默认不嵌入 dist）
 make e2e                 # 全量端到端测试（~57s，并行，968 断言）
 make e2e-one S=auth_flow # 只跑某个套件
+make fe-clean            # 清掉 web/*.html 与 internal/server/dist（下次 make fe 从零重建）
 make integration         # 集成测试（健康/缓存分级/鉴权矩阵）
-node scripts/ws_test.mjs # WS 接收端（需 RECV_KEY/SEND_KEY）
-node scripts/push_e2e.mjs# 桌面 Chrome 推送 E2E（需 SESSION/API_KEY）
+node scripts/ws_test.mjs # WS 接收端（需 SEND_KEY）
 go run ./cmd/devseed     # 播种测试用户 + Key + 会话
 ```
 
 > e2e 体系详见 `E2E_TESTING.md`（17 套件、并行执行器、结构化 JSON 结果）。
+
+### 删掉/改名页面之后
+
+`web/` 与 `internal/server/dist/` 都是 gitignore 的生成物，但**不能再靠手工清理**：
+
+- `make fe` 会 prune 掉 `web/*.html` 与 `dist/` 里「本轮没有产出」的文件，并逐个打印删了什么；
+- `make check-dist-fresh` 会点名 `dist/` 里任何「源已不存在」的残留并判红（不静默删除）；
+- 要整份重置就 `make fe-clean`，然后 `make fe`。
 
 ## API（/v1）
 
@@ -212,10 +216,8 @@ go run ./cmd/devseed     # 播种测试用户 + Key + 会话
 | `GET/POST/DELETE /v1/auth/password` | 密码状态 / 设置 / 修改 / 移除（需会话） |
 | `POST /v1/notify` | **已删除** —— v4 用 `POST /v1/namespaces/{namespace}/events`（Bearer Key，scope=notify:send） |
 | `GET /v1/stream` | **已删除** —— v4 长连接见 `api/agent.yaml` 的节点流；控制台读事件流走 `GET /v1/console/events` |
-| `GET/POST /v1/devices` | 推送订阅设备管理 |
 | `GET/POST /v1/keys` | API Key 管理 |
 | `GET /v1/notifications` | **已删除** —— v4 的事件流就是通知历史：`GET /v1/console/events` |
-| `GET /v1/vapid-public-key` | VAPID 公钥（前端订阅用） |
 
 ### Agent 上报示例（v4 事件入口）
 
@@ -236,7 +238,6 @@ curl -X POST https://你的域名/v1/namespaces/{namespace}/events \
 | `ANOTIFY_ADDR` | `:8080` | 监听地址 |
 | `ANOTIFY_DB` | `./anotify.db` | SQLite 路径 |
 | `ANOTIFY_STATIC` | 空(embed) | 本地静态目录（开发用 `./web`） |
-| `ANOTIFY_VAPID_PUBLIC_KEY/PRIVATE_KEY` | — | VAPID 密钥（推送必需） |
 | `ANOTIFY_RP_ID` | `localhost` | WebAuthn RP 域名（=访问域名） |
 | `ANOTIFY_RP_ORIGIN` | `http://localhost:8080` | WebAuthn Origin（含协议） |
 | `ANOTIFY_CDN_PREFIX` | 空 | CDN 前缀（生产静态加速） |
@@ -248,22 +249,22 @@ cmd/server/         单二进制入口
 cmd/devseed/        测试播种工具
 internal/
   store/            SQLite 数据访问 + schema
-  broker/           消息队列抽象 + SQLiteBroker
   auth/             Passkey(WebAuthn)/密码注册 + 密码(argon2id) + API Key(argon2id) + 会话
   api/              事件入口 + 资源路由（见 api/*.yaml）
-  ws/               WebSocket 派发器
-  push/             Web Push 派发器(VAPID)
-  route/            标签/status 投递过滤（共享纯逻辑）
+  ws/               节点长连接与派发
+  route/            事件 → 任务的路由与剪枝（共享纯逻辑）
+  protocol/         中枢与节点之间的 wire 协议
+  playbook/         预案解析/渲染/安装
+  yamldoc/          YAML 文档层（单文档约束）
   server/           路由装配 + 静态资源(CDN 缓存分级) + embed
 web/                前端（纯静态 HTML+Tailwind CDN+tokens.css）
 scripts/hash.mjs    指纹脚本（content-hash + 引用改写 + manifest）
-scripts/integration.sh / ws_test.mjs / push_e2e.mjs   测试脚本
+scripts/integration.sh / ws_test.mjs                 测试脚本
 ```
 
 ## 安全
 
-- API Key **只存 argon2id 哈希**，明文仅创建时显示一次，带 scope（notify:send / notify:receive / devices:read）
+- API Key **只存 argon2id 哈希**，明文仅创建时显示一次，scope 目前只有 `notify:send`（它护的是事件入口 `POST /v1/namespaces/{ns}/events`）
 - Passkey(WebAuthn) 无密码；也可注册时选密码，或登录后在安全页设置密码作为第二套登录方式；会话 httpOnly Cookie
 - **每个账号至少保留一种登录方式**：删除最后一个 Passkey 需先设置密码，移除密码需先有 Passkey
-- 推送载荷端到端加密（p256dh/auth），VAPID 私钥只在服务端
-- `vapid.json` / `*.db` / `.env.local` 已 gitignore，勿提交
+  - `*.db` / `.env.local` / `.env.dev` 已 gitignore，勿提交

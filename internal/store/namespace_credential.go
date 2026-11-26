@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/zzjcool/anotify/internal/sourcespec"
 )
 
-// 命名空间凭据（#532）：值只写不读（不进 config、不进回显、不进日志），写入口只有 poll 的 config.secret。
+// 命名空间凭据（#532/#554）：值只写不读（不进 config/回显/日志/审计），写入口 = poll 的 config.secret 与 PUT …/secrets/{name}。
 var ErrNamespaceSecretNotFound = errors.New("store: 命名空间凭据不存在")
 
 func (d *DB) UpsertNamespaceSecret(ctx context.Context, namespaceID, name, value string) error {
@@ -97,4 +99,266 @@ func resolveSourceSecretOn(ctx context.Context, ex queryExec, namespaceID, kind 
 		return err
 	}
 	return nil
+}
+
+type NamespaceSecretFact struct {
+	NamespaceID string
+	Name        string
+	CreatedAt   int64
+	UpdatedAt   int64
+	UsedBy      []string
+}
+
+const (
+	NamespaceSecretCreated = "created"
+	NamespaceSecretRotated = "rotated"
+	NamespaceSecretDeleted = "deleted"
+)
+
+type NamespaceSecretAuditEntry struct {
+	ID          string
+	NamespaceID string
+	Name        string
+	Action      string
+	ActorID     string
+	CreatedAt   int64
+}
+
+type NamespaceSecretInUseError struct {
+	Name    string
+	Sources []string
+}
+
+func (e *NamespaceSecretInUseError) Error() string {
+	return fmt.Sprintf("命名空间凭据 %q 还被 %d 个源引用（%s），先改那些源的 secretRef",
+		e.Name, len(e.Sources), strings.Join(e.Sources, ", "))
+}
+
+func (d *DB) ListNamespaceSecrets(ctx context.Context, namespaceID string) ([]NamespaceSecretFact, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	usage, err := secretUsageOn(ctx, d, namespaceID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := d.queryContext(ctx,
+		`SELECT name, created_at, updated_at FROM namespace_secrets WHERE namespace_id = ? ORDER BY name`,
+		namespaceID)
+	if err != nil {
+		return nil, fmt.Errorf("list namespace secrets: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []NamespaceSecretFact{}
+	for rows.Next() {
+		f := NamespaceSecretFact{NamespaceID: namespaceID}
+		if err := rows.Scan(&f.Name, &f.CreatedAt, &f.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan namespace secret: %w", err)
+		}
+		f.UsedBy = usedByOf(usage, f.Name)
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list namespace secrets: %w", err)
+	}
+	return out, nil
+}
+
+func (d *DB) GetNamespaceSecretMeta(ctx context.Context, namespaceID, name string) (*NamespaceSecretFact, error) {
+	return getNamespaceSecretMetaOn(ctx, d, namespaceID, name)
+}
+
+func getNamespaceSecretMetaOn(ctx context.Context, ex queryExec, namespaceID, name string) (*NamespaceSecretFact, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	f := &NamespaceSecretFact{NamespaceID: namespaceID, Name: name}
+	err := ex.queryRowContext(ctx,
+		`SELECT created_at, updated_at FROM namespace_secrets WHERE namespace_id = ? AND name = ?`,
+		namespaceID, name).Scan(&f.CreatedAt, &f.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: %q", ErrNamespaceSecretNotFound, name)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get namespace secret meta: %w", err)
+	}
+	usage, err := secretUsageOn(ctx, ex, namespaceID)
+	if err != nil {
+		return nil, err
+	}
+	f.UsedBy = usedByOf(usage, name)
+	return f, nil
+}
+
+func secretUsageOn(ctx context.Context, ex queryExec, namespaceID string) (map[string][]string, error) {
+	rows, err := ex.queryContext(ctx, `SELECT name, kind, config FROM sources WHERE namespace_id = ?`, namespaceID)
+	if err != nil {
+		return nil, fmt.Errorf("secret usage: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	usage := map[string][]string{}
+	for rows.Next() {
+		var srcName, kind, cfg string
+		if err := rows.Scan(&srcName, &kind, &cfg); err != nil {
+			return nil, fmt.Errorf("secret usage: %w", err)
+		}
+		ref := sourcespec.ParseConfig(kind, json.RawMessage(cfg)).SecretRef
+		if ref == nil || ref.Name == "" {
+			continue
+		}
+		usage[ref.Name] = append(usage[ref.Name], srcName)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("secret usage: %w", err)
+	}
+	for _, names := range usage {
+		sort.Strings(names)
+	}
+	return usage, nil
+}
+
+func usedByOf(usage map[string][]string, name string) []string {
+	if names := usage[name]; len(names) > 0 {
+		return names
+	}
+	return []string{}
+}
+
+func (d *DB) PutNamespaceSecret(ctx context.Context, namespaceID, name, value, actorID string) (bool, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return false, ErrNamespaceRequired
+	}
+	if err := sourcespec.ValidateSecretName(name); err != nil {
+		return false, fmt.Errorf("put namespace secret: %w", err)
+	}
+	if value == "" {
+		return false, fmt.Errorf("put namespace secret: value 不能为空")
+	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("put namespace secret: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	ex := txExec{tx: tx}
+
+	var probe int
+	err = ex.queryRowContext(ctx,
+		`SELECT 1 FROM namespace_secrets WHERE namespace_id = ? AND name = ?`, namespaceID, name).Scan(&probe)
+	created := errors.Is(err, sql.ErrNoRows)
+	if err != nil && !created {
+		return false, fmt.Errorf("put namespace secret: probe: %w", err)
+	}
+	if err := upsertNamespaceSecretOn(ctx, ex, namespaceID, name, value); err != nil {
+		return false, err
+	}
+	action := NamespaceSecretRotated
+	if created {
+		action = NamespaceSecretCreated
+	}
+	if err := appendNamespaceSecretAuditOn(ctx, ex, namespaceID, name, action, actorID); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("put namespace secret: commit: %w", err)
+	}
+	return created, nil
+}
+
+func (d *DB) DeleteNamespaceSecret(ctx context.Context, namespaceID, name, actorID string) error {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return ErrNamespaceRequired
+	}
+	if err := sourcespec.ValidateSecretName(name); err != nil {
+		return fmt.Errorf("delete namespace secret: %w", err)
+	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete namespace secret: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	ex := txExec{tx: tx}
+
+	var probe int
+	err = ex.queryRowContext(ctx,
+		`SELECT 1 FROM namespace_secrets WHERE namespace_id = ? AND name = ?`, namespaceID, name).Scan(&probe)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: %q", ErrNamespaceSecretNotFound, name)
+	}
+	if err != nil {
+		return fmt.Errorf("delete namespace secret: probe: %w", err)
+	}
+	usage, err := secretUsageOn(ctx, ex, namespaceID)
+	if err != nil {
+		return err
+	}
+	if names := usage[name]; len(names) > 0 {
+		return &NamespaceSecretInUseError{Name: name, Sources: names}
+	}
+	if _, err := ex.execContext(ctx,
+		`DELETE FROM namespace_secrets WHERE namespace_id = ? AND name = ?`, namespaceID, name); err != nil {
+		return fmt.Errorf("delete namespace secret: %w", err)
+	}
+	if err := appendNamespaceSecretAuditOn(ctx, ex, namespaceID, name, NamespaceSecretDeleted, actorID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete namespace secret: commit: %w", err)
+	}
+	return nil
+}
+
+func appendNamespaceSecretAuditOn(ctx context.Context, ex queryExec, namespaceID, name, action, actorID string) error {
+	switch action {
+	case NamespaceSecretCreated, NamespaceSecretRotated, NamespaceSecretDeleted:
+	default:
+		return fmt.Errorf("namespace secret audit: action %q 不在闭集内", action)
+	}
+	if _, err := ex.execContext(ctx,
+		`INSERT INTO namespace_secret_audit (id, namespace_id, name, action, actor_id, created_at)
+		 VALUES (?,?,?,?,?,?)`,
+		NewNamespaceSecretAuditID(), namespaceID, name, action, actorID, Now()); err != nil {
+		return fmt.Errorf("namespace secret audit: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) ListNamespaceSecretAudit(ctx context.Context, namespaceID, name string, beforeAt int64, limit int) ([]NamespaceSecretAuditEntry, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	if limit <= 0 {
+		limit = AuditDefaultLimit
+	}
+	if limit > AuditMaxLimit {
+		limit = AuditMaxLimit
+	}
+	q := `SELECT id, name, action, actor_id, created_at FROM namespace_secret_audit WHERE namespace_id = ?`
+	args := []any{namespaceID}
+	if name != "" {
+		q += ` AND name = ?`
+		args = append(args, name)
+	}
+	if beforeAt != 0 {
+		q += ` AND created_at < ?`
+		args = append(args, beforeAt)
+	}
+	q += ` ORDER BY created_at DESC, rowid DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := d.queryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list namespace secret audit: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []NamespaceSecretAuditEntry{}
+	for rows.Next() {
+		e := NamespaceSecretAuditEntry{NamespaceID: namespaceID}
+		if err := rows.Scan(&e.ID, &e.Name, &e.Action, &e.ActorID, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan namespace secret audit: %w", err)
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list namespace secret audit: %w", err)
+	}
+	return out, nil
 }

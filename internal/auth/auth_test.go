@@ -80,9 +80,6 @@ func TestAPIKey_ScopeLabels(t *testing.T) {
 		want   string
 	}{
 		{[]string{ScopeNotifySend}, "ant_send_"},
-		{[]string{ScopeNotifyReceive}, "ant_recv_"},
-		{[]string{ScopeNotifySend, ScopeNotifyReceive}, "ant_full_"},
-		{[]string{ScopeDevicesRead}, "ant_key_"},
 	}
 	svc := newTestService(t)
 	user := &store.User{ID: store.NewUserID(), Username: "bob", CreatedAt: store.Now()}
@@ -236,13 +233,14 @@ func TestRequireScope_InsufficientScopeForbidden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
-	h := svc.Keys().RequireScope(ScopeNotifyReceive)(scopeProtectedHandler(new(bool)))
+	// scope 只剩 notify:send 且空列表被拒，「缺 scope」已无法由公开 API 构造。
+	h := svc.Keys().RequireScope(ScopeNotifySend)(scopeProtectedHandler(new(bool)))
 	req := httptest.NewRequest(http.MethodGet, "/v1/stream", nil)
 	req.Header.Set("Authorization", "Bearer "+sendOnly)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("scope 不足应 403, got %d (body=%s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Errorf("持有 notify:send 应 200, got %d (body=%s)", rec.Code, rec.Body.String())
 	}
 }
 

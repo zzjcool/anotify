@@ -95,14 +95,14 @@ type PlaybookInstallGroup struct {
 	Release      string `json:"release"`
 	ValuesDigest string `json:"valuesDigest"`
 	// Values 是打码后的有效 values（与回执行一致：writeOnly → "***"）。
-	Values map[string]any `json:"values"`
-	// FirstAt / LastAt 是组内最早 / 最新一次 install 的时间（RFC3339）。
-	FirstAt string `json:"firstAt"`
-	LastAt  string `json:"lastAt"`
-	// Attempts 是组内回执行数。
-	Attempts int `json:"attempts"`
+	Values   map[string]any `json:"values"`
+	FirstAt  string         `json:"firstAt"` // 组内最早 / 最后一次 install 的时间（RFC3339）
+	LastAt   string         `json:"lastAt"`
+	Attempts int            `json:"attempts"` // 组内回执行数
 	// LastInstallID 是组内最新一次 install 的回执 id（单回执读取的入口）。
 	LastInstallID string `json:"lastInstallId"`
+	// UninstalledAt 是这组全部回执都已卸载时的卸载时刻（RFC3339，#553）；生效中的组没有这个键。
+	UninstalledAt string `json:"uninstalledAt,omitempty"`
 	// Capabilities / Sources 是组内**所有** install id 反查 installed_from 的行的并集。
 	Capabilities []string `json:"capabilities"`
 	Sources      []string `json:"sources"`
@@ -110,10 +110,8 @@ type PlaybookInstallGroup struct {
 
 // PlaybookInstallList 是 `GET …/installs` 的响应体（读模型，不建实例表）。
 type PlaybookInstallList struct {
-	// Total 是折叠组总数（可能大于返回条数：超过上限按 lastAt 截断）。
-	Total int `json:"total"`
-	// Installs 按 lastAt 降序；空列表是 [] 不是 null。
-	Installs []PlaybookInstallGroup `json:"installs"`
+	Total    int                    `json:"total"`    // 折叠组总数（可能大于返回条数：超过上限按 lastAt 截断）
+	Installs []PlaybookInstallGroup `json:"installs"` // 按 lastAt 降序；空列表是 [] 不是 null
 }
 
 // playbookInstallMaxGroups 是一次实例清单最多返回的组数（§4.10：实例数是十位量级）。
@@ -375,12 +373,7 @@ func (d *DB) RenderPlaybookVersion(ctx context.Context, namespaceID, slug, relea
 	return playbook.RenderForRelease(pkg, values, release)
 }
 
-// InstallPlaybook 在**一个 BEGIN IMMEDIATE 事务**里完成一次安装（§4.4 / §4.6）。release 是安装级
-// 身份（Helm 语义）：空串 = 包名，同一个包可以有多套实例；要复用的行属于别的 release 时 Plan 给出
-// release_conflict，本函数在写之前返回（0 写）。顺序固定：读包体 → Render + 读快照 → Plan →
-// 有 conflict 即返回 → INSERT create 条目 → INSERT 回执 → COMMIT（dryRun 在回执之后 Rollback）。
-// 红线：Plan 说 reuse 的条目一行都不碰（不能走折叠更新路径）；读错误必须让整次安装失败；
-// 不写 deployments / tasks / events dispatch（安装不部署）。
+// InstallPlaybook 在**一个 BEGIN IMMEDIATE 事务**里完成一次安装（§4.4 / §4.6）。release 是安装级 身份（Helm 语义）：空串 = 包名，同一个包可以有多套实例；要复用的行属于别的 release 时 Plan 给出 release_conflict，本函数在写之前返回（0 写）。顺序固定：读包体 → Render + 读快照 → Plan → 有 conflict 即返回 → INSERT create 条目 → INSERT 回执 → COMMIT（dryRun 在回执之后 Rollback）。 红线：Plan 说 reuse 的条目一行都不碰（不能走折叠更新路径）；读错误必须让整次安装失败； 不写 deployments / tasks / events dispatch（安装不部署）。
 func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, slug, release string, values map[string]any, dryRun bool) (*playbook.Receipt, error) {
 	return d.InstallPlaybookVersion(ctx, namespaceID, slug, release, 0, values, dryRun)
 }
@@ -435,8 +428,7 @@ func (d *DB) InstallPlaybookVersion(ctx context.Context, namespaceID, slug, rele
 	if planErr != nil {
 		return nil, planErr
 	}
-	// 回执的包身份记**这次真的用的那一版**（钉住的版本号 + 那份文件的 digest），
-	// 而不是包当下的版本：否则按 v1 装的回执会自称 v2。
+	// 回执的包身份记这次真的用的那一版（钉住的版本 + 那份文件的 digest），不是包当下的版本。
 	plan.Playbook.Version = pinned
 
 	nsSlug, err := getNamespaceSlugOn(ctx, ex, namespaceID)
@@ -464,7 +456,13 @@ func (d *DB) InstallPlaybookVersion(ctx context.Context, namespaceID, slug, rele
 		}
 	}
 
-	// ⑤ 回执：values 打码、digest 对打码前算（BuildReceipt 的约定）。
+	// ⑤ 回执：values 打码、digest 对打码前算（BuildReceipt 的约定）。安装时快照（#551）必须在 BuildReceipt **之前**装进 plan（回执是它唯一的出口，dryRun 也走这条）。
+	if plan.Created.Pinned, err = pinnedRefsOn(ctx, ex, namespaceID, plan.Created); err != nil {
+		return nil, fmt.Errorf("install playbook %q: %w", slug, err)
+	}
+	if plan.Skipped.Pinned, err = pinnedRefsOn(ctx, ex, namespaceID, plan.Skipped); err != nil { // 复用的对象也记
+		return nil, fmt.Errorf("install playbook %q: %w", slug, err)
+	}
 	receipt := playbook.BuildReceipt(plan, plan.Values, plan.ValuesDigest, playbook.InstallMeta{
 		ID:        installID,
 		At:        time.Unix(now, 0).UTC().Format(time.RFC3339),
@@ -535,9 +533,19 @@ func (d *DB) DeletePlaybook(ctx context.Context, namespaceID, slug string, expec
 	}, nil
 }
 
-// ListPlaybookInstalls 是实例清单（§4.10）：按 `(ns, 原包 id, release, valuesDigest)` 折叠成「一套 values 装过几次」。
-// 已卸载的回执不进清单；currentPlaybookID 是当前清单 id（同 slug 重建即新 id）；组数上限 200。
+// ListPlaybookInstalls 是实例清单（§4.10）：按 `(ns, 原包 id, release, valuesDigest)` 折叠成
+// 「一套 values 装过几次」。已卸载的回执不进清单；currentPlaybookID 是当前清单 id；组数上限 200。
 func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlaybookID string) (*PlaybookInstallList, error) {
+	return d.listPlaybookInstalls(ctx, namespaceID, currentPlaybookID, false)
+}
+
+// ListPlaybookInstallsWithUninstalled 同 ListPlaybookInstalls，但连带已卸载的回执（#553）：整组已卸载的
+// 组带 uninstalledAt，对象引用如实为空（软删行不再算「装出了什么」）。
+func (d *DB) ListPlaybookInstallsWithUninstalled(ctx context.Context, namespaceID, currentPlaybookID string) (*PlaybookInstallList, error) {
+	return d.listPlaybookInstalls(ctx, namespaceID, currentPlaybookID, true)
+}
+
+func (d *DB) listPlaybookInstalls(ctx context.Context, namespaceID, currentPlaybookID string, includeUninstalled bool) (*PlaybookInstallList, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
@@ -545,10 +553,14 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 	if strings.TrimSpace(currentPlaybookID) == "" {
 		return out, nil
 	}
+	where := `uninstalled_at = 0`
+	if includeUninstalled {
+		where = `1 = 1`
+	}
 	rows, err := d.cachedQueryContext(ctx,
-		`SELECT id, release, values_digest, "values", created_at, rowid
+		`SELECT id, release, values_digest, "values", created_at, rowid, uninstalled_at
 		   FROM playbook_installs
-		  WHERE namespace_id = ? AND playbook_id = ? AND uninstalled_at = 0
+		  WHERE namespace_id = ? AND playbook_id = ? AND `+where+`
 		  ORDER BY created_at, rowid`, namespaceID, currentPlaybookID)
 	if err != nil {
 		return nil, fmt.Errorf("list playbook installs: %w", err)
@@ -556,8 +568,10 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 	defer rows.Close()
 
 	type acc struct {
-		at  int64
-		seq int64
+		at         int64
+		seq        int64
+		goneAt     int64 // 组内最大 uninstalled_at
+		allUninsta bool
 	}
 	byGroup := map[string]*PlaybookInstallGroup{}
 	order := make([]string, 0)
@@ -567,9 +581,9 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 	for rows.Next() {
 		var (
 			id, release, digest, rawValues string
-			createdAt, seq                 int64
+			createdAt, seq, uninstalledAt  int64
 		)
-		if err := rows.Scan(&id, &release, &digest, &rawValues, &createdAt, &seq); err != nil {
+		if err := rows.Scan(&id, &release, &digest, &rawValues, &createdAt, &seq, &uninstalledAt); err != nil {
 			return nil, fmt.Errorf("scan playbook install: %w", err)
 		}
 		// 折叠键 = (release, valuesDigest)：同一套 values 装 N 次是一组；换 release 就是另一套实例（名字由 `{{release.name}}` 决定）。
@@ -596,7 +610,14 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 			}
 			byGroup[key] = g
 			order = append(order, key)
-			accs[key] = &acc{at: createdAt, seq: seq}
+			accs[key] = &acc{at: createdAt, seq: seq, allUninsta: true}
+		}
+		if left := accs[key]; left != nil {
+			if uninstalledAt == 0 {
+				left.allUninsta = false
+			} else if uninstalledAt > left.goneAt {
+				left.goneAt = uninstalledAt
+			}
 		}
 		g.Attempts++
 		if createdAt >= accs[key].at {
@@ -614,7 +635,12 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 
 	groups := make([]PlaybookInstallGroup, 0, len(order))
 	for _, key := range order {
-		groups = append(groups, *byGroup[key])
+		g := byGroup[key]
+		// 只有整组都已卸载时才给 uninstalledAt：卸载后又重装同一套 values 的组是「现在在跑」的。
+		if acc := accs[key]; acc.allUninsta && acc.goneAt > 0 {
+			g.UninstalledAt = time.Unix(acc.goneAt, 0).UTC().Format(time.RFC3339)
+		}
+		groups = append(groups, *g)
 	}
 	sort.SliceStable(groups, func(i, j int) bool {
 		a := accs[groups[i].Release+"\x00"+groups[i].ValuesDigest]
@@ -644,9 +670,13 @@ func (d *DB) ListPlaybookInstalls(ctx context.Context, namespaceID, currentPlayb
 	}
 	pageIDs := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if keepGroup[idGroup[id]] {
+		if keepGroup[idGroup[id]] && groups[groupOf[idGroup[id]]].UninstalledAt == "" {
 			pageIDs = append(pageIDs, id)
 		}
+	}
+	if len(pageIDs) == 0 { // 这一页全是已卸载的组：对象已删，不再反查（也避免空 IN 列表）
+		out.Installs = groups
+		return out, nil
 	}
 
 	// 能力：组内所有 install id 的 installed_from 并集（每个 create 行只记首次那一次）。
@@ -755,6 +785,16 @@ func anyArgs(ss []string) []any {
 	return out
 }
 
+// normalizePinned 把回执两个 created 对象的 pinned 归一成 `[]`（#534 dependencies 的同一惯例）；**不改回执原文**。
+func normalizePinned(receipt *playbook.Receipt) {
+	if receipt.Created.Pinned == nil {
+		receipt.Created.Pinned = []playbook.PinnedRef{}
+	}
+	if receipt.Skipped.Pinned == nil {
+		receipt.Skipped.Pinned = []playbook.PinnedRef{}
+	}
+}
+
 // GetPlaybookInstall 按「历史 ns + 原 slug + installId」读取一次 install 的完整回执。
 // **不要求当前清单存在**：回执行的 playbook_id / playbook_slug 是快照，删包之后单条回执仍可按旧 slug 直达（§4.10 / D21）；未命中返回 ErrNotFound。
 func (d *DB) GetPlaybookInstall(ctx context.Context, namespaceID, slug, installID string) (*playbook.Receipt, error) {
@@ -779,6 +819,7 @@ func (d *DB) GetPlaybookInstall(ctx context.Context, namespaceID, slug, installI
 	if receipt.Dependencies == nil {
 		receipt.Dependencies = []playbook.Dependency{}
 	}
+	normalizePinned(&receipt)
 	if receipt.Install.Release == "" {
 		// 迁移前写的回执原文里没有 release；列上已经回填成包名。回执是**审计快照**，不改它的原文，只在读的时候把「这次安装属于哪个 release」补齐——否则同一次 安装从实例清单（按列分组）点进来会显示成另一个身份。
 		receipt.Install.Release = release

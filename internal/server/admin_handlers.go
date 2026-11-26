@@ -29,7 +29,6 @@ type adminUserOut struct {
 	// #204 / #205：per-user 的 messageCount 随组织层一起删除 —— 组织没了之后
 	// 「这个用户有多少事件」没有对应关系（事件属于命名空间，而用户与命名空间之间
 	// 不再有归属关系）。留着只能造假数，所以字段整个去掉而不是填 0。
-	DeviceCount  int64 `json:"deviceCount"`
 	KeyCount     int64 `json:"keyCount"`
 	SessionCount int64 `json:"sessionCount"`
 }
@@ -38,8 +37,7 @@ func toAdminUserOut(u *store.UserWithStats) adminUserOut {
 	return adminUserOut{
 		ID: u.ID, Username: u.Username, DisplayName: u.DisplayName,
 		Role: u.Role, Disabled: u.Disabled, CreatedAt: u.CreatedAt,
-		DeviceCount: u.DeviceCount,
-		KeyCount:    u.KeyCount, SessionCount: u.SessionCount,
+		KeyCount: u.KeyCount, SessionCount: u.SessionCount,
 	}
 }
 

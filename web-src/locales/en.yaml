@@ -68,7 +68,6 @@ common:
     playbooks: "Playbooks"
     nodes: Nodes
     namespaces: Namespaces
-    receivers: Receivers
     keys: API Keys
     api: API Docs
     account: Account
@@ -183,14 +182,8 @@ index:
   kpi:
     total: Total events
     all_time: All time
-    rate: Delivery rate
     today: Events today
     today_sub: Received today
-    devices: Receiving devices
-    devices_enabled: Enabled
-    devices_sub: '{n} devices · end-to-end encrypted'
-    devices_sub2: Push subscriptions + WebSocket
-    rate_na: No receivers yet — delivery rate unavailable
     trend_live: Live
     running: In progress
     running_sub: "All tasks in this namespace"
@@ -198,7 +191,6 @@ index:
     failed: Failed tasks
     failed_sub: "All tasks in this namespace"
     failed_sub_all: All tasks across every namespace
-    devices_sub_all: Devices belong to your user, not to a namespace, so they don't change when you switch
   aggregate:
     unsupported: This figure can't be summed across namespaces yet
   heatmap:
@@ -322,11 +314,6 @@ message:
   body_label: Body
   open_link: Open Agent session
   fields_title: All fields
-  deliveries_title: Deliveries
-  delivery:
-    delivered_count: '{ok}/{n} delivered'
-    empty: No delivery records (no matching enabled devices)
-    attempt_info: '{channel} · {n} attempts · {time}'
   error:
     missing_id: Missing message ID (URL should have ?id=ntf_…)
     not_found: Message not found or has been cleaned up
@@ -494,121 +481,9 @@ login:
     login_success_short: Signed in — entering workspace…
     signup_success_short: Account created — entering workspace…
     need_username_short: Please pick a username first.
-receivers:
-  back_home: 'Back to overview'
-  docs_link: "Integration docs"
-  unavailable: 'Push notifications are not available yet. Your receiving devices will show up here once released.'
-  title: Receivers
-  channel:
-    push: Push subscriptions
-    ws: WebSocket connections
-  push:
-    title: Browser push subscriptions
-    subtitle_prefix: 'Delivered via system Push services (APNs / FCM). '
-    subtitle_highlight: Receives even when the browser is closed.
-    subtitle_suffix: ''
-    add_device: Add this device
-  ws:
-    title: Long-poll receiving · for plugins and any device
-    desc: Any device / plugin with a notify:receive API Key can establish a WebSocket long-poll for real-time push. Great for desktop widgets, CLI daemons, smart-home bridges. Runs alongside browser push.
-    connection_method: Connection
-    copy: Copy
-    active_title: Active connections
-    active_subtitle: Currently established WebSocket connections
-    online: ' online'
-    empty_hint: Once the backend is connected, live connections will appear here (name / Key prefix / uptime / tags / last message).
-  tags:
-    title: Tag routing · which device gets which notification
-    desc: Include deviceTags when reporting. Only devices with overlapping tags (or no tags = catch-all) will receive it. No tags on the notification = broadcast to all enabled devices; no tags on a device = receives everything.
-  pair:
-    title: Add this device
-    subtitle: After subscribing, this browser will receive push notifications
-    device_name: Device name
-    device_placeholder: e.g. Primary phone / Office Mac
-    submit: Request permission and subscribe
-    hint: The browser will ask for notification permission. iOS requires adding this site to the Home Screen first, then opening it as a standalone app.
-    unsupported: This environment doesn't support Web Push. On iOS, add this site to the Home Screen first.
-    requesting_perm: Requesting notification permission…
-    perm_denied: Notification permission not granted ({perm}). Please allow in browser settings and retry.
-    registering_sw: Registering Service Worker…
-    getting_vapid: Getting VAPID public key…
-    no_backend: Backend not connected — can't get the VAPID key. Make sure the server is running, then retry.
-    empty_vapid: VAPID public key is empty
-    subscribing: Subscribing to push…
-    reporting: Reporting subscription…
-    success: Subscribed! This device will receive push notifications.
-    failed: 'Subscription failed: {msg}'
-  scope:
-    all: Full lifecycle
-    final: Final results only
-  local:
-    enabled: Notifications enabled on this device
-    disabled: Notifications not enabled on this device
-    receiving: Receiving
-    not_receiving: Not receiving
-    unsupported: This browser doesn't support Web Push (iOS requires Add to Home Screen first).
-    subscribed: This browser ({browser}) is subscribed to push and can receive notifications.
-    permission_denied: Notification permission was denied — please re-enable in browser settings.
-    not_subscribed: This browser ({browser}) hasn't subscribed to push — this device won't receive notifications.
-    turn_off: Turn off notifications
-    turn_on: Turn on notifications
-    view_settings: How to enable
-    perm_denied_toast: Notification permission is denied. Allow this site in your browser settings, then try again.
-  troubleshoot:
-    title: Device checklist
-    local_check: Local check
-    perm_granted: 'Notification permission: Granted ✓'
-    perm_denied: 'Notification permission: Denied ✗ (reset in browser settings and re-subscribe)'
-    perm_default: 'Notification permission: Not asked (requested when you click "Add this device")'
-    expand: Not receiving? Check these →
-  empty: No receiving devices yet. Click "Add this device" in the top right to start.
-  device:
-    switch_aria: Receive toggle
-    tags: Tags
-    add_tag: + Tag
-    this_device: This device
-    receiving: Receiving
-    paused: Paused
-    last_delivered: Last delivered {time}
-    level: Notification level
-    rename: Rename
-    unbind: Unbind
-  prompt:
-    tag: Add a tag (e.g. phone / work / alert)
-    rename: Device name
-  confirm:
-    unbind: Unbind "{name}"? It will no longer receive notifications.
-  toast:
-    saved: Saved
-    save_failed: 'Save failed: {msg}'
-    unbound: Unbound
-    unbind_failed: 'Unbind failed: {msg}'
-    local_off: Local notifications turned off
-    added: Device added
-  checklist:
-    ios_1: Must open from the Home Screen icon (standalone mode) — regular Safari tabs don't support notifications
-    ios_2: iOS Settings → Notifications → Safari/PWA → Allow Notifications
-    ios_3: 'Not receiving after subscribing: turn off Focus/DND, confirm site notification permission is "Allow"'
-    mac_1: macOS System Settings → Notifications → find your browser (e.g. Google Chrome) → Allow
-    mac_2: Browser address bar lock icon → Notifications → set to "Allow" (not default/block)
-    mac_3: Push requires the browser process running with this site's tab open; closing the browser stops real-time push
-    mac_4: Foreground tabs may silently handle push — switch to background or minimize to test
-    win_1: Windows Settings → System → Notifications → confirm browser has notifications enabled
-    win_2: Browser address bar lock icon → Notifications → set to "Allow"
-    win_3: Focus Assist (Do Not Disturb) silences notifications when on
-    android_1: Android Settings → Apps → Browser → Notifications → Allow
-    android_2: WeChat's built-in browser and some Chinese browsers don't support Web Push — use Chrome
-    other_1: Confirm browser notification permission is "Allow" (address bar lock icon)
-    other_2: Confirm the browser process is running
-  subtitle: Control notifications per device
-  refresh: 'Refresh'
-  unavailableTitle: 'Push is not available yet'
-  emptyTitle: 'No receiving devices yet'
-  emptyDesc: 'Add this device and it will receive the notifications you confirm.'
-  wsEmptyTitle: 'No live connections yet'
 keys:
   title: API Keys
-  subtitle: Agents use them to report notifications
+  subtitle: Agent reporting · events · task chains
   desc_prefix: Agents carry a Key to call
   desc_suffix: to report notifications.
   desc_tip: The Key is shown in full only once at creation; the server stores only a hash — save it immediately (see "Key security practices" below).
@@ -645,10 +520,6 @@ keys:
     scope_label: Scopes (multi-select, least-privilege)
     scope_send_label: Send
     scope_send_desc: For Agents / CI to POST notifications. Prefix ant_live_
-    scope_receive_label: Receive
-    scope_receive_desc: For plugins / devices to establish WebSocket connections. Prefix ant_recv_
-    scope_read_label: Device read
-    scope_read_desc: Read-only device listing for script inspection
     scope_hint: 'Least privilege: send and receive are separate, so a leaked Key only affects one side.'
     cancel: Cancel
     generate: Generate Key
@@ -661,8 +532,6 @@ keys:
     done: I've saved it
   scope:
     send: Send
-    receive: Receive
-    read: Device read
   unnamed: Unnamed
   unnamed_key: Unnamed Key
   summary: '{total} Keys · {active} active'
@@ -689,7 +558,7 @@ keys:
 security:
   title: Security & Login
   subtitle: Passkey · Password · Sessions · Recovery codes
-  intro: 'Manage everything about who you are: Passkey credentials, password, login sessions, and recovery codes. These are separate from where notifications go (receiving devices).'
+  intro: 'Everything about who you are: Passkeys, password, sessions, recovery codes. It is a different axis from where events go (capabilities and sources).'
   add_passkey: Add Passkey
   passkey:
     title: Passkey credentials
@@ -795,7 +664,7 @@ security:
     revoke_failed: 'Revoke failed: {msg}'
 docs:
   title: Integration Docs
-  subtitle: Agent reporting · Web Push · WebSocket
+  subtitle: Agent reporting · events · task chains
   toc_heading: On this page
   table:
     method: Method
@@ -806,7 +675,6 @@ docs:
     agent: Connect Agent
     api: API overview
     auth: Authentication
-    webpush: Web Push subscription
     stream: WebSocket receiving
     events: POST /v1/namespaces/{namespace}/events
     node: Node protocol
@@ -838,7 +706,6 @@ docs:
       passkey-enroll: Passkey enrollment
       cli-auth: CLI auth
       admin: Admin
-      devices: Web Push
       resource: "Resources"
       agent: "Node protocol"
       ingress: "Ingress"
@@ -901,16 +768,11 @@ docs:
       notify: Agent reports a notification (core)
       tasks: 'Task list (event stream)'
       notifications: Notification history list
-      devices_list: Device list
-      devices_sub: Subscribe (register) a device
-      devices_update: Update device (toggle / filter / tags)
-      devices_delete: Unbind device
       node_stream: Node WebSocket protocol
       stream: WebSocket long-poll receiving
       keys_list: API Key list
       keys_create: Create API Key
       passkey: Passkey register / login
-      vapid: VAPID public key (for subscription)
   auth:
     title: Authentication
     intro: 'Two credential types, for two kinds of callers. <b class="doc-em">Least privilege</b>: send and receive are separate, so a leaked Key only affects one side.'
@@ -918,7 +780,7 @@ docs:
       title: API Key (Bearer)
       li1: · For Agent reporting / receiver long-poll connections
       li2: '· Header: <code class="doc-code">Authorization: Bearer ant_…</code>'
-      li3: '· scope: <code class="doc-code">notify:send</code> report · <code class="doc-code">notify:receive</code> receive · <code class="doc-code">devices:read</code> read-only'
+      li3: '· scope: <code class="doc-code">notify:send</code> (event ingress <code class="doc-code">POST /v1/namespaces/{ns}/events</code>)'
       li4: · Server stores only an argon2id hash; plaintext is shown once at creation
     passkey:
       title: Session Cookie
@@ -926,81 +788,6 @@ docs:
       li2: · WebAuthn passwordless login, biometric or device key
       li3: · httpOnly Cookie; multi-device sessions are independent and individually revocable
       li4: '· Cross-device: platform sync / one-time connection guide / recovery code fallback'
-  notify:
-    core: Core
-    intro: An Agent calls this endpoint to report a notification after a task ends. The server validates the API Key, locates the owner, and pushes the notification <b class="doc-em">end-to-end encrypted</b> to all of that user's "enabled and level/tag-matched" devices.
-    params:
-      title: Request body parameters
-      title_desc: Notification title, e.g. <code>"Deploy done"</code>, shown as the system notification's main title.
-      agent_state_desc: 'Agent state: <code>working</code> running · <code>blocked</code> waiting · <code>done</code> completed · <code>interrupted</code> interrupted · <code>error</code> failed. Determines icon color and device filtering.'
-      body_desc: Notification body, supplementary detail.
-      tags_desc: Routing tags. Empty = broadcast to all enabled devices; non-empty = only delivered to devices with a matching tag or no tags (catch-all). ≤10 tags, each ≤32 chars.
-      link_desc: Deep link opened when the notification is tapped, e.g. <code>pi://session/sess_8f3a2c</code>.
-      meta_desc: Context metadata for traceability and statistics, stored in notification history.
-      ttl_desc: <code>ttl</code> validity in seconds (default 86400); <code>priority</code> (default normal).
-    required: Required
-    optional: Optional
-    curl:
-      title: cURL · full request
-      title_val: Deploy done
-      body_val: Build succeeded, deployed to production
-      tag_val: work
-    resp200: Accepted and dispatched
-    resp200_dev1: Primary phone
-    resp200_dev2: Office Mac
-    resp400: No matching device / bad request
-    resp400_err: No subscribed devices; please subscribe in the workspace first
-    resp400_comment: // 401 · Key missing or invalid (403 if scope insufficient)
-    rules:
-      title: Delivery rules (tag routing + level filtering)
-  webpush:
-    off_note: "Mobile push (Web Push) is not available yet; the subscription steps will appear here once it is. Events are still recorded — see the Events page."
-    title: Web Push subscription (browser receiving)
-    intro: The browser subscribes via Service Worker + PushManager; the backend pushes with a VAPID signature. <b class="doc-em">Receives even when the page is closed.</b> iOS requires "Add to Home Screen" and standalone mode (iOS 16.4+).
-    step1: <b class="doc-em">① Get VAPID public key</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
-    step2: <b class="doc-em">② Register Service Worker</b> · <code class="doc-code">navigator.serviceWorker.register('/sw.js')</code>
-    step3: <b class="doc-em">③ Request permission and subscribe</b> · <code class="doc-code">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
-    step4: <b class="doc-em">④ Report subscription</b> · send endpoint + keys via <code class="doc-code">POST /v1/devices</code>
-    code:
-      title: Frontend subscription · core code
-      comment1: // 1. Register SW + get VAPID public key
-      comment2: // 2. Subscribe (requires notification permission)
-      comment3: // 3. Report to backend (session Cookie auth)
-      comment_p256dh: // { p256dh, auth }
-      comment_platform: // ios|mac|win|android|other
-    ios:
-      title: ⚠️ iOS prerequisite
-      desc: Must "Add to Home Screen" and run in standalone mode, otherwise Safari does not provide Notification / Push API.
-    android:
-      title: ✅ Android is easier
-      desc: Chrome/Edge can subscribe from a normal tab via FCM — no need to add to Home Screen.
-    e2e:
-      title: 🔒 End-to-end encrypted
-      desc: Payload encrypted with the subscription's p256dh/auth keys; the push service cannot read the content.
-  ws:
-    channel2: Second receive channel
-    intro: Besides browser push, any device / plugin can use a <code class="doc-code">notify:receive</code> Key to establish a WebSocket long-poll for real-time receiving. Great for desktop widgets, CLI daemons, smart-home bridges. Runs alongside browser push.
-    connect:
-      title: Establishing a connection
-      comment: '# requires notify:receive scope'
-      comment2: '# optional, for resume after reconnect'
-    s2c:
-      title: Server → Client
-      comment1: // first frame after connection
-      comment2: // new notification received
-      title_val: Deploy done
-      body_val: Deployed to prod
-      tag_val: work
-      comment3: // replay end / heartbeat / error
-    c2s:
-      title: Client → Server
-      comment1: // subscribe / unsubscribe tags (empty = all)
-      comment2: // acknowledge processed (at-least-once)
-      comment3: // heartbeat (every heartbeat_sec; 2 missed = disconnect)
-      comment4: // after reconnect, use resume frame (replaces Last-Event-Id header)
-    reconnect:
-      title: Reconnect and resume
-      desc: On reconnect, send the <code class="doc-code">Last-Event-Id</code> header (or a <code class="doc-code">resume</code> first frame). The server replays unacknowledged notifications from the last 24h (replay window), then enters the live stream. Beyond the retention window it returns a <code class="doc-code">resume_expired</code> error; the client should fetch full history.
   v4:
     five_specs: 'Endpoint list: grouped by resource, with method and path.'
     missing: "Endpoint list unavailable"
@@ -1177,10 +964,7 @@ admin:
     active: '{n} active (7d)'
     messages: Total messages
     today: Today {n}
-    devices: Devices
-    enabled: '{n} enabled'
-    keys: '{n} keys'
-    delivery_rate: Delivery rate
+    task_success_rate: Task success rate
   tab:
     users: Users
     messages: Messages
@@ -1190,7 +974,6 @@ admin:
     role: Role
     status: Status
     messages: Msgs
-    devices: Devices
     keys: Keys
     created: Created
     actions: Actions
@@ -1216,7 +999,6 @@ admin:
     empty: No active sessions
   top:
     messages: messages
-    devices: '{n} devices'
   confirm:
     title: Confirm
     cancel: Cancel
@@ -2418,10 +2200,16 @@ pb:
     release_group: "{release} · {n} groups"
     single_receipt: "Read full single receipt"
     no_installs: "No instances yet. The first install creates one."
+    no_active_installs: "Nothing is active right now; the history is below."
+    uninstalled_group: "Uninstalled · {n}"
+    expand_rest: "Show {n} more"
     view_yaml: "View YAML"
     release_active: "Active"
+    release_uninstalled: "Uninstalled"
+    release_uninstalled_at: "Uninstalled {at}"
     release_objects: "{c} capabilities / {s} sources"
     release_last_install: "installed {at}"
+    restore_highlight: "New instance created by restoring from a snapshot"
     yaml_title: "Instance YAML"
     yaml_empty: "This instance has no objects to show"
     yaml_load_failed: "Failed to load YAML"
@@ -2442,6 +2230,7 @@ pb:
     delete_stale: 'Version is stale. Refresh to get the current version; a second delete still requires confirmation.'
     uninstall: "Uninstall instance"
     uninstall_confirm: 'Uninstall instance "{release}"? Capabilities and sources created by this install are removed; objects that belong to others are kept, and the install record stays readable.'
+    uninstall_row: "Uninstall"
     uninstalled_n: 'Uninstalled "{release}": removed {c} capabilities / {s} sources.'
     uninstall_kept_n: "Kept {n} objects that do not belong to it (details below)."
     uninstall_already: "This instance was already uninstalled; nothing changed now."
@@ -2565,9 +2354,6 @@ uxaudit:
       resolved_yes: 'targets resolved'
       resolved_no: 'targets unresolved'
       hook_url: 'Hook URL'
-    receivers:
-      to_ws: 'See the WebSocket channel'
-      docs: 'Read the API docs'
     admin:
       role_admin: 'Super admin'
       role_member: 'Member'
@@ -2681,6 +2467,20 @@ source_detail:
   poll_cursor: 'Cursor'
   poll_cursor_none: 'No cursor yet (written after the first successful run)'
   poll_error_none: 'No failures recorded'
+  poll_now: 'Poll now'
+  poll_now_running: 'Polling…'
+  poll_now_done: 'Polled once'
+  poll_now_busy: 'A poll is already running, try again in a moment'
+  poll_result_items: 'Items'
+  poll_result_created: 'Created'
+  poll_result_duplicates: 'Duplicates'
+  poll_result_duration: 'Duration'
+  secret_name: 'Credential name'
+  secret_used_by: 'Referenced by'
+  secret_loading: 'Loading…'
+  secret_missing: 'Credential not found'
+  secret_only_self: 'Only this source references it'
+  secret_used_by_failed: 'Could not load the sources that reference it'
   hook_url: 'Hook URL'
   secret_set_yes: 'HMAC secret is set (write-only)'
   secret_set_no: 'No HMAC secret'
@@ -2693,6 +2493,24 @@ source_detail:
   recent_error: 'Recent receipts failed to load'
   view_trace: 'View trace'
   no_name_hint: 'Open a source from the source list, or put ?namespace=<ns>&name=<name> in the address.'
+  audit_title: 'Recent activity'
+  audit_empty: 'No audit entries yet. Manual polls show up here.'
+  audit_loading: 'Loading recent activity…'
+  audit_error: 'Recent activity failed to load'
+  audit_actor_none: 'Not a session principal'
+  audit_action_source_polled_manually: 'Manual poll'
+  secret_history: 'Credential history'
+  secret_history_title: 'Credential history'
+  secret_history_empty: 'This credential has no history yet.'
+  secret_history_loading: 'Loading credential history…'
+  secret_history_error: 'Credential history failed to load'
+  secret_history_col_action: 'Action'
+  secret_history_col_at: 'Time'
+  secret_history_col_actor: 'Actor'
+  secret_history_close: 'Close'
+  secret_action_created: 'Created'
+  secret_action_rotated: 'Rotated'
+  secret_action_deleted: 'Deleted'
 namespaces:
   v4:
     title: "Namespaces"
@@ -2767,14 +2585,32 @@ release:
   yaml_title: Instance YAML
   yaml_empty: This instance has no objects to export.
   yaml_failed: Export failed
+  as_current: Current
+  as_installed: At install
+  as_no_snapshot: This install kept no snapshot, so only the version in effect now can be shown.
+  as_current_gone: "The instance is uninstalled, so there is no version in effect to show."
   uninstall: Uninstall this instance
   uninstall_confirm: 'Uninstall “{release}”: delete the capabilities and sources it installed; receipts are kept.'
   uninstalled: Uninstalled
-  gone_title: This instance was uninstalled or never existed
-  gone_hint: 'Its objects are gone; the package page shows the instances running now.'
+  uninstalled_notice: "This instance was uninstalled at {at}; its objects are gone, and what follows is the snapshot taken at install time."
+  objects_gone: 'Objects are gone (this instance was uninstalled at {at}). The “At install” view of YAML exports the snapshot from that time.'
+  gone_title: This instance does not exist
+  gone_hint: 'It was never installed, or its package has been deleted.'
   gone_back: Back to package
   no_target_badge: No instance
   missing_hint: 'Open it from the package page instance list, or add the package and instance names to the link.'
   missing_back: Back to packages
   missing_target: The link is missing the package or instance name.
   invalid_detail: The server did not return a valid instance detail.
+  restore: Restore from snapshot
+  restore_confirm_title: Restore this instance from its snapshot
+  restore_confirm_body: "Rebuild these capabilities from the snapshot: {caps}. Sources involved: {sources}."
+  restore_confirm_note: "Sources are not rebuilt: if any source is missing, the restore is rejected (409)."
+  restore_confirm_ok: Restore from snapshot
+  restore_list_sep: ", "
+  restore_more: "…and {n} in total"
+  restore_no_snapshot: This install left no snapshot, so it cannot be restored from one.
+  restore_already_installed: This instance is still in effect, so no restore is needed.
+  restore_pinned_gone: A capability version from the snapshot has been deleted, so the restore cannot proceed.
+  restore_pin_missing_source: A source from the snapshot does not exist in this namespace; create it first, then restore.
+  restore_conflict: A capability with the same name and version already exists with different content, so the restore cannot proceed.

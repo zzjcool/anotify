@@ -34,7 +34,6 @@
  *   E2E_CONCURRENCY  Chrome 类套件并发上限（默认 4）
  *   E2E_RESULTS_DIR  JSON 结果输出目录（默认 .e2e-bin/results）
  *   ANOTIFY_BIN / DEVSEED_BIN / ANODE_BIN  二进制路径（由 run_all.sh 设置）
- *   ANOTIFY_VAPID_*  VAPID 密钥（由 run_all.sh 设置）
  *   E2E_MOCK_ONLY    **不由调用方设置**（#338）：只对四个具名套件自注入，其余一律剥掉
  *   E2E_SUITE_BUDGET_MS / E2E_SUITE_BUDGET_<SUITE>  临时覆盖墙钟预算（**诊断/注入用**；
  *                    被覆盖的套件会在启动横幅里显式打印，抬预算不许留静默）
@@ -90,6 +89,7 @@ const HTTP_SUITES = [
 	// → task.result → 日志 / 产物上传与私有下载 / 两种取消。
 	"node_v4",
 	"playbook_release",
+	"namespace_credentials",
 ];
 const CHROME_SUITES = [
 	"i18n",
@@ -223,9 +223,9 @@ const SUITE_TIMEOUT_OVERRIDE = {
 	// capacity（#336）：保留期清理挂 30s 租约巡检 tick，三轮 ≈150s；默认 120s 会 SIGKILL。
 	capacity: 300_000,
 };
-// 注册套件数冻结（#338）：一次全量 = 30 个套件（#476 vars_ui，#505 playbook_release）；
+// 注册套件数冻结（#338）：一次全量 = 31 个套件（#476 vars_ui，#505 playbook_release，#554 namespace_credentials）；
 // 增删套件要同步 AUTHORITY 清单（离线核对 --authority-plan），否则启动即 exit 2。
-const SUITE_REGISTRY_SIZE = 30;
+const SUITE_REGISTRY_SIZE = 31;
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");
 const CONCURRENCY = parseInt(process.env.E2E_CONCURRENCY || "4", 10);

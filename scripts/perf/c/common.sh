@@ -98,8 +98,6 @@ pc_start() {
 		ANOTIFY_LOG_LEVEL="${PC_LOG_LEVEL:-warn}" \
 		ANOTIFY_RP_ID=localhost \
 		ANOTIFY_RP_ORIGIN="http://localhost:$port" \
-		ANOTIFY_VAPID_PUBLIC_KEY=dummy \
-		ANOTIFY_VAPID_PRIVATE_KEY=dummy \
 		ANOTIFY_BOOT_ID="perf-c-$name" \
 		"$@" \
 		"$PC_BIN" >"$dbdir/server.log" 2>&1 &
@@ -143,17 +141,15 @@ pc_stop() {
 	return 0
 }
 
-# pc_seed [username]：devseed 造用户 + API Key + 会话，导出 PC_SESSION/PC_SEND_KEY/PC_RECV_KEY/PC_NS。
-# 注意 PC_NS 需要服务已在跑（走 /v1/namespaces 解析默认命名空间）。
+# pc_seed [username]：devseed 造用户 + Key + 会话，导出 PC_SESSION/PC_SEND_KEY/PC_NS（需服务在跑）。
 pc_seed() {
 	local user="${1:-perfc}"
 	local out
 	out=$("$PC_DEVSEED" -db "$PC_DB" -username "$user" 2>&1) || { echo "$out" >&2; return 1; }
 	PC_SESSION=$(echo "$out" | sed -n 's/^SESSION=//p')
 	PC_SEND_KEY=$(echo "$out" | sed -n 's/^SEND_KEY=//p')
-	PC_RECV_KEY=$(echo "$out" | sed -n 's/^RECV_KEY=//p')
 	PC_UID=$(echo "$out" | sed -n 's/^UID=//p')
-	export PC_SESSION PC_SEND_KEY PC_RECV_KEY PC_UID
+	export PC_SESSION PC_SEND_KEY PC_UID
 	# 默认命名空间：走契约端点，不查库（库是 store 的私有实现）。
 	# v4 信封：列表在 `items[]`，标识在 `metadata.uid`（v3 的 `namespaces[0].id` 已不存在）。
 	PC_NS=$(curl -s -H "Cookie: anotify_session=$PC_SESSION" "$PC_BASE/v1/namespaces" \

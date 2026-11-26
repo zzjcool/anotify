@@ -22,8 +22,6 @@ import assert from 'node:assert/strict';
 const FROZEN_IDS = [
   '#kpi-total',
   '#kpi-today',
-  '#kpi-rate',
-  '#kpi-devices',
   '#kpi-running',
   '#kpi-failed',
   '#index-events',
@@ -65,20 +63,10 @@ function sumPhases(items, phases, source) {
 // 首页 KPI 的既有格式化规则（web-src/pages/index.html · renderKpis）：
 //   · total / running / failed 走 toLocaleString()（running 命中 500 上限才补 +，全部模式不发生）
 //   · today 直接写数字（不本地化）
-//   · rate = 先 Σdelivered / ΣdeliveryTotal 再相除，无设备或无投递样本时是 –（绝不是 0%）
-//   · devices 是用户维度（不随 ns 求和），0 写成 "0"
 function kpiFrom(stats, counts) {
-  const devices = stats.deviceCount ?? 0;
-  const deliveryTotal = stats.deliveryTotal ?? 0;
-  const rate =
-    devices > 0 && deliveryTotal > 0
-      ? Math.round(((stats.delivered ?? 0) / deliveryTotal) * 1000) / 10
-      : null;
   return {
     total: num(stats.total ?? 0),
     today: String(stats.today ?? 0),
-    rate: rate == null ? '–' : rate + '%',
-    devices: String(devices || '0'),
     running: counts ? num(counts.working) : null,
     failed: counts ? num(counts.failed) : null,
   };
@@ -90,8 +78,6 @@ const readKpis = (page) =>
     return {
       total: text('kpi-total'),
       today: text('kpi-today'),
-      rate: text('kpi-rate'),
-      devices: text('kpi-devices'),
       running: text('kpi-running'),
       failed: text('kpi-failed'),
     };
@@ -242,8 +228,6 @@ export async function overviewAll(d) {
   for (const expected of [
     ['total', EXPECTED_ALL.total],
     ['today', EXPECTED_ALL.today],
-    ['rate', EXPECTED_ALL.rate],
-    ['devices', EXPECTED_ALL.devices],
     ['running', EXPECTED_ALL.running],
     ['failed', EXPECTED_ALL.failed],
   ]) {
@@ -265,7 +249,7 @@ export async function overviewAll(d) {
       '全部模式首页必须保住既有锚点 ' + selector + '（D5：既有 id 不变），实际命中 ' + hits,
     );
   }
-  check('ALL-OBSERVE bare index.html KPIs equal /v1/stats?namespace=* + Σ/v1/namespaces (total/today/rate/devices/running/failed), frozen ids intact');
+  check('ALL-OBSERVE bare index.html KPIs equal /v1/stats?namespace=* + Σ/v1/namespaces (total/today/running/failed), frozen ids intact');
 
   /* ================= 2. 全部模式的选择器 / 面包屑 / 徽标 / 链路卡 ================= */
   const allScope = await readScope(page);

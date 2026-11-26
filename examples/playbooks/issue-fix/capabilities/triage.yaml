@@ -1,0 +1,102 @@
+apiVersion: anotify/v1
+kind: Capability
+
+metadata:
+  name: '{{values.project}}-triage'
+  displayName: '{{values.project}} issue 是否成立'
+
+spec:
+  params:
+    type: object
+    required: [repo, issue]
+    properties:
+      repo:    { type: string }
+      issue:   { type: integer }
+      round:   { type: integer }
+      pr:      { type: string }
+      branch:  { type: string }
+      findings: { type: string }
+      outcome: { type: string }
+  next:
+    - '{{values.project}}-implement'
+    - '{{values.project}}-record'
+  requires:
+    commands: [pi, git, gh]
+  lifecycle:
+    idempotent: false
+    timeoutSec: 1800
+  run:
+    entrypoint: run.sh
+    files:
+      run.sh: |
+        #!/bin/sh
+        set -eu
+
+        repo=${ANOTIFY_PARAM_REPO:?}
+        issue=${ANOTIFY_PARAM_ISSUE:?}
+        art_dir=${ANOTIFY_ARTIFACT_DIR}
+        mkdir -p "$art_dir"
+
+        prompt="你在判断一个 issue 是否成立（是否值得动手）。仓库 $repo，issue #$issue。
+
+        步骤：
+        1. 用 gh issue view $issue --repo $repo --json number,title,body,state,labels 读全文；
+           必要时读相关代码与历史 issue。
+        2. 判断它是否成立：是不是真实存在的问题/合理需求；是否已有更早的重复 issue；
+           是否已被某个 open PR 覆盖 —— 只认 PR 正文/标题里明确写着关闭关键字的
+          （fixes/closes/resolves #N 这种声称），"改了同一行/提到了"不算覆盖；
+          描述是否足够到可以动手。
+
+        把你自己的裁决**只**写成 JSON 文件：$art_dir/agent-verdict.json
+        格式（严格）：
+        {\"valid\": true 或 false, \"reason\": \"一句话理由\"}
+
+        不要修改仓库、不要开 PR。写不出裁决就说明原因并结束。"
+
+
+        repo_dir=${REPO_DIR:?REPO_DIR 未注入}
+        agent=${AGENT_CMD:-pi}
+        agent_args=${AGENT_ARGS:--p}
+        art_dir=${ANOTIFY_ARTIFACT_DIR}
+        verdict="$art_dir/agent-verdict.json"
+        log_file="$art_dir/agent.log"
+        mkdir -p "$art_dir"
+        rm -f "$verdict"
+
+        cd "$repo_dir"
+
+        set +e
+        $agent $agent_args "$prompt" >"$log_file" 2>&1
+        agent_code=$?
+        set -e
+        echo "agent exit=$agent_code（日志见 artifacts/agent.log）"
+
+        if [ ! -f "$verdict" ]; then
+          echo "agent 没有写出裁决文件 $verdict —— 按未完成处理（不猜结果）" >&2
+          exit 1
+        fi
+        cat "$verdict"
+
+        if grep -q '"valid": *true' "$verdict"; then
+          outcome=valid
+        elif grep -q '"valid": *false' "$verdict"; then
+          outcome=invalid
+        else
+          echo "裁决文件里没有 valid 字段：不猜结果" >&2
+          exit 1
+        fi
+        echo "triage: $outcome"
+
+        if [ "$outcome" = invalid ]; then
+          reason=$(sed -n 's/.*"reason": *"\([^"]*\)".*/\1/p' "$verdict" | head -1)
+          gh issue close "$issue" --repo "$repo" --comment "按自动判定关闭：${reason:-issue 不成立}"
+          anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"closed\"}"
+          exit 0
+        fi
+
+        anode emit '{{values.project}}-implement' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"round\":1}"
+    env:
+      REPO_DIR: '{{values.repoDir}}'
+      AGENT_CMD: '{{values.agentCmd}}'
+      AGENT_ARGS: '{{values.agentArgs}}'
+      BASE_BRANCH: '{{values.baseBranch}}'

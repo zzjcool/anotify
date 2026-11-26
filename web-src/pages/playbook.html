@@ -90,6 +90,11 @@
   .pb-details[open] > summary { margin-bottom: 12px; }
   /* #521：安装抽屉 —— 复用全站 .modal-backdrop/.modal-panel，只把面板改成右侧整高一片。 */
   .pb-drawer { align-items: stretch; justify-content: flex-end; padding: 0; }
+  .pb-restored { border-radius: var(--r-md); animation: pb-restored-fade 3.2s var(--ease) 1 both; } /* #561：重装回来后那一行从 accent 底色褪回透明 */
+  @keyframes pb-restored-fade {
+    from { background-color: var(--accent-soft); }
+    to { background-color: transparent; }
+  }
   .pb-drawer-panel {
     max-width: min(520px, 100%);
     height: 100dvh;
@@ -129,7 +134,7 @@
          失败路径仍然清空 + hidden（#380 的契约：不留空圆角容器）。 */}}
     <section id="pb-summary" class="pb-status" aria-busy="true"></section>
     <div id="pb-content" hidden>
-      <section class="card card-pad">
+      <section id="pb-instances-card" class="card card-pad">
         <div class="card-head">
           {{/* C-5：这里曾经还有一个「重新体检」，与页头那个重复；安装记录跟着页头的
                刷新一起重拉。卡片的说明改成标题上的 tooltip，不再白占一行。 */}}
@@ -139,7 +144,9 @@
              参数摘要（短号，hover 全文）· 对象数 · 最近安装时间。对象 / 回执 / YAML / 卸载都进
              release 详情页：一旦在这里重新展开对象，「包」和「一份实例」两层就又糊在一起了。
              折叠键是 (release, valuesDigest)：同一 release 用两套参数装过是两组，但列表按
-             **release** 聚合，组数进行内（「N 组」），不拆成多行。 */}}
+             **release** 聚合，组数进行内（「N 组」）。已卸载的（#565）不藏在开关后面，一次取全后成组。 */}}
+        {{/* #561：从实例详情页「按快照重装」成功后回包页带 &restored=<release>，这里把
+             那一行滚到视口中间、加 .pb-restored 高亮，然后用 replaceState 抹掉参数（刷新不再滚）。 */}}
         <div id="pb-installs" aria-live="polite"></div>
         {{/* 动作结果（试装/安装/单次回执）是状态展示，不是第二个主操作：动作发生后
              才出现，首屏与「只看清单」的路径上一直 hidden。 */}}
@@ -291,7 +298,9 @@
     };
     const $ = id => document.getElementById(id);
     const el = (tag, cls, text) => dom(tag, { class: cls }, text);
-    const name = new URLSearchParams(location.search).get("id") || "";
+    const params = new URLSearchParams(location.search);
+    const name = params.get("id") || "";
+    const restoredRelease = params.get("restored") || "";
     Anotify.mountLayout({ active: "playbooks", title: t("pb.title"), subtitle: t("pb.v4.detail_hint") });
     let resource, schema, draft, filePath, templateRV;
     let fields = [], jsonValues = null, loading = false, currentVersion = 0;
@@ -564,21 +573,62 @@
       return "release.html?namespace=" + encodeURIComponent(getScope().namespace) +
         "&id=" + encodeURIComponent(name) + "&release=" + encodeURIComponent(release);
     }
-    function releaseRows(groups) {
-      const byRelease = new Map();
-      for (const group of groups) {
-        const release = group.release || "";
-        let row = byRelease.get(release);
-        if (!row) {
-          row = { release, groups: 0, digest: group.valuesDigest || "", lastAt: "", caps: new Set(), sources: new Set() };
-          byRelease.set(release, row);
-        }
-        row.groups += 1;
-        if (group.lastAt && group.lastAt > row.lastAt) row.lastAt = group.lastAt;
-        for (const ref of group.capabilities || []) row.caps.add(String(ref).split("@")[0]);
-        for (const ref of group.sources || []) row.sources.add(String(ref));
+    function releaseRow(row) {
+      const item = el("div", "pb-group");
+      item.dataset.release = row.release;
+      item.dataset.uninstalled = row.uninstalled ? "1" : "0";
+      const head = el("div", "pb-row");
+      const link = el("a", row.uninstalled ? "field-hint mono" : "field-label mono", row.release); // #565：已卸载行降级只复用现成的 .field-hint（--faint 在卡片底上仍 ≥4.5:1），不为历史另造样式。
+      link.href = releaseHref(row.release);
+      link.dataset.releaseLink = row.release;
+      const digest = el("span", "mono field-hint", shortDigest(row.digest));
+      digest.title = row.digest;
+      digest.dataset.digest = row.digest;
+      head.append(link,
+        row.uninstalled
+          ? el("span", "badge badge-warn", t("pb.v4.release_uninstalled"))
+          : el("span", "badge badge-success", t("pb.v4.release_active")),
+        digest,
+        el("span", "field-hint", t("pb.v4.release_objects", { c: String(row.caps.size), s: String(row.sources.size) })),
+        row.uninstalled
+          ? el("span", "field-hint", t("pb.v4.release_uninstalled_at", { at: fmtTime(row.uninstalledAt) }))
+          : el("span", "field-hint", t("pb.v4.release_last_install", { at: fmtTime(row.lastAt) })));
+      if (row.groups > 1) head.append(el("span", "field-hint", t("pb.v4.group_count", { n: String(row.groups) })));
+      const yaml = el("a", "btn btn-ghost btn-sm", t("pb.v4.view_yaml"));
+      yaml.dataset.releaseYaml = "";
+      yaml.href = releaseHref(row.release) + "&yaml=" + (row.uninstalled ? "installed" : "current");
+      head.append(yaml);
+      if (!row.uninstalled) {
+        const uninstall = el("button", "btn btn-danger btn-sm", t("pb.v4.uninstall_row"));
+        uninstall.type = "button";
+        uninstall.dataset.releaseUninstall = row.release;
+        uninstall.addEventListener("click", () => uninstallRelease(row.release));
+        head.append(uninstall);
       }
-      return [...byRelease.values()].sort((a, b) => (a.release < b.release ? -1 : a.release > b.release ? 1 : 0));
+      item.append(head);
+      return item;
+    }
+    const UNINSTALLED_PREVIEW = 5; // #565：历史超过这个数就先给这么多，「展开其余 N 个」是一次性动作，不改列表语义。
+    let uninstalledExpanded = false; // #565：历史是「存在就看得见」的分组，不是开关后面的第二份列表；没有历史就整组不出现（不留空壳）。
+    function uninstalledGroup(rows) {
+      const box = el("div", "");
+      box.dataset.group = "uninstalled";
+      box.append(el("h4", "card-sub", t("pb.v4.uninstalled_group", { n: String(rows.length) })));
+      const visible = uninstalledExpanded ? rows.length : Math.min(rows.length, UNINSTALLED_PREVIEW);
+      for (const row of rows.slice(0, visible)) box.append(releaseRow(row));
+      const rest = rows.slice(visible);
+      if (rest.length) {
+        const more = el("button", "btn btn-ghost btn-sm", t("pb.v4.expand_rest", { n: String(rest.length) }));
+        more.type = "button";
+        more.dataset.expandUninstalled = "";
+        more.addEventListener("click", () => {
+          uninstalledExpanded = true;
+          more.remove();
+          for (const row of rest) box.append(releaseRow(row));
+        });
+        box.append(more);
+      }
+      return box;
     }
     function fmtTime(iso) {
       if (!iso) return "—";
@@ -586,35 +636,61 @@
       if (Number.isNaN(at.getTime())) return String(iso);
       try { return at.toLocaleString(); } catch (e) { return String(iso); }
     }
-    function releaseRow(row) {
-      const item = el("div", "pb-group");
-      item.dataset.release = row.release;
-      const head = el("div", "pb-row");
-      const link = el("a", "field-label mono", row.release);
-      link.href = releaseHref(row.release);
-      link.dataset.releaseLink = row.release;
-      const digest = el("span", "mono field-hint", shortDigest(row.digest));
-      digest.title = row.digest;
-      digest.dataset.digest = row.digest;
-      head.append(link, el("span", "badge badge-success", t("pb.v4.release_active")), digest,
-        el("span", "field-hint", t("pb.v4.release_objects", { c: String(row.caps.size), s: String(row.sources.size) })),
-        el("span", "field-hint", t("pb.v4.release_last_install", { at: fmtTime(row.lastAt) })));
-      if (row.groups > 1) head.append(el("span", "field-hint", t("pb.v4.group_count", { n: String(row.groups) })));
-      item.append(head);
-      return item;
+    function releaseRows(groups) {
+      const byRelease = new Map();
+      for (const group of groups) {
+        const release = group.release || "";
+        let row = byRelease.get(release);
+        if (!row) {
+          row = { release, groups: 0, digest: group.valuesDigest || "", lastAt: "", caps: new Set(), sources: new Set(), uninstalled: true, uninstalledAt: "" };
+          byRelease.set(release, row);
+        }
+        row.groups += 1;
+        if (group.lastAt && group.lastAt > row.lastAt) row.lastAt = group.lastAt;
+        if (group.uninstalledAt) { if (group.uninstalledAt > row.uninstalledAt) row.uninstalledAt = group.uninstalledAt; }
+        else row.uninstalled = false;
+        for (const ref of group.capabilities || []) row.caps.add(String(ref).split("@")[0]);
+        for (const ref of group.sources || []) row.sources.add(String(ref));
+      }
+      return [...byRelease.values()].sort((a, b) => (a.release < b.release ? -1 : a.release > b.release ? 1 : 0));
+    }
+    async function uninstallRelease(release) {
+      if (!(await confirmDanger({ body: t("pb.v4.uninstall_confirm", { release }) }))) return;
+      try {
+        await api(path("/releases/" + encodeURIComponent(release)), { method: "DELETE" });
+        await installs();
+      } catch (error) { errorBar(error); }
+    }
+    let restoredPending = restoredRelease !== "";
+    function highlightRestored() {
+      if (!restoredPending) return;
+      restoredPending = false;
+      const row = [...$("pb-installs").querySelectorAll("[data-release]")].find(node => node.dataset.release === restoredRelease);
+      if (!row) return;
+      row.dataset.restored = "1";
+      row.classList.add("pb-restored");
+      row.title = t("pb.v4.restore_highlight");
+      row.scrollIntoView({ behavior: "smooth", block: "center" });
+      params.delete("restored"); // 用过即抹：刷新 / 回退不会反复滚动
+      const query = params.toString();
+      history.replaceState(null, "", location.pathname + (query ? "?" + query : ""));
     }
     async function installs() {
       $("pb-installs").textContent = t("pb.v4.loading");
       try {
-        const data = await api(path("/installs"));
+        const data = await api(path("/installs?include=uninstalled"));
         if (!Array.isArray(data.installs) || typeof data.total !== "number") throw new Error(t("pb.v4.invalid_installs"));
         const rows = releaseRows(data.installs);
-        status.instances = t("pb.v4.status_instances", { n: String(rows.length) });
+        const active = rows.filter(row => !row.uninstalled);
+        const history = rows.filter(row => row.uninstalled);
+        status.instances = t("pb.v4.status_instances", { n: String(active.length) });
         renderStatus();
         const host = $("pb-installs");
         host.replaceChildren();
-        for (const row of rows) host.append(releaseRow(row));
-        if (!rows.length) host.append(el("p", "field-hint", t("pb.v4.no_installs")));
+        if (!active.length) host.append(el("p", "field-hint", t(history.length ? "pb.v4.no_active_installs" : "pb.v4.no_installs")));
+        for (const row of active) host.append(releaseRow(row));
+        if (history.length) host.append(uninstalledGroup(history));
+        highlightRestored();
       } catch (error) { $("pb-installs").replaceChildren(loadErrorNode(error, installs)); }
     }
     async function singleReceipt(id) {

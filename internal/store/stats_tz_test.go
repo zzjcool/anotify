@@ -94,7 +94,7 @@ func TestMessageStatsTodayUsesLocalMidnight(t *testing.T) {
 		t.Run(loc.String(), func(t *testing.T) {
 			db := newTestDB(t)
 			ctx := context.Background()
-			nsID, userID := newTestNS(t, db)
+			nsID, _ := newTestNS(t, db)
 
 			midnight := localDay(loc, 0, 0, 0)
 			insertEventAt(t, db, nsID, midnight.Add(-time.Second)) // 本地前一日 23:59:59
@@ -102,7 +102,7 @@ func TestMessageStatsTodayUsesLocalMidnight(t *testing.T) {
 			insertEventAt(t, db, nsID, midnight.Add(time.Hour))    // 本地当日 01:00:00
 
 			now := localDay(loc, 0, 0, 30) // 本地 00:00:30
-			s, err := db.messageStats(ctx, nsID, userID, 0, now)
+			s, err := db.messageStats(ctx, nsID, 0, now)
 			if err != nil {
 				t.Fatalf("messageStats: %v", err)
 			}
@@ -124,7 +124,7 @@ func TestMessageStatsDailyUsesLocalDay(t *testing.T) {
 		t.Run(loc.String(), func(t *testing.T) {
 			db := newTestDB(t)
 			ctx := context.Background()
-			nsID, userID := newTestNS(t, db)
+			nsID, _ := newTestNS(t, db)
 
 			today := localDay(loc, 0, 0, 0)      // 本地当日 00:00:00
 			yesterday := today.AddDate(0, 0, -1) // 本地前一日 00:00:00
@@ -137,7 +137,7 @@ func TestMessageStatsDailyUsesLocalDay(t *testing.T) {
 			insertEventAt(t, db, nsID, today.Add(12*time.Hour))     // 本地 day 12:00:00
 
 			now := today.Add(30 * time.Second) // 本地 day 00:00:30
-			s, err := db.messageStats(ctx, nsID, userID, yesterday.Unix(), now)
+			s, err := db.messageStats(ctx, nsID, yesterday.Unix(), now)
 			if err != nil {
 				t.Fatalf("messageStats: %v", err)
 			}
@@ -156,10 +156,10 @@ func TestMessageStatsDailyUsesLocalDay(t *testing.T) {
 
 // TestMessageStatsTotalsDeliveryAndDevices 守重构的「搬运无损」：把 MessageStats
 // 的实现体搬进 messageStats 后，总数 / 任务成功率 / 启用设备数三块仍然对。
-func TestMessageStatsTotalsDeliveryAndDevices(t *testing.T) {
+func TestMessageStatsTotalsAndDelivery(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	nsID, userID := newTestNS(t, db)
+	nsID, _ := newTestNS(t, db)
 	loc := tzFixtureLocations()[0] // 本用例不关心日界，挑一个固定时区即可
 
 	day := localDay(loc, 9, 0, 0)
@@ -181,33 +181,18 @@ func TestMessageStatsTotalsDeliveryAndDevices(t *testing.T) {
 		mustExec(t, db, `UPDATE tasks SET phase=? WHERE id=?`, status, tasks[i].ID)
 	}
 
-	// 设备：启用 1 台、停用 1 台 → DeviceCount 只数启用的。
-	mustExec(t, db,
-		`INSERT INTO devices (id,user_id,name,platform,enabled,endpoint,p256dh,auth,created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?)`,
-		NewDeviceID(), userID, "enabled", "ios", 1,
-		"https://push.example/enabled", "p256dh-enabled", "auth-enabled", Now())
-	mustExec(t, db,
-		`INSERT INTO devices (id,user_id,name,platform,enabled,endpoint,p256dh,auth,created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?)`,
-		NewDeviceID(), userID, "disabled", "ios", 0,
-		"https://push.example/disabled", "p256dh-disabled", "auth-disabled", Now())
-
-	s, err := db.messageStats(ctx, nsID, userID, 0, day)
+	s, err := db.messageStats(ctx, nsID, 0, day)
 	if err != nil {
 		t.Fatalf("messageStats: %v", err)
 	}
 	if s.Total != 3 {
 		t.Errorf("Total = %d, want 3", s.Total)
 	}
-	if s.Delivered != 1 {
-		t.Errorf("Delivered = %d, want 1（只有 succeeded 计成功）", s.Delivered)
+	if s.SucceededTasks != 1 {
+		t.Errorf("SucceededTasks = %d, want 1（只有 succeeded 计成功）", s.SucceededTasks)
 	}
-	if s.DeliveryTotal != 4 {
-		t.Errorf("DeliveryTotal = %d, want 4（pending 不进分母）", s.DeliveryTotal)
-	}
-	if s.DeviceCount != 1 {
-		t.Errorf("DeviceCount = %d, want 1（只数 enabled=1）", s.DeviceCount)
+	if s.FinishedTasks != 4 {
+		t.Errorf("FinishedTasks = %d, want 4（pending 不进分母）", s.FinishedTasks)
 	}
 }
 
@@ -218,13 +203,13 @@ func TestMessageStatsTotalsDeliveryAndDevices(t *testing.T) {
 func TestMessageStatsPublicUsesRealClock(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	nsID, userID := newTestNS(t, db)
+	nsID, _ := newTestNS(t, db)
 
 	// 不能用 time.Unix(0, 0)：InsertEvent 把 CreatedAt==0 当「未设置」，会重写成 Now()。
 	insertEventAt(t, db, nsID, time.Unix(1, 0))     // 1970 年的老事件，绝不可能算「今日」
 	insertEventAt(t, db, nsID, time.Unix(Now(), 0)) // 真实当前时刻
 
-	s, err := db.MessageStats(ctx, nsID, userID, 0) // 公开入口：now 只可能是真实时钟
+	s, err := db.MessageStats(ctx, nsID, 0) // 公开入口：now 只可能是真实时钟
 	if err != nil {
 		t.Fatalf("MessageStats: %v", err)
 	}
@@ -241,15 +226,15 @@ func TestMessageStatsPublicUsesRealClock(t *testing.T) {
 func TestMessageStatsRejectsEmptyNamespace(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	_, userID := newTestNS(t, db)
+	_, _ = newTestNS(t, db)
 
 	for _, nsID := range []string{"", AllNamespaces} {
-		if _, err := db.messageStats(ctx, nsID, userID, 0, localDay(tzFixtureLocations()[0], 0, 0, 30)); !errors.Is(err, ErrNamespaceRequired) {
+		if _, err := db.messageStats(ctx, nsID, 0, localDay(tzFixtureLocations()[0], 0, 0, 30)); !errors.Is(err, ErrNamespaceRequired) {
 			t.Fatalf("messageStats(namespaceID=%q) err = %v, want ErrNamespaceRequired", nsID, err)
 		}
 	}
 	// 公开入口同样不许吞掉这个哨兵。
-	if _, err := db.MessageStats(ctx, "", userID, 0); !errors.Is(err, ErrNamespaceRequired) {
+	if _, err := db.MessageStats(ctx, "", 0); !errors.Is(err, ErrNamespaceRequired) {
 		t.Fatalf("MessageStats(namespaceID=\"\") err = %v, want ErrNamespaceRequired", err)
 	}
 }

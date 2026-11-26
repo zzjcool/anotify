@@ -131,7 +131,7 @@ func TestGzipJSON(t *testing.T) {
 		},
 		{
 			// 小块不值得压：gzip 头 + 预热表的成本比省下的字节还大。
-			name: "GET_v1_小JSON_不压", method: http.MethodGet, path: "/v1/vapid-public-key",
+			name: "GET_v1_小JSON_不压", method: http.MethodGet, path: "/v1/keys/self",
 			acceptEnc: "gzip", status: http.StatusOK,
 			contentType: "application/json", body: smallBody,
 
@@ -155,7 +155,7 @@ func TestGzipJSON(t *testing.T) {
 		},
 		{
 			// 204 没有 body：不许凭空写 Content-Encoding / Vary / Content-Length。
-			name: "GET_v1_204_无body", method: http.MethodGet, path: "/v1/devices/abc",
+			name: "GET_v1_204_无body", method: http.MethodGet, path: "/v1/keys/abc",
 			acceptEnc: "gzip", status: http.StatusNoContent,
 
 			wantStatus: http.StatusNoContent, wantGzip: false, wantVary: false,

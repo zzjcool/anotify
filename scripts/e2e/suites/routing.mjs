@@ -30,6 +30,7 @@
  * ==============================================================================
  */
 import { createHmac } from "node:crypto";
+import { createServer } from "node:http";
 
 import * as H from "../lib/harness.mjs";
 import * as V from "../lib/v4.mjs";
@@ -114,7 +115,6 @@ function fireSource(name, body = {}) {
 	return H.req(server.base, V.P.sourceFire(NS, name), { session, method: "POST", body });
 }
 
-// defineCap 造一个能力并返回信封（失败直接抛，带 body）。
 async function defineCap(name, opts = {}) {
 	const r = await V.createCapability(server.base, session, NS, V.capabilityBody({ name, ...opts }));
 	if (r.status !== 201) throw new Error(`定义能力 ${name} 失败: ${r.status} ${String(r.text).slice(0, 300)}`);
@@ -146,7 +146,6 @@ function hmacHex(secret, raw) {
 	return createHmac("sha256", secret).update(raw).digest("hex");
 }
 
-// taskParamsOf 取任务信封里渲染后的参数（回执只给 taskId）。
 async function taskParamsOf(taskId) {
 	return (await H.req(server.base, V.P.task(NS, taskId), { session })).json?.spec?.params;
 }
@@ -241,7 +240,6 @@ async function main() {
 	H.eq("无剪枝", (ev1.json?.pruned || []).length, 0);
 	const task1 = ev1.json?.tasks?.[0]?.taskId;
 
-	// 节点应收到 task.dispatch 帧（第 4 步真的挑到了它）
 	const disp = await waitDispatch(routingNode, task1);
 	H.check(
 		"节点收到 task.dispatch 帧",
@@ -762,7 +760,6 @@ async function main() {
 	H.eq("引用取到值：to 来自 payload", litTask?.spec?.params?.to, "u_1");
 
 	// ---------- 11. #513 A1：webhook 信封 / 签名 scheme / match.types ----------
-	// 逐条对着 .pi-legion/contract.md；用例名本身写清了语义，这里只留索引。
 	console.log("--- 11. webhook 信封 / 签名 scheme / match.types ---");
 
 	// 11.1 老契约对照（§8）：不写 envelope/signature/match 的源行为逐字不变
@@ -1629,6 +1626,283 @@ async function main() {
 		},
 	});
 	V.expectReason("14.5 PATCH 把 poll 改成 manual（kind 不可变）", kindChange, 400, "source_kind_immutable");
+
+	// ---------- 15. 「立即拉取一次」（#555）：同一把 in-flight 锁 / 失败不动游标 / 只有 poll 源能点 ----------
+	console.log("--- 15. 「立即拉取一次」（#555）：同一把锁 / 失败不动游标 / 只有 poll 源能点 ---");
+	// 本机 feed：listen(0) 随机端口（不占 SUITE_PORTS 段），响应体由 state 决定；15.2 的并发由
+	// 「feed 里发信号 + 等信号」造出来（不靠 sleep 计时序）。
+	const feeds = [];
+	const mkFeed = async () => {
+		const state = { body: { items: [] }, etag: '"e1"', gate: null, arrived: null };
+		const srv = createServer(async (_req, res) => {
+			if (state.arrived) {
+				const hit = state.arrived;
+				state.arrived = null;
+				hit();
+			}
+			if (state.gate) await state.gate;
+			res.writeHead(200, { "Content-Type": "application/json", ETag: state.etag });
+			res.end(JSON.stringify(state.body));
+		});
+		await new Promise((resolve) => srv.listen(0, "127.0.0.1", resolve));
+		feeds.push(srv);
+		return { state, url: `http://127.0.0.1:${srv.address().port}/feed` };
+	};
+	const pollFeedConfig = (url) => ({
+		url,
+		allowInsecure: true,
+		schedule: POLL_QUIET_SCHEDULE,
+		envelope: { items: "items", type: { pointer: "type" }, deliveryId: { pointer: "id" } },
+	});
+	const pollNow = (name) => H.req(server.base, V.P.sourcePoll(NS, name), { session, method: "POST" });
+	const pollStatus = async (name) =>
+		(await H.req(server.base, V.P.source(NS, name), { session })).json?.status;
+	const pollSource = (name, url) =>
+		V.createSource(server.base, session, NS, V.sourceBody({ name, kind: "poll", config: pollFeedConfig(url) }));
+
+	const okFeed = await mkFeed();
+	okFeed.state.body = { items: [{ id: "a", type: "advisory" }, { id: "b", type: "advisory" }] };
+	V.expectStatus(
+		"15.1 建 poll 源（环回 http + allowInsecure，schedule 不自己触发）→ 201",
+		await pollSource("poll.now-ok", okFeed.url),
+		201,
+	);
+	const okFirst = await pollNow("poll.now-ok");
+	V.expectStatus("15.1 立即拉取一次 → 200", okFirst, 200);
+	H.eq("15.1 items=2", okFirst.json?.items, 2);
+	H.eq("15.1 created=2", okFirst.json?.created, 2);
+	H.eq("15.1 duplicates=0", okFirst.json?.duplicates, 0);
+	H.eq("15.1 cursorAdvanced=true", okFirst.json?.cursorAdvanced, true);
+	H.check(
+		"15.1 durationMs 是 number ≥ 0",
+		typeof okFirst.json?.durationMs === "number" && okFirst.json.durationMs >= 0,
+		JSON.stringify(okFirst.json),
+	);
+	const okEvents = V.items(
+		await H.req(server.base, V.P.events(NS) + "?source=poll.now-ok&limit=50", { session }),
+	) || [];
+	H.eq("15.1 事件页里这批事件 2 条", okEvents.length, 2);
+	H.eq(
+		"15.1 事件的 deliveryId 就是 feed item 的 id",
+		JSON.stringify(okEvents.map((e) => e?.spec?.deliveryId).sort()),
+		JSON.stringify(["a", "b"]),
+	);
+	H.check(
+		"15.1 事件类型取自 feed item 的 type",
+		okEvents.every((e) => e?.spec?.eventType === "advisory"),
+		JSON.stringify(okEvents.map((e) => e?.spec?.eventType)),
+	);
+	const okAgain = await pollNow("poll.now-ok");
+	V.expectStatus("15.1 再点一次 → 200", okAgain, 200);
+	H.eq("15.1 再点一次 created=0（同一份 feed 不新建事件）", okAgain.json?.created, 0);
+	H.eq("15.1 再点一次 duplicates=2（按 deliveryId 命中去重）", okAgain.json?.duplicates, 2);
+
+	const slowFeed = await mkFeed();
+	slowFeed.state.body = { items: [{ id: "s1", type: "advisory" }] };
+	V.expectStatus("15.2 建慢 feed 的 poll 源 → 201", await pollSource("poll.now-slow", slowFeed.url), 201);
+	let releaseFirst;
+	slowFeed.state.gate = new Promise((resolve) => {
+		releaseFirst = resolve;
+	});
+	const firstArrived = new Promise((resolve) => {
+		slowFeed.state.arrived = resolve;
+	});
+	const inFlight = pollNow("poll.now-slow");
+	await firstArrived;
+	V.expectReason("15.2 第一次还在飞时再点一次", await pollNow("poll.now-slow"), 409, "poll_in_progress");
+	releaseFirst();
+	const firstSlow = await inFlight;
+	V.expectStatus("15.2 放行后第一次 → 200", firstSlow, 200);
+	H.eq("15.2 放行后第一次拿到了 feed 的 1 条", firstSlow.json?.items, 1);
+	slowFeed.state.gate = null;
+	V.expectStatus("15.2 锁释放后再点一次 → 200（不排队、也不残留）", await pollNow("poll.now-slow"), 200);
+
+	const failFeed = await mkFeed();
+	failFeed.state.body = { items: [{ id: "f1", type: "advisory" }] };
+	V.expectStatus("15.3 建 poll 源 → 201", await pollSource("poll.now-fail", failFeed.url), 201);
+	V.expectStatus("15.3 先跑一轮成功 → 200", await pollNow("poll.now-fail"), 200);
+	const cursorBefore = await pollStatus("poll.now-fail");
+	H.eq("15.3 成功一轮后 status.cursor 落在 feed 的 ETag 上", cursorBefore?.cursor, '"e1"');
+	failFeed.state.etag = '"e2"';
+	failFeed.state.body = { feed: { items: [] } };
+	const failed = await pollNow("poll.now-fail");
+	V.expectReason("15.3 envelope.items 取不到顶层 items 数组", failed, 502, "poll_failed");
+	H.check(
+		"15.3 502 回的是错误原文（message 非空）",
+		typeof failed.json?.message === "string" && failed.json.message.length > 0,
+		JSON.stringify(failed.json),
+	);
+	const cursorAfter = await pollStatus("poll.now-fail");
+	// 变异②的哨兵：手动触发失败若也前进游标，cursorAfter 就会与 cursorBefore 不同 → 红。
+	H.eq("15.3 失败不动游标（与失败前逐字相同）", cursorAfter?.cursor, cursorBefore?.cursor);
+	H.eq("15.3 失败计数 = 1", cursorAfter?.consecutiveFailures, 1);
+
+	V.expectStatus(
+		"15.4 建 kind=manual 的源 → 201",
+		await V.createSource(server.base, session, NS, V.sourceBody({ name: "poll.now-manual" })),
+		201,
+	);
+	V.expectReason("15.4 对非 poll 源点立即拉取", await pollNow("poll.now-manual"), 409, "not_poll_source");
+
+	V.expectStatus(
+		"15.5 未登录点立即拉取 → 401",
+		await H.req(server.base, V.P.sourcePoll(NS, "poll.now-slow"), { method: "POST" }),
+		401,
+	);
+	const okProj = await H.req(server.base, V.P.source(NS, "poll.now-ok"), { session });
+	V.expectStatus(
+		"15.6 停用 poll 源 → 200",
+		await H.req(server.base, V.P.source(NS, "poll.now-ok"), {
+			session,
+			method: "PATCH",
+			body: {
+				apiVersion: V.API_VERSION,
+				kind: "Source",
+				metadata: { resourceVersion: okProj.json?.metadata?.resourceVersion },
+				spec: { enabled: false },
+			},
+		}),
+		200,
+	);
+	V.expectReason("15.6 停用的 poll 源点立即拉取", await pollNow("poll.now-ok"), 409, "source_disabled");
+
+	console.log("--- 16. 源审计读端点（#559）：polled_manually 一条 / limit 边界 / before 游标 / 跨 ns ---");
+	const AUDIT_SRC = "poll.audit";
+	const auditFeed = await mkFeed();
+	auditFeed.state.body = { items: [{ id: "au1", type: "advisory" }, { id: "au2", type: "advisory" }] };
+	V.expectStatus("16.1 建 poll 源（本地 feed）→ 201", await pollSource(AUDIT_SRC, auditFeed.url), 201);
+	const auditPath = (ns, name, qs = "") => V.P.source(ns, name) + "/audit" + qs;
+	const sourceAudit = (qs = "") => H.req(server.base, auditPath(NS, AUDIT_SRC, qs), { session });
+	const sessionUser = (await H.req(server.base, "/v1/auth/me", { session })).json || {};
+	const who = sessionUser.id;
+	H.check(
+		"16.1 会话用户 id 非空（actor 的逐字基准）",
+		typeof who === "string" && who.length > 0,
+		JSON.stringify(sessionUser),
+	);
+
+	V.expectStatus("16.1 立即拉取一次 → 200", await pollNow(AUDIT_SRC), 200);
+	const auditOne = await sourceAudit();
+	V.expectStatus("16.1 GET …/sources/poll.audit/audit → 200", auditOne, 200);
+	const auditOneRows = V.items(auditOne) || [];
+	H.eq("16.1 审计恰好 1 条（一次人工拉取一行）", auditOneRows.length, 1);
+	const auditFirst = auditOneRows[0] || {};
+	H.eq("16.1 action = source.polled_manually", auditFirst.action, "source.polled_manually");
+	H.eq("16.1 actor = 会话用户 id（逐字相等）", auditFirst.actor, who);
+	H.check(
+		"16.1 at 是 RFC3339 且能被 Date.parse",
+		typeof auditFirst.at === "string" && !Number.isNaN(Date.parse(auditFirst.at)),
+		String(auditFirst.at),
+	);
+	H.check(
+		"16.1 审计项恰好 5 键（id/action/actor/at/detail）",
+		JSON.stringify(Object.keys(auditFirst).sort()) === JSON.stringify(["action", "actor", "at", "detail", "id"]),
+		JSON.stringify(Object.keys(auditFirst)),
+	);
+	H.check(
+		"16.1 detail 是对象且恰好 ok/items/created/duplicates 四键",
+		!!auditFirst.detail &&
+			typeof auditFirst.detail === "object" &&
+			JSON.stringify(Object.keys(auditFirst.detail).sort()) ===
+				JSON.stringify(["created", "duplicates", "items", "ok"]),
+		JSON.stringify(auditFirst.detail),
+	);
+	H.eq("16.1 detail.ok = true（这一轮成功）", auditFirst.detail?.ok, true);
+	H.eq("16.1 detail.items = 2（feed 的条数）", auditFirst.detail?.items, 2);
+	H.eq("16.1 detail.created = 2", auditFirst.detail?.created, 2);
+	H.eq("16.1 detail.duplicates = 0", auditFirst.detail?.duplicates, 0);
+	H.check(
+		"16.1 detail 只存计数、不存响应正文（feed 里的 type 值不出现）",
+		!String(auditOne.text).includes("advisory"),
+		String(auditOne.text).slice(0, 200),
+	);
+
+	V.expectStatus("16.2 再点一次 → 200", await pollNow(AUDIT_SRC), 200);
+	const auditTwoRows = V.items(await sourceAudit()) || [];
+	H.eq("16.2 审计 2 条（每次拉取一行）", auditTwoRows.length, 2);
+	H.check(
+		"16.2 最新在前（items[0].at >= items[1].at，同秒时也成立）",
+		Date.parse(auditTwoRows[0]?.at) >= Date.parse(auditTwoRows[1]?.at),
+		`${auditTwoRows[0]?.at} vs ${auditTwoRows[1]?.at}`,
+	);
+	H.check(
+		"16.2 两行 id 不同（每次拉取一行）",
+		!!auditTwoRows[0]?.id && auditTwoRows[0].id !== auditTwoRows[1]?.id,
+		`${auditTwoRows[0]?.id} vs ${auditTwoRows[1]?.id}`,
+	);
+	H.check(
+		"16.2 两行 actor 都是会话用户",
+		auditTwoRows.every((r) => r?.actor === who),
+		JSON.stringify(auditTwoRows.map((r) => r?.actor)),
+	);
+	H.eq(
+		"16.2 两行 detail 各记一轮（created=2/dups=0 与 created=0/dups=2，同秒并列时按集合比）",
+		JSON.stringify(auditTwoRows.map((r) => `${r?.detail?.created}/${r?.detail?.duplicates}`).sort()),
+		JSON.stringify(["0/2", "2/0"]),
+	);
+
+	const auditLimit1 = V.items(await sourceAudit("?limit=1")) || [];
+	H.eq("16.3 limit=1 → 恰好 1 条", auditLimit1.length, 1);
+	H.eq("16.3 limit=1 回的是最新那条（与全量第一条同 id）", auditLimit1[0]?.id, auditTwoRows[0]?.id);
+
+	const auditBad = {};
+	for (const qs of ["limit=0", "limit=201", "limit=-1", "limit=abc", "before=abc"]) {
+		auditBad[qs] = await sourceAudit("?" + qs);
+		V.expectReason(`16.4 ?${qs} → 400`, auditBad[qs], 400, "BadRequest");
+	}
+	const auditMsg = (qs) => String(auditBad[qs]?.json?.message || "");
+	H.eq("16.4 limit=0 的 message 点名 1..200 区间", auditMsg("limit=0"), "limit must be between 1 and 200");
+	H.eq("16.4 limit=201 的 message 与 limit=0 逐字相同", auditMsg("limit=201"), auditMsg("limit=0"));
+	H.eq("16.4 limit=abc 的 message 是「limit must be an integer」", auditMsg("limit=abc"), "limit must be an integer");
+	H.eq(
+		"16.4 before=abc 的 message 是「before must be an RFC3339 timestamp」",
+		auditMsg("before=abc"),
+		"before must be an RFC3339 timestamp",
+	);
+
+	const auditEpoch = (await sourceAudit("?before=1970-01-01T00:00:00Z")).json;
+	H.check(
+		"16.5 before=1970-01-01T00:00:00Z → 正文恰好 {\"items\":[]}",
+		JSON.stringify(auditEpoch) === '{"items":[]}',
+		JSON.stringify(auditEpoch),
+	);
+	const auditFuture = V.items(await sourceAudit("?before=" + encodeURIComponent("2999-01-01T00:00:00Z"))) || [];
+	H.eq("16.5 before=<未来> 条数不变（严格早于口径不裁未来行）", auditFuture.length, auditTwoRows.length);
+
+	const nsAudit = "aud" + Date.now().toString(36);
+	V.expectStatus("16.6 建第二个命名空间 → 201", await V.createNamespace(server.base, session, nsAudit, "审计隔离"), 201);
+	V.expectStatus(
+		"16.6 第二个 ns 建同名 poll 源（从未 poll）→ 201",
+		await V.createSource(
+			server.base,
+			session,
+			nsAudit,
+			V.sourceBody({ name: AUDIT_SRC, kind: "poll", config: pollFeedConfig(auditFeed.url) }),
+		),
+		201,
+	);
+	const auditCrossEmpty = await H.req(server.base, auditPath(nsAudit, AUDIT_SRC), { session });
+	V.expectStatus("16.6 同名源在第二个 ns 读到 200", auditCrossEmpty, 200);
+	H.check(
+		'16.6 同名未 poll 源的审计是空的 {"items":[]}（隔离：读不到 nsA 的行）',
+		JSON.stringify(auditCrossEmpty.json) === '{"items":[]}',
+		JSON.stringify(auditCrossEmpty.json),
+	);
+	const auditGhostLocal = await H.req(server.base, auditPath(NS, "poll.ghost"), { session });
+	V.expectReason("16.6 本 ns 里不存在的源 → 404", auditGhostLocal, 404, "NotFound");
+	const auditGhostCross = await H.req(server.base, auditPath(nsAudit, "poll.ghost"), { session });
+	V.expectReason("16.6 第二个 ns 里不存在的源 → 404", auditGhostCross, 404, "NotFound");
+	H.eq(
+		"16.6 两种 404 正文逐字节相同（跨 ns 与不存在同形，不泄露存在性）",
+		auditGhostCross.text,
+		auditGhostLocal.text,
+	);
+	V.expectStatus("16.7 匿名 GET 源审计 → 401", await H.req(server.base, auditPath(NS, AUDIT_SRC), {}), 401);
+
+	for (const srv of feeds.splice(0)) {
+		srv.closeAllConnections();
+		await new Promise((resolve) => srv.close(resolve));
+	}
 
 	for (const n of nodes) n.conn.close();
 	server.stop();

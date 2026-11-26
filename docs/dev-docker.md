@@ -20,7 +20,7 @@
 ## 1. 快速开始
 
 ```bash
-make dev-env     # 生成 .env.dev（含真实 VAPID 密钥；已 gitignore）
+make dev-env     # 生成 .env.dev（已 gitignore）
 make dev-up      # 源码构建 + 启动（首次构建几分钟）
 make dev-seed    # 播种 demo 用户（幂等），打印 SEND_KEY / RECV_KEY / SESSION
 ```
@@ -162,28 +162,13 @@ make mock-local   # 只本机
 为什么删：把"服务挂了"画成"示例数据"，会让故障看起来像功能；而且用户注册时踩到任何 4xx
 都会被甩进演示态还回不去（#273）。
 
-## 7. 功能开关：手机推送暂时隐藏
+## 7. 推送域已退役（V4-D7）
 
-「手机推送」（能力 `notify.phone` + 接收设备页）**按产品节奏暂时不对用户显示**，
-开关只有一处：
+「手机推送」（Web Push / VAPID / 接收设备页）已**整体删除**，不是隐藏：能力 `notify.phone`、
+`devices` 表与 `/v1/devices*`、`/v1/vapid-public-key`、`ANOTIFY_VAPID_*`、
+`notify:receive` / `devices:read` 两个 scope、`web-src/pages/receivers.html` 都已移除，
+相关文案与测试同步删除。理由与范围见 `docs/contracts/v4/CONTRACT.md` 的 V4-D7
+与 `docs/reports/retire-push.md`。
 
-```js
-// web/partials.js
-const PUSH_UI_ENABLED = false;
-```
-
-关掉时：
-
-| 位置 | 行为 |
-|---|---|
-| 能力页 / 端详情 | 列表里不出现 `notify.phone`（后端能力仍在，已有边/源照常渲染） |
-| 源 / 边 / 预案的选择器 | 不提供"指向推送"的选项 |
-| `docs.html` | 隐藏 Web Push 章节 |
-| `receivers.html` | 直接输 URL 时显示「手机推送暂未开放」 |
-
-**为什么用前端开关而不是删能力**：后端能力、已存在的边、历史任务都不受影响，
-放行时改一个字（`true`）即可，不需要数据迁移，也不需要重建后端。
-
-注意隐藏做在「发现/选择」的地方，**不做全局过滤**：边、源、预案里可能已经引用了
-被隐藏的能力，那些页面要拿它的 `paramsSchema` 渲染参数表单——全局过滤会让它们
-渲染成"未知能力"甚至崩溃（`source.html` 就这么炸过一次）。
+要恢复这条产品线必须**新开决策**（不是改一个开关）：后端的发送端、订阅存储、API、
+鉴权 scope 都已不存在。

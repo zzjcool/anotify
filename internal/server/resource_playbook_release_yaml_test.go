@@ -3,11 +3,13 @@ package server
 // #536：按 release 导出对象 YAML 的传输面验收；变异自证见 docs/reports/release-yaml-export.md。
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -271,5 +273,294 @@ func TestPlaybookReleaseYAMLEmptyAndReadOnly(t *testing.T) {
 	_ = env.exportYAML(t, slug, "empty")
 	if got := fmt.Sprintf("%d/%d/%d", env.capCount(t), env.srcCount(t), env.installCount(t, slug)); got != fmt.Sprintf("%d/%d/%d", capsBefore, srcsBefore, installsBefore) {
 		t.Fatalf("导出必须只读：能力/源/回执计数 %s → %s", fmt.Sprintf("%d/%d/%d", capsBefore, srcsBefore, installsBefore), got)
+	}
+}
+
+// ---------- #551 `?as=installed`（安装时快照）；契约 = docs/reports/install-snapshot.md §3 ----------
+
+// pbTestYAMLReceipt 只取本票用得到的回执事实（不扩 pbTestReleaseReceipt：那是并行面的文件）。
+type pbTestYAMLReceipt struct {
+	Install struct {
+		ID string `json:"id"`
+	} `json:"install"`
+	ValuesDigest string `json:"valuesDigest"`
+}
+
+func pbTestInstallYAML(t *testing.T, env *playbookTestEnv, slug, release string, values map[string]any) (string, string) {
+	t.Helper()
+	code, raw := env.install(t, slug, release, values)
+	if code != http.StatusOK {
+		t.Fatalf("install %s/%s → %v: %d %s", slug, release, values, code, raw)
+	}
+	var rcpt pbTestYAMLReceipt
+	if err := json.Unmarshal(raw, &rcpt); err != nil {
+		t.Fatalf("decode receipt: %v (%s)", err, raw)
+	}
+	return rcpt.Install.ID, rcpt.ValuesDigest
+}
+
+// pbTestInstalledDocs 切出 `as=installed` 的头注释 + 文档：固定 4 行（版本说明 + 源无版本），有缺失时第 5 行（D8）。
+func pbTestInstalledDocs(t *testing.T, body string, wantMissing int) (string, []string) {
+	t.Helper()
+	parts := strings.Split(body, "---\n")
+	header := parts[0]
+	lines := strings.Split(strings.TrimSuffix(header, "\n"), "\n")
+	want := 4
+	if wantMissing > 0 {
+		want = 5
+	}
+	if len(lines) != want {
+		t.Fatalf("as=installed 头注释要 %d 行，got %d:\n%s", want, len(lines), header)
+	}
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "#") {
+			t.Fatalf("头注释第 %d 行不是注释：%q", i+1, line)
+		}
+	}
+	if !strings.HasPrefix(lines[0], "# playbook: ") || !strings.HasPrefix(lines[1], "# install: ") {
+		t.Fatalf("头注释前两行形状不对:\n%s", header)
+	}
+	if !strings.Contains(lines[2], "安装时快照") || !strings.Contains(lines[3], "源无版本") {
+		t.Fatalf("第 3/4 行必须是「安装时快照」+「源无版本」说明：\n%s", header)
+	}
+	if wantMissing > 0 && !strings.Contains(lines[4], fmt.Sprintf("快照缺失: %d 个对象", wantMissing)) {
+		t.Fatalf("第 5 行应是「快照缺失: %d 个对象」：\n%s", wantMissing, header)
+	}
+	return header, parts[1:]
+}
+
+// TestPlaybookReleaseYAMLInstalledSnapshot 是验收 1：装 v1 → 升级出 v2 → as=installed 是 v1、默认是 v2。
+func TestPlaybookReleaseYAMLInstalledSnapshot(t *testing.T) {
+	env := newPlaybookTestEnv(t)
+	env.pbTestExportMux(t)
+	slug := "pb-snapshot"
+	env.create(t, slug, pbTestExportBundle(slug))
+	pbTestExportInstallOK(t, env, slug, "default")
+
+	// 把安装时建出的那个能力升一版：同一 name 不同正文 = 新版本（内容寻址）。
+	rec := env.do(t, "POST", "/v1/namespaces/"+env.nsID+"/capabilities",
+		capabilityBody("demo-a-fixer", 0, "#!/bin/sh\necho v2\n"))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("升级能力应 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var upgraded struct {
+		Metadata struct {
+			Version int `json:"version"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &upgraded); err != nil {
+		t.Fatalf("decode 升级后的能力: %v (%s)", err, rec.Body.String())
+	}
+	if upgraded.Metadata.Version != 2 {
+		t.Fatalf("升级后当前生效版本应是 2, got %d", upgraded.Metadata.Version)
+	}
+
+	snap := env.do(t, "GET", env.path("/"+slug+"/releases/default/yaml")+"?as=installed", nil)
+	if snap.Code != http.StatusOK {
+		t.Fatalf("as=installed 应 200, got %d: %s", snap.Code, snap.Body.String())
+	}
+	header, docs := pbTestInstalledDocs(t, snap.Body.String(), 0)
+	if !strings.Contains(header, "objects: 3") {
+		t.Fatalf("快照导出应含 3 个对象：%s", header)
+	}
+	if len(docs) != 3 {
+		t.Fatalf("2 能力 + 1 源应导出 3 个文档，got %d:\n%s", len(docs), snap.Body.String())
+	}
+	if !strings.Contains(docs[0], "version: 1") || !strings.Contains(docs[0], "echo ok") {
+		t.Fatalf("as=installed 的 demo-a-fixer 必须是安装那一刻的 v1 正文：\n%s", docs[0])
+	}
+	if strings.Contains(docs[0], "echo v2") {
+		t.Fatalf("as=installed 取成了当前生效版本（v2）——变异 ② 没被抓住：\n%s", docs[0])
+	}
+
+	cur := env.exportYAML(t, slug, "default")
+	if cur.Code != http.StatusOK {
+		t.Fatalf("默认导出应 200, got %d: %s", cur.Code, cur.Body.String())
+	}
+	_, curDocs := pbTestExportDocs(t, cur.Body.String())
+	if len(curDocs) != 3 {
+		t.Fatalf("默认导出应 3 个文档，got %d", len(curDocs))
+	}
+	if !strings.Contains(curDocs[0], "version: 2") || !strings.Contains(curDocs[0], "echo v2") {
+		t.Fatalf("默认导出必须是当前生效版本（v2）：\n%s", curDocs[0])
+	}
+	if snap.Body.String() == cur.Body.String() {
+		t.Fatalf("两种视图必须不同：as=installed 是快照，默认是当前生效版本")
+	}
+}
+
+// TestPlaybookReleaseYAMLInstalledAfterUninstall 是验收 2：卸载后 as=installed 仍 200（源计入缺失），current 仍 404。
+func TestPlaybookReleaseYAMLInstalledAfterUninstall(t *testing.T) {
+	env := newPlaybookTestEnv(t)
+	env.pbTestExportMux(t)
+	slug := "pb-snapshot-gone"
+	env.create(t, slug, pbTestExportBundle(slug))
+	installID, _ := pbTestInstallYAML(t, env, slug, "default", pbTestValues("demo"))
+
+	// 未升级时快照文档与单对象端点逐字节相同（同一份读投影与脱敏，D10）。
+	before := env.do(t, "GET", env.path("/"+slug+"/releases/default/yaml")+"?as=installed", nil)
+	_, beforeDocs := pbTestInstalledDocs(t, before.Body.String(), 0)
+	if want := pbTestExportYAMLOf(t, env, "/v1/namespaces/"+env.nsID+"/capabilities/demo-a-fixer/yaml"); beforeDocs[0] != want {
+		t.Fatalf("快照文档与单对象端点不逐字节相同：\n--- 快照 ---\n%q\n--- 端点 ---\n%q", beforeDocs[0], want)
+	}
+
+	if rec := env.do(t, "DELETE", env.path("/"+slug+"/releases/default"), nil); rec.Code != http.StatusOK {
+		t.Fatalf("卸载应 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	snap := env.do(t, "GET", env.path("/"+slug+"/releases/default/yaml")+"?as=installed", nil)
+	if snap.Code != http.StatusOK {
+		t.Fatalf("已卸载的实例 as=installed 仍应 200（软删行正文还在）, got %d: %s", snap.Code, snap.Body.String())
+	}
+	// 能力只剩软删行（仍可取正文），源行已被卸载物理删除 → 恰好 1 个缺失。
+	header, docs := pbTestInstalledDocs(t, snap.Body.String(), 1)
+	if !strings.Contains(header, "install: "+installID) {
+		t.Fatalf("头注释必须带安装身份 install: %s:\n%s", installID, header)
+	}
+	if !strings.Contains(header, "objects: 2") || len(docs) != 2 {
+		t.Fatalf("软删的 2 个能力仍应导出（objects: 2），got %q / %d 个文档:\n%s", header, len(docs), snap.Body.String())
+	}
+	if strings.Contains(snap.Body.String(), "demo-m-push") {
+		t.Fatalf("卸载已物理删除源行：快照导出不许编造它\n%s", snap.Body.String())
+	}
+
+	for _, path := range []string{
+		env.path("/" + slug + "/releases/default/yaml"),
+		env.path("/"+slug+"/releases/default/yaml") + "?as=current",
+	} {
+		rec := env.do(t, "GET", path, nil)
+		if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "release_not_found") {
+			t.Fatalf("%s 应 404 release_not_found（as=current 口径不变）, got %d: %s", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// pbTestLegacyReceipt 把回执改造成 #551 之前的形状：JSON 的 created/skipped 没有 pinned，索引表也没有行。
+func pbTestLegacyReceipt(t *testing.T, env *playbookTestEnv, installID string) {
+	t.Helper()
+	ctx := context.Background()
+	var raw string
+	if err := env.db.QueryRowContext(ctx, `SELECT receipt FROM playbook_installs WHERE id = ?`, installID).Scan(&raw); err != nil {
+		t.Fatalf("读回执 %s: %v", installID, err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatalf("decode 回执 %s: %v", installID, err)
+	}
+	for _, key := range []string{"created", "skipped"} {
+		section, ok := doc[key].(map[string]any)
+		if !ok {
+			t.Fatalf("回执 %s 没有 %s 段: %s", installID, key, raw)
+		}
+		delete(section, "pinned")
+	}
+	legacy, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal 旧回执: %v", err)
+	}
+	if _, err := env.db.ExecContext(ctx,
+		`UPDATE playbook_installs SET receipt = ? WHERE id = ?`, string(legacy), installID); err != nil {
+		t.Fatalf("改写回执 %s: %v", installID, err)
+	}
+	if _, err := env.db.ExecContext(ctx,
+		`DELETE FROM playbook_install_pinned WHERE install_id = ?`, installID); err != nil {
+		t.Fatalf("删快照索引 %s: %v", installID, err)
+	}
+}
+
+// TestPlaybookReleaseYAMLNoSnapshot 是验收 3：老回执（没有 pinned）→ 409 no_snapshot，causes[0].field=release。
+func TestPlaybookReleaseYAMLNoSnapshot(t *testing.T) {
+	env := newPlaybookTestEnv(t)
+	env.pbTestExportMux(t)
+	slug := "pb-snapshot-legacy"
+	env.create(t, slug, pbTestExportBundle(slug))
+	installID, _ := pbTestInstallYAML(t, env, slug, "default", pbTestValues("demo"))
+	pbTestLegacyReceipt(t, env, installID)
+
+	snap := env.do(t, "GET", env.path("/"+slug+"/releases/default/yaml")+"?as=installed", nil)
+	if snap.Code != http.StatusConflict {
+		t.Fatalf("没有快照应 409, got %d: %s", snap.Code, snap.Body.String())
+	}
+	var doc pbTestStatusDoc
+	if err := json.Unmarshal(snap.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("409 错误体不是 JSON Status: %v (%s)", err, snap.Body.String())
+	}
+	if doc.Reason != "no_snapshot" {
+		t.Fatalf("reason = %q, 期望 no_snapshot（%s）", doc.Reason, snap.Body.String())
+	}
+	var causes struct {
+		Details struct {
+			Causes []struct {
+				Reason string `json:"reason"`
+				Field  string `json:"field"`
+			} `json:"causes"`
+		} `json:"details"`
+	}
+	if err := json.Unmarshal(snap.Body.Bytes(), &causes); err != nil {
+		t.Fatalf("decode causes: %v (%s)", err, snap.Body.String())
+	}
+	if len(causes.Details.Causes) == 0 || causes.Details.Causes[0].Field != "release" {
+		t.Fatalf("details.causes[0].field 必须指到 release（%s）", snap.Body.String())
+	}
+	if doc.Message == "" || !strings.Contains(doc.Message, "快照") {
+		t.Fatalf("409 message 要说清「没有安装时快照」：%q", doc.Message)
+	}
+
+	// 老回执照常可按当前生效版本导出：409 只属于 as=installed。
+	if rec := env.exportYAML(t, slug, "default"); rec.Code != http.StatusOK {
+		t.Fatalf("老回执的默认导出应 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestPlaybookReleaseYAMLAsParam：as 的两态等价与非法值、valuesDigest 与 as=installed 的组合。
+func TestPlaybookReleaseYAMLAsParam(t *testing.T) {
+	env := newPlaybookTestEnv(t)
+	env.pbTestExportMux(t)
+	slug := "pb-snapshot-as"
+	env.create(t, slug, pbTestExportBundle(slug))
+	_, firstDigest := pbTestInstallYAML(t, env, slug, "default", pbTestValues("demo"))
+
+	plain := env.do(t, "GET", env.path("/"+slug+"/releases/default/yaml"), nil)
+	current := env.do(t, "GET", env.path("/"+slug+"/releases/default/yaml")+"?as=current", nil)
+	if plain.Code != http.StatusOK || current.Code != http.StatusOK {
+		t.Fatalf("两种写法都应 200: %d / %d", plain.Code, current.Code)
+	}
+	if plain.Body.String() != current.Body.String() {
+		t.Fatalf("不带 as 与 as=current 必须逐字节相同：\n%s\n---\n%s", plain.Body.String(), current.Body.String())
+	}
+	if plain.Header().Get("Content-Type") != current.Header().Get("Content-Type") {
+		t.Fatalf("Content-Type 不一致: %q / %q", plain.Header().Get("Content-Type"), current.Header().Get("Content-Type"))
+	}
+
+	for _, bad := range []string{"nope", "Installed", "snapshot"} {
+		rec := env.do(t, "GET", env.path("/"+slug+"/releases/default/yaml")+"?as="+url.QueryEscape(bad), nil)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "value_invalid") {
+			t.Fatalf("as=%q 应 400 value_invalid, got %d: %s", bad, rec.Code, rec.Body.String())
+		}
+	}
+
+	// 同一 release 的第二套 values = 第二个参数组：不带 digest 是两组并集，按组只给这一组。
+	_, secondDigest := pbTestInstallYAML(t, env, slug, "default", pbTestValues("demo2"))
+	all := env.do(t, "GET", env.path("/"+slug+"/releases/default/yaml")+"?as=installed", nil)
+	if all.Code != http.StatusOK {
+		t.Fatalf("并集导出应 200, got %d: %s", all.Code, all.Body.String())
+	}
+	head, docs := pbTestInstalledDocs(t, all.Body.String(), 0)
+	if len(docs) != 6 || !strings.Contains(head, "objects: 6") {
+		t.Fatalf("两套 values = 4 能力 + 2 源 = 6 个文档，got %d:\n%s", len(docs), all.Body.String())
+	}
+	one := env.do(t, "GET", env.path("/"+slug+"/releases/default/yaml")+"?as=installed&valuesDigest="+url.QueryEscape(secondDigest), nil)
+	if one.Code != http.StatusOK {
+		t.Fatalf("按组导出应 200, got %d: %s", one.Code, one.Body.String())
+	}
+	head, docs = pbTestInstalledDocs(t, one.Body.String(), 0)
+	if len(docs) != 3 || !strings.Contains(head, "objects: 3") {
+		t.Fatalf("按组导出只给这一组的 3 个文档，got %d:\n%s", len(docs), one.Body.String())
+	}
+	if !strings.Contains(one.Body.String(), "demo2-a-fixer") || strings.Contains(one.Body.String(), "name: demo-a-fixer") {
+		t.Fatalf("按组导出只应含第二组的对象:\n%s", one.Body.String())
+	}
+	if strings.Contains(one.Body.String(), "values-digest: "+firstDigest) {
+		t.Fatalf("按组导出的头注释应写第二组的 valuesDigest:\n%s", head)
 	}
 }

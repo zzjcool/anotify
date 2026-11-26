@@ -41,7 +41,7 @@ const TARGETS = [
 	{ name: "apple-touch-icon.png", size: 180, square: true },
 	{ name: "icon-192.png", size: 192, square: false },
 	{ name: "icon-512.png", size: 512, square: false },
-	{ name: "icon.png", size: 192, square: false }, // sw.js 通知 icon 用
+	{ name: "icon.png", size: 192, square: false }, // PWA 图标用
 ];
 
 function htmlFor(size, square) {

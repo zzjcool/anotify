@@ -45,12 +45,12 @@ export function withDeadline(label, promise, ms = WAIT_DEADLINE_MS) {
 export const LANGS = ['zh-CN', 'en', 'ja', 'es'];
 // 旧的 source 页已删除（黑盒审计 B-4：两个源详情页重复，只留 source-detail 这一页）；
 // 无参/带参访问 `/source.html` 一律 404（internal/server/static.go 的未知文件路径）。
-export const PAGES = ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','namespace','namespaces','node','nodes','passkey-enroll','playbook','playbooks','receivers','release','security','source-detail','sources','trace'];
+export const PAGES = ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','namespace','namespaces','node','nodes','passkey-enroll','playbook','playbooks','release','security','source-detail','sources','trace'];
 // 401 → 登录页那条用例覆盖的页面。capability.html 是**受保护的深层链接页**：
 // 它自己的布局挂载就会打 /v1/auth/me，游客必得 401，且它在 partials.js 的
 // loginHref 白名单里（next=capability.html 必须保住 ?namespace=&name=），
 // 所以进 GUARDED 才是与产品真实页面集一致的覆盖。
-export const GUARDED = ['index','receivers','keys','security','message','events','sources','capabilities','capability','nodes'];
+export const GUARDED = ['index','keys','security','message','events','sources','capabilities','capability','nodes'];
 export const isMock = () => process.env.E2E_MOCK_ONLY === '1';
 export function chromePath() {
   if (process.env.E2E_CHROME_PATH) return process.env.E2E_CHROME_PATH;
@@ -86,7 +86,7 @@ function ensureSession(server, username, extraArgs = []) {
   const out = execFileSync(H.DEVSEED_BIN, ['-db', server.dbPath, '-username', username, ...extraArgs], { encoding: 'utf8' });
   const get = (k) => (out.match(new RegExp(`^${k}=(.*)$`, 'm')) || [])[1];
   assert.ok(get('SESSION'), `T1 seam: devseed must return SESSION for ${username}`);
-  return { session: get('SESSION'), uid: get('UID'), role: get('ROLE'), sendKey: get('SEND_KEY'), recvKey: get('RECV_KEY') };
+  return { session: get('SESSION'), uid: get('UID'), role: get('ROLE'), sendKey: get('SEND_KEY') };
 }
 
 // ensureNamespace 保证 default/prod 两个命名空间存在（契约 resource.yaml ·
@@ -792,7 +792,6 @@ export async function openDriver(id, options = {}) {
             if (id==='node-namespace-system') MockApi.state.systemConfig.retention={resultTtlSec:3600,eventTtlSec:7000,taskTtlSec:9000};
           }
           MockApi.latency(0);
-          value.pushUIEnabled=true;
         }
         const raw = window.fetch;
         window.fetch = async (url,opts={}) => {
@@ -814,9 +813,13 @@ export async function openDriver(id, options = {}) {
               : failure(400,'retained_rejection','Actual retained rejection sentinel'); // Resource/Key fixtures unchanged.
             else response=await raw(url,opts);
             call.httpStatus=response.status;
-            if((response.headers.get('Content-Type')||'').includes('json') || (target==='/v1/auth/me' && response.status===401)) {
+            call.contentType=response.headers.get('Content-Type')||'';
+            if(call.contentType.includes('json') || (target==='/v1/auth/me' && response.status===401)) {
               window.__f3TraceResponse?.(call,'parse-start');
-              call.result=await response.clone().json();call.response=call.result;
+              // 先读原始字节再解析：`bodyBytes` 让「200 但没有 body」和「200 且 body 缺字段」
+              // 在断言日志里分得开（#563 的现场正是这两种的歧义）。
+              const text=await response.clone().text();call.bodyBytes=text.length;
+              call.result=JSON.parse(text);call.response=call.result;
               window.__f3TraceResponse?.(call,'parsed');
               if(response.status>=400) {call.status=response.status;call.reason=call.result?.reason;call.details=call.result?.details;}
             }
@@ -868,7 +871,7 @@ export async function openDriver(id, options = {}) {
         else docs.push({...trace,snapshots:[trace.snapshot]});
       }
       // Reports never contain raw credentials, scripts, host values or receipt values.
-      report.requests.push(...rows.map(c=>({url:c.url,method:c.method,httpStatus:c.httpStatus,reason:c.reason,kind:c.result?.kind,itemCount:c.result?.items?.length,resourceVersion:c.body?.metadata?.resourceVersion,error:c.error})));
+      report.requests.push(...rows.map(c=>({url:c.url,method:c.method,httpStatus:c.httpStatus,contentType:c.contentType,bodyBytes:c.bodyBytes,reason:c.reason,kind:c.result?.kind,itemCount:c.result?.items?.length,resourceVersion:c.body?.metadata?.resourceVersion,error:c.error})));
       await page.evaluate(()=>{window.__f3Calls=[];});
     };
     const goto=async(file,query='namespace=default',lang=options.lang||'en')=>{

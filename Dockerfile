@@ -1,6 +1,6 @@
 # Anotify 中枢镜像（server + 内置节点升级源 anode）
 # 构建：make docker（或 docker build -t anotify .）
-# 运行：docker run -p 8080:8080 -e ANOTIFY_VAPID_PUBLIC_KEY=... -e ANOTIFY_VAPID_PRIVATE_KEY=... anotify
+# 运行：docker run -p 8080:8080 -e ANOTIFY_RP_ID=example.com -e ANOTIFY_RP_ORIGIN=https://example.com anotify
 #
 # v4 只包含两个产品二进制（#334）：
 #   · /usr/local/bin/anotify  中枢（server，内嵌指纹前端）
@@ -28,6 +28,7 @@ RUN go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en
 FROM node:22-alpine AS fe
 WORKDIR /app
 COPY scripts/hash.mjs ./scripts/hash.mjs
+COPY scripts/lib/direct-run.mjs ./scripts/lib/direct-run.mjs
 COPY --from=sitegen /app/web ./web
 RUN node scripts/hash.mjs web internal/server/dist
 

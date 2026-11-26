@@ -4,7 +4,7 @@
  * 覆盖 case：
  *  注册：新用户注册 → 会话建立 → 可访问受保护 API
  *  注册：重复用户名 → 400
- *  Key：登录态下创建 notify:send / notify:receive Key（真实 API）→ 各 scope 生效
+ *  Key：登录态下创建 notify:send Key（真实 API）→ scope 生效；退休 scope 必须被拒
  *  登录：登出后用已注册 Passkey 重新登录 → 会话恢复
  *  登出：logout → 会话失效 → 401
  *  登录：未注册用户登录 → 400/401
@@ -431,12 +431,12 @@ async function main() {
 	H.eq("创建 notify:send Key → 200", sendKeyResp.status, 200);
 	const sendKey = sendKeyResp.json?.key;
 	H.check("Key 明文仅创建时返回一次", !!sendKey && sendKey.startsWith("ant_"));
-	const recvKeyResp = await H.req(server.base, "/v1/keys", {
+	// notify:receive 随推送域退役（V4-D7）：它不再是合法 scope，建 Key 必须被拒。
+	const retiredResp = await H.req(server.base, "/v1/keys", {
 		session: sess,
 		body: { name: "ws-recv", scopes: ["notify:receive"] },
 	});
-	const recvKey = recvKeyResp.json?.key;
-	H.eq("创建 notify:receive Key → 200", recvKeyResp.status, 200);
+	H.eq("退休 scope notify:receive 建 Key → 400", retiredResp.status, 400);
 
 	// 4. scope 生效验证
 	H.eq(
@@ -448,16 +448,6 @@ async function main() {
 		).status,
 		200,
 	);
-	H.eq(
-		"recv Key 上报被拒(403)",
-		(
-			await V.ingestEvent(server.base, recvKey, NS, {
-				source: "github", type: "pr_opened", payload: { title: "t" },
-			})
-		).status,
-		403,
-	);
-
 	// 5. Key 列表不泄露明文
 	const keyList = await H.req(server.base, "/v1/keys", { session: sess });
 	H.check(
@@ -531,10 +521,6 @@ async function main() {
 		`total=${stats.json?.total}`,
 	);
 	H.check("stats.daily 是数组", Array.isArray(stats.json?.daily));
-	H.check(
-		"stats.deviceCount 是数字",
-		typeof stats.json?.deviceCount === "number",
-	);
 
 	// 12. 前端侧栏真实用户名 + 退出按钮 + 退出跳登录
 	await page.goto(server.base + "/index.html", { waitUntil: "load" });

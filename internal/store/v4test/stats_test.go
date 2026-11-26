@@ -86,11 +86,11 @@ func TestStatsEmptyAndWorkspace(t *testing.T) {
 		}
 	}
 
-	ws, err := db.MessageStats(ctx, ns, user.ID, store.Now()-86400)
+	ws, err := db.MessageStats(ctx, ns, store.Now()-86400)
 	if err != nil {
 		t.Fatalf("message stats: %v", err)
 	}
-	if ws.Total != 0 || ws.Today != 0 || ws.Delivered != 0 || ws.DeliveryTotal != 0 {
+	if ws.Total != 0 || ws.Today != 0 || ws.SucceededTasks != 0 || ws.FinishedTasks != 0 {
 		t.Fatalf("空库工作台统计应全 0：%+v", ws)
 	}
 	if ws.Daily == nil {
@@ -105,11 +105,11 @@ func TestStatsEmptyAndWorkspace(t *testing.T) {
 	node := newNode(t, db, "node-a", 1)
 	finishedTask(t, db, ns, c, node, "trace-done", store.Now()-1)
 
-	ws, err = db.MessageStats(ctx, ns, user.ID, store.Now()-86400)
+	ws, err = db.MessageStats(ctx, ns, store.Now()-86400)
 	if err != nil {
 		t.Fatalf("message stats after: %v", err)
 	}
-	if ws.Total != 1 || ws.Delivered != 1 || ws.DeliveryTotal != 1 {
+	if ws.Total != 1 || ws.SucceededTasks != 1 || ws.FinishedTasks != 1 {
 		t.Fatalf("工作台统计口径错：%+v", ws)
 	}
 	if len(ws.Daily) != 1 {

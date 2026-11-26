@@ -1,0 +1,27 @@
+apiVersion: anotify/v1
+kind: Source
+
+metadata:
+  name: '{{values.project}}-issue-hook'
+  displayName: '{{values.project}} issue 收单'
+
+spec:
+  kind: webhook
+  enabled: true
+  config:
+    token: ''
+    payloadSchema:
+      type: object
+      required: [issue]
+      properties:
+        issue:
+          type: integer
+          minimum: 1
+          description: 要处理哪个 issue
+    sample:
+      issue: 649
+  targets:
+    - capability: '{{values.project}}-issue-claim'
+      params:
+        repo: '{{values.repo}}'
+        issue: $(payload.issue)

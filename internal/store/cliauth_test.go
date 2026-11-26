@@ -16,7 +16,7 @@ func TestCliAuthSession_RoundTrip(t *testing.T) {
 		DeviceName:      "my-macbook",
 		Kind:            CliAuthKindAPIKey,
 		DeviceHint:      "",
-		ScopesRequested: []string{"notify:send", "notify:receive"},
+		ScopesRequested: []string{"notify:send"},
 		Status:          CliAuthPending,
 		CreatedAt:       1000,
 		ExpiresAt:       1600,

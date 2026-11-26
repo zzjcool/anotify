@@ -18,6 +18,8 @@ import (
 var (
 	// ErrPlaybookReleaseNotFound 表示这个包名下没有该 release 的回执（404 release_not_found）。
 	ErrPlaybookReleaseNotFound = errors.New("store: playbook release not found")
+	// ErrPlaybookSnapshotMissing 表示选中的回执没有任何安装时快照行（老回执；导出端翻 409 no_snapshot）。
+	ErrPlaybookSnapshotMissing = errors.New("store: playbook install snapshot missing")
 	// ErrPlaybookInstallMismatch 表示 installId 不在该 release 的回执里（409 install_conflict）。
 	ErrPlaybookInstallMismatch = errors.New("store: install id does not belong to this release")
 )
@@ -443,6 +445,7 @@ func sharedReleaseRefsOn(ctx context.Context, ex queryExec, namespaceID string, 
 		if err := json.Unmarshal([]byte(raw), &receipt); err != nil {
 			return nil, nil, fmt.Errorf("uninstall playbook: decode install receipt: %w", err)
 		}
+		normalizePinned(&receipt)
 		for _, ref := range receipt.Skipped.Capabilities {
 			if ref = strings.TrimSpace(ref); ref != "" {
 				caps[ref] = release

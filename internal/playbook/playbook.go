@@ -75,7 +75,6 @@ const (
 	CodeRenderTypeMismatch  = "render_type_mismatch"
 	CodeDuplicateCapability = "duplicate_capability"
 	CodeDuplicateSource     = "duplicate_source"
-	CodeCycle               = "cycle"
 
 	// 安装期。
 	CodePlaybookConflict        = "playbook_conflict"
@@ -111,8 +110,7 @@ const (
 	// NoteSourceDisabled 是包内源渲染后 enabled: false（只是提示）。
 	NoteSourceDisabled = "source_disabled"
 	// NoteNoNode 是包内没有任何能力能在当前节点池上跑。它需要节点池事实（哪些节点声明了
-	// 什么），属于读模型的体检/派生 status（§6.1，G3），本包的纯 Plan 不产出它；
-	// 常量放在这里是为了让码表在一处封闭。
+	// 什么），属于读模型的体检/派生 status（§6.1，G3），本包的纯 Plan 不产出它； 常量放在这里是为了让码表在一处封闭。
 	NoteNoNode = "no_node"
 )
 
@@ -265,11 +263,22 @@ type InstallRef struct {
 
 // Created 是"这次建了什么"：能力写 `name@version`，源写名字。
 //
-// **两份（created / skipped）都是对象而不是数组**：`{capabilities: [], sources: []}`
-// （W3 冻结；空列表是 `[]` 不是 `null`）。
+// **两份（created / skipped）都是对象而不是数组**：`{capabilities: [], sources: [], pinned: []}`
+// （W3 冻结；空列表是 `[]` 不是 `null`；#551 的 pinned 两边都记：created 是新建、skipped 是复用到的版本）。
 type Created struct {
 	Capabilities []string `json:"capabilities"`
 	Sources      []string `json:"sources"`
+	// Pinned 是安装时快照（#551）：恒发（不进 required），nil 归一成 []。
+	Pinned []PinnedRef `json:"pinned"`
+}
+
+// PinnedRef 是安装那一刻钉住的一个对象（#551）：能力记 (name,version,digest)，源记 (name,kindOf)。 源没有版本概念，所以源那一行没有 version/digest；能力那一行没有 kindOf。
+type PinnedRef struct {
+	Kind    string `json:"kind"`
+	Name    string `json:"name"`
+	KindOf  string `json:"kindOf,omitempty"`
+	Version int    `json:"version,omitempty"`
+	Digest  string `json:"digest,omitempty"`
 }
 
 // Affects 是新版本会影响到的落点计数（§5 D23：两个计数都要算）。
@@ -310,7 +319,7 @@ type Note struct {
 // Receipt 是安装回执（playbook.md §4.5，D15）。
 //
 // 形状硬约束：
-// - `created` / `skipped` 都是 `{capabilities: [], sources: []}` 对象；
+// - `created` / `skipped` 都是 `{capabilities: [], sources: [], pinned: []}` 对象；
 // - `values` 是**打码后**的有效 values（writeOnly → `"***"`），`valuesDigest` 对**打码前**算；
 // - **没有 `conflicts` 字段**：冲突只在 400 错误体里（`Error.Details`）。
 type Receipt struct {
@@ -331,16 +340,18 @@ type Receipt struct {
 	Notes        []Note           `json:"notes"`
 	// Dependencies 是这次安装解析到的外部依赖（恒为 []，不是 null：空列表纪律）。
 	Dependencies []Dependency `json:"dependencies"`
+	RestoredFrom string       `json:"restoredFrom,omitempty"` // 只有按快照重装（#561）才有：被复原的那次 install id
 }
 
 // emptyCreated 保证 created / skipped 的列表序列化成 `[]` 而不是 `null`（空列表纪律）。
-func emptyCreated() Created { return Created{Capabilities: []string{}, Sources: []string{}} }
+func emptyCreated() Created {
+	return Created{Capabilities: []string{}, Sources: []string{}, Pinned: []PinnedRef{}}
+}
 
 // InstallsFoldKey 是实例清单（§4.10）的折叠键：
 // `(namespace_id, playbook_id, release, values_digest)`。
 //
-// 纯函数部分（拼键）留在这里，一次 `GROUP BY` 的聚合由 store 做（G1-5b）：同一个
-// release 用同一组 values 装 3 次 = 1 个折叠组 + attempts=3，不是 3 个实例；
+// 纯函数部分（拼键）留在这里，一次 `GROUP BY` 的聚合由 store 做（G1-5b）：同一个 release 用同一组 values 装 3 次 = 1 个折叠组 + attempts=3，不是 3 个实例；
 // 换一个 release（哪怕 values 一模一样）是**另一套实例**，单独立组。
 func InstallsFoldKey(namespaceID, playbookID, release, valuesDigest string) string {
 	return namespaceID + "\x00" + playbookID + "\x00" + release + "\x00" + valuesDigest

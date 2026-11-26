@@ -1,16 +1,14 @@
 package server
 
-// 派发预算（ANOTIFY_MAX_HOPS / ANOTIFY_TRACE_TASK_BUDGET）在**配置层**的验收。
+// 派发预算（ANOTIFY_MAX_HOPS / ANOTIFY_TRACE_TASK_BUDGET）的配置层验收。
 //
-// 为什么恢复这一组用例（m4-2）：review 指出 v3 的三条派发预算用例被退役，理由是
-// 「env 解析的对象不存在了」——但事实是 `Config.MaxHops/TraceTaskBudget` 仍在
-// `FromEnv` 解析、`Validate` 启动校验、`mux.go` 启动日志打印；退役之后
-// `grep MaxHops *_test.go` = 0，配置面完全裸奔。v4 只是**不再消费**这两个预算
-// （route.Router 没有跳数预算），不等于「配错也不该报错」。
+// 为什么恢复这组用例（m4-2）：review 指出 v3 的三条派发预算用例被退役，理由是
+// 「env 解析的对象不存在了」——但 `Config.MaxHops/TraceTaskBudget` 仍在 `FromEnv`
+// 解析、`Validate` 启动校验、`mux.go` 启动日志打印，退役后配置面完全裸奔。
+// 消费方是 `route.Router.checkBudget`（每次派发都判，见 internal/route/budget.go）。
 //
-// 断言逐条沿用 v3（意图不变，只把默认值来源从 route 包常量改成本包常量：
-// v4 的 route 包已不导出它们）：
-//   - 不配 env → 本包默认值（16 / 512，与 v3 逐字相同）；
+// 断言逐条沿用 v3：
+//   - 不配 env → 默认值（16 / 512，引 route 的常量）；
 //   - 正整数原样使用；0 / 负数 / 非数字 → 哨兵 0，由 Validate 拒绝（启动即失败）。
 
 import (
@@ -56,7 +54,6 @@ func TestDispatchBudgetEnvParsing(t *testing.T) {
 // TestValidateRejectsBadDispatchBudgets 非法预算 ⇒ 启动即失败（不静默用默认）。
 func TestValidateRejectsBadDispatchBudgets(t *testing.T) {
 	base := Config{
-		VAPIDPublic: "pub", VAPIDPriv: "priv",
 		MaxHops: defaultMaxHops, TraceTaskBudget: defaultTraceTaskBudget,
 	}
 	if err := base.Validate(); err != nil {
@@ -76,7 +73,6 @@ func TestValidateRejectsBadDispatchBudgets(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(tc.key, tc.raw)
 			cfg := FromEnv()
-			cfg.VAPIDPublic, cfg.VAPIDPriv = "pub", "priv" // VAPID 不是本用例的关注点
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatalf("%s=%q 被接受了：非法预算必须让启动失败", tc.key, tc.raw)

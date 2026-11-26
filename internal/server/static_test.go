@@ -37,7 +37,6 @@ func TestClassify(t *testing.T) {
 		{"/index.html", cacheEntry},
 		{"/login.html", cacheEntry},
 		{"/en/playbook.html", cacheEntry},
-		{"/sw.js", cacheEntry},
 		{"/manifest.json", cacheEntry},
 		{"/manifest.webmanifest", cacheEntry}, // #233：显式名单，不再靠兜底
 		{"/app.js", cacheEntry},               // 无指纹 → 短缓存
@@ -77,7 +76,6 @@ func TestClassifyDetailRules(t *testing.T) {
 	}{
 		{"/manifest.webmanifest", cacheEntry, "entry-name"},
 		{"/manifest.json", cacheEntry, "entry-name"},
-		{"/sw.js", cacheEntry, "entry-name"},
 		{"/index.html", cacheEntry, "entry-html"},
 		{"/en/playbook.html", cacheEntry, "entry-html"},
 		{"/ui.c84903a0.css", cacheImmutable, "hash"},
@@ -136,10 +134,10 @@ func TestClassifyEntryProductNamesExistInDist(t *testing.T) {
 	}
 }
 
-// TestClassifyWebEntryProducts 只对 web/ 里名字固定的两个入口产物做断言
+// TestClassifyWebEntryProducts 只对 web/ 里名字固定的入口产物做断言
 // （web/ 是开发源目录，里面大量无指纹源文件落 fallback 是**正确**意图）。
 func TestClassifyWebEntryProducts(t *testing.T) {
-	for _, name := range []string{"sw.js", "manifest.webmanifest"} {
+	for _, name := range []string{"manifest.webmanifest"} {
 		st, err := os.Stat(filepath.Join(unitStaticWebDir, name))
 		if err != nil {
 			t.Fatalf("web/ 里应有固定名产物 %q: %v", name, err)
@@ -507,7 +505,6 @@ func TestStaticCacheControlGrading(t *testing.T) {
 		"app.js":                 "console.log(1)",
 		"index.html":             "<!doctype html>",
 		"en/index.html":          "<!doctype html>",
-		"sw.js":                  js,
 		"manifest.json":          `{"a":"b"}`,
 		"manifest.webmanifest":   `{"name":"anotify"}`,
 		"agent-login.sh":         "#!/bin/sh\n",
@@ -520,7 +517,6 @@ func TestStaticCacheControlGrading(t *testing.T) {
 		{"/assets/app.c84903a0.js", immutable},
 		{"/", entry}, // 入口 HTML（/index.html 会 301 到 ./）
 		{"/en/", entry},
-		{"/sw.js", entry},
 		{"/manifest.json", entry},
 		{"/manifest.webmanifest", entry},
 		{"/app.js", entry},         // 无指纹 → 入口类（短缓存 + ETag）
@@ -770,7 +766,6 @@ func TestStaticGzipOnceAndConcurrent(t *testing.T) {
 	files := map[string]string{
 		"assets/app.c84903a0.js": js,
 		"index.html":             "<!doctype html><title>root</title>",
-		"sw.js":                  js,
 	}
 	srv, h := unitStaticNew(t, files)
 

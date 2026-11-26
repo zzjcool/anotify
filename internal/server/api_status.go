@@ -79,7 +79,6 @@ func errStatus(code int, reason, message string) error {
 	return &apiError{Code: code, Reason: reason, Message: message}
 }
 
-// writeStatus 写一个 Status 响应。
 func writeStatus(w http.ResponseWriter, code int, reason, message string, details *statusDetails) {
 	writeJSON(w, code, statusDoc{
 		APIVersion: apiVersionV1,
@@ -139,6 +138,21 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		return
 	}
 
+	// #554：被源引用的凭据不删；causes 逐条列引用者（源名），客户端据此改 secretRef。
+	var secretInUse *store.NamespaceSecretInUseError
+	if errors.As(err, &secretInUse) {
+		causes := make([]statusCause, 0, len(secretInUse.Sources))
+		for _, src := range secretInUse.Sources {
+			causes = append(causes, statusCause{
+				Reason:  reasonSecretInUse,
+				Field:   "source",
+				Message: fmt.Sprintf("源 %q 引用它（先改该源的 secretRef 再删）", src),
+			})
+		}
+		writeStatus(w, http.StatusConflict, reasonSecretInUse, secretInUse.Error(), &statusDetails{Causes: causes})
+		return
+	}
+
 	switch {
 	case errors.Is(err, store.ErrAuthRequired):
 		writeStatus(w, http.StatusUnauthorized, reasonUnauthorized, "authentication required", nil)
@@ -164,6 +178,8 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		writeStatus(w, http.StatusNotFound, reasonNotFound, "not found", nil)
 	case errors.Is(err, store.ErrSourceNotFound):
 		writeStatus(w, http.StatusNotFound, reasonNotFound, "source not found", nil)
+	case errors.Is(err, store.ErrNamespaceSecretNotFound):
+		writeStatus(w, http.StatusNotFound, reasonSecretAbsent, "namespace secret not found", nil)
 	case errors.Is(err, store.ErrSourceNameTaken):
 		writeStatus(w, http.StatusConflict, "source_name_used", "source name already used", nil)
 	case errors.Is(err, store.ErrSourceKindImmutable):
@@ -174,14 +190,10 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		// #519：带路径校验失败逐条落进 details.causes[]（红点点到具体那行配置）。
 		writeStatus(w, http.StatusBadRequest, sourceConfigReason(err), err.Error(), sourceConfigCauses(err))
 	case errors.Is(err, store.ErrSourceTargetInvalid):
-		// targets 指向不存在的出口能力是**调用方输入错误**（改引用就好），不是服务端故障。
-		// 不加这一条就落 default 500：客户端会把它当瞬时故障去重试一个永远不会成功的写。
-		// reason 复用 source 域的既有封闭码（targets 的形状错也走它），不新造词。
+		// 指向不存在的出口能力是**调用方输入错误**（改引用就好）：不加这条会落 500，被当成瞬时故障重试。
 		writeStatus(w, http.StatusBadRequest, "invalid_source_config", err.Error(), nil)
 	case errors.Is(err, store.ErrReservedEventSource):
-		// 保留来源名（`route`）是**调用方输入错误**，不是服务端故障：v3 有专门用例钉它
-		// 必须是 400（§4.2 的 reason 封闭集合里没有 5xx 用户错误码）。不加这一条就会落到
-		// default 500，把「名字选错了」报成「服务器坏了」。
+		// 保留来源名（`route`）是**调用方输入错误**：v3 钉死它必须 400，不加这条会落 500。
 		writeStatus(w, http.StatusBadRequest, "invalid_source_config", err.Error(), nil)
 	case errors.Is(err, store.ErrCapabilityInvalid):
 		writeStatus(w, http.StatusBadRequest, reasonBadRequest, err.Error(), nil)
@@ -197,6 +209,15 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		writeStatus(w, http.StatusNotFound, "version_not_found", err.Error(), nil)
 	case errors.Is(err, store.ErrPlaybookInstallMismatch):
 		writeStatus(w, http.StatusConflict, "install_conflict", err.Error(), nil)
+	// #551：回执早于「安装时快照」（没有 pinned 行）→ 409 而不是 404：release 存在，只是装得更早。
+	case errors.Is(err, store.ErrPlaybookSnapshotMissing):
+		writeStatus(w, http.StatusConflict, "no_snapshot",
+			"该实例安装于未记录快照的版本，没有安装时快照可导出（可改用 as=current 导出当前生效版本）",
+			&statusDetails{Causes: []statusCause{{
+				Reason:  "no_snapshot",
+				Message: "该实例的安装回执没有记录对象版本（安装发生在记录安装时快照之前）",
+				Field:   "release",
+			}}})
 	case errors.Is(err, store.ErrEmitIDConflict):
 		writeStatus(w, http.StatusConflict, "emit_id_conflict", err.Error(), nil)
 	case errors.Is(err, store.ErrEmitNamespaceDenied):
@@ -207,9 +228,7 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		writeStatus(w, http.StatusConflict, reasonAlreadyExists, "node already exists", nil)
 	case errors.Is(err, store.ErrNodeDraining):
 		writeStatus(w, http.StatusConflict, reasonConflict, "node is draining", nil)
-	// A1/#332 产物域的封闭错误码（上传动作端点自己有 {"error":…} 动作文档，
-	// 但下载/其它资源路径会把这些 sentinel 传到这里，落 default 500 会把
-	// 「副本已过期」报成「服务器坏了」）。
+	// A1/#332 产物域的封闭错误码：落 default 500 会把「副本已过期」报成「服务器坏了」。
 	case errors.Is(err, store.ErrArtifactExpired):
 		writeStatus(w, http.StatusGone, reasonArtifactExpired, "artifact copy expired", nil)
 	case errors.Is(err, store.ErrArtifactConflict):
@@ -252,8 +271,7 @@ func capabilityLockDetails(e *store.CapabilityLockedError) *statusDetails {
 	return &statusDetails{Causes: causes}
 }
 
-// sourceConfigReason 决定 `invalid_source_config` 的顶层 reason（#519）：纯「一个未知键」的错
-// 沿用文档层的 `unknown_field`（客户端已按它分支，也与 YAML 写面同口径），其余仍是既有码。
+// sourceConfigReason 定顶层 reason（#519）：纯「一个未知键」沿用 `unknown_field`（与 YAML 写面同口径）。
 func sourceConfigReason(err error) string {
 	causes := sourceConfigCauseList(err)
 	if len(causes) == 1 && causes[0].Reason == sourcespec.CauseReasonUnknownField {
@@ -262,8 +280,7 @@ func sourceConfigReason(err error) string {
 	return "invalid_source_config"
 }
 
-// sourceConfigCauses 把带路径校验失败翻成 details.causes[]（#519）：field 补 `spec.`——它是
-// **文档路径**（与 YAML 写面同写法），前端拿它去文档树定位；sourcespec 不该知道信封。
+// sourceConfigCauses 把校验失败翻成 details.causes[]（#519）：field 补 `spec.`（文档路径，前端据此定位）。
 func sourceConfigCauses(err error) *statusDetails {
 	causes := sourceConfigCauseList(err)
 	if len(causes) == 0 {

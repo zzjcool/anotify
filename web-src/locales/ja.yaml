@@ -68,7 +68,6 @@ common:
     playbooks: "プレイブック"
     nodes: ノード
     namespaces: ネームスペース
-    receivers: 通知先
     keys: API Keys
     api: API ドキュメント
     account: アカウント
@@ -183,14 +182,8 @@ index:
   kpi:
     total: イベント総数
     all_time: 累計
-    rate: 配信率
     today: 今日のイベント
     today_sub: 今日の受信数
-    devices: 受信デバイス
-    devices_enabled: 有効
-    devices_sub: '{n} 台 · エンドツーエンド暗号化'
-    devices_sub2: プッシュ購読 + WebSocket
-    rate_na: 受信デバイスがまだないため、配信率は表示できません
     trend_live: ライブ
     running: 実行中
     running_sub: "この名前空間の全タスク"
@@ -198,7 +191,6 @@ index:
     failed: 異常タスク
     failed_sub: "この名前空間の全タスク"
     failed_sub_all: すべてのネームスペースの全タスク
-    devices_sub_all: デバイスはユーザー単位で、ネームスペースによって変わりません
   aggregate:
     unsupported: この指標はまだネームスペースをまたいで集計できません
   heatmap:
@@ -322,11 +314,6 @@ message:
   body_label: 本文
   open_link: Agent セッションを開く
   fields_title: すべてのフィールド
-  deliveries_title: 配信記録
-  delivery:
-    delivered_count: '{ok}/{n} 配信済み'
-    empty: 配信記録なし（有効なデバイスが見つかりません）
-    attempt_info: '{channel} · {n} 回試行 · {time}'
   error:
     missing_id: メッセージ ID がありません（URL に ?id=ntf_… が必要）
     not_found: メッセージが見つからないか削除されました
@@ -494,118 +481,6 @@ login:
     login_success_short: ログイン成功、ワークスペースに移動中…
     signup_success_short: 登録成功！ワークスペースに移動中…
     need_username_short: まずユーザー名を決めてください。
-receivers:
-  back_home: '概要に戻る'
-  docs_link: "連携手順を見る"
-  unavailable: 'プッシュ通知は未公開です。公開後にここへ受信デバイスが表示されます。'
-  title: 通知先
-  channel:
-    push: プッシュ購読
-    ws: WebSocket 接続
-  push:
-    title: ブラウザプッシュ購読
-    subtitle_prefix: システム Push サービス（APNs / FCM）で配信。
-    subtitle_highlight: ブラウザを閉じていても受信
-    subtitle_suffix: ''
-    add_device: このデバイスを追加
-  ws:
-    title: 長接続受信 · プラグインと任意デバイスのために
-    desc: notify:receive 権限の API Key を持つ任意のデバイス / プラグインが WebSocket 長接続を確立し、サーバーからリアルタイムに通知を受信。 デスクトップウィジェット、CLI デーモン、スマートホームブリッジなどに最適。 ブラウザプッシュと並行して動作します。
-    connection_method: 接続方法
-    copy: コピー
-    active_title: アクティブな接続
-    active_subtitle: 現在確立している WebSocket 接続
-    online: ' 件オンライン'
-    empty_hint: バックエンド接続後、ここにリアルタイム接続が表示されます （接続名 / Key プレフィックス / 稼働時間 / タグ / 最新メッセージ）。
-  tags:
-    title: タグルーティング · どのデバイスがどの通知を受け取るか
-    desc: 通知報告時に deviceTags を付与します。「タグの積集合がある」または 「タグなし（全受信）」のデバイスのみが受信します。通知にタグなし = すべての有効なデバイスへブロードキャスト、デバイスにタグなし = すべてを受信。
-  pair:
-    title: このデバイスを追加
-    subtitle: 購読後、このブラウザがプッシュ通知を受信します
-    device_name: デバイス名
-    device_placeholder: 例：メインスマホ / オフィスの Mac
-    submit: 権限を要求して購読
-    hint: ブラウザが通知権限を要求します。iOS ではまず本サイトを「ホーム画面に追加」し、スタンドアロンアプリとして開く必要があります。
-    unsupported: この環境は Web Push に対応していません。iOS はホーム画面に追加してから開いてください。
-    requesting_perm: 通知権限を要求中…
-    perm_denied: 通知権限が付与されませんでした（{perm}）。ブラウザ設定で許可して再試行してください。
-    registering_sw: Service Worker を登録中…
-    getting_vapid: VAPID 公開鍵を取得中…
-    no_backend: バックエンド未接続 — VAPID 鍵を取得できません。サーバーが起動しているか確認して再試行してください。
-    empty_vapid: VAPID 公開鍵が空です
-    subscribing: プッシュを購読中…
-    reporting: 購読を報告中…
-    success: 購読成功！このデバイスはプッシュ通知を受信します。
-    failed: 購読に失敗：{msg}
-  scope:
-    all: 全ライフサイクル
-    final: 最終結果のみ
-  local:
-    enabled: この端末は通知が有効です
-    disabled: この端末は通知が無効です
-    receiving: 受信中
-    not_receiving: 受信不可
-    unsupported: このブラウザは Web Push に対応していません（iOS はホーム画面に追加が必要です）。
-    subscribed: このブラウザ（{browser}）はプッシュ通知を購読中で、通知を受信できます。
-    permission_denied: 通知権限が拒否されました — ブラウザの設定で再度許可してください。
-    not_subscribed: このブラウザ（{browser}）はプッシュ通知を購読していません — この端末は通知を受信できません。
-    turn_off: 通知をオフにする
-    turn_on: 通知をオンにする
-    view_settings: 有効化の方法を見る
-    perm_denied_toast: 通知権限が拒否されています（denied）。ブラウザの設定でこのサイトを許可してから再試行してください。
-  troubleshoot:
-    title: デバイス別チェックリスト
-    local_check: ローカル確認
-    perm_granted: 通知権限：許可済み ✓
-    perm_denied: 通知権限：拒否 ✗（ブラウザ設定でリセットして再購読してください）
-    perm_default: 通知権限：未設定（「このデバイスを追加」を押した際に要求します）
-    expand: 受信できない？これらを確認 →
-  empty: まだ受信デバイスがありません。右上の「このデバイスを追加」で始めましょう。
-  device:
-    switch_aria: 受信スイッチ
-    tags: タグ
-    add_tag: + タグ
-    this_device: この端末
-    receiving: 受信中
-    paused: 一時停止
-    last_delivered: 最終配信 {time}
-    level: 通知レベル
-    rename: 名前変更
-    unbind: 解除
-  prompt:
-    tag: タグを追加（例：スマホ / 仕事 / アラート）
-    rename: デバイス名
-  confirm:
-    unbind: 「{name}」を解除しますか？通知を受信できなくなります。
-  toast:
-    saved: 保存しました
-    save_failed: 保存に失敗：{msg}
-    unbound: 解除しました
-    unbind_failed: 解除に失敗：{msg}
-    local_off: この端末の通知をオフにしました
-    added: デバイスを追加しました
-  checklist:
-    ios_1: ホーム画面のアイコンから開く必要があります（standalone）。通常の Safari タブは通知に対応していません
-    ios_2: iOS 設定 → 通知 → Safari/PWA → 通知を許可
-    ios_3: 購読後に受信できない：集中モードをオフにし、サイトの通知権限が「許可」か確認
-    mac_1: macOS システム設定 → 通知 → 該当ブラウザ（例：Google Chrome）→ 通知を許可
-    mac_2: ブラウザのアドレスバーの鍵アイコン → 通知 → 「許可」に設定（デフォルト/ブロック以外）
-    mac_3: プッシュにはブラウザプロセスの実行と当サイトのタブが開いている必要があります。ブラウザを閉じるとリアルタイムプッシュは受信できません
-    mac_4: フォアグラウンドタブはプッシュをサイレント処理することがあります — バックグラウンドに切り替えるか最小化してテスト
-    win_1: Windows 設定 → システム → 通知 → ブラウザの通知がオンか確認
-    win_2: ブラウザのアドレスバーの鍵アイコン → 通知 → 「許可」に設定
-    win_3: 集中アシスト（おやすみモード）がオンだと通知がサイレントになります
-    android_1: Android 設定 → アプリ → ブラウザ → 通知 → 許可
-    android_2: WeChat の内蔵ブラウザや一部の中国製ブラウザは Web Push に対応していません。Chrome をご使用ください
-    other_1: ブラウザの通知権限が「許可」か確認（アドレスバーの鍵アイコン）
-    other_2: ブラウザプロセスが実行中か確認
-  subtitle: デバイスごとに通知受信を制御
-  refresh: '更新'
-  unavailableTitle: 'プッシュ通知は未公開です'
-  emptyTitle: '受信デバイスがまだありません'
-  emptyDesc: 'このデバイスを追加すると、確認した通知を受け取れます。'
-  wsEmptyTitle: '接続はまだありません'
 keys:
   title: API Keys
   subtitle: Agent が通知報告に使用する Key
@@ -645,10 +520,6 @@ keys:
     scope_label: スコープ（複数選択可、最小権限）
     scope_send_label: 送信
     scope_send_desc: Agent / CI が POST 通知に使用。プレフィックス ant_live_
-    scope_receive_label: 受信
-    scope_receive_desc: プラグイン / デバイスが WebSocket 接続を確立するために使用。プレフィックス ant_recv_
-    scope_read_label: デバイス参照
-    scope_read_desc: スクリプト点検用の読み取り専用デバイス一覧
     scope_hint: 最小権限：送信と受信は分離され、Key 漏洩時の影響は片側のみ。
     cancel: キャンセル
     generate: Key を生成
@@ -661,8 +532,6 @@ keys:
     done: 保存しました
   scope:
     send: 送信
-    receive: 受信
-    read: デバイス参照
   unnamed: 名前なし
   unnamed_key: 名前なし Key
   summary: '{total} 個の Key · {active} 有効'
@@ -689,7 +558,7 @@ keys:
 security:
   title: セキュリティとログイン
   subtitle: Passkey · パスワード · セッション · リカバリーコード
-  intro: 「あなたは誰か」をすべて管理：Passkey 認証情報、パスワード、ログインセッション、 リカバリーコード。これらは「通知をどこへ送るか」（受信デバイス）と は独立した軸です。
+  intro: 「あなたは誰か」をすべて管理：Passkey 認証情報、パスワード、ログインセッション、 リカバリーコード。これらは「イベントをどこへ送るか」（ケイパビリティとソース）とは独立した軸です。
   add_passkey: Passkey を追加
   passkey:
     title: Passkey 認証情報
@@ -795,7 +664,7 @@ security:
     revoke_failed: 取り消しに失敗：{msg}
 docs:
   title: 連携ドキュメント
-  subtitle: Agent 上報 · Web Push · WebSocket
+  subtitle: Agent 上報 · イベント · タスクチェーン
   toc_heading: このページの目次
   table:
     method: メソッド
@@ -806,7 +675,6 @@ docs:
     agent: Agent 連携
     api: API 概要
     auth: 認証方法
-    webpush: Web Push 購読
     stream: WebSocket 受信
     events: POST /v1/namespaces/{namespace}/events
     node: ノードプロトコル
@@ -838,7 +706,6 @@ docs:
       passkey-enroll: パスキー登録
       cli-auth: CLI 認証
       admin: 管理
-      devices: Web Push
       resource: "リソース"
       agent: "ノードプロトコル"
       ingress: "イベント入力"
@@ -901,16 +768,11 @@ docs:
       notify: Agent による通知上報（中核）
       tasks: 'タスク一覧（イベントストリーム）'
       notifications: 通知履歴一覧
-      devices_list: デバイス一覧
-      devices_sub: デバイス購読（登録）
-      devices_update: デバイス更新（オンオフ / フィルタ / タグ）
-      devices_delete: デバイス解除
       node_stream: ノード WebSocket プロトコル
       stream: WebSocket ロングポール受信
       keys_list: API Key 一覧
       keys_create: API Key 新規作成
       passkey: Passkey 登録 / ログイン
-      vapid: VAPID 公開鍵（購読用）
   auth:
     title: 認証方法
     intro: 2 種類の認証情報があり、呼び出し元に応じて使い分けます。<b class="doc-em">最小権限</b>：上報と受信は分離されており、Key が漏洩しても片方だけの影響で済みます。
@@ -918,7 +780,7 @@ docs:
       title: API Key（Bearer）
       li1: · Agent 上報 / 受信側ロングポール接続に使用
       li2: '· Header：<code class="doc-code">Authorization: Bearer ant_…</code>'
-      li3: · scope：<code class="doc-code">notify:send</code> 上報 · <code class="doc-code">notify:receive</code> 受信 · <code class="doc-code">devices:read</code> 読み取り専用
+      li3: '· scope：<code class="doc-code">notify:send</code>（イベント入口 <code class="doc-code">POST /v1/namespaces/{ns}/events</code>）'
       li4: · サーバーは argon2id ハッシュのみ保存、平文は作成時のみ表示
     passkey:
       title: セッション Cookie
@@ -926,81 +788,6 @@ docs:
       li2: · WebAuthn パスワードレスログイン、生体認証またはデバイスキー
       li3: · httpOnly Cookie、マルチデバイスセッションは独立して個別に取り消し可能
       li4: · クロスデバイス：プラットフォーム同期 / 一時接続ガイド / リカバリーコード
-  notify:
-    core: 中核
-    intro: Agent がタスク終了後にこのエンドポイントを呼び出して通知を上報します。サーバーは API Key を検証し、所有者を特定し、通知を<b class="doc-em">エンドツーエンド暗号化</b>で「有効かつレベル / タグが一致する」すべてのデバイスにプッシュします。
-    params:
-      title: リクエストボディ パラメータ
-      title_desc: 通知タイトル。例：<code>"デプロイ完了"</code>。システム通知のメインタイトルになります。
-      agent_state_desc: エージェント状態：<code>working</code> 実行中 · <code>blocked</code> 待機中 · <code>done</code> 完了 · <code>interrupted</code> 中断 · <code>error</code> 失敗。アイコン色とデバイスフィルタを決定します。
-      body_desc: 通知本文。補足説明です。
-      tags_desc: ルーティングタグ。空 = すべての有効デバイスにブロードキャスト。非空 = 「共通タグがある」または「タグなし（catch-all）」のデバイスのみに配信。≤10 個、各 ≤32 文字。
-      link_desc: 通知タップ時に開くディープリンク。例：<code>pi://session/sess_8f3a2c</code>。
-      meta_desc: コンテキストメタデータ。追跡と統計に使用され、通知履歴に保存されます。
-      ttl_desc: <code>ttl</code> 有効期限（秒）（デフォルト 86400）；<code>priority</code> 優先度（デフォルト normal）。
-    required: 必須
-    optional: 任意
-    curl:
-      title: cURL · 完全なリクエスト
-      title_val: デプロイ完了
-      body_val: ビルド成功、本番環境にデプロイ済み
-      tag_val: 仕事
-    resp200: 受領・配信完了
-    resp200_dev1: メインスマホ
-    resp200_dev2: オフィス Mac
-    resp400: 一致するデバイスなし / パラメータエラー
-    resp400_err: 購読済みデバイスがありません。先にワークスペースで購読してください
-    resp400_comment: // 401 · Key がないまたは無効（scope 不足時は 403）
-    rules:
-      title: 配信ルール（タグルーティング + レベルフィルタ）
-  webpush:
-    off_note: "モバイルプッシュ（Web Push）は未公開です：公開されるとここに購読手順が表示されます。イベント自体は記録され、「イベントストリーム」ページで確認できます。"
-    title: Web Push 購読（ブラウザ受信）
-    intro: ブラウザは Service Worker + PushManager で購読し、バックエンドは VAPID 署名でプッシュします。<b class="doc-em">ページを閉じていても受信できます</b>。iOS は「ホーム画面に追加」してスタンドアローンモードで実行する必要があります（iOS 16.4+）。
-    step1: <b class="doc-em">① VAPID 公開鍵を取得</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
-    step2: <b class="doc-em">② Service Worker を登録</b> · <code class="doc-code">navigator.serviceWorker.register('/sw.js')</code>
-    step3: <b class="doc-em">③ 権限を要求して購読</b> · <code class="doc-code">pushManager.subscribe(&#123; applicationServerKey &#125;)</code>
-    step4: <b class="doc-em">④ 購読を上報</b> · endpoint + keys を <code class="doc-code">POST /v1/devices</code> で送信
-    code:
-      title: フロントエンド購読 · コアコード
-      comment1: // 1. SW 登録 + VAPID 公開鍵を取得
-      comment2: // 2. 購読（通知権限の許可が必要）
-      comment3: // 3. バックエンドに報告（セッション Cookie 認証）
-      comment_p256dh: // { p256dh, auth }
-      comment_platform: // ios|mac|win|android|other
-    ios:
-      title: ⚠️ iOS の前提条件
-      desc: 「ホーム画面に追加」してスタンドアローンモードで実行する必要があります。そうしないと Safari は Notification / Push API を提供しません。
-    android:
-      title: ✅ Android はもっと簡単
-      desc: Chrome/Edge は通常のタブから購読でき、FCM 経由です。ホーム画面に追加する必要はありません。
-    e2e:
-      title: 🔒 エンドツーエンド暗号化
-      desc: ペイロードは購読の p256dh/auth 鍵で暗号化され、プッシュサービスは内容を読めません。
-  ws:
-    channel2: 2 つ目の受信チャネル
-    intro: ブラウザプッシュに加え、任意のデバイス / プラグインが <code class="doc-code">notify:receive</code> 権限の Key で WebSocket ロングポールを確立し、リアルタイム受信できます。デスクトップウィジェット、CLI デーモン、スマートホームブリッジに最適。ブラウザプッシュと並行稼働します。
-    connect:
-      title: 接続の確立
-      comment: '# notify:receive 権限が必要'
-      comment2: '# 任意、再接続時のレジュム用'
-    s2c:
-      title: サーバー → クライアント
-      comment1: // 接続成功後の最初のフレーム
-      comment2: // 新しい通知を受信
-      title_val: デプロイ完了
-      body_val: 本番にデプロイ済み
-      tag_val: 仕事
-      comment3: // リプレイ終了 / ハートビート / エラー
-    c2s:
-      title: クライアント → サーバー
-      comment1: // タグの購読 / 購読解除（空 = 全て）
-      comment2: // 処理済みを確認（at-least-once）
-      comment3: // ハートビート（heartbeat_sec ごと、2 回連続未受信で切断）
-      comment4: // 再接続後、resume フレームでレジュム（Last-Event-Id ヘッダの代替）
-    reconnect:
-      title: 再接続とレジュム
-      desc: 再接続時に <code class="doc-code">Last-Event-Id</code> ヘッダ（または最初のフレームで <code class="doc-code">resume</code>）を送信すると、サーバーは直近 24h の未確認通知（リプレイウィンドウ）を再送し、その後リアルタイムストリームに移行します。保持期間を超えると <code class="doc-code">resume_expired</code> エラーを返します。クライアントは全履歴を再取得してください。
   v4:
     five_specs: 'エンドポイント一覧：リソースごとにメソッドとパスを並べています。'
     missing: "エンドポイント一覧を利用できません"
@@ -1177,10 +964,7 @@ admin:
     active: 7日間 {n} アクティブ
     messages: メッセージ総数
     today: 今日 {n}
-    devices: デバイス
-    enabled: '{n} 有効'
-    keys: '{n} Keys'
-    delivery_rate: 配信成功率
+    task_success_rate: タスク成功率
   tab:
     users: ユーザー
     messages: メッセージ
@@ -1190,7 +974,6 @@ admin:
     role: ロール
     status: 状態
     messages: メッセージ
-    devices: デバイス
     keys: Keys
     created: 登録日時
     actions: 操作
@@ -1216,7 +999,6 @@ admin:
     empty: アクティブセッションなし
   top:
     messages: メッセージ
-    devices: '{n} デバイス'
   confirm:
     title: 確認
     cancel: キャンセル
@@ -2418,10 +2200,16 @@ pb:
     release_group: "{release} · {n} グループ"
     single_receipt: "完全な単一記録を読む"
     no_installs: "インスタンスはまだありません。最初のインストールで 1 つ作られます。"
+    no_active_installs: "現在稼働中のインスタンスはありません。以下は履歴です。"
+    uninstalled_group: "アンインストール済み · {n} 件"
+    expand_rest: "残り {n} 件を表示"
     view_yaml: "YAML を表示"
     release_active: "稼働中"
+    release_uninstalled: "アンインストール済み"
+    release_uninstalled_at: "削除 {at}"
     release_objects: "{c} ケイパビリティ / {s} ソース"
     release_last_install: "{at} にインストール"
+    restore_highlight: "スナップショットから復元して作成したインスタンス"
     yaml_title: "インスタンス YAML"
     yaml_empty: "このインスタンスに表示できるオブジェクトはありません"
     yaml_load_failed: "YAML の読み込みに失敗しました"
@@ -2442,6 +2230,7 @@ pb:
     delete_stale: '版が古いです。再読み込みで最新を取得し、再削除時も確認が必要です。'
     uninstall: "アンインストール"
     uninstall_confirm: "インスタンス「{release}」をアンインストールしますか？このインストールが作成した能力とソースを削除します。他のインスタンスに属するものは保持され、インストール記録は引き続き参照できます。"
+    uninstall_row: "アンインストール"
     uninstalled_n: "「{release}」をアンインストールしました：能力 {c} 個 / ソース {s} 個を削除。"
     uninstall_kept_n: "このインスタンスに属さない {n} 個のオブジェクトを保持しました（明細は下）。"
     uninstall_already: "このインスタンスはすでにアンインストール済みです。今回は何も変わっていません。"
@@ -2565,9 +2354,6 @@ uxaudit:
       resolved_yes: 'targets 解決済み'
       resolved_no: 'targets 未解決'
       hook_url: 'フック URL'
-    receivers:
-      to_ws: 'WebSocket 長接続を見る'
-      docs: 'API ドキュメントを見る'
     admin:
       role_admin: 'スーパー管理者'
       role_member: 'メンバー'
@@ -2681,6 +2467,20 @@ source_detail:
   poll_cursor: 'カーソル'
   poll_cursor_none: 'カーソルはまだありません（初回成功後に保存されます）'
   poll_error_none: '失敗の記録はありません'
+  poll_now: '今すぐ取得'
+  poll_now_running: '取得中…'
+  poll_now_done: '1 回取得しました'
+  poll_now_busy: 'ポーリング中です。しばらくお待ちください'
+  poll_result_items: '取得項目'
+  poll_result_created: '新規'
+  poll_result_duplicates: '重複'
+  poll_result_duration: '所要時間'
+  secret_name: '認証情報名'
+  secret_used_by: '参照元'
+  secret_loading: '読み込み中…'
+  secret_missing: '認証情報が存在しません'
+  secret_only_self: '参照しているのはこのソースのみ'
+  secret_used_by_failed: '参照元を読み込めませんでした'
   hook_url: 'Hook URL'
   secret_set_yes: 'HMAC 署名は設定済み（書き込み専用）'
   secret_set_no: 'HMAC 署名なし'
@@ -2693,6 +2493,24 @@ source_detail:
   recent_error: '最近の受信を読み込めませんでした'
   view_trace: 'トレースを見る'
   no_name_hint: 'ソース一覧から名前をクリックするか、アドレスに ?namespace=<ns>&name=<name> を付けてください。'
+  audit_title: '最近の操作'
+  audit_empty: '監査記録はまだありません。手動取得するとここに記録されます。'
+  audit_loading: '最近の操作を読み込み中…'
+  audit_error: '最近の操作を読み込めませんでした'
+  audit_actor_none: 'セッション主体以外'
+  audit_action_source_polled_manually: '手動取得'
+  secret_history: '認証情報の履歴'
+  secret_history_title: '認証情報の履歴'
+  secret_history_empty: 'この認証情報にはまだ履歴がありません。'
+  secret_history_loading: '認証情報の履歴を読み込み中…'
+  secret_history_error: '認証情報の履歴を読み込めませんでした'
+  secret_history_col_action: '操作'
+  secret_history_col_at: '日時'
+  secret_history_col_actor: '実行者'
+  secret_history_close: '閉じる'
+  secret_action_created: '作成'
+  secret_action_rotated: 'ローテーション'
+  secret_action_deleted: '削除'
 namespaces:
   v4:
     title: "ネームスペース"
@@ -2767,14 +2585,32 @@ release:
   yaml_title: インスタンスの YAML
   yaml_empty: このインスタンスにはエクスポートできるオブジェクトがありません。
   yaml_failed: エクスポートに失敗しました
+  as_current: 現在有効
+  as_installed: インストール時
+  as_no_snapshot: このインストールにはスナップショットが残っていないため、現在有効なバージョンのみ表示します。
+  as_current_gone: "インスタンスはアンインストール済みのため、表示できる現在有効なバージョンはありません。"
   uninstall: このインスタンスを削除
   uninstall_confirm: 'インスタンス「{release}」を削除します：作成したケイパビリティとソースを削除し、結果は保持します。'
   uninstalled: 削除済み
-  gone_title: このインスタンスは削除済みか存在しません
-  gone_hint: '作成したオブジェクトは削除されました。パッケージのページで現在稼働中のインスタンスを確認できます。'
+  uninstalled_notice: "このインスタンスは {at} にアンインストールされ、オブジェクトは削除されました。以下はインストール時点のスナップショットです。"
+  objects_gone: "オブジェクトは削除されました（インスタンスは {at} にアンインストール済み）。YAML の「インストール時」で当時のスナップショットを書き出せます。"
+  gone_title: このインスタンスは存在しません
+  gone_hint: '一度もインストールされていないか、所属するパッケージが削除されています。'
   gone_back: パッケージに戻る
   no_target_badge: インスタンス未指定
   missing_hint: 'パッケージのインスタンス一覧から開くか、リンクにパッケージ名とインスタンス名を足してください。'
   missing_back: パッケージ一覧に戻る
   missing_target: リンクにパッケージ名またはインスタンス名がありません。
   invalid_detail: サーバーが有効なインスタンス詳細を返しませんでした。
+  restore: スナップショットから復元
+  restore_confirm_title: スナップショットからこのインスタンスを復元
+  restore_confirm_body: "スナップショットから次のケイパビリティを作り直します：{caps}。関与するソースは {sources} 件です。"
+  restore_confirm_note: "ソースは作り直しません：1 つでも欠けていると復元は拒否されます（409）。"
+  restore_confirm_ok: スナップショットから復元
+  restore_list_sep: 、
+  restore_more: "…ほか計 {n} 件"
+  restore_no_snapshot: このインストールにはスナップショットが残っていないため、スナップショットから復元できません。
+  restore_already_installed: このインスタンスはまだ有効なため、復元は不要です。
+  restore_pinned_gone: スナップショット内のケイパビリティのバージョンが削除済みのため、復元できません。
+  restore_pin_missing_source: スナップショット内のソースがこの名前空間に存在しません。先にソースを作成してから復元してください。
+  restore_conflict: 同じ名前・バージョンのケイパビリティが別の内容で存在するため、復元できません。

@@ -98,7 +98,7 @@ const QUIET_MS = 150;
 const READY_TIMEOUT_MS = 30000;
 
 // ---------------------------------------------------------------- 页面清单
-// 18 页 = 生产站点的全部页面；参数页用固定 mock 参数（scripts/mock.sh 的假数据）。
+// 17 页 = 生产站点的全部页面；参数页用固定 mock 参数（scripts/mock.sh 的假数据）。
 export const PAGES = [
 	{ slug: "index", path: "/index.html", anon: false },
 	{ slug: "events", path: "/events.html", anon: false },
@@ -109,7 +109,6 @@ export const PAGES = [
 	{ slug: "nodes", path: "/nodes.html", anon: false },
 	{ slug: "node", path: "/node.html?namespace=default&id=anode-1", anon: false },
 	{ slug: "keys", path: "/keys.html", anon: false },
-	{ slug: "receivers", path: "/receivers.html", anon: false },
 	{ slug: "security", path: "/security.html", anon: false },
 	{ slug: "admin", path: "/admin.html", anon: false },
 	{ slug: "docs", path: "/docs.html", anon: false },

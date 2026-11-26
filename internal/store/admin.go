@@ -33,7 +33,6 @@ func (d *DB) AdminCount(ctx context.Context) (int64, error) {
 // 现在「用户 → 事件」没有任何对应关系（事件属于命名空间），硬留只能造假数。
 type UserWithStats struct {
 	User
-	DeviceCount  int64 `json:"deviceCount"`
 	KeyCount     int64 `json:"keyCount"`
 	SessionCount int64 `json:"sessionCount"`
 }
@@ -45,7 +44,6 @@ type UserWithStats struct {
 func (d *DB) ListUsersWithStats(ctx context.Context) ([]*UserWithStats, error) {
 	rows, err := d.QueryContext(ctx,
 		`SELECT u.id, u.username, u.display_name, u.role, u.disabled, u.created_at,
-		        (SELECT COUNT(*) FROM devices   d WHERE d.user_id = u.id),
 		        (SELECT COUNT(*) FROM api_keys  k WHERE k.user_id = u.id),
 		        (SELECT COUNT(*) FROM sessions  s WHERE s.user_id = u.id)
 		 FROM users u
@@ -59,7 +57,7 @@ func (d *DB) ListUsersWithStats(ctx context.Context) ([]*UserWithStats, error) {
 		var u UserWithStats
 		var disabled int
 		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.CreatedAt,
-			&u.DeviceCount, &u.KeyCount, &u.SessionCount); err != nil {
+			&u.KeyCount, &u.SessionCount); err != nil {
 			return nil, fmt.Errorf("scan user with stats: %w", err)
 		}
 		u.Disabled = disabled != 0
@@ -81,7 +79,6 @@ func (d *DB) ListUsersWithStats(ctx context.Context) ([]*UserWithStats, error) {
 // 用 id 反查 rowid 只多一次唯一索引查找。
 func (d *DB) ListUsersWithStatsPage(ctx context.Context, afterAt int64, afterID string, limit int) ([]*UserWithStats, error) {
 	query := `SELECT u.id, u.username, u.display_name, u.role, u.disabled, u.created_at,
-	        (SELECT COUNT(*) FROM devices   d WHERE d.user_id = u.id),
 	        (SELECT COUNT(*) FROM api_keys  k WHERE k.user_id = u.id),
 	        (SELECT COUNT(*) FROM sessions  s WHERE s.user_id = u.id)
 	 FROM users u`
@@ -102,7 +99,7 @@ func (d *DB) ListUsersWithStatsPage(ctx context.Context, afterAt int64, afterID 
 		var u UserWithStats
 		var disabled int
 		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.CreatedAt,
-			&u.DeviceCount, &u.KeyCount, &u.SessionCount); err != nil {
+			&u.KeyCount, &u.SessionCount); err != nil {
 			return nil, fmt.Errorf("scan user with stats: %w", err)
 		}
 		u.Disabled = disabled != 0
@@ -117,12 +114,10 @@ type SystemStats struct {
 	AdminCount     int64        `json:"adminCount"`     // 超管数
 	MessageCount   int64        `json:"messageCount"`   // 消息总数
 	TodayMessages  int64        `json:"todayMessages"`  // 今日消息数
-	DeviceCount    int64        `json:"deviceCount"`    // 接收设备总数
-	EnabledDevices int64        `json:"enabledDevices"` // 启用设备数
 	KeyCount       int64        `json:"keyCount"`       // API Key 总数
 	SessionCount   int64        `json:"sessionCount"`   // 活跃会话数
-	DeliveredCount int64        `json:"deliveredCount"` // 已送达投递数（sent/delivered/acked）
-	DeliveryTotal  int64        `json:"deliveryTotal"`  // 投递尝试总数
+	SucceededTasks int64        `json:"succeededTasks"` // 终态任务里 succeeded 的数量
+	FinishedTasks  int64        `json:"finishedTasks"`  // 终态任务数（succeeded|failed|cancelled|abandoned）
 	Daily          []DayCount   `json:"daily"`          // 近 N 天每天全站消息数
 	TopUsers       []UserMetric `json:"topUsers"`       // 最近活跃 Top N 用户（见 ListTopUsers）
 }
@@ -136,7 +131,6 @@ type UserMetric struct {
 	UserID      string `json:"userId"`
 	Username    string `json:"username"`
 	DisplayName string `json:"displayName"`
-	DeviceCount int64  `json:"deviceCount"`
 	// LastSeenAt 是该用户最近一次会话活跃时刻（unixepoch 秒；0 = 从没登录过）。
 	LastSeenAt int64 `json:"lastSeenAt"`
 }
@@ -162,8 +156,6 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 		{&s.TodayMessages,
 			`SELECT COUNT(*) FROM events WHERE origin <> 'test' AND created_at >= ?`,
 			[]any{startOfLocalDayUnix(time.Now())}, "today events"},
-		{&s.DeviceCount, `SELECT COUNT(*) FROM devices`, nil, "device count"},
-		{&s.EnabledDevices, `SELECT COUNT(*) FROM devices WHERE enabled = 1`, nil, "enabled devices"},
 		{&s.KeyCount, `SELECT COUNT(*) FROM api_keys`, nil, "key count"},
 		{&s.SessionCount, `SELECT COUNT(*) FROM sessions WHERE expires_at > strftime('%s','now')`, nil, "session count"},
 	}
@@ -175,8 +167,8 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 
 	// 任务完成统计（口径见 #80）：
 	//
-	//	DeliveredCount = 成功任务数（phase=succeeded）
-	//	DeliveryTotal  = 已结束任务数（四个终态相位）
+	//	SucceededTasks = 成功任务数（phase=succeeded）
+	//	FinishedTasks  = 已结束任务数（四个终态相位）
 	//
 	// 以前查 deliveries 表统计"推送送达"，但那张表随旧消息模型一起删除了。
 	// 现在的语义是"任务办成了没有"——推送只是其中一种任务结果。
@@ -187,8 +179,8 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 		 FROM tasks
 		 WHERE phase IN (?,?,?,?)`,
 		TaskSucceeded, TaskSucceeded, TaskFailed, TaskCancelled, TaskAbandoned).
-		Scan(&s.DeliveredCount, &s.DeliveryTotal); err != nil {
-		return nil, fmt.Errorf("system stats delivered: %w", err)
+		Scan(&s.SucceededTasks, &s.FinishedTasks); err != nil {
+		return nil, fmt.Errorf("system stats task outcomes: %w", err)
 	}
 
 	// 近 N 天每天全站事件数
@@ -215,7 +207,6 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 	// Top 10 活跃用户：按「最近一次会话活跃」降序（#205 之后不再有 per-org 事件计数）
 	trows, err := d.QueryContext(ctx,
 		`SELECT u.id, u.username, u.display_name,
-		        (SELECT COUNT(*) FROM devices d WHERE d.user_id = u.id),
 		        COALESCE((SELECT MAX(s.last_seen) FROM sessions s WHERE s.user_id = u.id), 0)
 		 FROM users u
 		 ORDER BY COALESCE((SELECT MAX(s2.last_seen) FROM sessions s2 WHERE s2.user_id = u.id), 0) DESC,
@@ -227,7 +218,7 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 	defer trows.Close()
 	for trows.Next() {
 		var u UserMetric
-		if err := trows.Scan(&u.UserID, &u.Username, &u.DisplayName, &u.DeviceCount, &u.LastSeenAt); err != nil {
+		if err := trows.Scan(&u.UserID, &u.Username, &u.DisplayName, &u.LastSeenAt); err != nil {
 			return nil, fmt.Errorf("system stats top users scan: %w", err)
 		}
 		s.TopUsers = append(s.TopUsers, u)

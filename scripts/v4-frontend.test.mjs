@@ -21,6 +21,7 @@ import assert from "node:assert/strict";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PARTIALS_SRC = readFileSync(path.join(ROOT, "web/partials.js"), "utf8");
 const YAMLDOC_SRC = readFileSync(path.join(ROOT, "web/yamldoc.js"), "utf8");
+const VARS_SRC = readFileSync(path.join(ROOT, "web/vars-table.js"), "utf8");
 const MOCK_SRC = readFileSync(path.join(ROOT, "web/mock.js"), "utf8");
 const GRAPHS_SRC = readFileSync(path.join(ROOT, "web/graphs.js"), "utf8");
 const TRACEVIEW_SRC = readFileSync(path.join(ROOT, "web/traceview.js"), "utf8");
@@ -103,6 +104,9 @@ function fakeNode(tag = "div") {
 		}),
 		get firstChild() {
 			return children[0] || null;
+		},
+		get lastChild() {
+			return children[children.length - 1] || null;
 		},
 	};
 	return node;
@@ -245,6 +249,7 @@ function loadAnotify(opts = {}) {
 	vm.runInContext("globalThis.window = globalThis; globalThis.self = globalThis;", ctx);
 	vm.runInContext(PARTIALS_SRC, ctx, { filename: "web/partials.js" });
 	vm.runInContext(YAMLDOC_SRC, ctx, { filename: "web/yamldoc.js" });
+	vm.runInContext(VARS_SRC, ctx, { filename: "web/vars-table.js" });
 
 	return {
 		A: base.sandbox.Anotify,
@@ -267,6 +272,7 @@ function loadMock(opts = {}) {
 	vm.runInContext("globalThis.window = globalThis; globalThis.self = globalThis;", ctx);
 	vm.runInContext(PARTIALS_SRC, ctx, { filename: "web/partials.js" });
 	vm.runInContext(YAMLDOC_SRC, ctx, { filename: "web/yamldoc.js" });
+	vm.runInContext(VARS_SRC, ctx, { filename: "web/vars-table.js" });
 	vm.runInContext(opts.mockSrc || MOCK_SRC, ctx, { filename: "web/mock.js" });
 	// 图库（可选）：sourceTopology / taskOf 是纯函数，能在没有布局的情况下断言
 	if (opts.graphs) {
@@ -1204,7 +1210,7 @@ test("model.playbook：valuesSchema/status.unapplied/items/sources/files", () =>
 const RECEIPT = {
 	apiVersion: "anotify/v1",
 	kind: "InstallReceipt",
-	playbook: { name: "delivery", version: "1.2.0" },
+	playbook: { name: "delivery", version: "1.2.0", filesDigest: "sha256:pb" },
 	source: "inline",
 	install: { id: "inst-1", at: "2024-01-01T00:00:00Z", dryRun: false },
 	namespace: "default",
@@ -1236,7 +1242,9 @@ test("model.receipt：12 格字段齐全，created/skipped 是对象，其余数
 	const { A } = loadAnotify();
 	const m = plain(A.model.receipt(RECEIPT));
 
-	assert.deepEqual(m.playbook, { name: "delivery", version: "1.2.0" });
+	assert.deepEqual(m.playbook, { name: "delivery", version: "1.2.0", filesDigest: "sha256:pb" });
+	assert.deepEqual(plain(A.model.receipt({ ...RECEIPT, playbook: { name: "x", version: 1 } }).playbook),
+		{ name: "x", version: 1, filesDigest: null }, "缺文件指纹时补 null，而不是丢键");
 	assert.equal(m.source, "inline", "顶层 source（安装来源）要保留");
 	assert.equal(m.namespace, "default");
 	assert.equal(m.install.id, "inst-1");
@@ -2345,70 +2353,6 @@ test("mock: 真正没实现的新接口仍是 501 + 既有 warn 文案（e2e 门
 	);
 });
 
-test("mock: 保留域仍可用（auth/me、devices、keys、admin/stats、cli-auth、templates、vapid）", async () => {
-	const { req } = loadMock();
-	const me = await req("/v1/auth/me");
-	assert.equal(me.status, 200);
-	assert.equal(me.body.username, "demo");
-
-	const devices = await req("/v1/devices");
-	assert.equal(devices.status, 200);
-	assert.deepEqual(devices.body.devices, []);
-
-	const keys = await req("/v1/keys");
-	assert.equal(keys.body.keys.length, 2);
-	assert.equal(keys.body.keys[0].enabled, true);
-
-	const created = await req("/v1/keys", jsonInit("POST", { name: "新 key", scopes: ["send"] }));
-	assert.equal(created.status, 200);
-	assert.equal(typeof created.body.key, "string", "key 是明文串（只返回一次）");
-	assert.equal(created.body.record.name, "新 key");
-
-	const admin = await req("/v1/admin/stats");
-	assert.equal(admin.body.nodes, 5);
-	assert.ok(admin.body.tasks > 0);
-
-	const cli = await req("/v1/cli-auth/sessions/by-code?code=MOCK-1234");
-	assert.equal(cli.body.session.code, "MOCK-1234");
-
-	// passkey 设备注册会话（保留域）：状态机 pending → requested → approved
-	const created2 = await req("/v1/passkey-enroll/sessions", jsonInit("POST", { deviceName: "cli" }));
-	assert.equal(created2.status, 201);
-	assert.ok(created2.body.sessionId);
-	assert.ok(created2.body.userCode);
-	const byId = await req("/v1/passkey-enroll/sessions/" + created2.body.sessionId);
-	assert.equal(byId.body.status, "pending");
-	const byCode = await req("/v1/passkey-enroll/sessions/by-code?code=" + created2.body.userCode);
-	assert.equal(byCode.body.sessionId, created2.body.sessionId);
-	const reqd = await req(
-		"/v1/passkey-enroll/sessions/" + created2.body.sessionId + "/request",
-		jsonInit("POST", { deviceHint: "Chrome on Linux" }),
-	);
-	assert.equal(reqd.body.status, "requested");
-	assert.equal(reqd.body.secret, created2.body.secret, "secret 只回给发起请求的设备");
-	const badPoll = await req(
-		"/v1/passkey-enroll/sessions/" + created2.body.sessionId + "/poll?secret=wrong",
-	);
-	assert.equal(badPoll.status, 404);
-	const poll = await req(
-		"/v1/passkey-enroll/sessions/" + created2.body.sessionId + "/poll?secret=" + created2.body.secret,
-	);
-	assert.equal(poll.body.status, "requested");
-	// mock 不伪造 WebAuthn：不返回 attestationOptions，页面会停在"等待批准"
-	assert.equal("attestationOptions" in poll.body, false);
-
-	const tpl = await req("/v1/capability-templates");
-	assert.ok(Array.isArray(tpl.body.templates));
-	assert.ok(tpl.body.templates.length >= 9);
-	assert.equal(tpl.body.templates[0].outputs, undefined, "v4 模板没有 outputs");
-
-	const vapid = await req("/v1/vapid-public-key");
-	assert.ok(vapid.body.publicKey);
-
-	const logout = await req("/v1/auth/logout", jsonInit("POST", {}));
-	assert.equal(logout.body.ok, true);
-});
-
 test("mock: ?mockFail=1 强制错误态；MockApi 旋钮（state/reset/capByName/noAgentBinary/failUpgrade/latency）", async () => {
 	const { req, Mock } = loadMock();
 	const fail = await req("/v1/stats?namespace=default&mockFail=1");
@@ -2439,7 +2383,7 @@ test("mock: stats / console.events 必须显式给 namespace（不再默认全 n
 	const stats = await req("/v1/stats?namespace=default");
 	assert.equal(stats.status, 200);
 	assert.equal(typeof stats.body.total, "number");
-	assert.equal(typeof stats.body.deliveryTotal, "number");
+	assert.equal(typeof stats.body.finishedTasks, "number");
 	assert.ok(Array.isArray(stats.body.daily));
 	assert.equal(stats.body.daily.length, 7);
 	assert.equal(stats.body.nodesTotal, 3, "default 的候选节点数（授权交集）");
@@ -3283,14 +3227,14 @@ test("F2b2 Task facts: waiting preserves attempt, dual revisions, masked env/att
   assert.ok(abandon.body.status.result.error.reason);
 });
 
-test("F2b2 stats: daily uses actual events; delivery not task terminal count; empty devices honest", async () => {
+test("F2b2 stats: daily uses actual events; delivery not task terminal count; no deviceCount field", async () => {
   const { req, Mock } = loadMock();
   const stats = (await req('/v1/stats?namespace=default')).body;
   assert.equal(stats.total, Mock.state.events.filter(e => e.ns === 'default').length);
   assert.equal(stats.daily.reduce((sum, d) => sum + d.count, 0), stats.total);
-  assert.equal(stats.deviceCount, 0);
-  assert.equal(stats.deliveryTotal, 0, 'No push facts means no fabricated task-as-delivery samples');
-  assert.equal(stats.delivered, 0);
+  assert.equal('deviceCount' in stats, false, 'V4-D7：推送域退役后 stats 不再有 deviceCount');
+  assert.equal(stats.finishedTasks, 0, '终态任务数：没有终态任务就是 0，不造样本');
+  assert.equal(stats.succeededTasks, 0);
   assert.equal(stats.running, Mock.state.tasks.filter(t => t.ns === 'default' && t.phase === 'running').length);
 });
 
@@ -3445,6 +3389,14 @@ function b2Find(node, predicate, out = []) {
   for (const child of node?.children || []) b2Find(child, predicate, out);
   return out;
 }
+function assertBaseGraph(spec, label) {
+  assert.ok(spec && Array.isArray(spec.nodes), label + ': graph mounted');
+  const ids = spec.nodes.map(n => String(n.id));
+  assert.ok(ids.includes('__trigger__'), label + ': 底图必须带触发器节点 — ' + JSON.stringify(ids));
+  assert.equal(ids.some(id => id.startsWith('tsk_')), false, label + ': 底图模式节点 id 不得是任务 id — ' + JSON.stringify(ids));
+  assert.ok(ids.length >= 2, label + ': 至少触发器 + 一个能力 — ' + JSON.stringify(ids));
+  return ids;
+}
 
 test("F2b2 events controller: actual filter/page/refresh/scope clicks reset opaque cursor and dedup UID", async () => {
   const run = await b2Page('events', '?namespace=default');
@@ -3504,20 +3456,22 @@ test("F2b2 message controller: diagnostics mask env, actual previous logs/emissi
   assert.match(b2Text(expired.get('task-result')), /message.v4.artifact_expired/);
 });
 
-test("F2b2 trace/index controllers: actual namespace Trace graph and task deep links, stats and 0 devices", async () => {
+test("F2b2 trace/index controllers: actual namespace Trace graph and task deep links, stats only", async () => {
   const trace = await b2Page('trace', '?namespace=default&traceUID=trace_mock_t1');
   assert.equal(trace.calls.filter(c => c.url.includes('/traces/')).length, 1);
-  assert.ok(trace.get('trace-graph')._mountSpec.nodes.length >= 7);
+  const traceIds = assertBaseGraph(trace.get('trace-graph')._mountSpec, 'trace');
   assert.equal(trace.get('trace-tasks').children.length, 7, 'three attempts still one logical task');
   assert.match(b2Text(trace.get('trace-pruned')), /param_schema/);
   const links = b2Find(trace.get('trace-tasks'), n => n.tagName === 'A');
   assert.ok(links.every(n => n.getAttribute('href').includes('namespace=default&id=tsk_mock_')));
   const index = await b2Page('index', '?namespace=default');
   assert.equal(index.get('kpi-total').textContent, '4');
-  assert.equal(index.get('kpi-devices').textContent, '0');
-  assert.equal(index.get('kpi-rate').children[0].textContent, '–');
+  // V4-D7：设备 / 送达率两张 KPI 卡已删，首页不再有这两个 id。
+  // get() 会按需造节点，查注册表才知道它到底在不在。
+  assert.equal(index.nodes.has('kpi-devices'), false);
+  assert.equal(index.nodes.has('kpi-rate'), false);
   assert.equal(index.calls.some(c => /^\/v1\/tasks/.test(c.url)), false);
-  assert.ok(index.get('flow-host')._mountSpec.nodes.length >= 7);
+  assertBaseGraph(index.get('flow-host')._mountSpec, 'index flow');
 });
 
 /* ------------------------------------------------------------------ *
@@ -3610,7 +3564,7 @@ function traceStartup(options = {}) {
 test("TRACE-STARTUP barrier: first render waits for the deferred graph library instead of reading taskChain too early", async () => {
   const run = traceStartup({ readyState: 'loading' });
   await run.settle();
-  // 解析期已发出 Trace 请求并拿到 7 tasks —— 真实现场的竞态窗口已经建立。
+  // 解析期 Trace GET 已返回 7 tasks：真实现场的竞态窗口已建立。
   assert.equal(run.traceCalls(), 1, 'trace GET already returned while the deferred graph library is still pending');
   assert.equal(run.get('trace-tasks').children.length, 0, 'no section may be rendered before the deferred graph library ran');
   assert.equal(run.get('trace-content').getAttribute('aria-busy'), 'true', 'load stays busy while the startup barrier waits');
@@ -3627,10 +3581,10 @@ test("TRACE-STARTUP barrier: first render waits for the deferred graph library i
   assert.equal(run.traceCalls(), 1, 'the barrier is not another Trace request');
   assert.equal(run.get('trace-tasks').children.length, 7, 'three attempts still one logical task');
   const spec = run.get('trace-graph')._mountSpec;
-  assert.ok(spec && spec.nodes.length >= 7, 'the real graphs.js taskChain spec is mounted');
+  assertBaseGraph(spec, 'the real graphs.js taskChain spec is mounted');
   assert.equal(b2Text(run.get('trace-error')), '', 'no error after the dependency arrived');
-  spec.onNodeClick({ id: 'tsk_mock_1' });
-  assert.equal(run.sandbox.location.href, 'message.html?namespace=default&id=tsk_mock_1', 'canonical task node link still navigates');
+  spec.onNodeClick({ id: spec.nodes.map(n => n.id).find(id => id !== '__trigger__') });
+  assert.match(String(run.sandbox.location.href), /^message\.html\?namespace=default&id=tsk_mock_\d+$/, 'canonical task node link still navigates');
 });
 
 test("TRACE-STARTUP failure: missing graph library is a visible real error with no fake rows, and the original retry recovers once the script is available", async () => {
@@ -3650,7 +3604,7 @@ test("TRACE-STARTUP failure: missing graph library is a visible real error with 
   await run.settle();
   assert.equal(run.traceCalls(), 2, 'retry really issues a fresh Trace GET');
   assert.equal(run.get('trace-tasks').children.length, 7);
-  assert.ok(run.get('trace-graph')._mountSpec.nodes.length >= 7, 'retry draws the real taskChain graph');
+  assertBaseGraph(run.get('trace-graph')._mountSpec, 'retry draws the real taskChain graph');
   assert.equal(b2Text(run.get('trace-error')), '', 'error clears after a successful retry');
   // interactive 不天然保证 defer 完成：既不能错过事件、也不能挂死。
   const interactive = traceStartup({ readyState: 'interactive' });
@@ -3670,7 +3624,7 @@ test("TRACE-STARTUP loaded path: already interactive/complete documents render w
     await run.settle();
     assert.equal(run.domReady.length, 0, readyState + ': the startup barrier must not register a DOMContentLoaded listener');
     assert.equal(run.get('trace-tasks').children.length, 7, readyState + ': normal loaded page renders immediately');
-    assert.ok(run.get('trace-graph')._mountSpec.nodes.length >= 7, readyState + ': real graph spec mounted');
+    assertBaseGraph(run.get('trace-graph')._mountSpec, readyState + ': real graph spec mounted');
     assert.equal(b2Text(run.get('trace-error')), '', readyState + ': no error on the normal path');
     assert.equal(run.traceCalls(), 1);
   }
@@ -3758,7 +3712,7 @@ test("F2b2 controllers: offline/error/empty are distinct, never automatic mock f
   assert.equal(traceFailure.get('trace-content').children.length, 0);
   assert.ok(traceFailure.get('trace-error').children.length);
   const missing = await b2Page('message', '?namespace=prod&id=tsk_mock_2');
-  assert.match(b2Text(missing.get('msg-error')), /message.v4.not_found/);
+  assert.match(b2Text(missing.get('msg-error')), /不属于此命名空间/);
 });
 
 test("F2b2 final index: event read failure is graph error, actual Source root, no invented execution trends", async () => {
@@ -4074,16 +4028,20 @@ test("F2c1 parser: frozen authored block/flow/quoted/literal package uses ONE sh
 	assert.equal(legacy.valuesSchema, null); assert.equal("files" in legacy, false, "no second manifest or res.files adapter");
 });
 
-test("F2c1 package render errors: duplicate names, cycles and invalid typed name reject without changing ALL state", async () => {
+test("F2c1 package render: duplicate names / invalid typed name reject atomically; next cycles render (A7)", async () => {
 	for (const [edit, reason] of [
 		[d => d["capabilities/fixer.yaml"].metadata.name = "{{values.project}}-review", "duplicate_capability"],
-		[d => d["capabilities/fixer.yaml"].spec.next = ["{{values.project}}-review"], "cycle"],
 		[d => { d["playbook.yaml"].spec.values.properties.n = { type: "integer", default: 3 }; d["capabilities/fixer.yaml"].metadata.name = "{{values.n}}"; }, "render_type_mismatch"],
 	]) {
 		const { req, Mock } = loadMock(); await pbCreate(req, playbookFiles({ edit })); const before = allFacts(Mock);
 		assert.equal((await pbAction(req, "render")).body.reason, reason);
 		assert.equal((await pbAction(req, "install")).body.reason, reason); assert.equal(allFacts(Mock), before);
 	}
+	const { req: cycleReq } = loadMock();
+	await pbCreate(cycleReq, playbookFiles({ edit: d => { d["capabilities/fixer.yaml"].spec.next = ["{{values.project}}-review"]; } }));
+	const cycle = await pbAction(cycleReq, "render");
+	assert.equal(cycle.status, 200, JSON.stringify(cycle.body));
+	assert.deepEqual(cycle.body.capabilities.map(c => c.metadata.name).sort(), ["a-fixer", "a-review"]);
 });
 
 /* F2c2: Node/config closure. These requests exercise genuine mock mutations. */
@@ -4211,14 +4169,16 @@ test("F2c2: confirmed Node actions expose actual offline/unavailable/failed upgr
  assert.equal(JSON.stringify(Mock.state.nodes[0].facts.instances), before, "drain does not falsely reap occupied slots");
 });
 
-test("F2c2: retained login AUTH1 identity.error rejection and zero-device admin facts", async () => {
+test("F2c2: retained login AUTH1 identity.error rejection and admin delivery facts", async () => {
  const page = readFileSync(path.join(ROOT, "web-src/pages/login.html"), "utf8");
  const fn = page.slice(page.indexOf("async function postJSON"), page.indexOf("return res.json();", page.indexOf("async function postJSON")) + "return res.json();".length) + "\n}";
  const run = vm.runInNewContext("(" + fn + ")", { fetch: async () => ({ ok: false, status: 400, json: async () => ({ error: "Actual retained rejection sentinel" }) }) });
  await rejectsWith(run("/v1/auth/password/login", {}), { message: "Actual retained rejection sentinel", status: 400 });
  const { req, Mock } = loadMock();
  const stats = (await req("/v1/admin/stats")).body;
- assert.equal(stats.deviceCount, Mock.state.devices.length); assert.equal(stats.deliveryTotal, 0); assert.equal(stats.deliveredCount, 0);
+ assert.equal('deviceCount' in stats, false, 'V4-D7：admin/stats 不再有 deviceCount');
+ assert.equal('enabledDevices' in stats, false);
+ assert.equal(stats.finishedTasks, 0); assert.equal(stats.succeededTasks, 0);
  assert.equal((await req("/v1/auth/password")).body.hasPassword, true);
  const invalid = await req("/v1/auth/password", jsonInit("DELETE", { currentPassword: "wrong" })); assert.equal(invalid.status, 400);
  assert.ok(!JSON.stringify(invalid.body).includes("wrong"));
@@ -4227,7 +4187,9 @@ test("F2c2: retained login AUTH1 identity.error rejection and zero-device admin 
 test("F2c2: real Node controllers consume apiList.items, bootstrap config, preserve CAS drafts and namespace context", async () => {
  const list = await b2Page('nodes', '?namespace=default', ({ sandbox }) => { sandbox.location.origin = 'https://controller.example'; });
  assert.equal(b2Find(list.get('nodes-list'), n => !!n?.dataset?.node).length, 5, 'actual NodeList GET must render all rows');
- assert.equal(list.get('namespace-save').disabled, false, 'actual NamespaceList items must bootstrap the plain config wrapper');
+ // #436：配置编辑器已迁到 namespace.html。
+ assert.equal(list.nodes.has('namespace-save'), false);
+ assert.equal(list.calls.some(c => /\/namespaces\/[^/]+\/config$/.test(c.url)), false, '节点页不再读命名空间配置');
  list.get('reg-name').value = 'controller-new-node'; await list.get('reg-submit').onclick(); await list.settle();
  assert.ok(list.get('reg-token').textContent); assert.ok(list.get('reg-yaml').textContent.includes('wss://controller.example'));
  list.get('reg-close').onclick(); assert.equal(list.get('reg-token').textContent, '');
@@ -4238,12 +4200,17 @@ test("F2c2: real Node controllers consume apiList.items, bootstrap config, prese
  assert.ok(detail.calls.some(c => c.url === '/v1/nodes/anode-1?namespace=default'));
  assert.ok(b2Text(detail.get('node-tasks')).includes('tsk_mock_'), 'actual TaskList items must be consumed');
  // 唯一写入口 = YAML：没有表单写路径（#node-config-save 不存在），保存只发 PUT …/yaml。
- assert.equal(detail.get('node-config-save'), null, '表单写入口必须已删除');
- const yamlDoc = ['apiVersion: anotify/v1', 'kind: Node', 'metadata:', '  name: anode-1', 'spec:', '  vars:', '    SOURCE_ROOT: /ui-default'].join('\n') + '\n';
+ assert.equal(detail.nodes.has('node-config-save'), false, '表单写入口必须已删除');
+ // 用页面加载到的原文（含 CAS 令牌）原样保存：凭空拼最小文档会被 resource_version_required 拒。
+ const loaded = detail.get('node-yaml-text').textContent;
+ assert.match(loaded, /resourceVersion:/, '页面必须先把带 CAS 令牌的原文交给编辑区');
+ const yamlDoc = loaded + '';
  detail.get('node-yaml-input').value = yamlDoc;
  await detail.get('node-yaml-save').onclick(); await detail.settle();
- const writes = detail.calls.filter(c => c.method !== 'GET');
- assert.ok(writes.some(c => c.url === '/v1/nodes/anode-1/yaml' && JSON.parse(c.body).yaml === yamlDoc), '保存必须把整份 YAML 发到 /yaml');
+ const writes = detail.calls.filter(c => c.opts && c.opts.method !== 'GET');
+ const put = writes.filter(c => c.opts.method === 'PUT' && c.url === '/v1/nodes/anode-1/yaml');
+ assert.ok(put.length, '保存必须 PUT 到 /yaml');
+ assert.equal(JSON.parse(put.at(-1).opts.body).yaml, yamlDoc, '保存必须把整份 YAML 原样发出去');
  assert.ok(!writes.some(c => c.url === '/v1/nodes/anode-1/config'), '页面不得再写 /config');
  assert.equal(detail.Mock.state.nodes[0].facts.instances[0].busy, true, 'terminal Task does not clear occupied slot');
 });
@@ -4359,17 +4326,24 @@ test("R1 scope rule: URL namespace wins at entry (mount/ensureScope), in-page sw
   assert.equal(JSON.parse(entry.store.get('anotify.scope')).namespace, 'team-a');
 });
 
-test("R1 graph clicks: task-name nodes navigate to the canonical Task name; baseGraph capability ids hand back name", async () => {
+test("R1 graph clicks: baseGraph 页面的节点 id 是能力名，点击落到该能力的规范化 Task；无底图时才用任务 id", async () => {
   const trace = await b2Page('trace', '?namespace=default&traceUID=trace_mock_t1');
   const traceSpec = trace.get('trace-graph')._mountSpec;
   assert.equal(typeof traceSpec.onNodeClick, 'function');
-  // 无底图：真实注册的节点是任务名（tsk_mock_2）
-  traceSpec.onNodeClick({ id: 'tsk_mock_3' });
-  assert.equal(trace.sandbox.location.href, 'message.html?namespace=default&id=tsk_mock_3');
+  assertBaseGraph(traceSpec, 'trace page');
+  const taskIds = b2Find(trace.get('trace-tasks'), n => n.tagName === 'A')
+    .map(a => String(a.getAttribute('href')).split('id=')[1]);
+  assert.ok(taskIds.length >= 7, 'trace 页仍列出全部逻辑任务');
+  const capId = traceSpec.nodes.map(n => String(n.id)).find(id => id !== '__trigger__');
+  traceSpec.onNodeClick({ id: capId });
+  const href = String(trace.sandbox.location.href);
+  assert.match(href, /^message\.html\?namespace=default&id=tsk_mock_\d+$/, '底图节点点击必须落到规范化任务：' + href);
+  assert.ok(taskIds.includes(href.split('id=')[1]), '点到的任务必须真实存在于这条 trace：' + href);
 
   const index = await b2Page('index', '?namespace=default');
-  index.get('flow-host')._mountSpec.onNodeClick({ id: 'tsk_mock_2' });
-  assert.equal(index.sandbox.location.href, 'message.html?namespace=default&id=tsk_mock_2');
+  const indexIds = assertBaseGraph(index.get('flow-host')._mountSpec, 'index flow');
+  index.get('flow-host')._mountSpec.onNodeClick({ id: indexIds.find(id => id !== '__trigger__') });
+  assert.match(String(index.sandbox.location.href), /^message\.html\?namespace=default&id=tsk_mock_/, '首页底图节点同样落到任务详情');
 
   // 有底图：节点 id 是能力名；回调必须交出规范化 Task（name），不是不存在的 id
   const { sandbox, req } = loadMock({ graphs: true });
@@ -4391,6 +4365,16 @@ test("R1 graph clicks: task-name nodes navigate to the canonical Task name; base
   assert.equal(clicks.length, 1);
   assert.ok(clicks[0].name && clicks[0].name.startsWith('tsk_mock_'), 'callback carries the canonical task name');
   assert.equal('id' in clicks[0], false, 'no invented id fallback');
+
+  // 无底图（没有源拓扑）：节点 id 退回任务名，回调直接拿到该任务。
+  const plainHost = fakeNode();
+  const plainClicks = [];
+  G.taskChain(plainHost, { tasks: traceRes.body.tasks, sourceLabel: 'deploy-hook',
+    t: (k, d) => d || k, onNodeClick: task => plainClicks.push(task) });
+  assert.equal(plainHost._mountSpec.nodes.map(n => n.id).includes('tsk_mock_3'), true, '无底图时节点 id 是任务名');
+  plainHost._mountSpec.onNodeClick({ id: 'tsk_mock_3' });
+  assert.equal(plainClicks.length, 1);
+  assert.equal(plainClicks[0].name, 'tsk_mock_3', '直接点任务 id 也交出同一个任务');
   host._mountSpec.onNodeClick({ id: 'ghost-node' });
   assert.equal(clicks.length, 1, 'unknown nodes never fabricate a task');
 });
@@ -4539,79 +4523,66 @@ test("R1 writeOnly masking: integer/boolean/object/array leaves stay secret in r
   }
 });
 
-test("R1 nodes namespace config: captured ns+generation discards reversed stale success/error; save binds loaded ns/RV; refresh failure stays visible", async () => {
-  const run = await b2Page('nodes', '?namespace=default', ({ sandbox, Mock }) => {
+test("R1 namespace config: 保存把 CAS 令牌绑在已加载的 RV 上、写 /yaml、不跨命名空间；刷新失败与 saved 同时可见", async () => {
+  /* #436/#476：编辑器在 namespace.html(?name=)，/config 只剩 GET，写入口是 PUT …/yaml。 */
+  const run = await b2Page('namespace', '?name=default', ({ sandbox, Mock }) => {
     Mock.state.nsConfig.default.rv = 'shared-config-rv';
     Mock.state.nsConfig.prod.rv = 'shared-config-rv';
     const original = sandbox.fetch;
-    const holds = [];
     let failDefaultRead = false;
     sandbox.fetch = (url, opts = {}) => {
       const u = String(url);
-      if (u === '/v1/namespaces/prod/config' && !opts.method) return new Promise(resolve => holds.push(resolve));
       if (failDefaultRead && u === '/v1/namespaces/default/config' && !opts.method) {
         failDefaultRead = false;
         return original('/v1/namespaces/default/missing-endpoint'); // 真实 501 Status：读失败
       }
       return original(url, opts);
     };
-    sandbox.r1 = { holds, original, failDefaultRead: () => { failDefaultRead = true; } };
+    sandbox.r1 = { failDefaultRead: () => { failDefaultRead = true; } };
   });
+  assert.equal(typeof run.get('namespace-save').onclick, 'function', 'namespace 页必须真的接上配置编辑器（防止页面再搬走时静默变绿）');
   const vars = () => JSON.parse(run.get('namespace-vars').value);
   assert.deepEqual(vars(), plain(run.Mock.state.nsVars.default));
-  const pick = run.get('config-namespace');
-
-  // A(prod) 挂起 → B(default) 先回 → A 后回（反序）：A 的响应属于过期请求
-  pick.value = 'prod'; await pick.onchange(); await run.settle();
-  pick.value = 'default'; await pick.onchange(); await run.settle();
-  const prodResponse = await run.sandbox.r1.original('/v1/namespaces/prod/config');
-  run.sandbox.r1.holds.shift()(prodResponse); await run.settle();
-  assert.deepEqual(vars(), plain(run.Mock.state.nsVars.default), 'late prod success must not paint the default editor');
   assert.match(run.get('namespace-revisions').textContent, /resourceVersion=shared-config-rv/);
 
-  // 保存：路径/CAS 都绑“已加载的” namespace，而不是全局 scope/当前选择
   run.get('namespace-vars').value = JSON.stringify({ ONLY_DEFAULT: 'saved-in-default' });
   await run.get('namespace-save').onclick(); await run.settle();
   const put = run.calls.filter(c => c.opts && c.opts.method === 'PUT').at(-1);
-  assert.equal(put.url, '/v1/namespaces/default/config');
-  const putBody = JSON.parse(put.opts.body);
-  assert.equal(putBody.metadata.resourceVersion, 'shared-config-rv', 'save CASes the loaded namespace RV');
-  assert.deepEqual(putBody.vars, { ONLY_DEFAULT: 'saved-in-default' });
+  assert.ok(put, '保存必须发一次 PUT');
+  assert.equal(put.url, '/v1/namespaces/default/yaml', '唯一写入口是 /yaml');
+  const yaml = JSON.parse(put.opts.body).yaml;
+  assert.match(yaml, /resourceVersion:\s*"?shared-config-rv"?/, 'CAS 用的是加载时拿到的 RV');
+  assert.match(yaml, /ONLY_DEFAULT: saved-in-default/, '草稿写进了整份文档');
   assert.deepEqual(plain(run.Mock.state.nsVars.default), { ONLY_DEFAULT: 'saved-in-default' });
   assert.deepEqual(plain(run.Mock.state.nsVars.prod), { NOTIFY_URL: 'https://hooks.example/notify/prod', SLACK_CHANNEL: '#prod' },
     'prod config must never receive the default draft');
+  assert.match(b2Text(run.get('namespace-state')), /nodes\.v4\.saved/, '保存成功要报出来');
 
-  // 反序的“过期错误”同样不许落进界面
-  pick.value = 'prod'; await pick.onchange(); await run.settle();
-  pick.value = 'default'; await pick.onchange(); await run.settle();
-  run.sandbox.r1.holds.shift()(await run.sandbox.r1.original('/v1/namespaces/default/missing-endpoint')); await run.settle();
-  assert.equal(b2Text(run.get('namespace-state')).includes('nodes.v4.error'), false, 'stale error must not paint');
-  assert.deepEqual(vars(), { ONLY_DEFAULT: 'saved-in-default' });
-
-  // 保存成功但刷新读失败：必须保留“已保存 + 刷新失败”，不能只报 saved
   run.sandbox.r1.failDefaultRead();
+  run.get('namespace-vars').value = JSON.stringify({ ONLY_DEFAULT: 'second-save' });
   await run.get('namespace-save').onclick(); await run.settle();
   const state = b2Text(run.get('namespace-state'));
   assert.match(state, /nodes\.v4\.saved/, 'the save itself is still reported');
   assert.match(state, /nodes\.v4\.error/, 'the failed refresh stays visible');
-  assert.equal(run.calls.some(c => c.opts && c.opts.method === 'PUT' && c.url === '/v1/namespaces/prod/config'), false, 'no namespace write ever crosses scopes');
+  assert.equal(run.calls.some(c => c.opts && c.opts.method === 'PUT' && c.url === '/v1/namespaces/prod/yaml'), false, 'no namespace write ever crosses scopes');
 });
 
-test("R1 sources template copy: copyText(button, () => token) really writes the expression", async () => {
-  const run = await b2Page('sources', '?namespace=default', ({ sandbox }) => {
-    sandbox.r1clip = [];
-    sandbox.navigator.clipboard.writeText = async text => { sandbox.r1clip.push(text); };
-  });
-  await run.get('btn-new').onclick(); await run.settle();
-  run.get('f-sample').value = JSON.stringify({ repo: 'acme/api' });
-  run.get('f-kind').value = 'webhook';
-  await run.get('f-kind').onchange(); await run.settle();
-  const tokens = b2Find(run.get('avail-vars-body'), n => n.tagName === 'BUTTON');
-  const token = tokens.find(n => n.textContent === '$(payload.repo)');
-  assert.ok(token, 'suggestion buttons must be rendered');
-  await token.onclick();
-  assert.deepEqual(run.sandbox.r1clip, ['$(payload.repo)'], 'the clipboard receives the variable expression, not null');
-  assert.notEqual(token.textContent, '$(payload.repo)', 'button shows the copied confirmation');
+test("R1 sources template copy: copyText(button, () => expr) 写进剪贴板的是表达式本身，不是 null", async () => {
+  /* 编辑器抽成外部 source-editor.js（b2Page 只跑内联脚本）：这里钉共用的 A.copyText 契约。 */
+  const { A, sandbox } = loadMock();
+  const clips = [];
+  sandbox.navigator.clipboard.writeText = async text => { clips.push(text); };
+  const btn = fakeNode('button');
+  btn.textContent = '$(payload.repo)';
+  let calls = 0;
+  A.copyText(btn, () => { calls++; return '$(payload.repo)'; });
+  await new Promise(setImmediate);
+  assert.equal(calls, 1, 'getText 回调必须被调用一次');
+  assert.deepEqual(clips, ['$(payload.repo)'], '剪贴板收到的是表达式本身');
+  assert.notEqual(btn.textContent, '$(payload.repo)', '按钮显示复制成功（文案随 i18n，只钉「换掉了」）');
+  assert.equal(typeof A.copyText(fakeNode('button'), () => undefined), 'undefined');
+  await new Promise(setImmediate);
+  assert.equal(clips.at(-1), undefined, '回调返回 undefined 也照实写入，不静默改成字符串 null');
 });
 
 test("R1 A1 artifacts: valid logical path + malformed hash stays display-only (no link, no artifact request)", async () => {
@@ -4815,14 +4786,17 @@ test('R1 A2c source detail: 原始 YAML 折叠块默认收起、展开才取，�
 });
 
 
-// R1b: genuine registered regressions for deferred writes and exact display provenance.
+// R1b: deferred-write regressions（#436/#476：编辑器在 namespace.html，写入口 PUT …/yaml，「ABA」用 reload）。
+const NS_PAGE = ['namespace', '?name=default'];
+const nsReload = async run => { await run.get('namespace-reload').onclick(); await run.settle(); };
+
 for (const [journey, outcome] of [['ABA', 'success'], ['ABA', '409'], ['ABA', 'error'], ['sameNS', 'success'], ['sameNS', '409']]) {
-  test(`R1b nodes deferred actual PUT: ${journey} ${outcome} preserves newer draft/CAS/state/finally`, async () => {
-    const run = await b2Page('nodes', '?namespace=default', ({ sandbox, Mock }) => {
+  test(`R1b namespace deferred actual PUT: ${journey} ${outcome} preserves newer draft/CAS/state/finally`, async () => {
+    const run = await b2Page(...NS_PAGE, ({ sandbox, Mock }) => {
       const original = sandbox.fetch;
       const held = [];
       sandbox.fetch = async (url, opts = {}) => {
-        if (String(url) === '/v1/namespaces/default/config' && opts.method === 'PUT') {
+        if (String(url) === '/v1/namespaces/default/yaml' && opts.method === 'PUT') {
           if (outcome === '409') Mock.state.nsConfig.default.rv = 'concurrent-rv';
           const response = await original(url, opts); // execute the real PUT before deferring its response
           return new Promise(resolve => held.push({ resolve, response }));
@@ -4831,15 +4805,13 @@ for (const [journey, outcome] of [['ABA', 'success'], ['ABA', '409'], ['ABA', 'e
       };
       sandbox.r1bHeld = held;
     });
+    assert.equal(typeof run.get('namespace-save').onclick, 'function', 'namespace 页必须真的接上配置编辑器');
     const edit = async text => { run.get('namespace-vars').value = text; await run.get('namespace-vars').fire('input'); };
     const loadedRV = /resourceVersion=([^ ]+)/.exec(run.get('namespace-revisions').textContent)[1];
     await edit('{"OLD_SAVE":"old-submission"}');
     const saving = run.get('namespace-save').onclick(); await run.settle();
     assert.equal(run.sandbox.r1bHeld.length, 1, 'actual PUT is now held');
-    if (journey === 'ABA') {
-      run.get('config-namespace').value = 'prod'; await run.get('config-namespace').onchange(); await run.settle();
-      run.get('config-namespace').value = 'default'; await run.get('config-namespace').onchange(); await run.settle();
-    }
+    if (journey === 'ABA') await nsReload(run); // 新一代加载：旧提交不得触达新编辑器
     await edit('{"NEW_DRAFT":"must-survive-old-response"}');
     const before = { draft: run.get('namespace-vars').value, revisions: run.get('namespace-revisions').textContent,
       state: b2Text(run.get('namespace-state')), disabled: run.get('namespace-save').disabled, calls: run.calls.length };
@@ -4853,16 +4825,17 @@ for (const [journey, outcome] of [['ABA', 'success'], ['ABA', '409'], ['ABA', 'e
     assert.equal(run.calls.length, before.calls, 'stale completion cannot refresh or auto-save');
     const puts = run.calls.filter(c => c.opts?.method === 'PUT');
     assert.equal(puts.length, 1);
-    assert.equal(puts[0].url, '/v1/namespaces/default/config');
-    assert.equal(JSON.parse(puts[0].opts.body).metadata.resourceVersion, loadedRV);
-    assert.deepEqual(JSON.parse(puts[0].opts.body).vars, { OLD_SAVE: 'old-submission' });
+    assert.equal(puts[0].url, '/v1/namespaces/default/yaml');
+    const yaml = JSON.parse(puts[0].opts.body).yaml;
+    assert.match(yaml, new RegExp('resourceVersion:\\s*"?' + loadedRV + '"?'), 'save CASes the loaded namespace RV');
+    assert.match(yaml, /OLD_SAVE: old-submission/);
     if (outcome !== '409') assert.deepEqual(plain(run.Mock.state.nsVars.default), { OLD_SAVE: 'old-submission' });
     assert.equal('NEW_DRAFT' in run.Mock.state.nsVars.default, false);
   });
 }
 for (const outcome of ['success', 'error']) {
-  test(`R1b nodes duplicate sameNS GET reverse ${outcome} detects load generation`, async () => {
-    const run = await b2Page('nodes', '?namespace=default');
+  test(`R1b namespace duplicate sameNS GET reverse ${outcome} detects load generation`, async () => {
+    const run = await b2Page(...NS_PAGE);
     const original = run.sandbox.fetch;
     const held = [];
     run.sandbox.fetch = (url, opts = {}) => String(url) === '/v1/namespaces/default/config' && !opts.method
@@ -5025,18 +4998,19 @@ test('R1b sources LIST real fire receipt opens Trace exact returned ID in same n
 });
 
 for (const stage of ['sameNS edit ABA', 'refresh GET']) {
-  test(`R1b nodes edit epoch during ${stage} isolates old submission even with equal draft text`, async () => {
-    const run = await b2Page('nodes', '?namespace=default');
+  test(`R1b namespace edit epoch during ${stage} isolates old submission even with equal draft text`, async () => {
+    const run = await b2Page(...NS_PAGE);
     const original = run.sandbox.fetch;
     const held = [];
     let wrote = false;
     run.sandbox.fetch = async (url, opts = {}) => {
       const response = await original(url, opts);
-      if (String(url) === '/v1/namespaces/default/config') {
-        if (opts.method === 'PUT') {
-          wrote = true;
-          if (stage === 'sameNS edit ABA') return new Promise(resolve => held.push({ response, resolve }));
-        } else if (wrote) return new Promise(resolve => held.push({ response, resolve }));
+      const u = String(url);
+      if (u === '/v1/namespaces/default/yaml' && opts.method === 'PUT') {
+        wrote = true;
+        if (stage === 'sameNS edit ABA') return new Promise(resolve => held.push({ response, resolve }));
+      } else if (u === '/v1/namespaces/default/config' && wrote && !opts.method) {
+        return new Promise(resolve => held.push({ response, resolve }));
       }
       return response;
     };
@@ -5456,10 +5430,10 @@ test('G1 M3 condition provenance masks a private versioned-next derived name wit
 });
 
 // F3b2a locale registrations and aggregate anti-degeneration (original 141 retained).
-test('F3b2a both locale suites register all twenty-one pages in each of four languages and retained interactions', async () => {
+test('F3b2a both locale suites register all twenty-two pages in each of four languages and retained interactions', async () => {
   const { casesFor, pageBatches } = await import('./e2e/fixtures/f3/f3-i18n-cases.mjs');
   const { PAGES, LANGS } = await import('./e2e/fixtures/f3/f3-driver.mjs');
-  assert.equal(pageBatches.flat().length, 21);
+  assert.equal(pageBatches.flat().length, 22);
   for (const suite of ['i18n', 'i18n_coverage']) {
     const cases = casesFor(suite); assert.equal(new Set(cases.map(x => x.id)).size, cases.length);
     for (const lang of LANGS) {
@@ -5584,26 +5558,6 @@ test('L1 retained exact password login validates known user/hash, preserves raw 
   assert.ok(Mock.state.auth.passwordHash);
 });
 
-test('L1 retained device PATCH enabled=false preserves exact identity/other facts and rejects missing or invalid updates with DEV1 wire', async () => {
-  const { req, Mock } = loadMock();
-  const device = { id: 'f3-locale-device', userId: 'usr_mock_demo', name: 'Locale Receiver', enabled: true, eventScope: 'all', tags: ['fixed'], endpoint: 'https://push.example.invalid/device' };
-  Mock.state.devices.push(device);
-  const before = plain(device);
-  const route = '/v1/devices/' + device.id;
-  const updated = await req(route, jsonInit('PATCH', { enabled: false }));
-  assert.equal(updated.status, 200); assert.deepEqual(updated.body, { ok: true, device: { ...before, enabled: false } });
-  const current = (await req('/v1/devices')).body.devices.find(d => d.id === device.id);
-  assert.deepEqual(current, { ...before, enabled: false }); assert.equal(current.enabled, false);
-  assert.equal((await req(route, jsonInit('PATCH', {}))).status, 200, 'DEV1 omitted fields keep facts');
-  for (const body of [{ enabled: 'false' }, { enabled: false, uid: 'replace-uid' }]) {
-    const invalid = await req(route, jsonInit('PATCH', body));
-    assert.equal(invalid.status, 400); assert.deepEqual(Object.keys(invalid.body), ['error']);
-  }
-  const missing = await req('/v1/devices/missing-device', jsonInit('PATCH', { enabled: false }));
-  assert.equal(missing.status, 404); assert.deepEqual(Object.keys(missing.body), ['error']);
-  assert.deepEqual((await req('/v1/devices')).body.devices.find(d => d.id === device.id), current);
-});
-
 async function l1Boot(response, search = '') {
   const base = makeSandbox({ pathname: '/login.html', search, fetch: async () => {
     if (response instanceof Error) throw response;
@@ -5643,12 +5597,12 @@ test('L1 actual login controller boots only valid canonical200 sessions through 
   }
 });
 
-// F3b2b: last two suites — truthful 336-view registry, retained UX19–23 and
+// F3b2b: last two suites — truthful 352-view registry, retained UX19–23 and
 // aggregate rules that cannot be satisfied by a partial or retried run.
-test('F3b2b ui_shift registers every one of the 336 page views exactly once with an anonymous login view', async () => {
+test('F3b2b ui_shift registers every one of the 352 page views exactly once with an anonymous login view', async () => {
   const { casesFor, registeredViews } = await import('./e2e/fixtures/f3/f3-ui-cases.mjs');
   const { PAGES, LANGS, THEMES, VIEWPORTS, KEY_PAGES, MATRIX_VIEWS } = await import('./e2e/fixtures/f3/f3-ui-helper.mjs');
-  assert.deepEqual(PAGES.map(x => x), ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source-detail','sources','trace']);
+  assert.deepEqual(PAGES.map(x => x), ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','namespace','namespaces','node','nodes','passkey-enroll','playbook','playbooks','release','security','source-detail','sources','trace']);
   assert.deepEqual(LANGS.map(x => x), ['zh-CN','en','ja','es']);
   assert.deepEqual(THEMES.map(x => x), ['light','dark']);
   assert.deepEqual(Object.keys(VIEWPORTS), ['desktop','mobile']);
@@ -5657,13 +5611,13 @@ test('F3b2b ui_shift registers every one of the 336 page views exactly once with
   assert.equal(new Set(cases.map(x => x.id)).size, cases.length, 'unique registered ids');
   const grid = cases.filter(x => x.kind === 'grid');
   const cells = grid.flatMap(c => c.pages.map(page => [page, c.lang, c.theme, c.viewport].join('|')));
-  assert.equal(cells.length, MATRIX_VIEWS, '336 registered matrix views');
-  assert.equal(new Set(cells).size, 336, 'no duplicated page/lang/theme/viewport cell');
+  assert.equal(cells.length, MATRIX_VIEWS, '352 registered matrix views');
+  assert.equal(new Set(cells).size, 352, 'no duplicated page/lang/theme/viewport cell');
   for (const lang of LANGS) for (const theme of THEMES) for (const viewport of Object.keys(VIEWPORTS)) {
     const slice = grid.filter(c => c.lang === lang && c.theme === theme && c.viewport === viewport);
     assert.deepEqual(slice.flatMap(c => c.pages).sort(), PAGES.slice().sort(), `complete page coverage for ${lang}/${theme}/${viewport}`);
   }
-  assert.equal(registeredViews('ui_shift').matrix, 336);
+  assert.equal(registeredViews('ui_shift').matrix, 352);
   // login is a genuine guest form view in the matrix (no session), and never a duplicate of index.
   const loginViews = grid.filter(c => c.pages.includes('login')).length;
   assert.equal(loginViews, 16, 'login is registered in all sixteen lang/theme/viewport combinations');
@@ -5675,19 +5629,19 @@ test('F3b2b ui_shift registers every one of the 336 page views exactly once with
   assert.ok(cases.some(c => c.id === 'shift-lang-hint') && cases.some(c => c.id === 'shift-scope-slot') && cases.some(c => c.id === 'shift-collapsed'));
   assert.ok(cases.some(c => c.id === 'interact-namespace-switch') && cases.some(c => c.id === 'interact-dialogs') && cases.some(c => c.id === 'guards-guest'));
 });
-test('F3b2b ux_regression_19_23 retains all five behaviours plus device PATCH, guards and the exact password form', async () => {
+test('F3b2b ux_regression_19_23 retains the UX19–23 behaviours minus the retired push ones, guards and the exact password form', async () => {
   const { casesFor, registeredViews } = await import('./e2e/fixtures/f3/f3-ui-cases.mjs');
   const cases = casesFor('ux_regression_19_23');
   const ids = cases.map(c => c.id);
   assert.equal(new Set(ids).size, ids.length);
-  for (const id of ['ux19-member-admin','ux20-notification-denied','ux21-authme-identity','ux22-passkey-empty-enrollment','ux23-zero-devices-honest','retained-device-patch','retained-guards','retained-login-form'])
+  for (const id of ['ux19-member-admin','ux21-authme-identity','ux22-passkey-empty-enrollment','ux23-no-push-surface','retained-guards','retained-login-form'])
     assert.ok(ids.includes(id), 'registered retained case ' + id);
   assert.ok(cases.filter(c => c.id.startsWith('ux19') || c.id.startsWith('ux2')).every(c => c.views === 1));
-  assert.ok(registeredViews('ux_regression_19_23').views >= 12);
+  assert.ok(registeredViews('ux_regression_19_23').views >= 10);
   const source = readFileSync(path.join(ROOT, 'scripts/e2e/fixtures/f3/f3-ui-cases.mjs'), 'utf8')
     + readFileSync(path.join(ROOT, 'scripts/e2e/fixtures/f3/f3-ui-helper.mjs'), 'utf8');
   // Genuine wire/DOM facts, not "element exists" theatre.
-  for (const needle of ['role, "member"', '/v1/devices/', 'enabled, false', 'f3-guest', 'login-panel', 'Notification.permission', 'auth/me'])
+  for (const needle of ['role, "member"', 'f3-guest', 'login-panel', 'auth/me'])
     assert.ok(source.includes(needle), 'case body keeps genuine fact: ' + needle);
   assert.equal(/"skip"|skipped:|test\.skip/.test(source), false, 'no skip path in the retained UX cases');
 });
@@ -5711,7 +5665,6 @@ test('F3b2b aggregate rejects wrong authority/epoch/cwd/attempt, duplicate cells
   assert.throws(() => validate({ ...meta, cwd: '/tmp' }, result, exit, expected), undefined, 'wrong cwd cannot pass');
 });
 
-// AUTH1/DEV1: retained identity/device wire is NOT the resource Status domain.
 const L1D_USER = { id: 'usr_mock_demo', username: 'demo', displayName: 'demo', role: 'admin', disabled: false, createdAt: 123 };
 test('L1D AUTH1 cookie-only exact canonical six-field me and anonymous text/plain error', async () => {
   const { sandbox, req } = loadMock();
@@ -5740,19 +5693,6 @@ test('L1D AUTH1 password exact 400 401 429 error and RAW success cookie without 
   for(let n=0;n<10;n++) limited=await sandbox.fetch(route,jsonInit('POST',{username:'DEMO',password:'wrong'}));
   assert.equal(limited.status,429); assert.ok(Number(limited.headers.get('Retry-After'))>0);
   assert.deepEqual(plain(await limited.json()),{error:'请求过于频繁，请稍后再试'});
-});
-test('L1D DEV1 exact wrapped flat device PATCH null/omitted keep tags empty clear owner and persisted false', async () => {
-  const { req, Mock }=loadMock();
-  const device={id:'l1d-device',userId:'usr_mock_demo',name:'Owner',platform:'desktop',enabled:true,eventScope:'all',tags:['fixed'],endpoint:'https://push.invalid',p256dh:'fixed-key',auth:'fixed-auth',userAgent:'Chrome',createdAt:123};
-  Mock.state.devices.push(device,{...device,id:'other-device',userId:'other-user'});
-  const r=await req('/v1/devices/l1d-device',jsonInit('PATCH',{enabled:false,name:null,eventScope:null,tags:null}));
-  assert.equal(r.status,200); assert.deepEqual(r.body,{ok:true,device:{...device,enabled:false}});
-  assert.deepEqual((await req('/v1/devices')).body.devices.find(d=>d.id===device.id),r.body.device);
-  const clear=await req('/v1/devices/l1d-device',jsonInit('PATCH',{name:'Renamed',eventScope:'final',tags:[]}));
-  assert.equal(clear.body.device.enabled,false); assert.deepEqual(clear.body.device.tags,[]); assert.equal(clear.body.device.name,'Renamed');
-  for(const id of ['missing','other-device']) { const bad=await req('/v1/devices/'+id,jsonInit('PATCH',{enabled:false})); assert.equal(bad.status,404); assert.deepEqual(Object.keys(bad.body),['error']); }
-  await req('/v1/auth/logout',jsonInit('POST',{}));
-  const guest=await req('/v1/devices/l1d-device',jsonInit('PATCH',{enabled:true})); assert.equal(guest.status,401); assert.deepEqual(guest.body,{error:'未登录'});
 });
 test('L1D AUTH1 startup only enabled canonical six fields and visible honest unhealthy error', async () => {
   const valid=await l1Boot({status:200,body:L1D_USER}); assert.equal(valid.location.href,'index.html');
@@ -6134,12 +6074,11 @@ test('E1b immutable exactly-once attempt validator: UNIT fake records never brow
   for(const change of [{ok:false},{checks:0},{report:{errors:['501 network failure']}}])assert.throws(()=>e1bEpoch.validateAttempt(id,{...result,...change},exit,id));
   assert.throws(()=>e1bEpoch.validateAttempt(id,result,null,id));
 });
-test('E1b all 38 ACTUAL frontend registered IDs exactly once: UNIT records, not browser PASS', async () => {
+test('E1b all 47 ACTUAL frontend registered IDs exactly once: UNIT records, not browser PASS', async () => {
   const {CASES}=await import('./e2e/fixtures/f3/f3-cases.mjs');
-  // 注：这个字面量**已经陈旧**（本文件是未接线单测，带已知基线红）：#435 之前实际注册
-  // 就是 39，本批新增 node-deployments 后是 40。未在本批修正 —— 修正它等于顺手改“已知
-  // 红台账”，需要连同 docs/lint-guards.md 的账一起改。
-  assert.equal(CASES.length,38); // #376/#384 playbook-missing +1；yaml-create +1；#424 observe-index-all 再 +1
+  // 条数 = f3-cases 的直呼项 + 四组循环展开；顺带钉「没有重复注册」（这个数漂过）。
+  assert.equal(CASES.length,47);
+  assert.equal(new Set(CASES.map(x=>x.id)).size,47,'注册 ID 不得重复');
   const attempts=CASES.map(({id},i)=>({suite:'frontend',id,runId:'UNIT-all38',attemptId:'a'+i,cwd:ROOT,mode:'explicit-mock',authority:'explicit-mock',sourceHash:'unitSHA',sourceCodeSHA:'unitCode',fullSourceArtifactSHA:'unitSHA',artifactEpoch:'unitSHA'}));
   const exits=attempts.map(x=>({...x,exitCode:0,signal:null,timedOut:false}));
   const registered=CASES.map(x=>x.id),manifest={registered,attempts};
@@ -6328,7 +6267,7 @@ const finalR1Fetch = window.fetch; window.fetch = (p,o) => p === '/v1/admin/fina
     calls: async () => calls, archive: async () => { d.report.requests.push(...calls); calls = []; }, finish: async () => {},
     page: { goto: async () => { const r = await run.req('/v1/admin/finalr1-extra-get'); assert.equal(r.status,200,'mutation provider is an actual 200 extra GET'); calls.push({ url: '/v1/admin/finalr1-extra-get', method: 'GET', httpStatus: r.status }); },
       waitForFunction: async () => {}, evaluate: async fn => vm.runInNewContext('(' + fn + ')()', { document: doc, window: { Anotify: { me: { role: 'member' } } } }) } };
-  const body = finalR1CaseBody('ux19', 'ux20', { withDriver: async (id, opt, fn) => fn(d, { n: 0, inc() {} }),
+  const body = finalR1CaseBody('ux19', 'ux21', { withDriver: async (id, opt, fn) => fn(d, { n: 0, inc() {} }),
     greetMember: async () => { member = true; }, writeWrites: async () => calls.filter(c => c.method !== 'GET'), ok: () => ({ ok: true }) });
   await assert.rejects(body({ id: 'mutation-admin-get' }), /no privileged admin API/);
 });
@@ -6356,6 +6295,8 @@ test('FINALR1 m2 actual frontend aggregate retains completed nonzero red without
     evidenceDirectory: () => '/UNIT', readEnrollments: async () => [meta],
     readFile: async file => JSON.stringify(file.endsWith('case.json') ? evidence : exit),
     writeFile: async (file, text) => { aggregate = JSON.parse(text); }, path,
+    // 切片外的 import 与 stepJudgement 在这里补齐，否则 ReferenceError 会顶替真正的断言。
+    INCOMPLETE: 'incomplete', TIMEOUT: 'timeout', readRetryRecord: async () => null, stepJudgement: () => '',
     H: { bad: (id, message) => failures.push({ id, message }), ok: () => assert.fail('red cannot pass') } });
   const start = source.includes('function validateCompletion(') ? source.indexOf('function validateCompletion(') : source.indexOf('async function aggregate(');
   const fn = vm.runInContext(source.slice(start, source.indexOf('\nH.startTimer();', start)) + '\naggregate', ctx);
@@ -6396,18 +6337,6 @@ test('FINALR1 U2 actual helper fixture creates canonical Playbook and GET conten
   assert.equal((await run.req('/v1/namespaces/default/playbooks')).body.items.length, 1);
   assert.equal(new URLSearchParams(ctx.queryUnderTest('playbook', {}, false)).has('id'), false, 'missing-id negative remains distinct');
 });
-test('FINALR1 U3 actual me.id owner PATCH wrapped200 GETfalse and foreign404 retain strict DEV1 domain', async () => {
-  const run = loadMock(), me = (await run.req('/v1/auth/me')).body;
-  const own = { id:'finalr1-own-device', userId:me.id, name:'Own receiver', platform:'web', enabled:true, eventScope:'all', tags:[] };
-  const foreign = { ...own, id:'finalr1-foreign-device', userId:'other-owner' };
-  run.Mock.state.devices = [own, foreign];
-  const patched = await run.req('/v1/devices/' + own.id, { method:'PATCH', body:JSON.stringify({enabled:false}) });
-  assert.equal(patched.status,200); assert.equal(patched.body.device.id,own.id); assert.equal(patched.body.device.enabled,false);
-  assert.equal((await run.req('/v1/devices')).body.devices.find(d=>d.id===own.id).enabled,false);
-  const rejected = await run.req('/v1/devices/' + foreign.id, { method:'PATCH', body:JSON.stringify({enabled:false}) });
-  assert.equal(rejected.status,404); assert.equal(foreign.enabled,true);
-});
-
 // A finite native delete case with one exact response-boundary mutation.
 for (const mutation of [false, true]) {
   test('PARENT-EPOCH native: deleted installs group ' + (mutation ? 'rejects exact GET 200 mutant' : '404 keeps exact receipt 200'), { timeout: 55000 }, () => {
@@ -6595,7 +6524,7 @@ for (const synthetic of [true, false]) {
     assert.ok(response.parsedAtMs <= response.returnAtMs);
     assert.ok(response.returnAtMs <= doc.snapshot.atMs);
     if (synthetic) {
-      const caught = doc.events.find(e => e.event === 'loadErrorNode:input');
+      const caught = doc.events.find(e => e.event === 'errorFacts:input');
       assert.equal(caught.error.name, 'TypeError');
       assert.equal(caught.error.message, 'safeSyntheticRenderError');
       assert.ok(caught.error.stack.some(s => s.includes('taskChain')));
@@ -6612,7 +6541,7 @@ for (const synthetic of [true, false]) {
       assert.match(next.snapshot.actualDocumentURL, /\/index\.html\?namespace=default$/);
       assert.equal(next.snapshot.taskRows, 0, 'Do not copy the old Trace body into index evidence');
     }
-    console.log('TRACE ARCHIVE SAVED ' + JSON.stringify({ reportPath: saved.reportPath, documentId: doc.documentId, snapshot: doc.snapshot, response: { actualURL: response.actualURL, namespace: response.namespace, uid: response.uid, httpStatus: response.httpStatus, kind: response.response.kind, taskIDs: response.response.tasks.items.map(t => t.metadata.name), parseStartedAtMs: response.parseStartedAtMs, parsedAtMs: response.parsedAtMs, returnAtMs: response.returnAtMs }, caught: doc.events.filter(e => e.event === 'loadErrorNode:input') }));
+    console.log('TRACE ARCHIVE SAVED ' + JSON.stringify({ reportPath: saved.reportPath, documentId: doc.documentId, snapshot: doc.snapshot, response: { actualURL: response.actualURL, namespace: response.namespace, uid: response.uid, httpStatus: response.httpStatus, kind: response.response.kind, taskIDs: response.response.tasks.items.map(t => t.metadata.name), parseStartedAtMs: response.parseStartedAtMs, parsedAtMs: response.parsedAtMs, returnAtMs: response.returnAtMs }, caught: doc.events.filter(e => e.event === 'errorFacts:input') }));
   });
 }
 
@@ -6638,7 +6567,8 @@ test('TRACE-ARCHIVE: observer preserves original return Promise, this, arguments
   const args = [{ kind: 'Task' }, { tasks: [] }];
   let receiver, received;
   const graphs = { taskChain(...values) { receiver = this; received = values; return promise; } };
-  const A = { model: { task() { throw originalError; } }, loadErrorNode() { return promise; }, readScope() { return { namespace: 'default' }; } };
+  // trace 页的错误分级入口是 A.errorFacts（#378），loadErrorNode 早已不再被它调用。
+  const A = { model: { task() { throw originalError; } }, errorFacts() { return promise; }, readScope() { return { namespace: 'default' }; } };
   const doc = { readyState: 'complete', documentElement: { lang: 'es' }, querySelector: () => null, querySelectorAll: () => [], getElementById: () => null, addEventListener() {} };
   const win = { Anotify: A, AnotifyGraphs: graphs, addEventListener() {} };
   const context = vm.createContext({ window: win, document: doc, navigator: { language: 'es' }, location: new URL('http://fixture/es/trace.html?namespace=default'), URL, URLSearchParams, performance: { timeOrigin: 123, now: () => 7 }, MutationObserver: class { observe() {} } });
@@ -6647,10 +6577,10 @@ test('TRACE-ARCHIVE: observer preserves original return Promise, this, arguments
   assert.equal(receiver, graphs);
   assert.deepEqual(received, args);
   assert.throws(() => A.model.task(args[0]), e => e === originalError);
-  assert.equal(A.loadErrorNode(originalError), promise);
+  assert.equal(A.errorFacts(originalError), promise);
   const scene = win.__f3TraceSnapshot();
   assert.ok(scene.events.some(e => e.event === 'task:throw-before-cleanup'));
-  assert.ok(scene.events.some(e => e.event === 'loadErrorNode:input'));
+  assert.ok(scene.events.some(e => e.event === 'errorFacts:input'));
 });
 
 /* ------------------------------------------------------------------ *

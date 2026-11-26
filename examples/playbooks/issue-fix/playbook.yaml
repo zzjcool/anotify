@@ -1,0 +1,55 @@
+apiVersion: anotify/v1
+kind: Playbook
+
+metadata:
+  name: issue-fix
+  displayName: issue 判断 → 修复 ⇄ review（真环，两轮上限）
+  version: 1
+  description: |
+    手动投一个 issue 号，用 PI 当执行者把这件事从"成立吗"推到"PR 通过 review"：
+    判定不成立就关单结束；成立则修、提 PR、由另一个 agent review；
+    有问题回到修复，修完再复审一轮；两轮仍不通过就交回人。
+
+spec:
+  values:
+    type: object
+    additionalProperties: false
+    required: [project, repo, repoDir]
+    properties:
+      project:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]{0,20}$'
+        description: 前缀 slug，会拼进能力名与源名
+      repo:
+        type: string
+        pattern: '^[A-Za-z0-9][A-Za-z0-9.-]*/[A-Za-z0-9][A-Za-z0-9._-]*$'
+        description: 仓库（owner/name），装包时填一次
+      repoDir:
+        type: string
+        pattern: '^/'
+        description: 节点上这个仓库的检出目录（agent 在里面干活，绝对路径）
+      baseBranch:
+        type: string
+        default: main
+        description: 基线分支；修复分支从这里切
+      agentCmd:
+        type: string
+        default: pi
+        description: 跑 agent 的命令（节点上要能直接执行）
+      agentArgs:
+        type: string
+        default: -p
+        description: 传给 agentCmd 的参数；默认以 -p（非交互）模式运行
+      roundLimit:
+        type: string
+        default: '2'
+        description: review 轮数上限（脚本里判：round < 2 才回到 fix，之后交回人）
+
+  capabilities:
+    - capabilities/triage.yaml
+    - capabilities/implement.yaml
+    - capabilities/review.yaml
+    - capabilities/fix.yaml
+    - capabilities/record.yaml
+  sources:
+    - sources/issue-fix-hook.yaml

@@ -1,0 +1,27 @@
+apiVersion: anotify/v1
+kind: Source
+
+metadata:
+  name: '{{values.project}}-issue-fix-hook'
+  displayName: '{{values.project}} issue 修复入口'
+
+spec:
+  kind: webhook
+  enabled: true
+  config:
+    token: ''
+    payloadSchema:
+      type: object
+      required: [issue]
+      properties:
+        issue:
+          type: integer
+          minimum: 1
+          description: 要处理的 issue 号
+    sample:
+      issue: 649
+  targets:
+    - capability: '{{values.project}}-triage'
+      params:
+        repo: '{{values.repo}}'
+        issue: $(payload.issue)

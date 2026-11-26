@@ -29,6 +29,9 @@ type PlaybookReleaseGroups struct {
 	Release         string
 	Groups          []PlaybookReleaseGroup
 	Uninstalled     bool
+	// UninstalledAt / Receipts 供详情页用：最新卸载时刻（unix 秒，未卸载为 0）+ 扁平回执（安装顺序）。
+	UninstalledAt int64
+	Receipts      []playbook.Receipt
 }
 
 // GetPlaybookReleaseGroups 按 (ns, slug, release) 读回执并折叠成参数组。
@@ -53,13 +56,16 @@ func (d *DB) GetPlaybookReleaseGroups(ctx context.Context, namespaceID, slug, re
 		return nil, fmt.Errorf("%w: release %q", ErrPlaybookReleaseNotFound, rel)
 	}
 	out := &PlaybookReleaseGroups{PlaybookName: row.Slug, PlaybookVersion: row.Version, Release: rel,
-		Groups: []PlaybookReleaseGroup{}, Uninstalled: true}
+		Groups: []PlaybookReleaseGroup{}, Uninstalled: true, Receipts: []playbook.Receipt{}}
 	byDigest := map[string]int{}
 	lastKey := map[string][2]int64{}
 	for _, rc := range receipts {
 		if !rc.uninstalled {
 			out.Uninstalled = false
+		} else if rc.uninstalledAt > out.UninstalledAt {
+			out.UninstalledAt = rc.uninstalledAt
 		}
+		out.Receipts = append(out.Receipts, rc.receipt)
 		at := time.Unix(rc.createdAt, 0).UTC().Format(time.RFC3339)
 		idx, ok := byDigest[rc.receipt.ValuesDigest]
 		if !ok {
@@ -105,11 +111,12 @@ func (d *DB) GetPlaybookReleaseGroups(ctx context.Context, namespaceID, slug, re
 }
 
 type playbookReleaseReceiptRow struct {
-	receipt     playbook.Receipt
-	values      map[string]any
-	createdAt   int64
-	seq         int64
-	uninstalled bool
+	receipt       playbook.Receipt
+	values        map[string]any
+	createdAt     int64
+	seq           int64
+	uninstalled   bool
+	uninstalledAt int64
 }
 
 // playbookReleaseReceipts 取一个 release 的全部回执（安装顺序，含已卸载的）。
@@ -140,6 +147,7 @@ func (d *DB) playbookReleaseReceipts(ctx context.Context, namespaceID, playbookI
 		if receipt.Dependencies == nil {
 			receipt.Dependencies = []playbook.Dependency{}
 		}
+		normalizePinned(&receipt)
 		if receipt.Install.Release == "" {
 			receipt.Install.Release = release
 		}
@@ -153,11 +161,12 @@ func (d *DB) playbookReleaseReceipts(ctx context.Context, namespaceID, playbookI
 			}
 		}
 		out = append(out, playbookReleaseReceiptRow{
-			receipt:     receipt,
-			values:      values,
-			createdAt:   createdAt,
-			seq:         seq,
-			uninstalled: uninstalledAt != 0,
+			receipt:       receipt,
+			values:        values,
+			createdAt:     createdAt,
+			seq:           seq,
+			uninstalled:   uninstalledAt != 0,
+			uninstalledAt: uninstalledAt,
 		})
 	}
 	if err := rows.Err(); err != nil {

@@ -97,9 +97,9 @@ DONE <任务ID>
 
 详见 `DEVELOPMENT.md` 第 8 节。要点：
 
-- **VAPID subject**：webpush-go 会自动加 `mailto:`，配置若已带要 `TrimPrefix`，否则双重前缀致 Apple BadJwtToken
 - **BackupEligible**：注册时必须持久化 `cred.Flags.BackupEligible`，否则登录校验不一致报错
-- **UpsertDevice vs UpdateDevice**：前者是订阅刷新（只更新密钥），后者是改配置（全字段）；PATCH 用 Update
+- **推送域已退役（V4-D7）**：`internal/push`、`devices` 表、`/v1/devices*`、VAPID、
+  `notify:receive`/`devices:read` 都已删除，别再按旧记忆去改这些文件（它们不存在了）
 - **store 只依赖叶子包**：`protocol`/`artifact`/`sourcespec`/`playbook`/`route`/`source`；
   不得 import `server`/`ws`/`lease`/`auth`/`api`（分层倒挂 + import 循环）
 - **空列表返回 `[]`**：别返回 `null`，否则前端误判"未连接"

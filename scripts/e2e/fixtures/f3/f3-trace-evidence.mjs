@@ -68,7 +68,8 @@ export function installTraceEvidence(makeTools) {
   window.__f3TraceAttach = value => {
     wrap(value?.model, 'task', args => ({ input: T.task(args[0]) }));
     wrap(value?.model, 'event', args => ({ inputTypes: T.fields(args[0], ['kind', 'metadata', 'spec']) }));
-    wrap(value, 'loadErrorNode', args => ({ error: T.error(args[0]) }));
+    // trace 页从 #378 起改用 A.errorFacts 分级（页内 failureState），不再调 loadErrorNode。
+    wrap(value, 'errorFacts', args => ({ error: T.error(args[0]) }));
   };
   // Driver may initialize before or after this init script; both orders attach
   // to the final export without replacing Anotify's transport accessor.

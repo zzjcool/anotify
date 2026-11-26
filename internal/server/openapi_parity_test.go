@@ -120,15 +120,15 @@ const maxRefDepth = 8
 // 删一个 schema，都必须同时改这里的数字，并在 PR 里写清为什么。
 const (
 	// parityPairsFloor 是 parityPairs() 的对数（历史区间见 git log）。
-	parityPairsFloor = 216
+	parityPairsFloor = 224
 	// bareMountFloor 是 bareMountSpec() 的条目数。
-	bareMountFloor = 27
+	bareMountFloor = 24
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底），历史见提交信息。
-	muxPatternCount = 132
+	muxPatternCount = 137
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
-	bareOpFloor = 39
+	bareOpFloor = 34
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数（历史区间见 git log）。
-	specSchemaFloor = 256
+	specSchemaFloor = 264
 )
 
 // ---------- 测试入口 ----------
@@ -160,9 +160,9 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 	fatalIfProblems(t, "解析 $ref（含跨文件）", refIntegrityProblems(docs))
 
 	ops, _ := collectSpecOps(docs)
-	// 快照逐次只增（历次增量见 git log）：#548 的实例详情是最近一条。
-	if len(ops) != 143 {
-		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 143（142 + #548 的实例详情）", len(ops))
+	// 快照逐次只增（历次增量见 git log）：#554 的凭据 CRUD 四条 + #555 的立即拉取 + #561 的按快照重装。
+	if len(ops) != 146 {
+		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 146（143 + 凭据 CRUD 四条 + 立即拉取 + 审计两条 + 按快照重装 − 推送域退役五条）", len(ops))
 	}
 	// 至少一条来自 components.pathItems（agent.yaml 四条 + events/ingress 的共享 pathItem）。
 	fromPathItems := 0
@@ -328,10 +328,8 @@ func TestOpenAPIParityDTOFields(t *testing.T) {
 	}
 }
 
-// TestOpenAPIParityMutations 是负向自测：每条门禁都要能被一个具体的错误**打红**。
-//
-// 变异全部在内存里做（重新 Unmarshal 一份），绝不写盘；每条变异的断言消息里都带
-// 变异名，失败时能直接看出“哪条变异没被抓到”。
+// TestOpenAPIParityMutations 是负向自测：每条门禁都要能被一个具体的错误**打红**（变异全在内存里做，
+// 绝不写盘；断言消息带变异名，失败时能直接看出“哪条变异没被抓到”）。
 func TestOpenAPIParityMutations(t *testing.T) {
 	patterns, problems := collectMuxPatterns(serverPkgDir)
 	fatalIfProblems(t, "静态收集 mux pattern", problems)
@@ -485,16 +483,16 @@ func TestOpenAPIParityMutations(t *testing.T) {
 		table := bareMountSpec()
 		appended := false
 		for i := range table {
-			if table[i].Pattern == "/v1/devices" {
+			if table[i].Pattern == "/v1/keys" {
 				table[i].Ops = append(table[i].Ops, bareOp{
-					Method: "PUT", Path: "/v1/devices/{ghost}",
-					Dispatch: "case http.MethodPut:", Literal: `strings.TrimPrefix(r.URL.Path, "/v1/devices")`,
+					Method: "PUT", Path: "/v1/keys/{ghost}",
+					Dispatch: "case http.MethodPut:", Literal: `strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/keys"), "/")`,
 				})
 				appended = true
 			}
 		}
 		if !appended {
-			t.Fatalf("变异失败：裸挂载表里没有 /v1/devices")
+			t.Fatalf("变异失败：裸挂载表里没有 /v1/keys")
 		}
 		problems := bareMountProblems(patterns, baseOps, table)
 		requireProblem(t, "裸挂载反向多写", problems, "在五份 spec 里找不到")
@@ -506,7 +504,7 @@ func TestOpenAPIParityMutations(t *testing.T) {
 		for i := range table {
 			for j := range table[i].Ops {
 				op := &table[i].Ops[j]
-				if op.Method == "PATCH" && op.Path == "/v1/devices/{id}" {
+				if op.Method == "POST" && op.Path == "/v1/keys/{id}/revoke" {
 					// 真实回归就是这一种：`case http.MethodPatch:` 被改成别的 method。
 					op.Dispatch = `case http.MethodPut:`
 					mutated = true
@@ -514,7 +512,7 @@ func TestOpenAPIParityMutations(t *testing.T) {
 			}
 		}
 		if !mutated {
-			t.Fatalf("变异失败：裸挂载表里没有 PATCH /v1/devices/{id}")
+			t.Fatalf("变异失败：裸挂载表里没有 POST /v1/keys/{id}/revoke")
 		}
 		problems := bareMountProblems(patterns, baseOps, table)
 		requireProblem(t, "method token 不一致", problems, "Dispatch 指向 PUT")
@@ -1330,12 +1328,8 @@ func securitySchemeNames(v any) ([]string, error) {
 	return out, nil
 }
 
-// specIntegrityProblems 守 operation 的身份：同一 (method, canonical path) 不得重复，
-// operationId 跨五文件全局唯一（归属键 = method + canonical path）。
-//
-// 判重**必须用 canonical path**：`{ns}` 与 `{namespace}` 是两个不同的原始 path，却是同一个
-// 归属（`internal/server` 里只有一份路由）。按原始 path 判重会漏掉
-// 「同一端点两种占位符写法」这种重复——spec 里两条 operation、mux 上一条路由。
+// specIntegrityProblems 守 operation 的身份：同一 (method, canonical path) 不得重复，operationId 全局唯一。
+// 判重**必须用 canonical path**：`{ns}` 与 `{namespace}` 是同一个归属，按原始 path 判重会漏掉重复。
 func specIntegrityProblems(ops []specOp) []string {
 	var problems []string
 	byKey := map[string]specOp{}
@@ -1412,10 +1406,8 @@ type routePattern struct {
 // Canonical 是归一后的路径（`{ns}` → `{}`）。
 func (p routePattern) Canonical() string { return canonicalPath(p.Path) }
 
-// protocolPathConsts 是**唯一**允许出现在 pattern 表达式里的外部常量小表。
-//
-// 为什么只允许这张表：pattern 是「协议的一部分」，只能来自 protocol 包里那几个被节点共享
-// 的常量。放开任意 selector 等于让 pattern 变成运行期算出来的值，静态门禁就彻底失效。
+// protocolPathConsts 是**唯一**允许出现在 pattern 表达式里的外部常量小表：pattern 是协议的一部分，
+// 放开任意 selector 等于让它是运行期算出来的值，静态门禁就失效了。
 var protocolPathConsts = map[string]string{
 	"NodeTaskArtifactsPathPrefix": protocol.NodeTaskArtifactsPathPrefix,
 	"NodeTaskArtifactsPathInfix":  protocol.NodeTaskArtifactsPathInfix,
@@ -1582,16 +1574,7 @@ func takesServeMux(ft *ast.FuncType) bool {
 	return false
 }
 
-// scanFunc 处理一个函数体里的全部路由注册形态：
-//
-//	① 直写：            mux.Handle("GET " + base, h)
-//	② 包装闭包：        route := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, …) }
-//	                    route("GET "+nodesPath, a.list)
-//	③ 表驱动 + range：  routes := []struct{pattern string; h http.HandlerFunc}{…}
-//	                    for _, rt := range routes { mux.Handle(rt.pattern, …) }
-//
-// ② ③ 是真实代码的写法（resource_node/resource_task/retained_reads/capability/playbook）；
-// 不展开它们就等于漏掉那五个资源域的全部路由 —— 所以这里必须理解它们，而不是“跳过”。
+// scanFunc 处理一个函数体里的全部路由注册形态（三种形态见 scanBody）。
 func (c *patternCollector) scanFunc(fd *ast.FuncDecl) {
 	if fd.Body == nil {
 		return
@@ -2297,29 +2280,6 @@ func bareMountSpec() []bareMountEntry {
 				{"POST", "/v1/auth/passkeys/register", `sub == "register" && r.Method == http.MethodPost`, "", `sub == "register"`},
 				{"PATCH", "/v1/auth/passkeys/{id}", `if r.Method != http.MethodPatch`, "", `func (h *authHandler) renamePasskey(w http.ResponseWriter`},
 				{"DELETE", "/v1/auth/passkeys/{id}", `case r.Method == http.MethodDelete:`, "", `func (h *authHandler) deletePasskey(w http.ResponseWriter`},
-			},
-		},
-		{
-			Pattern:     "/v1/vapid-public-key",
-			HandlerFile: "mux.go",
-			Ops: []bareOp{
-				{"GET", "/v1/vapid-public-key", "", "内联闭包没有 method 分派：任何方法都回同一个公钥 JSON", `"/v1/vapid-public-key"`},
-			},
-		},
-		{
-			Pattern:     "/v1/devices",
-			HandlerFile: "handlers.go",
-			Ops: []bareOp{
-				{"GET", "/v1/devices", `case http.MethodGet:`, "", `strings.TrimPrefix(r.URL.Path, "/v1/devices")`},
-				{"POST", "/v1/devices", `case http.MethodPost:`, "", `strings.TrimPrefix(r.URL.Path, "/v1/devices")`},
-			},
-		},
-		{
-			Pattern:     "/v1/devices/",
-			HandlerFile: "handlers.go",
-			Ops: []bareOp{
-				{"PATCH", "/v1/devices/{id}", `case http.MethodPatch:`, "", `h.patch(w, r, rest)`},
-				{"DELETE", "/v1/devices/{id}", `case http.MethodDelete:`, "", `h.remove(w, r, rest)`},
 			},
 		},
 		{
@@ -3048,6 +3008,10 @@ func parityPairs() []parityPair {
 		{GoLabel: "capabilityTestWarning", File: "resource.yaml", Schema: "CapabilityTestWarning", Sample: capabilityTestWarning{}},
 		{GoLabel: "capabilityAuditEntryDoc", File: "resource.yaml", Schema: "CapabilityAuditEntry", Sample: capabilityAuditEntryDoc{}},
 		{GoLabel: "capabilityAuditListDoc", File: "resource.yaml", Schema: "CapabilityAuditList", Sample: capabilityAuditListDoc{}},
+		{GoLabel: "sourceAuditEntryDoc", File: "resource.yaml", Schema: "SourceAuditEntry", Sample: sourceAuditEntryDoc{}},
+		{GoLabel: "sourceAuditListDoc", File: "resource.yaml", Schema: "SourceAuditList", Sample: sourceAuditListDoc{}},
+		{GoLabel: "secretAuditEntryDoc", File: "resource.yaml", Schema: "NamespaceSecretAuditEntry", Sample: secretAuditEntryDoc{}},
+		{GoLabel: "secretAuditListDoc", File: "resource.yaml", Schema: "NamespaceSecretAuditList", Sample: secretAuditListDoc{}},
 		// status.observed：空对象是合法形状（无事实时 `{}`），所以顶层四个键都不在 required；
 		// 子形状全部 required（有事实时每个键都在）。
 		{GoLabel: "capabilityObserved", File: "resource.yaml", Schema: "CapabilityObserved", Sample: capabilityObserved{}},
@@ -3063,6 +3027,7 @@ func parityPairs() []parityPair {
 		{GoLabel: "srcReceiptDoc", File: "resource.yaml", Schema: "SourceReceipt", Sample: srcReceiptDoc{}},
 		{GoLabel: "srcReceiptTask", File: "resource.yaml", Schema: "SourceReceiptTask", Sample: srcReceiptTask{}},
 		{GoLabel: "route.Prune", File: "resource.yaml", Schema: "PruneFact", Sample: route.Prune{}},
+		{GoLabel: "srcPollResultDoc", File: "resource.yaml", Schema: "SourcePollResult", Sample: srcPollResultDoc{}},
 		{GoLabel: "srcPreviewDoc", File: "resource.yaml", Schema: "SourcePreview", Sample: srcPreviewDoc{}},
 		{GoLabel: "srcPreviewTarget", File: "resource.yaml", Schema: "SourcePreviewTarget", Sample: srcPreviewTarget{}},
 
@@ -3073,6 +3038,7 @@ func parityPairs() []parityPair {
 		{GoLabel: "playbookSourceStatus", File: "resource.yaml", Schema: "PlaybookSourceStatus", Sample: playbookSourceStatus{}},
 		{GoLabel: "playbook.UnappliedEntry", File: "resource.yaml", Schema: "PlaybookUnappliedEntry", Sample: playbook.UnappliedEntry{}},
 		{GoLabel: "playbook.Receipt", File: "resource.yaml", Schema: "PlaybookReceipt", Sample: playbook.Receipt{}},
+		{GoLabel: "playbook.PinnedRef", File: "resource.yaml", Schema: "PlaybookPinnedRef", Sample: playbook.PinnedRef{}},
 		{GoLabel: "playbook.RenderResult", File: "resource.yaml", Schema: "PlaybookRenderResult", Sample: playbook.RenderResult{}},
 		{GoLabel: "playbook.Requirement", File: "resource.yaml", Schema: "PlaybookRequirement", Sample: playbook.Requirement{}},
 		{GoLabel: "playbook.Dependency", File: "resource.yaml", Schema: "PlaybookDependency", Sample: playbook.Dependency{}},
@@ -3091,6 +3057,8 @@ func parityPairs() []parityPair {
 		{GoLabel: "store.PlaybookKept", File: "resource.yaml", Schema: "PlaybookKept", Sample: store.PlaybookKept{}},
 		{GoLabel: "store.PlaybookUninstallResult", File: "resource.yaml", Schema: "PlaybookUninstallResult", Sample: store.PlaybookUninstallResult{}},
 		{GoLabel: "store.PlaybookUninstallKept", File: "resource.yaml", Schema: "PlaybookUninstallKept", Sample: store.PlaybookUninstallKept{}},
+		{GoLabel: "playbookRestoreEntry", File: "resource.yaml", Schema: "PlaybookRestoreEntry", Sample: playbookRestoreEntry{}},
+		{GoLabel: "playbookRestoreCounts", File: "resource.yaml", Schema: "PlaybookRestoreCounts", Sample: playbookRestoreCounts{}},
 
 		// ---- namespace / system config ----
 		{GoLabel: "namespaceCounts", File: "resource.yaml", Schema: "NamespaceCounts", Sample: namespaceCounts{}},
@@ -3099,6 +3067,10 @@ func parityPairs() []parityPair {
 		{GoLabel: "namespaceConfigDoc", File: "resource.yaml", Schema: "NamespaceConfig", Sample: namespaceConfigDoc{}},
 		{GoLabel: "systemConfigDoc", File: "resource.yaml", Schema: "SystemConfig", Sample: systemConfigDoc{}},
 		{GoLabel: "retentionDoc", File: "resource.yaml", Schema: "Retention", Sample: retentionDoc{}},
+
+		{GoLabel: "namespaceSecretDoc", File: "resource.yaml", Schema: "NamespaceSecret", Sample: namespaceSecretDoc{}},
+		{GoLabel: "namespaceSecretListDoc", File: "resource.yaml", Schema: "NamespaceSecretList", Sample: namespaceSecretListDoc{}},
+		{GoLabel: "namespaceSecretWrite", File: "resource.yaml", Schema: "NamespaceSecretWrite", Sample: namespaceSecretWrite{}},
 
 		// ---- node ----
 		{GoLabel: "nodeSpec", File: "resource.yaml", Schema: "NodeSpec", Sample: nodeSpec{}},
@@ -3140,13 +3112,6 @@ func parityPairs() []parityPair {
 		// ---- auth.yaml：身份 / 设备 / Key / 会话 / 管理后台（F1 的核心缺口）----
 		// 具名类型的直接 reflect；handler 里就地定义的形状走 Wire（读产品源码，不抄一份）。
 		{GoLabel: "store.User", File: "auth.yaml", Schema: "User", Sample: store.User{}},
-		{GoLabel: "store.Device", File: "auth.yaml", Schema: "Device", Sample: store.Device{}},
-		{GoLabel: "deviceUpsertReq", File: "auth.yaml", Schema: "DeviceUpsertRequest", Sample: deviceUpsertReq{}},
-		{GoLabel: "devicePatchReq", File: "auth.yaml", Schema: "DevicePatchRequest", Sample: devicePatchReq{}},
-		{GoLabel: "devicesHandler.upsert", File: "auth.yaml", Schema: "DeviceResult",
-			Wire: &goWire{File: "handlers.go", Func: "devicesHandler.upsert", Kind: "response", Select: -1}},
-		{GoLabel: "devicesHandler.list", File: "auth.yaml", Schema: "DeviceList",
-			Wire: &goWire{File: "handlers.go", Func: "devicesHandler.list", Kind: "response", Select: -1}},
 		{GoLabel: "keyPublic", File: "auth.yaml", Schema: "APIKey", Sample: keyPublic{}},
 		{GoLabel: "keyCreateReq", File: "auth.yaml", Schema: "APIKeyCreateRequest", Sample: keyCreateReq{}},
 		{GoLabel: "keysHandler.create", File: "auth.yaml", Schema: "APIKeyCreateResult",
@@ -3186,8 +3151,6 @@ func parityPairs() []parityPair {
 			Wire: &goWire{File: "auth_handlers.go", Func: "authHandler.recoveryStatus", Kind: "response", Select: -1}},
 		{GoLabel: "authHandler.logout", File: "auth.yaml", Schema: "OkResult",
 			Wire: &goWire{File: "auth_handlers.go", Func: "authHandler.logout", Kind: "response", Select: -1}},
-		{GoLabel: "NewApp(vapid)", File: "auth.yaml", Schema: "VAPIDPublicKey",
-			Wire: &goWire{File: "mux.go", Func: "NewApp", Kind: "response", Select: -1}},
 		{GoLabel: "adminUserOut", File: "auth.yaml", Schema: "AdminUser", Sample: adminUserOut{}},
 		{GoLabel: "adminHandler.patchUser", File: "auth.yaml", Schema: "AdminUserPatchRequest",
 			Wire: &goWire{File: "admin_handlers.go", Func: "adminHandler.patchUser", Kind: "request", Select: -1}},
@@ -3243,6 +3206,7 @@ func parityPairs() []parityPair {
 		{GoLabel: "nodeAPI.upgradeNode", File: "resource.yaml", Schema: "NodeUpgradeResult",
 			Wire: &goWire{File: "resource_node.go", Func: "nodeAPI.upgradeNode", Kind: "response", Select: 0}},
 		{GoLabel: "playbookActionBody", File: "resource.yaml", Schema: "PlaybookActionRequest", Sample: playbookActionBody{}},
+		{GoLabel: "playbookRestoreBody", File: "resource.yaml", Schema: "PlaybookRestoreRequest", Sample: playbookRestoreBody{}},
 		{GoLabel: "protocol.DecisionRequest", File: "resource.yaml", Schema: "TaskDecisionRequest", Sample: protocol.DecisionRequest{}},
 		{GoLabel: "protocol.DecisionResponse", File: "resource.yaml", Schema: "TaskDecisionResponse", Sample: protocol.DecisionResponse{}},
 		{GoLabel: "taskActionReason", File: "resource.yaml", Schema: "TaskActionRequest",
