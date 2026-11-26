@@ -6,7 +6,7 @@
  *    写死 `|` 会把「没有行尾换行」的值补上一个行尾换行。
  *  · 双引号标量用 JSON 转义（YAML 双引号标量是 JSON 的超集）；块标量只在首行不带
  *    空白、正文没有 `\r` 时使用 —— 否则退回双引号标量，值逐字不变。
- *  · 以数字开头的值一律加引号：`010` 是八进制、`123` 是整数，服务端按类型解码会 400。
+ *  · 以数字开头的值一律加引号（`010` 八进制 / `123` 整数，服务端按类型解码会 400）；超 2^53-1 的整数保留原文、不走 Number —— 静默改值比 400 更糟。
  *  · `total` 为 null 时整键省略（写面要求 ≥1，省略 = 不动）；`tags` 的 null（未知）
  *    与 `[]`（清空）是两件事。
  *  · 数组/映射是值节点，整份替换（`spec.vars` 删键就是清空）；读不懂的方言返回
@@ -16,13 +16,16 @@
 	'use strict';
 
 
-	var PLAIN = /^[A-Za-z_][A-Za-z0-9_./:@+-]*$/;
+	var PLAIN = /^[A-Za-z_][A-Za-z0-9_./@+-]*(?::[A-Za-z0-9_./@+-]+)*$/; // 裸写只收「中间带冒号」：以冒号结尾的 `a:` 会被 yaml.v3 读成 key（`k: a:` 直接语法错）
 	var RESERVED = /^(?:true|false|null|yes|no|on|off|y|n|~)$/i;
 
 	function scalar(value) {
 		if (value === null || value === undefined) return 'null';
 		if (typeof value === 'boolean') return value ? 'true' : 'false';
-		if (typeof value === 'number') return isFinite(value) ? String(value) : JSON.stringify(String(value));
+		if (typeof value === 'number') {
+			var lossy = Number.isInteger(value) && !Number.isSafeInteger(value);
+			return isFinite(value) && !lossy ? String(value) : JSON.stringify(String(value));
+		}
 		var text = String(value);
 		if (text === '') return '""';
 		if (PLAIN.test(text) && !RESERVED.test(text)) return text;
@@ -261,7 +264,8 @@
 		switch (type) {
 		case 'int': {
 			var n = typeof value === 'number' ? value : Number(String(value).trim());
-			return isFinite(n) ? n : value;
+			if (!isFinite(n)) return value;
+			return Number.isInteger(n) && !Number.isSafeInteger(n) ? value : n; // 超 2^53-1：保留原文，不让 Number 改值
 		}
 		case 'strings': {
 			var list = Array.isArray(value) ? value : [value];
@@ -398,7 +402,8 @@
 			if (/^(?:false)$/i.test(text)) return false;
 			if (/^[-+]?\d+$/.test(text)) {
 				if (/^[-+]?0\d+$/.test(text)) return text;
-				return parseInt(text, 10);
+				var int = parseInt(text, 10);
+				return Number.isSafeInteger(int) ? int : text; // 超安全范围保留原文：转 Number 就是改值
 			}
 			if (/^[-+]?(?:\d+\.\d*|\.\d+)(?:[eE][-+]?\d+)?$/.test(text)) return parseFloat(text);
 			return text;
