@@ -75,7 +75,6 @@ const (
 	CodeRenderTypeMismatch  = "render_type_mismatch"
 	CodeDuplicateCapability = "duplicate_capability"
 	CodeDuplicateSource     = "duplicate_source"
-	CodeCycle               = "cycle"
 
 	// 安装期。
 	CodePlaybookConflict        = "playbook_conflict"

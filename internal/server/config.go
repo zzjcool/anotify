@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/zzjcool/anotify/internal/route"
 )
 
 // 保留期 / 背压的默认值（#229 / #228）。
@@ -49,19 +51,10 @@ const (
 	maxEventRetentionDays = 36500     // 100 年：再长就等于永久保留，不如显式配 0
 	maxPendingMaxAgeSec   = 7 * 86400 // 7 天：超过这个量级已经不是「背压」，是「长期停机」
 
-	// defaultMaxHops / defaultTraceTaskBudget 是派发预算的默认值（v3 契约 §2）。
-	//
-	// v4 起 `route` 包不再导出这两个默认值：v3 的 Dispatcher（带 Publisher / MaxHops /
-	// TraceTaskBudget 的那个结构）已被 `route.Router` 取代，Router 只有 db/now ——
-	// 环与扇出的兜底挪进了 store 的派发事实（见 route 包注释与 capability.md §8.5），
-	// 中枢侧不再有「跳数预算」这个运行时旋钮。
-	//
-	// Config 字段与 Validate 行为**保留**（运维脚本 / 兼容面：非法值仍然启动即失败），
-	// 但默认值必须落在本包：继续引 route 会变成引一个已不存在的常量。两个数字与 v3
-	// 的 route.DefaultMaxHops / route.DefaultTraceTaskBudget 逐字相同，避免「同一个
-	// env 在升级前后给出两个不同的默认值」。
-	defaultMaxHops         = 16
-	defaultTraceTaskBudget = 512
+	// 派发预算的默认值（CONTRACT.md A7）：直接引 route 的两个常量——同一个 env
+	// 出现两个默认值就是「升级前后行为不一致」的来源。
+	defaultMaxHops         = route.DefaultMaxHops
+	defaultTraceTaskBudget = route.DefaultTraceTaskBudget
 )
 
 // Config 服务配置（全部可用环境变量覆盖）。
@@ -169,20 +162,13 @@ type Config struct {
 	// 漂移，跨部署不可比；「最老的 pending 等了多久」才与部署规模无关。
 	PendingMaxAgeSec int
 
-	// MaxHops / TraceTaskBudget 是派发的两个预算（v3 契约 §2）。
+	// MaxHops / TraceTaskBudget 是派发的两个预算（CONTRACT.md A7），由 route.Router
+	// 每次派发消耗。
 	//
-	// v4 状态：**保留配置面与 Validate 行为，但中枢侧已不再消费**（route.Router 没有
-	// 跳数预算；环与扇出的兜底在 store 的派发事实上）。保留而不是删：env 是已发布的
-	// 运维接口，删掉会让「配了却静默无效」变成「启动直接报错」+ 需要改所有部署脚本；
-	// 而且非法值继续在启动那一刻失败仍然是想要的行为。
-	//
-	// 语义（解析见 positiveIntFromEnv）：
-	//   - 未设置 / 空 → 默认（hop 16 / trace 512）；
-	//   - 正整数     → 原值；
-	//   - 其它（0 / 负数 / 非数字）→ **启动即失败**（Validate 报错），
-	//     不像保留期那样回落默认。理由：预算是一条防线（环 + 无限扇出的兜底），
-	//     一个写错的 env 把防线悄悄换回默认值，比拒绝启动更难查——
-	//     而拒绝启动在这里没有代价（改对再起）。
+	// 语义（解析见 positiveIntFromEnv）：未设置 / 空 → 默认（hop 16 / trace 512）；
+	// 正整数 → 原值；其它（0 / 负数 / 非数字）→ **启动即失败**（Validate 报错），
+	// 不像保留期那样回落默认：预算是一条防线（环 + 无限扇出的兜底），一个写错的
+	// env 把防线悄悄换回默认值，比拒绝启动更难查。
 	MaxHops         int
 	TraceTaskBudget int
 

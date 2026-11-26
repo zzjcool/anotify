@@ -3485,16 +3485,6 @@
 				documents[slot].push(rendered); files[path] = JSON.stringify(rendered, null, 2);
 			}
 		}
-		const byName = new Map(documents.capabilities.map(d => [d.metadata.name, d]));
-		const visiting = new Set(); const done = new Set();
-		const visit = name => {
-			if (visiting.has(name)) pbFail("cycle", "Package next cycle at " + name);
-			if (done.has(name)) return;
-			visiting.add(name);
-			for (const ref of byName.get(name)?.spec.next || []) if (byName.has(splitRef(ref).name)) visit(splitRef(ref).name);
-			visiting.delete(name); done.add(name);
-		};
-		for (const name of byName.keys()) visit(name);
 		return { values, valuesDigest: mockDigest(stableStringify(values)), files, documents, release: rel };
 		} catch (error) { if (error.reason) error.message = pbMask(error.message, errorSecrets); throw error; }
 	}

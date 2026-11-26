@@ -2790,7 +2790,7 @@ components:
           description: "没被派发出去的那个下游"
         reason:
           type: string
-          description: "剪枝码（`param_missing` / `param_schema` / `param_type` / `no_target` / `event_schema`）"
+          description: "剪枝码（`param_missing` / `param_schema` / `param_type` / `no_target` / `event_schema` / `max_hops` / `budget`）"
         detail:
           type: string
           description: "人话补充，可为空串；不参与任何判断"

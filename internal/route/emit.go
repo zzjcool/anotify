@@ -187,11 +187,9 @@ func emitData(raw json.RawMessage) json.RawMessage {
 	return raw
 }
 
-// mapEmitStoreError 把 store 的授权/幂等哨兵翻成 emit 的封闭原因码。
-//
-// 身份不符与 ns 未授权都回 token_invalid（401）：对调用方而言「这把令牌不能做这件事」
-// 是同一类回答，且不泄漏节点/ns 的存在性。任何未识别的错误保持 generic（映射成 500），
-// 绝不静默当成成功。
+// mapEmitStoreError 把 store 的授权/幂等哨兵翻成 emit 的封闭原因码。身份不符与 ns
+// 未授权都回 token_invalid（401）——对调用方是同一类回答，也不泄漏存在性；未识别的
+// 错误保持 generic（500），绝不静默当成成功。
 func mapEmitStoreError(err error) error {
 	if err == nil {
 		return nil

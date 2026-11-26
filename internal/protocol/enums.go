@@ -177,6 +177,9 @@ const (
 	// ReasonNoMatch 是「target 声明了 match.types，本次事件 type 不在里面」（#513 A1）。
 	ReasonNoMatch = "no_match"
 
+	ReasonMaxHops = "max_hops"
+	ReasonBudget  = "budget"
+
 	// 决策通道（#522）：HTTP 结论码 + `source='route'` 观察行 type。
 	ReasonOutcomeNotDeclared   = "outcome_not_declared"   // 结局名不在声明表（403 + 审计行）
 	ReasonDecisionAlreadyTaken = "decision_already_taken" // 同 task 第二次决策（409）
@@ -197,6 +200,8 @@ var pruneReasons = []string{
 	ReasonParamMissing,
 	ReasonCapabilityDisabled,
 	ReasonNoMatch,
+	ReasonMaxHops,
+	ReasonBudget,
 }
 
 // 决策通道观察行（#522）：不在 pruneReasons。

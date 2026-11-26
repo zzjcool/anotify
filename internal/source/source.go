@@ -50,7 +50,6 @@ func NewWithClock(db *store.DB, router *route.Router, now Clock) *Service {
 // Router 返回共享的路由器（编排层复用同一份解析）。
 func (s *Service) Router() *route.Router { return s.router }
 
-// Now 返回当前时刻（秒）。
 func (s *Service) Now() int64 {
 	if s.now == nil {
 		return store.Now()
