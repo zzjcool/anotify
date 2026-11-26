@@ -162,6 +162,12 @@ const COUPLED = [
 		mustNot: ["frontend", "ui_shift", "contract", "node_v4"],
 	},
 	{
+		why: "#616 改 Key 页（新建弹层的重复提交）：keys_create 必须重跑，其它页的套件不必",
+		files: ["web-src/pages/keys.html"],
+		must: ["keys_create", "recovery_next"],
+		mustNot: ["frontend", "api_contract", "routing", "node_v4", "ws_protocol"],
+	},
+	{
 		why: "改共享 harness：所有套件都靠它 startServer/seed，必须全量",
 		files: ["scripts/e2e/lib/harness.mjs"],
 		must: SUITES,

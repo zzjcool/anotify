@@ -118,6 +118,7 @@ const CHROME_SUITES = [
 	// 密码登录（第二套登录模型）：真后端 + 真 Chrome，覆盖设置/修改/移除密码、
 	// 密码登录与 Passkey 并存、最后一个 Passkey 删除护栏
 	"password_login",
+	"keys_create",
 ];
 const ALL_SUITES = [...HTTP_SUITES, ...CHROME_SUITES];
 
@@ -223,9 +224,9 @@ const SUITE_TIMEOUT_OVERRIDE = {
 	// capacity（#336）：保留期清理挂 30s 租约巡检 tick，三轮 ≈150s；默认 120s 会 SIGKILL。
 	capacity: 300_000,
 };
-// 注册套件数冻结（#338）：一次全量 = 31 个套件（#476 vars_ui，#505 playbook_release，#554 namespace_credentials）；
+// 注册套件数冻结（#338）：一次全量 = 32 个套件（#476 vars_ui，#505 playbook_release，#554 namespace_credentials，#616 keys_create）；
 // 增删套件要同步 AUTHORITY 清单（离线核对 --authority-plan），否则启动即 exit 2。
-const SUITE_REGISTRY_SIZE = 31;
+const SUITE_REGISTRY_SIZE = 32;
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");
 const CONCURRENCY = parseInt(process.env.E2E_CONCURRENCY || "4", 10);
