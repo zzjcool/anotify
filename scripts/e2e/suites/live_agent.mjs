@@ -161,7 +161,12 @@ function partCLI() {
 	{
 		const r = runCLI(["emit", "some.thing", "--data", "[]"]);
 		H.eq("emit --data 不是对象 → 退出码 2", r.status, 2);
-		H.eq("→ 机器码 target_not_declared", jsonLine(r.stdout)?.error, "target_not_declared");
+		H.eq("→ 机器码 param_type（不是 target_not_declared）", jsonLine(r.stdout)?.error, "param_type");
+	}
+	{
+		const r = runCLI(["emit", "some.thing", "--data", "{bad json"]);
+		H.eq("emit --data 坏 JSON → 退出码 2", r.status, 2);
+		H.eq("→ 机器码 param_type", jsonLine(r.stdout)?.error, "param_type");
 	}
 	{
 		// 没有任务令牌：3（令牌无效）。这一层必须在**发请求之前**就拒绝。
