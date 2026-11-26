@@ -169,8 +169,58 @@ e2e（改实现 → `make fe` + 重编 server → 跑 case）：
 1. **试运行（`#btn-dry`）的 causes 分支今天到不了**（见 MAJOR-1 的探测表）。文案修复与接线都已就位，
    但「试运行失败：N 处」只有在后端给 preview 路径加字段级校验之后才会有真实入口。要不要加那层
    校验是产品/契约决定（会让现在「200 + pruned」的草稿试运行变成 400），本轮没动后端。
-2. 本机环境坑（与改动无关，写在这里省下一次踩）：`make fe` / 单测要能解析仓库根依赖目录里的 `yaml` /
-   `playwright-core`）；`make ci` 的 contract 需要 PyYAML；`v4-frontend.test.mjs` 里 16 个
+2. 本机环境坑（与改动无关，写在这里省下一次踩）：`make fe` / 单测要能解析仓库根依赖目录（gitignore）里的
+   `yaml` 与 `playwright-core`；`make ci` 的 contract 需要 PyYAML；`v4-frontend.test.mjs` 里 16 个
    `: native` 用例要 `E2E_CHROME_PATH` 指向本机 Chrome（`f3-driver.mjs` 只找 Linux 路径与
    `/usr/bin/google-chrome`）。
 3. 注释棘轮：`web` 目录本轮净 0（新增 2 行注释由删掉的 2 行注释付账），总量仍 42889。
+
+## 合并 main（#676 / issue #637）
+
+- 合并提交 `ac0f6935`，对照 `origin/main` = `a82acbc8`（Merge PR #676）。
+- 三处冲突的解法：
+
+| 文件 | 解法 |
+| --- | --- |
+| `scripts/e2e/fixtures/f3/f3-cases.mjs` | 两边的 `add()` 都保留：main 的 `source-poll-edit-unreadable` + 本分支的 `source-save-causes` / `capability-save-causes`；导入行 git 自动合成了并集。**没有**任一边被覆盖或改名。 |
+| `scripts/v4-frontend.test.mjs` | E1b 的计数与用例名按合并后的**实测真值**统一成 `50`（main 侧 48 = 47+1，本侧 49 = 47+2，两边各加各的）。 |
+| `web/source-editor.js` | 两个 catch 都保留两边的语义：`POLLERR ? pollLoadFailed(POLLERR,false) : error($("form-result"),err,"save"/"preview")`；toast 仍走 `A.causeTitle(action, n)`，main 的 `syncEditorLocks()` 收尾与 `#637` 闸门（`pollConfig()` 抛 `poll_load_blocked`）原样保留。 |
+
+- `CASES.length` 真值（实跑取，不靠猜）：
+
+  ```
+  $ node -e "import('./scripts/e2e/fixtures/f3/f3-cases.mjs').then(m=>console.log(m.CASES.length))"
+  50
+  ```
+
+  任务卡里写的「合并后应是 42」与实测不符：那是文件里 `add(` 字面量个数（含四组循环展开的模板），
+  注册表长度以 `CASES.length` 为准。顺手把 `scripts/e2e/suites/frontend.mjs` 里
+  「四十九个 case」的注释同步成「五十个 case」。
+
+- 合并后门禁（本机，`E2E_CHROME_PATH` 指向本机 Chrome）：
+
+  ```
+  $ node -e "…f3-cases.mjs…"                                 50
+  $ node --test scripts/v4-causes.test.mjs                   # tests 10  / # pass 10 / # fail 0
+  $ node --test scripts/v4-frontend.test.mjs                 # tests 213 / # pass 213 / # fail 0（E1b 的 50 绿）
+  $ make test-frontend                                       # 16 / 11 / 4 / 10 全绿（含本轮 10 条）
+  $ node scripts/e2e/affected.test.mjs                       # tests 38  / # pass 38 / # fail 0
+  $ node scripts/check-comment-density.mjs                   ✅ 42889 = 基线（web 目录仍净 0）
+  $ node scripts/check-test-discipline.mjs                   ✅ 五项与基线一致
+  $ node scripts/check-annotations.mjs                       exit=0（unbacked 293 = 基线、unmarked 209 = 基线）
+  $ node scripts/check-secrets.mjs                           exit=0（放行 3 条登记）
+  $ make fe                                                  ✅（i18n 键守卫含 main 新增的 poll_load_* / 本分支的 preview_failed_fields）
+  $ make check-dist-fresh                                    ✅ stamp 23a5e2ba9201…
+  $ gofmt -l ./cmd ./internal                                （空）
+  $ go vet ./... && go build ./...                           exit=0 / exit=0
+  ```
+
+- 合并后 e2e 实跑（真实服务端 + 真 Chrome；两边各自的 case 都跑过一遍，证明合并没退语义）：
+
+  ```
+  source-save-causes            ✅ 5 behavior assertions
+  capability-save-causes        ✅ 5 behavior assertions
+  source-poll-edit-unreadable   ✅ 5 behavior assertions（main 的 #637：读失败锁定 + 重试 + 深等回写）
+  source-poll-edit              ✅ 10 behavior assertions（#540/#637 的 round-trip 与 PATCH 全量）
+  source-poll / source-actions / source-edit-jump  ✅
+  ```
