@@ -1,16 +1,17 @@
-// Package runner 是节点上的真实执行运行器：dispatch → accept/reject → lease.grant → 真 shebang exec → renew/ack → result/ack / cancel。
+// Package runner 是节点上的真实执行运行器：dispatch → accept/reject → lease.grant → 真 shebang exec
+// → renew/ack → result/ack / cancel。
 //
 // 硬不变量（capability.md §8.5 / @decision V4-D4 / SLOT-HANDOFF A3）：
 //
-//  1. **派发不是授权**：task.dispatch 只做校验 + 原子预留真实空闲槽（accept），没有 token、
-//     不执行、不计 attempt；只有 lease.grant 才启动进程，grant 里的 attempt 是权威 attempt。
-//  2. **只有两种 reject**：stale_config（机器级 revision 真的不一致）与 slot_unavailable
-//     （没有真实空槽/预算吃满）。cache/ref/ns 的问题不得伪装成 stale_config；不能 accept
-//     的派发直接不回应（中枢按租约/重派处理），启动前的确定性错误走 task.result failed。
-//  3. **历史绑定栅栏**：lease.ack / cancel / result.ack 都按 (taskId, attempt, leaseId, slot)
-//     精确匹配；旧 attempt 的取消/ACK 不动当前进程、不清新槽。
-//  4. **物理事实优先**：槽位账本记录真实占用；重启按持久记录 + pgid 核查，未确认 reaped
-//     的保持 busy/unknown，不因内存为空/新 hello 就报 idle。缩预算不假释放存量占用。
+//  1. **派发不是授权**：task.dispatch 只做校验 + 原子预留真实空闲槽，没有 token、不执行、不计
+//     attempt；只有 lease.grant 才启动进程，grant 里的 attempt 是权威 attempt。
+//  2. **只有两种 reject**：stale_config（机器级 revision 真不一致）与 slot_unavailable（无真实空槽/预算
+//     吃满）；cache/ref/ns 不得伪装成 stale_config；不能 accept 的派发直接不回应（中枢按租约/重派处理），
+//     启动前的确定性错误走 task.result failed。
+//  3. **历史绑定栅栏**：lease.ack / cancel / result.ack 都按 (taskId, attempt, leaseId, slot) 精确匹配；
+//     旧 attempt 的取消/ACK 不动当前进程、不清新槽。
+//  4. **物理事实优先**：槽位账本记录真实占用；重启按持久记录 + pgid 核查，未确认 reaped 的保持
+//     busy/unknown，不因内存为空/新 hello 就报 idle；缩预算不假释放存量占用。
 package runner
 
 import (
@@ -77,7 +78,8 @@ type Options struct {
 	// Logf 是诊断日志（可选）。
 	Logf func(format string, args ...any)
 
-	// LeaseTTL / RenewInterval / TermGrace 默认取协议常量（生产不得缩小）。
+	// LeaseTTL / RenewInterval / TermGrace 默认取协议常量（生产不得缩小）。LeaseTTL 只是
+	// **兜底**：正常路径的 deadline 来自中枢给的 expiresAt（见 leaseDeadline）。
 	LeaseTTL      time.Duration
 	RenewInterval time.Duration
 	TermGrace     time.Duration
@@ -250,12 +252,9 @@ func (r *Runner) Draining() bool {
 	return r.draining
 }
 
-// Instances 返回真实物理槽位快照（hello / config.applied 用）。
-//
-//   - 空槽：busy=false（本机明确无进程）；
-//   - reservation（未 grant）：busy=true + taskId/assignmentId/proposedAttempt，**不伪造 leaseId**；
-//   - 运行/未确认回收：busy=true + taskId/attempt/leaseId；
-//   - 缩预算后超出新范围的存量占用照样报告，直到真正回收。
+// Instances 返回真实物理槽位快照（hello / config.applied 用）：空槽 busy=false；reservation
+// （未 grant）busy=true + task/assignment/proposed、**不伪造 leaseId**；运行/未确认回收
+// busy=true + task/attempt/leaseId；缩预算后超出的存量占用照样报告，直到真正回收。
 func (r *Runner) Instances() []protocol.HelloInstance {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -561,7 +560,21 @@ func (r *Runner) HandleLeaseGrant(f *protocol.LeaseGrantFrame) {
 	}()
 }
 
-// HandleLeaseAck 更新本地 deadline（最后一次 ACK + TTL）；旧 lease 的 ACK 不动新 attempt。
+// leaseDeadline 把 wire 上的绝对到期时刻翻成本地 deadline：用中枢给的 expiresAt 而不是本地
+// 常量（中枢租约可配、默认 180s，节点按 60s 自算就会在中枢还认这次执行时 TERM/KILL 它，#661）。
+// 时钟偏差保护：节点快几十秒时刚到的 ACK 可能看起来已过期，那种情况退回「now + 一个续租周期」。
+func (r *Runner) leaseDeadline(expiresAt time.Time) time.Time {
+	now := r.clk.Now()
+	if expiresAt.IsZero() {
+		return now.Add(r.opts.LeaseTTL)
+	}
+	if floor := now.Add(r.opts.RenewInterval); !expiresAt.After(floor) {
+		return floor
+	}
+	return expiresAt
+}
+
+// HandleLeaseAck 更新本地 deadline（中枢给的 expiresAt）；旧 lease 的 ACK 不动新 attempt。
 func (r *Runner) HandleLeaseAck(f *protocol.LeaseAckFrame) {
 	if f == nil || f.Type != protocol.FrameLeaseAck {
 		return
@@ -577,7 +590,7 @@ func (r *Runner) HandleLeaseAck(f *protocol.LeaseAckFrame) {
 			f.TaskID, f.Attempt, f.LeaseID)
 		return
 	}
-	att.noteAck(r.clk.Now().Add(r.opts.LeaseTTL))
+	att.noteAck(r.leaseDeadline(f.ExpiresAt))
 }
 
 // HandleResultAck 匹配 pending 结果（事实已结束，不再重发；accepted=false 只记诊断）。
@@ -960,10 +973,8 @@ func (r *Runner) finishAttemptLocked(att *Attempt) {
 	}
 }
 
-// watchReapLocked 为「终态未确认回收」起一次有界后台复核（每个 attempt 一次）。
-//
-// 物理事实优先：确认不了就继续占着槽位（不假释放）；一旦内核真的回收了，就把
-// 这个事实补齐（补发 reaped=true 的回执 + 释放槽位），不让中枢永久认为槽位被占。
+// watchReapLocked 为「终态未确认回收」起一次有界后台复核（每个 attempt 一次）：确认不了
+// 就继续占着槽位（不假释放），内核真的回收了才补 reaped=true 并释放槽位。
 func (r *Runner) watchReapLocked(att *Attempt) {
 	if r.closed {
 		return

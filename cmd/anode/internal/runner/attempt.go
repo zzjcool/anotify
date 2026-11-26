@@ -108,7 +108,7 @@ func newAttempt(r *Runner, res *reservation, grant *protocol.LeaseGrantFrame) *A
 		groupReaped: true,
 		leaseOK:     true,
 		emitOpen:    true,
-		deadline:    r.clk.Now().Add(r.opts.LeaseTTL),
+		deadline:    r.leaseDeadline(grant.ExpiresAt),
 		ackWake:     make(chan struct{}, 1),
 		done:        make(chan struct{}),
 		procDone:    make(chan struct{}),

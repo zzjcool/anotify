@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/route"
 )
 
@@ -34,20 +35,10 @@ const (
 
 	// maxEventRetentionDays / maxPendingMaxAgeSec 是**防溢出上限**（不是产品策略）。
 	//
-	// 超上限时**钳到上限**（而不是回落默认）——两条路径（env 解析 / 直接写 Config）语义必须一致：
-	//   - 保留期：填一个天文数字的人想的是「几乎永不删」，回落成 30 天等于**加速删**，方向反了；
-	//   - 背压阈值：填一个天文数字的人想的是「几乎不触发」，回落成 120 秒等于**变严**，也反了。
-	// 钳到上限（100 年 / 7 天）既保住「他想要的方向」，又保证乘法绝不回绕。
-	// 非数字这类**看不懂**的输入仍然回落默认（见 retentionDaysFromEnv）。
-	//
-	// 为什么需要它们：两个值都会被乘上一个常数后变成 `int` / `time.Duration`：
-	//   EventRetentionDays * 86400            → int
-	//   PendingMaxAgeSec   * time.Second      → time.Duration（int64 纳秒，上限 ≈ 292 年）
-	// `strconv.Atoi` 在 64 位上可以吃下到 9.2e18，乘完会**回绕**。回绕的方向极其危险：
-	//   - 保留天数回绕成一个小正数 → cutoff = now - 小正数 → 一次删掉几乎全库（不可逆）；
-	//   - 背压阈值回绕成 290ms 左右 → 全站新事件立刻开始 503。
-	// 手滑多打几个 0 是很常见的事故来源，所以这里**按「非法值回落默认」处理**
-	// （与既有的「写错一个 env 不该把防线关掉」同一原则），而不是让它回绕。
+	// 两个值都会被乘上常数变成 int / time.Duration，而 Atoi 能吃下到 9.2e18：乘完会
+	// **回绕**，方向极其危险（保留期回绕 → 一次删掉几乎全库；背压回绕成 290ms → 全站
+	// 立刻 503）。所以超上限钳到上限（保住「想永不删/几乎不触发」的方向），看不懂的
+	// 输入仍回落默认（见 retentionDaysFromEnv）。手滑多打几个 0 是常见事故来源。
 	maxEventRetentionDays = 36500     // 100 年：再长就等于永久保留，不如显式配 0
 	maxPendingMaxAgeSec   = 7 * 86400 // 7 天：超过这个量级已经不是「背压」，是「长期停机」
 
@@ -79,28 +70,19 @@ type Config struct {
 
 	// BootID 是**本次进程启动**的标识，由 /health 回显。
 	//
-	// 为什么需要它：/health 只回 {"ok":true} 时，调用方无法区分「我起的那个进程」
-	// 和「同一个端口上别人的/上次残留的进程」——两者都返回 200。
-	// e2e 的并行套件、以及"上一次 e2e 的 server 没退干净"这两种场景，
-	// 都会让测试**静默连上别人的后端**，症状是随机的 401 和造数 undefined
-	// （表现为 0通过/0失败，看起来像超时或代码坏了，排查成本极高，见 issue #215）。
-	//
-	// 默认随机生成（每次启动都不同）；显式设 ANOTIFY_BOOT_ID 时用它，
-	// 便于外部在启动前就知道该等哪个实例。
+	// 为什么需要它：/health 只回 {"ok":true} 时无法区分「我起的那个进程」与「同端口
+	// 上别人的/上次残留的进程」——两者都 200，e2e 会**静默连上别人的后端**（随机 401、
+	// 造数 undefined，见 issue #215）。默认每次启动随机生成；显式设 ANOTIFY_BOOT_ID
+	// 时用它，便于外部在启动前就知道该等哪个实例。
 	BootID string
 
 	// HookRatePerMin / HookRatePerIPPerMin 是 POST /v1/hooks/{token} 的双维度限流额度
 	// （每分钟），见 ratelimit.go 的 rateLimitedHook。
 	//
-	// 为什么两维：这个端点的 token 是攻击者手里可以换的东西，只按 token 限流等于
-	// 换个 token 就绕过；只按 IP 限流则会把「一个出口 IP + 批量告警」按 60/min 卡死
-	// （issue #245：批量告警从第 61 条起全 429）。两维都过才放行。
-	//
-	// 取值语义（解析见 hookRateFromEnv / hookRateLimits）：
-	//   - 空 / "0" / 非法值 → 用默认（600 每 token、1200 每 IP）；
-	//   - 负数（如 -1，或字面的 "off"）→ **关闭该维度**（显式运维选择，
-	//     configureHookRateLimit 会打 WARN 留痕）；
-	//   - 正数 → 原样使用。
+	// 为什么两维：token 是攻击者能换的东西，只按 token 限流换个 token 就绕过；只按 IP
+	// 限流会把「一个出口 IP + 批量告警」按 60/min 卡死（issue #245：从第 61 条起全 429）。
+	// 取值语义（hookRateFromEnv）：空/"0"/非法 → 默认（600/1200）；负数或 "off" → 关闭
+	// 该维度（configureHookRateLimit 打 WARN 留痕）；正数 → 原样使用。
 	HookRatePerMin      int
 	HookRatePerIPPerMin int
 
@@ -112,10 +94,9 @@ type Config struct {
 	//   - "off" / "-1" / ...   → **关闭该缓存**（所有请求走完整 DB / argon2 校验）；
 	//   - "30s" / "30"         → 原值（纯数字按秒）。
 	//
-	// 为什么要给运维这个旋钮：这两个 TTL 同时是「超管禁用用户 / 吊销 Key 之后，
-	// 本进程还要多久才一定不再放行」的上界（正常路径有同步失效钩子，TTL 兜的是
-	// 绕过钩子的写路径，例如运维直接改库）。合规要求严格时可以调到 1s 或直接关掉，
-	// 代价只是吞吐。
+	// 为什么给运维这个旋钮：这两个 TTL 是「超管禁用用户 / 吊销 Key 后本进程还要多久
+	// 才一定不再放行」的上界（正常路径有同步失效钩子，TTL 兜的是直接改库这类绕过）。
+	// 合规严格时可调到 1s 或关掉，代价只是吞吐。
 	SessionCacheTTL time.Duration
 	APIKeyCacheTTL  time.Duration
 
@@ -135,9 +116,8 @@ type Config struct {
 	//   - 非数字（手滑）  → 默认 30 天（写错一个 env 不该改变保留策略的方向：
 	//     宁可照默认多留 30 天，也不要因为一个拼写错误变成永久保留）。
 	//
-	// 为什么要给运维这个旋钮：events 是「只进不出」的增长来源，30 天是默认折中；
-	// 合规要求长期留存时可以调大，0 是显式承担容量风险的运维选择
-	// （注意 auto_vacuum=0：清理让文件「平台化」而不是变小，见 store/retention.go）。
+	// 为什么给运维这个旋钮：events 是「只进不出」的增长来源，30 天是默认折中；合规要求
+	// 长期留存可调大，0 是显式承担容量风险（auto_vacuum=0：清理让文件平台化而非变小）。
 	EventRetentionDays int
 
 	// EventRetentionDaysSet 表示 ANOTIFY_EVENT_RETENTION_DAYS 被**显式设置**过（非空）。
@@ -212,15 +192,24 @@ type Config struct {
 	//   - "0" / 负数     → **禁用**周期回收（显式运维选择：tombstone 会一直留着）；
 	//   - 正数           → 原值（上限 1 天）。
 	//
-	// 为什么默认是 1 小时而不是照抄产物 GC 的 5 分钟：purge 的判据是
-	// `capability_versions` 全扫 + 三次相关全扫 + `json_tree` + 临时 B 树排序，
-	// 全程持 `BEGIN IMMEDIATE` 写锁（见 store.PurgeDeletedCapabilities）。按分钟级跑
-	// 等于持续与事件入口抢写锁，而 tombstone 的增长速率是个位数/天量级
-	// （每删一次能力只把现有 live 版本原地打 `deleted_at`，不新增行）。
-	//
-	// 判据事实（无引用才删、tasks 是 RESTRICT / deployments 是 CASCADE）全在 store 侧
-	// （PurgeDeletedCapabilities），这里只是驱动器。
+	// 为什么默认 1 小时而不是照抄产物 GC 的 5 分钟：purge 的判据是 `capability_versions`
+	// 全扫 + `json_tree` + 临时 B 树排序，全程持 `BEGIN IMMEDIATE` 写锁（见
+	// store.PurgeDeletedCapabilities）；按分钟级跑等于持续与事件入口抢写锁，而 tombstone
+	// 是「个位数/天」量级。判据事实全在 store 侧，这里只是驱动器。
 	CapabilityGCIntervalSec int
+
+	// LeaseTTL 是中枢授予/续租的租约时长（#661）。
+	//
+	// 语义（解析见 leaseTTLFromEnv，校验见 Validate）：
+	//   - 未设置 / 空 → 默认（protocol.DefaultLeaseTTL = 180s）；
+	//   - "180s" / "3m" / "180"（纯数字按秒）→ 原值；
+	//   - 其它（0 / 负数 / 低于协议下限 60s / 与续租间隔不成比例 / 写错）→
+	//     **启动即拒**（不像保留期那样回落默认）。
+	//
+	// 为什么“写错就拒”而不是静默回落：缩小的租约不会报错，只会让整单任务在隧道抽一下
+	// 时被判失联（#661：10–37 分钟的 implement 一步被 60s 抖动作废），而回落的默认值
+	// 恰好比运维想配的**更小**。类型是 time.Duration，与协议侧同一单位口径。
+	LeaseTTL time.Duration
 }
 
 // hookRateLimits 把两个字段归宿成最终额度（perToken, perIP）。
@@ -498,6 +487,36 @@ func (c Config) PendingMaxAge() time.Duration {
 	return time.Duration(n) * time.Second
 }
 
+// LeaseGrantTTL 归一化 `ANOTIFY_LEASE_TTL`：0（未配置 / 直接构造 Config）= 协议默认；
+// 归一化只在这个方法里做一次，mux/测试都调它，不各自猜零值语义。
+func (c Config) LeaseGrantTTL() time.Duration {
+	if c.LeaseTTL == 0 {
+		return protocol.DefaultLeaseTTL
+	}
+	return c.LeaseTTL
+}
+
+// leaseTTLFromEnv 读 ANOTIFY_LEASE_TTL（#661）。与同文件其它 *_from_env 不同，这里
+// 是「写错就拒」：未设置/空 → def（180s）；"180s"/"3m"/"180"（纯数字按秒）→ 原值；
+// 其它（含 0 / 负数 / 写错）→ -1 哨兵，由 Validate 带着原值报错。缩小的租约是**静默**
+// 的危险（隧道抽一下任务就被判失联），而手滑的值往往正好比默认小。
+func leaseTTLFromEnv(key string, def time.Duration) time.Duration {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if raw == "" {
+		return def
+	}
+	if d, err := time.ParseDuration(raw); err == nil {
+		if d <= 0 {
+			return -1
+		}
+		return d
+	}
+	if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return -1
+}
+
 // cacheTTLFromEnv 读取一个缓存 TTL 环境变量。
 //
 // 语义：
@@ -573,6 +592,9 @@ func FromEnv() Config {
 		// 已删能力（tombstone）物理回收周期（issue 003）：默认 1 小时，0 = 禁用。
 		CapabilityGCIntervalSec: capabilityGCIntervalFromEnv("ANOTIFY_CAPABILITY_GC_INTERVAL_SEC"),
 
+		// 租约时长（#661）：默认 180s，非法值由 Validate 拦在启动那一刻。
+		LeaseTTL: leaseTTLFromEnv("ANOTIFY_LEASE_TTL", protocol.DefaultLeaseTTL),
+
 		// 派发预算（v3 契约 §2）：非法值由 Validate 拦在启动那一刻。
 		//
 		// v4 的 route.Router 不消费这两个值（中枢不再有跳数预算），默认值因此落在
@@ -631,6 +653,11 @@ func (c Config) Validate() error {
 		if it.got <= 0 {
 			return fmt.Errorf("%s 必须是正整数（当前 %q）", it.key, os.Getenv(it.key))
 		}
+	}
+	// 租约时长（#661）：低于协议下限 / 与续租间隔不成比例都**启动即拒**。
+	// 带上 env 里的原值，否则运维只会看到「低于下限」却不知道自己配了什么。
+	if err := protocol.ValidateLeaseTTL(c.LeaseGrantTTL(), protocol.LeaseRenewInterval); err != nil {
+		return fmt.Errorf("ANOTIFY_LEASE_TTL 非法（当前 %q）：%w", os.Getenv("ANOTIFY_LEASE_TTL"), err)
 	}
 	return nil
 }

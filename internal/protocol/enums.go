@@ -1,6 +1,9 @@
 package protocol
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // TaskPhase 是任务的相位（capability.md §8.3：小写，与 wire 一致）。
 //
@@ -285,18 +288,44 @@ func (c CancelReason) Valid() bool {
 	return false
 }
 
-// 租约参数（capability.md §2.3「全目录一致」）。
-//
-// 基础租约 60s、续租间隔 20s、TERM 宽限 5s 后 KILL 整个进程组。三个数必须来自
-// 同一处，否则节点与中枢各算各的 deadline，症状是「任务莫名其妙被 KILL」。
+// 租约参数（capability.md §2.3「全目录一致」）：60s 下限 / 20s 续租 / 5s TERM 宽限。三个
+// 数必须来自同一处，否则节点与中枢各算各的 deadline，症状是「任务莫名其妙被 KILL」。
 const (
-	// LeaseTTL 是中枢授予的租约时长。
+	// LeaseTTL 是租约时长的**协议下限**（历史默认值也是它）：中枢可用 ANOTIFY_LEASE_TTL
+	// 调大，但不得短于它——隧道重建（502/TLS 重置）实测可达 40–90s，60s 的租约撞上这种
+	// 抖动就整单作废（#661：10–37 分钟的 implement 一步被判死）。
 	LeaseTTL = 60 * time.Second
-	// LeaseRenewInterval 是节点续租间隔（LeaseTTL 的三分之一）。
+	// DefaultLeaseTTL 是中枢未显式配置时授予的租约时长（180s = 9 个续租周期）。
+	// 为什么不用下限 60s：中枢的判据是「最后一次续租 + TTL」，60s 只够 3 个续租周期，
+	// 任何超过 60s 的断连都直接推终态；代价只是失联回收最多晚 120s。
+	DefaultLeaseTTL = 180 * time.Second
+	// LeaseRenewInterval 是节点续租间隔（默认租约的九分之一）。
 	LeaseRenewInterval = 20 * time.Second
 	// LeaseTermGrace 是 TERM 之后到 KILL 进程组的宽限期。
 	LeaseTermGrace = 5 * time.Second
+	// LeaseRenewRatio 是「租约时长至少几个续租间隔」：少于 3 个就没有抗抖动余量。
+	LeaseRenewRatio = 3
 )
+
+// ValidateLeaseTTL 校验 (ttl, renew) 自洽：非法配置必须**启动即拒**，不能在运行期才表现
+// 为「任务莫名其妙被判失联」。两条判据是不同的事故形态：低于协议下限（一次隧道重建就
+// 够判死）与续租间隔相对太长（丢一两个 ACK 就到期）。
+func ValidateLeaseTTL(ttl, renew time.Duration) error {
+	if ttl <= 0 {
+		return fmt.Errorf("租约时长必须为正数（当前 %v）", ttl)
+	}
+	if ttl < LeaseTTL {
+		return fmt.Errorf("租约时长 %v 低于协议下限 %v", ttl, LeaseTTL)
+	}
+	if renew <= 0 {
+		return fmt.Errorf("续租间隔必须为正数（当前 %v）", renew)
+	}
+	if min := time.Duration(LeaseRenewRatio) * renew; ttl < min {
+		return fmt.Errorf("租约时长 %v 不能小于 %d×续租间隔（%v）：抖动余量不足",
+			ttl, LeaseRenewRatio, min)
+	}
+	return nil
+}
 
 // 退避参数（D-I11，写常量集中一处）。
 const (

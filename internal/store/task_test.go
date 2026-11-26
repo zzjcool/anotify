@@ -879,7 +879,9 @@ func TestStopIntentLiterals(t *testing.T) {
 	}
 }
 
-// TestRecoverLostLeasesRequeues 过期租约按幂等声明分派：可重试 → 回 pending，不可重试 → abandoned。
+// TestRecoverLostLeasesRequeues 过期租约按**重试预算**分派：还有预算 → 回 pending，预算用尽 → abandoned。
+//
+// 幂等声明不再是判据（#661）：非幂等能力只要声明了 maxAttempts>1，失联后同样按预算重试。
 func TestRecoverLostLeasesRequeues(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -896,6 +898,12 @@ func TestRecoverLostLeasesRequeues(t *testing.T) {
 		},
 	})
 	nonIdem := v4Cap(t, db, nsID, "nonidem", 1)
+	// 声明「不可重试」（maxAttempts=1）：失联仍然直接终局。
+	once := 1
+	onceBudget := v4CapWith(t, db, &CapabilityVersion{
+		NamespaceID: nsID, Name: "once", Version: 1,
+		Spec: artifact.Spec{Lifecycle: artifact.Lifecycle{MaxAttempts: &once}},
+	})
 
 	for _, tc := range []struct {
 		name string
@@ -903,7 +911,8 @@ func TestRecoverLostLeasesRequeues(t *testing.T) {
 		want string
 	}{
 		{"idempotent-requeues", idem, TaskPending},
-		{"non-idempotent-abandons", nonIdem, TaskAbandoned},
+		{"non-idempotent-requeues", nonIdem, TaskPending},
+		{"budget-exhausted-abandons", onceBudget, TaskAbandoned},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			node := v4Node(t, db, "node-"+tc.name, 1)

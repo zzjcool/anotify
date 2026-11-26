@@ -6,15 +6,9 @@ import (
 	"time"
 )
 
-// 执行子协议的 10 个帧（capability.md §8.5）。
-//
-// 时序：dispatch → accept/reject → lease.grant → 启动 →
-// (lease.renew/lease.ack)* → task.result/result.ack；task.cancel 可随时抢占，
-// 进入 cancel.ack。
-//
-// 一条不变量：**派发不是授权**。task.dispatch 只带 assignmentId / proposedAttempt，
-// 不授 lease、不带 attemptToken；执行权只来自中枢的 lease.grant（leaseId +
-// attemptToken 都由中枢生成）。节点收到 grant 之后才启动子进程，attempt 才计数。
+// 执行子协议的 10 个帧（capability.md §8.5）：dispatch/accept/reject、lease.grant/renew/
+// ack、task.result/result.ack、task.cancel/cancel.ack。下行 = 中枢授权，上行 = 节点事实；
+// 只有 lease.grant 计 attempt 并启动执行，dispatch 只是候选（不授 lease/token）。
 const (
 	FrameTaskDispatch = "task.dispatch"
 	FrameTaskAccept   = "task.accept"
@@ -93,11 +87,8 @@ type TaskAcceptFrame struct {
 	Slot *int `json:"slot"`
 }
 
-// TaskRejectFrame 是节点对派发的拒绝。
-//
-// reason 是 A3 封闭集合：stale_config | slot_unavailable。两者均不计 attempt、
-// 不授 lease；前者是机器级配置未 applied，后者是真实 slot/预算不可用。
-// 缺命令、HOME、workDir、export 等执行准备错误不能伪装为 pre-grant reject。
+// TaskRejectFrame 是节点对派发的拒绝。缺命令、HOME、workDir、export 等执行准备错误
+// 不能伪装为 pre-grant reject（它们发生在 grant 之后，应当走 task.result failed）。
 type TaskRejectFrame struct {
 	Type            string `json:"type"`
 	TaskID          string `json:"taskId"`
@@ -114,10 +105,8 @@ type TaskRejectFrame struct {
 	Reason string `json:"reason"`
 }
 
-// LeaseGrantFrame 是中枢 → 节点的执行授权。
-//
-// leaseId / attemptToken 由中枢生成（节点不得自生成 lease）；grant 生效时 attempt
-// 才计数，节点收到后才启动子进程。attemptToken 就是任务脚本里的
+// LeaseGrantFrame 是中枢 → 节点的执行授权：leaseId / attemptToken 由中枢生成（节点不得
+// 自生成 lease），grant 生效时 attempt 才计数。attemptToken 就是脚本里的
 // ANOTIFY_TASK_TOKEN，emit 网关按它把请求归属到 task/attempt。
 type LeaseGrantFrame struct {
 	Type    string `json:"type"`
@@ -148,8 +137,8 @@ type LeaseRenewFrame struct {
 	LeaseID string `json:"leaseId"`
 }
 
-// LeaseAckFrame 是中枢对续租的确认：节点以「最后一次 ACK + 本地 deadline」判定
-// 失联，到期自行 TERM，5s 后 KILL 整个进程组。
+// LeaseAckFrame 是中枢对续租的确认：节点以「最后一次 ACK + expiresAt」判失联，到期自行
+// TERM，5s 后 KILL 整个进程组。
 type LeaseAckFrame struct {
 	Type      string    `json:"type"`
 	TaskID    string    `json:"taskId"`

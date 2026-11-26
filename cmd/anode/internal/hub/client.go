@@ -33,17 +33,21 @@ const writeTimeout = 10 * time.Second
 
 // 保活参数（keepalive）：**空闲连接必须自己发帧**。
 //
-// 中枢与节点之间在空闲时一个帧都不发，而它们中间通常站着反向代理 / 隧道
-// （cloudflared、nginx、负载均衡）。这些中间层对**无数据**的 WebSocket 有 idle
-// timeout（实测本机经 cloudflared 是 ~126s），到点直接关连接 —— 现场表现是
-// 「每两分钟断一次、1 秒后又连上」：控制台在线状态来回跳，派发偶尔撞上
-// `no_online_node`（任务明明有节点却报没有）。
-//
-// ping 既保活（30s 远小于任何常见 idle timeout），也是最便宜的半开连接探测：
-// 回不了 pong 就主动断开重连，比等 TCP 超时快得多。
+// 中间层（cloudflared / nginx / 负载均衡）对**无数据**的 WebSocket 有 idle
+// timeout（实测经 cloudflared ~126s），到点直接关连接：现场表现为「每两分钟断
+// 一次、1 秒后又连上」，派发偶尔撞上 `no_online_node`。ping 既保活（30s 远小于
+// 任何常见 idle timeout），也是最便宜的半开连接探测：回不了 pong 就断开重连。
 const (
 	pingInterval = 30 * time.Second
 	pingTimeout  = 10 * time.Second
+)
+
+// 硬心跳（frame heartbeat）：**读循环卡在隧道里时唯一的自救手段**。keepalive 的 ping 只在
+// 控制帧还能收发时有效；隧道把**下行业务帧**丢掉而连接不报错时（#661）Read 会永久阻塞。
+// 判据 = 「发了一个等回执的帧，N 内一个下行帧都没来」，N = 2×LeaseRenewInterval（40s）。
+const (
+	defaultHeartbeatTimeout  = 2 * protocol.LeaseRenewInterval
+	defaultHeartbeatInterval = defaultHeartbeatTimeout / 4
 )
 
 // Handler 是节点对配置/部署帧的处理入口（由 internal/node 实现）。
@@ -70,10 +74,8 @@ type ExecHandler interface {
 	HandleCancel(frame *protocol.TaskCancelFrame)
 }
 
-// OpsHandler 是保留运维帧入口（ops 实现）。
-//
-// Upgrade 自己负责 ack（send 是并发安全的上行入口）：替换成功后先 ack 实际版本
-// 再触发重启，顺序不能反（ack 丢了中枢就永远不知道升没升上去）。
+// OpsHandler 是保留运维帧入口（ops 实现）。Upgrade 自己负责 ack：替换成功后先 ack 实际
+// 版本再触发重启，顺序不能反（ack 丢了中枢永远不知道升没升上去）。
 type OpsHandler interface {
 	HandleUpgrade(ctx context.Context, frame *protocol.UpgradeFrame, send func(any) error)
 	HandleLogsRequest(ctx context.Context, frame *protocol.LogsRequestFrame) *protocol.LogsResponseFrame
@@ -107,9 +109,19 @@ type Client struct {
 	ReadLimit int64
 	Logf      func(format string, args ...any)
 
+	// HeartbeatTimeout 是「等回执的帧最多等多久」（0 = 2×LeaseRenewInterval）。
+	HeartbeatTimeout time.Duration
+	// HeartbeatInterval 是判定周期（0 = HeartbeatTimeout/4）。
+	HeartbeatInterval time.Duration
+
 	writeMu    sync.Mutex
 	conn       *websocket.Conn
 	generation atomic.Uint64 // changes invalidate sends queued for an earlier connection
+
+	// lastFrame / awaitAck 是硬心跳的两个时刻（unixnano；0 = 本会话没有）；awaitAck 只在
+	// 下行帧到达时清零——那是「链路还在把字节送回来」的正向证据。
+	lastFrame atomic.Int64
+	awaitAck  atomic.Int64
 }
 
 // New 校验 server 形状并装配客户端。
@@ -123,16 +135,11 @@ func New(serverURL, token string, handler Handler) (*Client, error) {
 	return &Client{ServerURL: serverURL, Token: token, Handler: handler}, nil
 }
 
-// Check 做一次性身份预检：连接 → hello → 等到 welcome → 返回。
-//
-// 它是 `anode serve --check` 的实现（v4.1 契约 §4）：只确认「中枢可达 + 身份被接受」，
-// 不应用配置、不写盘、不上报本地 applied。**不重连、不重试、不 sleep、不 backoff**：
-// 调用方给 ctx 一个 deadline（CLI 固定 10s），那就是整次预检的上限。
-//
-// 诊断约定（CLI 据此分 kind）：
-//   - 401/403、或 welcome 之前的 close 1008 → 包装 ErrAuthRejected（身份被拒）；
-//   - ctx 到期 → 包装 ErrCheckTimeout；ctx 取消 → 返回 ctx.Err()；
-//   - 其它失败原样返回（CLI 归入 timeout 诊断，detail 带真实原因）。
+// Check 做一次性身份预检：连接 → hello → 等到 welcome → 返回（`anode serve --check` 的实现，
+// v4.1 契约 §4）。只确认「中枢可达 + 身份被接受」，不应用配置、不写盘、不上报 applied。
+// **不重连、不重试、不 sleep、不 backoff**：调用方给的 ctx deadline（CLI 固定 10s）就是上限。
+// 诊断约定（CLI 据此分 kind）：401/403 或 welcome 前的 close 1008 → ErrAuthRejected；ctx 到期
+// → ErrCheckTimeout；其它原样返回（归入 timeout 诊断，detail 带真实原因）。
 func Check(ctx context.Context, serverURL, token string, hello protocol.HelloFrame) error {
 	streamURL, err := StreamURL(serverURL)
 	if err != nil {
@@ -248,16 +255,15 @@ func (c *Client) Send(frame any) error {
 	if err := c.conn.Write(ctx, websocket.MessageText, data); err != nil {
 		return fmt.Errorf("hub: 写帧: %w", err)
 	}
+	c.noteAwaitAck(frame)
 	return nil
 }
 
-// SendGuarded is the task.result write fence. guard must only inspect state:
-// it runs under writeMu, after the connection check, immediately before Write.
-// false/nil means locally rejected (no bytes), not a network failure. ctx must
-// be cancelable by the lease owner and bounded by its authorization deadline.
-// Cancellation fences admission, but cannot retract an admitted write: that
-// write retains the original deadline/network cap, not attempt cleanup cancel.
-// No runner/attempt lock is retained during the network write.
+// SendGuarded is the task.result write fence. guard only inspects state: it runs
+// under writeMu, after the connection check, immediately before Write; false/nil
+// means locally rejected (no bytes), not a network failure. Cancellation fences
+// admission but cannot retract an admitted write (that write keeps the original
+// deadline/network cap). No runner/attempt lock is held during the network write.
 func (c *Client) SendGuarded(ctx context.Context, frame any, guard func() bool) (bool, error) {
 	generation := c.generation.Load()
 	data, err := protocol.Encode(frame)
@@ -282,18 +288,17 @@ func (c *Client) SendGuarded(ctx context.Context, frame any, guard func() bool) 
 	if admissionCtx.Err() != nil { // Caller cancellation during guard still precedes admission.
 		return false, nil
 	}
-	// The guard/caller check is the admission fence. In particular a trusted
-	// result ACK may immediately cancel the attempt while Write is returning;
-	// propagating it into coder/websocket would close the entire shared stream.
-	// WithoutCancel strips deadlines too, so explicitly restore the captured
-	// minimum of the caller's authorization deadline and the original 10s cap.
-	// Connection Close still interrupts IO; the server finally validates bytes.
+	// The guard/caller check is the admission fence: a trusted result ACK may cancel the
+	// attempt while Write returns, which must not close the shared stream. WithoutCancel
+	// strips deadlines too, so restore the captured minimum; connection Close still
+	// interrupts IO and the server finally validates bytes.
 	deadline, _ := admissionCtx.Deadline() // WithTimeout always supplies one.
 	writeCtx, stopWrite := context.WithDeadline(context.WithoutCancel(admissionCtx), deadline)
 	defer stopWrite()
 	if err := c.conn.Write(writeCtx, websocket.MessageText, data); err != nil {
 		return false, fmt.Errorf("hub: 写 guarded 帧: %w", err)
 	}
+	c.noteAwaitAck(frame)
 	return true, nil
 }
 
@@ -319,10 +324,11 @@ func (c *Client) runSession(ctx context.Context) error {
 	c.setConn(conn)
 	defer c.clearConn(conn)
 
-	// 保活：与本会话同生共死（连接一断，ping 循环也随之结束）。
+	// 保活 + 硬心跳：都与本会话同生共死（连接一断，两个循环也随之结束）。
 	pingCtx, stopPing := context.WithCancel(ctx)
 	defer stopPing()
 	go c.keepalive(pingCtx, conn)
+	go c.watchHeartbeat(pingCtx, conn)
 
 	if err := c.Send(c.Handler.Hello()); err != nil {
 		return err
@@ -353,6 +359,7 @@ func (c *Client) runSession(ctx context.Context) error {
 		if _, ok := frame.(*protocol.WelcomeFrame); ok {
 			welcomed = true
 		}
+		c.noteInbound()
 		c.dispatch(ctx, conn, frame)
 	}
 }
@@ -377,6 +384,73 @@ func (c *Client) keepalive(ctx context.Context, conn *websocket.Conn) {
 				_ = conn.Close(websocket.StatusPolicyViolation, "ping timeout")
 				return
 			}
+		}
+	}
+}
+
+// noteInbound 记录「收到一帧」并清掉等待中的回执。
+func (c *Client) noteInbound() {
+	c.lastFrame.Store(time.Now().UnixNano())
+	c.awaitAck.Store(0)
+}
+
+// noteAwaitAck 登记等待起点（不覆盖已有值：判据是「最早那个没回执的请求等了多久」）。
+func (c *Client) noteAwaitAck(frame any) {
+	if !expectsReply(frame) {
+		return
+	}
+	c.awaitAck.CompareAndSwap(0, time.Now().UnixNano())
+}
+
+// expectsReply 报告上行帧是否**协议保证**有回执：只有 lease.renew→lease.ack、
+// task.result→result.ack、task.emit→emit.ack。单向事实（hello/applied/cancel.ack）
+// 算进来会让空闲连接被自己的心跳判死。
+func expectsReply(frame any) bool {
+	switch frame.(type) {
+	case *protocol.LeaseRenewFrame, *protocol.TaskResultFrame, *protocol.TaskEmitFrame:
+		return true
+	}
+	return false
+}
+
+// watchHeartbeat 是读循环的硬超时：等回执超时即断开重连。只在「有等待回执的上行帧」
+// 时计时——空闲连接本来就没有下行帧，拿它判死会把每条空闲连接每 40s 掐一次。
+func (c *Client) watchHeartbeat(ctx context.Context, conn *websocket.Conn) {
+	timeout := c.HeartbeatTimeout
+	if timeout <= 0 {
+		timeout = defaultHeartbeatTimeout
+	}
+	interval := c.HeartbeatInterval
+	if interval <= 0 {
+		interval = timeout / 4
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			waiting := c.awaitAck.Load()
+			if waiting == 0 {
+				continue
+			}
+			waited := time.Since(time.Unix(0, waiting))
+			if waited < timeout {
+				continue
+			}
+			last := c.lastFrame.Load()
+			lastText := "本会话还没收到任何帧"
+			if last > 0 {
+				lastText = fmt.Sprintf("最后收到帧于 %s 前",
+					time.Since(time.Unix(0, last)).Truncate(time.Millisecond))
+			}
+			c.logf("hub: 超过 %s 没收到任何下行帧（等回执已 %s，%s），主动断开重连",
+				timeout, waited.Truncate(time.Millisecond), lastText)
+			// CloseNow 而不是 Close：Close 要等对端的 close 帧（握手期 5s 级），
+			// 而这里的判据就是「对端不说话」——等它只会把重连推迟到判据失效之后。
+			_ = conn.CloseNow()
+			return
 		}
 	}
 }

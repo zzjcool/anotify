@@ -101,11 +101,19 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		"path", cfg.DBPath,
 	)
 
+	// 租约时长（#661）：grant / renew 两个写入点都读它（store.leaseUntil），必须在第一条 grant 之前注入。
+	db.SetLeaseTTL(cfg.LeaseGrantTTL())
+	slog.Info("lease ttl configured",
+		"event", "server.lease.ttl.configured",
+		"lease_ttl_sec", int(db.LeaseTTL()/time.Second),
+		"renew_interval_sec", int(protocol.LeaseRenewInterval/time.Second),
+		"note", "节点按每帧 lease.ack 的 expiresAt 自算本地 deadline，两侧用同一个数",
+	)
+
 	// events 保留期（#229 / #005）：**生效值来自 system_config**，env 只在空库首次启动时播种。
 	//
-	// 为什么启动时必须打这一条：events 清理**不可逆**，而「默认 30 天」是一个真实的
-	// 产品决策（用户拍板）。运维必须在重启后就能从日志里读到「这台机器会删 30 天前的
-	// 事件」或者「这台机器永不删事件、磁盘会一直涨」——两种后果完全不同，不能只留在文档里。
+	// 必须打这一条：events 清理**不可逆**，运维要在重启后就能读到「这台机器会删 30 天前
+	// 的事件」还是「永不删、磁盘会一直涨」——两种后果完全不同，不能只留在文档里。
 	//
 	// 数字口径（`scripts/perf/c/s6-capacity.sh` a 段实测，与批次 4 的 s2-retention.sh
 	// 同量级）：一条空 payload 的 ingest 在磁盘上是 **679.9 B**（含派发剪枝留痕的额外行，
