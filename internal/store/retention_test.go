@@ -13,6 +13,8 @@ package store
 import (
 	"context"
 	"testing"
+
+	"github.com/zzjcool/anotify/internal/protocol"
 )
 
 // seedTerminalTask 造一条「服务器裁定的终态、未上报」任务（reported=0 + finished_at）。
@@ -172,8 +174,8 @@ func TestRetentionDeletesExpiredTerminalTasks(t *testing.T) {
 // TestRetentionKeepsUnreapedAttempts 还有未 reaped 的 attempt → 任务行不许先消失；
 // 可信回收（精确历史绑定）之后下一轮才允许删（物理事实保留）。
 //
-// 怎么造出「终态但未回收」：非幂等能力的租约过期由 RecoverLostLeases 置 abandoned，
-// 该分支**不写 reaped 事实、也不释放槽位**（等节点交回可信回收）。
+// 怎么造出「终态但未回收」：取消在飞时租约过期——取消分支把任务推进取消终态，
+// 但不写 reaped、不释放槽（等节点交回 processGroupReaped）。
 func TestRetentionKeepsUnreapedAttempts(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -188,10 +190,13 @@ func TestRetentionKeepsUnreapedAttempts(t *testing.T) {
 	if running.LeaseUntil == nil {
 		t.Fatal("grant 后应有 leaseUntil")
 	}
+	if err := db.RequestCancel(ctx, task.ID, protocol.ReasonCancelledByUser, Now()); err != nil {
+		t.Fatalf("request cancel: %v", err)
+	}
 	if _, _, err := db.RecoverLostLeases(ctx, *running.LeaseUntil+1); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
-	v4MustPhase(t, db, nsID, task.ID, TaskAbandoned)
+	v4MustPhase(t, db, nsID, task.ID, TaskCancelled)
 	// 保底留 1 小时，确保「能不能删」只由 reaped 事实决定，不由 TTL 边界决定。
 	now := Now() + 3600
 	stats, err := db.RunRetention(ctx, now)

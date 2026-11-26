@@ -501,11 +501,8 @@
     </section>
 
     <!-- ===== 系统保留配置（管理员）=====
-         IA（#436）：这块原先挂在节点列表页（nodes.html 的 #system-config）——
-         它是**系统级**配置（system_config 单行表），与节点无关。整块原样迁到这里，
-         元素 id 与 CAS 语义逐字保留（#result-ttl / #event-ttl / #task-ttl）。
-         ④：再分成三个区（标题 + 说明 + 分隔）——可改的保留期、只读的 System YAML、
-         真正会造成数据丢失的写动作（危险操作）。非 admin 不是空白页：
+         系统级单例（#436 从节点列表页迁来），元素 id 与 CAS 语义逐字保留（#result-ttl / #event-ttl / #task-ttl）。
+         分三区（④）：可改的保留期、只读的 System YAML、真正会丢数据的写动作；非 admin 不是空白页：
          页面级无权限卡（#admin-forbidden）+ 这里的 #system-forbidden 都给出 403。 -->
     <section id="system-config" class="card card-pad">
       <div class="card-title">{{t "nodes.v4.retention"}}</div>
@@ -1303,6 +1300,33 @@
     box.textContent = n === 0 ? nx('ttl_zero') : nx('ttl_hint').replace('{n}', String(n)).replace('{days}', days);
   }
   for (const [id] of ttlFields) $(id + '-ttl').addEventListener('input', () => renderTtlHint(id));
+  /* #647：保留期是**不可逆的数据生命周期变更** —— 缩短窗口（含 0 → N 天：0 是永久）
+     或改为 0 会真的删掉超窗数据且不可恢复，所以「会删数据」的改动先确认再写，延长/未改动直接保存。
+     摘要逐字段给「旧 → 新」＋后果，并同屏列出未改动的字段（弹层盖住了输入框，要能核对全量）。 */
+  const ttlSpan = n => (n === 0 ? Infinity : n);
+  const ttlText = n => n === 0 ? nt('ttl_forever')
+    : n % 86400 === 0 ? nt('ttl_days').replace('{n}', String(n / 86400))
+    : n % 3600 === 0 ? nt('ttl_hours').replace('{n}', String(n / 3600))
+    : n < 3600 ? nt('ttl_seconds').replace('{n}', String(n))
+    : nt('ttl_hours').replace('{n}', (n / 3600).toFixed(1));
+  const ttlLabels = { result: nx('ttl_result'), event: nx('ttl_event'), task: nx('ttl_task') };
+  const needsSaveConfirm = retention => ttlFields.some(([, key]) => {
+    const from = systemConfig.retention[key], to = retention[key];
+    return from !== to && (ttlSpan(to) < ttlSpan(from) || to === 0);
+  });
+  const saveConfirmDanger = retention => A.confirmDanger({
+    title: nt('save_confirm_title'),
+    body: ttlFields.map(([id, key]) => {
+      const label = ttlLabels[id], from = systemConfig.retention[key], to = retention[key];
+      if (from === to) return nt('save_confirm_line_same').replace('{label}', label);
+      const line = nt('save_confirm_line').replace('{label}', label).replace('{from}', ttlText(from)).replace('{to}', ttlText(to));
+      const impact = to === 0 ? nt('save_confirm_impact_forever')
+        : ttlSpan(to) < ttlSpan(from) ? nt('save_confirm_impact_shrink') : nt('save_confirm_impact_extend');
+      return line + impact;
+    }).join('\n'),
+    note: nt('save_confirm_note'),
+    confirmLabel: nt('save_confirm_ok'),
+  });
   async function loadSystem() {
     if (!has('system-config')) return;
     $('system-save').disabled = true; msg('system-state', nt('loading'));
@@ -1335,13 +1359,18 @@
   if (has('system-yaml-copy')) $('system-yaml-copy').onclick = () => A.copyText($('system-yaml-copy'), () => $('system-yaml-text').textContent);
   $('system-reload').onclick = async () => { if (currentTtls() !== systemOriginal && !(await A.confirmDanger({ body: nt('reload_confirm') }))) return; loadSystem(); };
   $('system-save').onclick = async () => {
-    if (!systemConfig) return; $('system-save').disabled = true;
+    if (!systemConfig) return;
+    let retention;
     try {
-      const retention = Object.fromEntries(ttlFields.map(([id, key]) => {
+      retention = Object.fromEntries(ttlFields.map(([id, key]) => {
         const raw = $(id + '-ttl').value;
         if (!/^\d+$/.test(raw)) throw new Error('TTL requires integer seconds >= 0');
         return [key, Number(raw)];
       }));
+    } catch (e) { msg('system-state', errorText(e), true); return; }
+    if (needsSaveConfirm(retention) && !(await saveConfirmDanger(retention))) return;
+    $('system-save').disabled = true;
+    try {
       const value = await write('/v1/system/config', { metadata: { resourceVersion: systemConfig.metadata.resourceVersion }, retention });
       systemConfig = value;
       await loadSystem(); msg('system-state', nt('saved'));

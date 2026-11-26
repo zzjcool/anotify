@@ -323,7 +323,7 @@ func TestTaskRecoverIdempotentRequeues(t *testing.T) {
 		t.Fatalf("expire leases: %v", err)
 	}
 	// 显式模拟**真实 offline 事实**（会话死亡）：它只说明连接断了，不证明进程组已回收，
-	// 所以 busy 账本必须保留（容量不可派发，但不造假 reaped）。
+	// 所以重排那格必须保留（不造假 reaped）；终局那格见下面的收敛断言。
 	if err := db.MarkNodeOffline(ctx, node.ID, now); err != nil {
 		t.Fatalf("mark node offline: %v", err)
 	}
@@ -348,17 +348,21 @@ func TestTaskRecoverIdempotentRequeues(t *testing.T) {
 	if dead.Error != protocol.ReasonLeaseExpired {
 		t.Fatalf("非幂等过期应 abandoned + lease_expired，得到 %q", dead.Error)
 	}
-	// offline 不能当物理回收事实：两个 attempt 的槽必须都还记着。
-	if busySlots(t, db, node.ID) != 2 {
-		t.Fatalf("offline 不是进程回收事实：busy 账本必须保留，得到 %d", busySlots(t, db, node.ID))
+	// 重排那格必须保留（旧进程可能还在跑）；abandoned 那格在终局同事务收敛时释放，
+	// 否则那条 attempt 永远算未回收执行 + 永远占着物理槽（#660）。
+	if busySlots(t, db, node.ID) != 1 {
+		t.Fatalf("重排的槽必须保留、abandoned 的槽必须收敛：busy=%d", busySlots(t, db, node.ID))
 	}
-	// 节点回来并明确声明两个槽都空闲：这才是可信回收事实。
+	if deadAttempt, derr := db.GetTaskAttempt(ctx, plainTask.ID, 1); derr != nil || deadAttempt.ReapedAt == nil {
+		t.Fatalf("abandoned 的 attempt 必须补 reaped 事实：%+v err=%v", deadAttempt, derr)
+	}
+	// 节点回来并明确声明剩下的槽空闲：这才是可信回收事实。
 	facts := idleObservations(t, db, node.ID)
-	if len(facts) != 2 {
-		t.Fatalf("应有 2 个空闲事实，得到 %d", len(facts))
+	if len(facts) != 1 {
+		t.Fatalf("应只剩 1 个空闲事实，得到 %d", len(facts))
 	}
-	if n, rerr := db.ReclaimStaleSlots(ctx, node.ID, facts, now); rerr != nil || n != 2 {
-		t.Fatalf("明确空闲事实应回收两个槽：n=%d err=%v", n, rerr)
+	if n, rerr := db.ReclaimStaleSlots(ctx, node.ID, facts, now); rerr != nil || n != 1 {
+		t.Fatalf("明确空闲事实应回收剩下的槽：n=%d err=%v", n, rerr)
 	}
 	if busySlots(t, db, node.ID) != 0 {
 		t.Fatalf("明确回收后仍有 %d 个 busy 槽位", busySlots(t, db, node.ID))
@@ -582,9 +586,7 @@ func TestTaskMaxAttemptsThreeTotal(t *testing.T) {
 		if got != attempt {
 			t.Fatalf("第 %d 次 grant 的 attempt = %d", attempt, got)
 		}
-		// 用「租约过期 + 节点真的掉了」制造一次 infra 失败：非最后一次应当重排。
-		// 物理槽位不再因 offline / phase 变化被回收（那只是会话死亡，不是进程事实）：
-		// 只有节点重连后**明确**申报「槽位空闲」才允许清。
+		// 「租约过期 + 节点掉了」制造 infra 失败：最后一次是终局 abandon（#660）。
 		if _, err := db.Exec(`UPDATE tasks SET lease_until = ? WHERE id = ?`, store.Now()-1, task.ID); err != nil {
 			t.Fatalf("expire lease: %v", err)
 		}
@@ -594,16 +596,26 @@ func TestTaskMaxAttemptsThreeTotal(t *testing.T) {
 		if _, _, err := db.RecoverLostLeases(ctx, store.Now()); err != nil {
 			t.Fatalf("recover after attempt %d: %v", attempt, err)
 		}
-		if busySlots(t, db, node.ID) != 1 {
-			t.Fatalf("offline 只说明连接断了，不能证明进程组已回收：busy 必须保留（attempt %d），得到 %d",
-				attempt, busySlots(t, db, node.ID))
-		}
-		// 重连并明确申报「槽 0 此刻空闲」才是物理回收事实。
-		if n, rerr := db.ReclaimStaleSlots(ctx, node.ID, idleObservations(t, db, node.ID, 0), store.Now()); rerr != nil || n != 1 {
-			t.Fatalf("明确空闲事实应回收槽位（attempt %d）：n=%d err=%v", attempt, n, rerr)
-		}
-		if busySlots(t, db, node.ID) != 0 {
-			t.Fatalf("明确回收后不该再有 busy 槽位（attempt %d）", attempt)
+		if attempt < 3 {
+			if busySlots(t, db, node.ID) != 1 {
+				t.Fatalf("offline 不能证明进程组已回收：busy 必须保留（attempt %d），得到 %d",
+					attempt, busySlots(t, db, node.ID))
+			}
+			// 重连并明确申报「槽 0 此刻空闲」才是物理回收事实。
+			if n, rerr := db.ReclaimStaleSlots(ctx, node.ID, idleObservations(t, db, node.ID, 0), store.Now()); rerr != nil || n != 1 {
+				t.Fatalf("明确空闲事实应回收槽位（attempt %d）：n=%d err=%v", attempt, n, rerr)
+			}
+			if busySlots(t, db, node.ID) != 0 {
+				t.Fatalf("明确回收后不该再有 busy 槽位（attempt %d）", attempt)
+			}
+		} else {
+			if busySlots(t, db, node.ID) != 0 {
+				t.Fatalf("终局 abandon 必须释放物理槽（attempt %d），得到 busy=%d", attempt, busySlots(t, db, node.ID))
+			}
+			att, aerr := db.GetTaskAttempt(ctx, task.ID, attempt)
+			if aerr != nil || att.ReapedAt == nil {
+				t.Fatalf("终局 abandon 必须补 reaped 事实（attempt %d）：%+v err=%v", attempt, att, aerr)
+			}
 		}
 		if uerr := db.UpdateNodeStatus(ctx, node.ID, store.NodeStatusOnline); uerr != nil {
 			t.Fatalf("mark node online after attempt %d: %v", attempt, uerr)

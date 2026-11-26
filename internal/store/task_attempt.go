@@ -20,8 +20,7 @@ import (
 // 的可定位性靠这张表，不靠 tasks 上「当前 attempt」的字段反推——重试会覆盖那些字段，
 // 覆盖之后就再也找不到旧执行占的是哪个物理槽了（旧 ACK 因此烧掉槽位）。
 
-// attempt 级回收原因（reclaim_reason）：记录「reaped 这个事实」是谁证明的。
-// 它们是**诊断值**，不是 wire 字段（最终帧字段由 T3 冻结后由 G2 映射）。
+// attempt 级回收原因（reclaim_reason）：记录「reaped 这个事实」是谁证明的（诊断值）。
 const (
 	// ReclaimReasonResult 是正常 task.result：结果到达本身就证明子进程已退出。
 	ReclaimReasonResult = "result"
@@ -31,6 +30,9 @@ const (
 	ReclaimReasonNodeIdle = "node_instance_idle"
 	// ReclaimReasonNodeReport 是节点按历史绑定上报的 reaped 事实（ReapTaskAttempt）。
 	ReclaimReasonNodeReport = "node_report"
+	// ReclaimReasonLeaseAbandon / ReclaimReasonSweepConverge 是 #660 的两条收敛口径。
+	ReclaimReasonLeaseAbandon  = "lease_abandon"
+	ReclaimReasonSweepConverge = "sweep_converge"
 )
 
 // attempt 级诊断相位（**不是**任务状态机）：grant 时 running，结束/重排时落成对应值。

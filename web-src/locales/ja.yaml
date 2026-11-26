@@ -1541,6 +1541,18 @@ nodes:
     save: '保存'
     reload: "最新設定を明示的に再読込"
     reload_confirm: "再読込で現在の下書きを置き換えます。続行しますか？"
+    save_confirm_title: "データ保持期間を変更しますか？"
+    save_confirm_line: "{label} {from} → {to}"
+    save_confirm_line_same: "{label} 変更なし"
+    save_confirm_impact_forever: "（永久保持に変更。ディスクは増える一方です）"
+    save_confirm_impact_shrink: "（新しい期間を超えたデータは削除され、復元できません）"
+    save_confirm_impact_extend: "（期間を延長。既存のデータは削除されません）"
+    save_confirm_note: "確認するとすぐにクリーンアップに反映されます。削除されたデータは復元できません。"
+    save_confirm_ok: "確認して保存"
+    ttl_forever: "永久保持"
+    ttl_days: "{n} 日"
+    ttl_hours: "{n} 時間"
+    ttl_seconds: "{n} 秒"
     saved: "保存しました。ノードの既定値は apply を待ち、名前空間の値は次のタスクのみへ反映します。"
     stale: 'ほかの場所で更新されています。下書きはそのまま残ります。再読み込みしてからやり直してください（自動では上書きしません）。'
     error: "リクエスト失敗"

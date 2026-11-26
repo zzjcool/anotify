@@ -1541,6 +1541,18 @@ nodes:
     save: 'Save'
     reload: "Reload latest explicitly"
     reload_confirm: "Reload replaces your current draft. Continue?"
+    save_confirm_title: "Change data retention?"
+    save_confirm_line: "{label} {from} → {to}"
+    save_confirm_line_same: "{label} unchanged"
+    save_confirm_impact_forever: " (kept forever; the disk only grows)"
+    save_confirm_impact_shrink: " (data beyond the new window is cleaned up and cannot be restored)"
+    save_confirm_impact_extend: " (longer window; nothing is deleted)"
+    save_confirm_note: "This takes effect for the cleanup job immediately. Cleaned-up data cannot be restored."
+    save_confirm_ok: "Confirm and save"
+    ttl_forever: "forever"
+    ttl_days: "{n} d"
+    ttl_hours: "{n} h"
+    ttl_seconds: "{n} s"
     saved: "Saved. Node defaults wait for node apply; namespace values affect the next task only."
     stale: 'Changed elsewhere since you loaded it; your draft is kept intact. Refresh, then try again — nothing is overwritten automatically.'
     error: "Request failed"

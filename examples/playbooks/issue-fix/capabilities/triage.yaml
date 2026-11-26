@@ -22,6 +22,7 @@ spec:
     - '{{values.project}}-record'
   requires:
     commands: [pi, git, gh]
+    values: [vars.REPO_DIR]
   lifecycle:
     idempotent: false
     timeoutSec: 1800
@@ -43,7 +44,9 @@ spec:
         1. 用 gh issue view $issue --repo $repo --json number,title,body,state,labels 读全文；
            必要时读相关代码与历史 issue。
         2. 判断它是否成立：是不是真实存在的问题/合理需求；是否已有更早的重复 issue；
-           是否已被某个 open PR 覆盖；描述是否足够到可以动手。
+           是否已被某个 open PR 覆盖 —— 只认 PR 正文/标题里明确写着关闭关键字的
+          （fixes/closes/resolves #N 这种声称），"改了同一行/提到了"不算覆盖；
+          描述是否足够到可以动手。
 
         把你自己的裁决**只**写成 JSON 文件：$art_dir/agent-verdict.json
         格式（严格）：
@@ -52,7 +55,7 @@ spec:
         不要修改仓库、不要开 PR。写不出裁决就说明原因并结束。"
 
 
-        repo_dir=${REPO_DIR:?REPO_DIR 未注入}
+        repo_dir=${REPO_DIR:?该节点没配节点变量 REPO_DIR（spec.vars.REPO_DIR）}
         agent=${AGENT_CMD:-pi}
         agent_args=${AGENT_ARGS:--p}
         art_dir=${ANOTIFY_ARTIFACT_DIR}
@@ -88,13 +91,15 @@ spec:
         if [ "$outcome" = invalid ]; then
           reason=$(sed -n 's/.*"reason": *"\([^"]*\)".*/\1/p' "$verdict" | head -1)
           gh issue close "$issue" --repo "$repo" --comment "按自动判定关闭：${reason:-issue 不成立}"
-          anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"closed\",\"findings\":\"${reason:-issue 不成立}\"}"
+          anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"closed\"}"
           exit 0
         fi
 
         anode emit '{{values.project}}-implement' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"round\":1}"
-            env:
-              REPO_DIR: '{{values.repoDir}}'
-              AGENT_CMD: '{{values.agentCmd}}'
-              AGENT_ARGS: '{{values.agentArgs}}'
-              BASE_BRANCH: '{{values.baseBranch}}'
+    env:
+      REPO_DIR:
+        valueFrom:
+          fieldRef: {fieldPath: vars.REPO_DIR}
+      AGENT_CMD: '{{values.agentCmd}}'
+      AGENT_ARGS: '{{values.agentArgs}}'
+      BASE_BRANCH: '{{values.baseBranch}}'
