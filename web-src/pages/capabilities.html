@@ -1736,6 +1736,8 @@
           p.textContent = "";
           p.classList.add("hidden");
         }
+        const body = $("cap-modal") && $("cap-modal").querySelector(".modal-body");
+        A.clearCauses(body);
         $("cap-form-msg").textContent = "";
       }
       function showFormError(field, message) {
@@ -1750,7 +1752,10 @@
         const banner = $("cap-banner");
         banner.className = "cap-banner" + (kind === "warn" ? " is-warn" : "");
         $("cap-banner-title").textContent = title == null ? "" : String(title);
-        $("cap-banner-text").textContent = text == null ? "" : String(text);
+        const holder = $("cap-banner-text");
+        holder.replaceChildren();
+        if (text && text.nodeType) holder.append(text);
+        else holder.textContent = text == null ? "" : String(text);
         const box = $("cap-banner-actions");
         box.replaceChildren();
         for (const a of actions || []) box.append(a);
@@ -1762,10 +1767,33 @@
       function hideBanner() {
         const banner = $("cap-banner");
         if (banner) banner.className = "cap-banner hidden";
+        const holder = $("cap-banner-text");
+        if (holder) holder.replaceChildren();
+      }
+      /* 能力写面今天只有 params 会被后端点名（artifact.go:633 是唯一非空 field 的生产点），其余落 rest[]。 */
+      const CAUSE_FIELDS = {
+        params: "cap-params",
+      };
+      function causeStep(control) {
+        for (const body of wizardBodies()) {
+          if (body.contains(control)) return Number(body.getAttribute("data-cap-step")) || 0;
+        }
+        return 0;
+      }
+      function jumpToCause(control) {
+        const step = causeStep(control);
+        if (WIZARD.on && step) wizardGo(step);
+        A.focusCause(control);
       }
       function showWriteError(e) {
-        /* 新建只有一个写动作（POST），409 就是「这个名字已被占用」，400 是输入问题；
-           两种都把服务端结论原样说清楚，输入一律保留、不自动重试。 */
+        /* 新建只有一个写动作（POST）：409 是名字被别人占用，400 是输入问题，两种都把服务端结论原样说清、输入一律保留。 */
+        const body = $("cap-modal") && $("cap-modal").querySelector(".modal-body");
+        const res = A.applyCauses(body, e, CAUSE_FIELDS);
+        if (res.causes.length) {
+          showBanner("error", "", A.causeReport(e, res, { jump: jumpToCause }), []);
+          if (res.fields.length) jumpToCause(res.fields[0].control);
+          return;
+        }
         const reason = e && e.reason ? e.reason : e && e.status ? "HTTP " + e.status : "—";
         showBanner("error", sub(t("caps.error.title", "保存失败：{reason}"), { reason }), statusLine(e), []);
       }

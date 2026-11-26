@@ -51,7 +51,7 @@ async function spawnAttempt(meta,dir,id,sourceHash){
     const proc=spawn(process.execPath,[SELF,'--case',id],{cwd:ROOT,detached:true,stdio:['ignore','pipe','pipe'],env:{...process.env,F3_RUN_ID:runId,F3_ATTEMPT_ID:meta.attemptId,F3_SOURCE_HASH:sourceHash,E2E_RESULTS_DIR:dir}});
     children.add(proc);let output='COMMAND '+JSON.stringify({cwd:ROOT,argv:[process.execPath,SELF,'--case',id],identity:meta})+'\n',childOutput='',timedOut=false;
     // 单 case 外层预算：默认 52s（本地实测 3–5s 的 10× 余量）。**刻意不读 CI 的
-    // F3_CASE_BUDGET_MS**（那里给 ui/i18n 设的 150s）：frontend 一个套件四十三个 case、
+    // F3_CASE_BUDGET_MS**（那里给 ui/i18n 设的 150s）：frontend 一个套件五十个 case、
     // per-suite 预算 360s，单 case 150s 只会把「一个 case 卡住」变成「整套被 SIGKILL、
     // 一条 results 都没有」—— 那正是本轮要消灭的证据丢失。要压预算的本地调试用这个独立开关。
     const budgetMs=Number(process.env.F3_FRONTEND_CASE_BUDGET_MS||52000),startedAt=Date.now();

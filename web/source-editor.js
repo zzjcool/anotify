@@ -390,7 +390,32 @@ const json = (box, optional=false) => {
   return value;
 };
 
-function error(box, err){
+const CAUSE_FIELDS={
+  name:"f-name",
+  displayName:"f-display",
+  kind:"f-kind",
+  "config.url":"f-poll-url",
+  "config.schedule":"f-expr",
+  "config.schedule.expr":"f-expr",
+  "config.schedule.tz":"f-tz",
+  "config.timeoutMs":"f-poll-timeout",
+  "config.maxItems":"f-poll-maxitems",
+  "config.headers":"f-poll-headers",
+  "config.secretRef":"f-poll-cred-name",
+  "config.secret":"f-poll-secret",
+  "config.envelope":"f-env-items",
+  "config.payload":"f-payload",
+  "config.payloadSchema":"f-payload-schema",
+  "config.expr":"f-expr",
+  "config.tz":"f-tz",
+  targets:"f-targets",
+};
+function error(box, err, action){
+  const res=A.applyCauses($("src-modal-body"),err,CAUSE_FIELDS);
+  if(res.causes.length){
+    box.replaceChildren(A.causeReport(err,res,{action}));
+    return;
+  }
   box.replaceChildren(el("p","source-error",[err.reason,err.message].filter(Boolean).join(": ")));
 }
 
@@ -536,6 +561,7 @@ function syncHeaderCap(){
   $("add-poll-header").disabled=$("f-poll-headers").children.length>=POLL_HEADER_MAX;
 }
 function resetPollForm(){
+  A.clearCauses($("src-modal-body"));
   for(const id of ["f-poll-url","f-poll-cred-name","f-poll-cred-header","f-poll-cred-prefix","f-poll-secret","f-env-items","f-env-type","f-env-delivery"])$(id).value="";
   $("f-poll-timeout").value=POLL_TIMEOUT_DEFAULT;
   $("f-poll-maxitems").value=POLL_MAXITEMS_DEFAULT;
@@ -803,6 +829,13 @@ function flagField(id,message){
   const input=$(id),box=$(id+"-error");
   if(!input)return;
   input.classList.toggle("is-invalid",!!message);
+  /* aria-invalid 与动态 cause hint 是 applyCauses 的通道，flagField 不清就会与红框脱节。 */
+  if(message)input.setAttribute("aria-invalid","true");
+  else{
+    input.removeAttribute("aria-invalid");
+    const stale=document.querySelector('[data-cause-for="'+id+'"]');
+    if(stale)stale.remove();
+  }
   if(box){
     box.textContent=message||"";
     box.classList.toggle("hidden",!message);
@@ -829,9 +862,11 @@ function flagField(id,message){
       await (CTX.onSaved ? CTX.onSaved() : Promise.resolve());
     }catch(err){
       if(POLLERR)pollLoadFailed(POLLERR,false); // 被 pollConfig() 拦下时重试入口必须留在原处（错误条由下面那句 toast 统一给）
-      else error($("form-result"),err);
-      // 校验类错误：字段红框 + 立即可见的 toast（W2-4）
+      else error($("form-result"),err,"save");
+      /* 校验类错误：字段红框 + 立即可见的 toast（W2-4）；带 causes 时 toast 只报条数。 */
+      const causes=err.details&&Array.isArray(err.details.causes)?err.details.causes:[];
       if(err.field)flagField(err.field,err.message);
+      else if(causes.length)A.toast(A.causeTitle("save",causes.length),"error");
       else A.toast([err.reason,err.message].filter(Boolean).join(": ")||t("save_failed"),"error");
       if(err.field==="targets")A.toast(err.message,"error");
       if(A.isConflict(err)||err.reason==="resource_version_required"){
@@ -848,9 +883,8 @@ function flagField(id,message){
     const btn=$("btn-dry");
     btn.disabled=true;
     try{
-      /* 未保存源的 dry-run 请求体是 InlinePreviewBody：`source` 是 InlineSourceDraft，
-       * metadata 只认 name/displayName（additionalProperties:false），把写信封的
-       * metadata.namespace 一起发过去会被严格解码拒掉。所以只挑草稿允许的键。 */
+      /* 未保存源的 dry-run 请求体是 InlinePreviewBody：`source` 是 InlineSourceDraft，metadata
+       * 只认 name/displayName（additionalProperties:false），多塞 namespace 会被严格解码拒掉。 */
       const envelope=writeSource();
       const source={
         apiVersion:envelope.apiVersion,
@@ -867,8 +901,10 @@ function flagField(id,message){
       })));
     }catch(err){
       if(POLLERR)pollLoadFailed(POLLERR,false); // 试运行同样过 pollConfig() 闸门：被拦下也要留住重试入口
-      else error($("form-result"),err);
-      A.toast([err.reason,err.message].filter(Boolean).join(": ")||t("save_failed"),"error");
+      else error($("form-result"),err,"preview");
+      const causes=err.details&&Array.isArray(err.details.causes)?err.details.causes:[];
+      if(causes.length)A.toast(A.causeTitle("preview",causes.length),"error");
+      else A.toast([err.reason,err.message].filter(Boolean).join(": ")||t("save_failed"),"error");
     }finally{
       btn.disabled=false;
       syncEditorLocks();
@@ -891,6 +927,8 @@ function flagField(id,message){
   function closeEditor() {
     const done = CTX.onClose;
     CTX.onClose = null;
+    /* 关掉弹层只隐藏 DOM，标记不清就会活到下一次打开，在新表单上报上一轮的错。 */
+    A.clearCauses($("src-modal-body"));
     A.closeModal($("src-modal"));
     $("f-token").value="";
     $("f-secret").value="";

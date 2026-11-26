@@ -13,6 +13,10 @@ common:
   server_error: 'error del servidor HTTP {code}'
   request_rejected: 'solicitud rechazada HTTP {code}'
   request_failed: 'la solicitud falló'
+  save_failed_fields: 'No se pudo guardar: hay que corregir {n} campos'
+  preview_failed_fields: 'La prueba falló: hay que corregir {n} campos'
+  save_failed_raw: 'JSON original'
+  save_failed_copy: 'Copiar'
   unknown: 'Desconocido'
   err:
     title:

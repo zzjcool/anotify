@@ -1068,8 +1068,7 @@
       }
       function condRow(c) {
         const row = el("div", { class: "cap-cond" });
-        /* 条件类型是协议值（Implemented / NodesAvailable …）：挂在 data-cond 上供
-           告警与自动化断言取，界面只说人话（见 caps.cond.<Type> 词条）。 */
+        /* 条件类型是协议值（Implemented / NodesAvailable …）：挂在 data-cond 上供告警与自动化断言取，界面只说人话（见 caps.cond.<Type> 词条）。 */
         if (c.type) row.setAttribute("data-cond", String(c.type));
         const type = el("div", { class: "cap-cond-type" });
         type.append(
@@ -2143,6 +2142,8 @@
           p.textContent = "";
           p.classList.add("hidden");
         }
+        const body = $("cap-modal") && $("cap-modal").querySelector(".modal-body");
+        A.clearCauses(body);
         $("cap-form-msg").textContent = "";
       }
       function showFormError(field, message) {
@@ -2153,11 +2154,19 @@
         }
         $("cap-form-msg").textContent = message;
       }
+      /* 能力写面今天只有 params 会被后端点名（artifact.go:633 是唯一非空 field 的生产点），其余落 rest[]。 */
+      const CAUSE_FIELDS = {
+        params: "cap-params",
+      };
+
       function showBanner(kind, title, text, actions) {
         const banner = $("cap-banner");
         banner.className = "cap-banner" + (kind === "warn" ? " is-warn" : "");
         $("cap-banner-title").textContent = title == null ? "" : String(title);
-        $("cap-banner-text").textContent = text == null ? "" : String(text);
+        const holder = $("cap-banner-text");
+        holder.replaceChildren();
+        if (text && text.nodeType) holder.append(text);
+        else holder.textContent = text == null ? "" : String(text);
         const box = $("cap-banner-actions");
         box.replaceChildren();
         for (const a of actions || []) box.append(a);
@@ -2168,6 +2177,8 @@
       function hideBanner() {
         const banner = $("cap-banner");
         if (banner) banner.className = "cap-banner hidden";
+        const holder = $("cap-banner-text");
+        if (holder) holder.replaceChildren();
       }
       async function reloadAfterConflict() {
         if (!META) return;
@@ -2201,6 +2212,12 @@
             t("caps.error.immutable", "这个显式版本的内容已经存在且不可变：改 run/params/requires/lifecycle/concurrency 必须换一个版本（next/displayName 例外）。") + (e.message ? " " + e.message : ""),
             [],
           );
+          return;
+        }
+        const body = $("cap-modal") && $("cap-modal").querySelector(".modal-body");
+        const res = A.applyCauses(body, e, CAUSE_FIELDS);
+        if (res.causes.length) {
+          showBanner("error", "", A.causeReport(e, res), []);
           return;
         }
         const reason = e && e.reason ? e.reason : e && e.status ? "HTTP " + e.status : "—";

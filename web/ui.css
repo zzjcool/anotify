@@ -3120,6 +3120,66 @@ a.side-link svg {
 	line-height: 1.5;
 	color: var(--error);
 }
+.input.is-invalid,
+.textarea.is-invalid,
+.select.is-invalid {
+	border-color: var(--error);
+	box-shadow: 0 0 0 3px var(--error-soft);
+}
+.cause-report {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.cause-report-title {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--error);
+}
+.cause-report-list {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+.cause-report-item {
+	display: block;
+	width: 100%;
+	margin: 0;
+	padding: 2px 0;
+	border: 0;
+	background: none;
+	font: inherit;
+	font-size: 12px;
+	line-height: 1.5;
+	text-align: left;
+	color: var(--text);
+	overflow-wrap: anywhere;
+}
+button.cause-report-item {
+	cursor: pointer;
+}
+button.cause-report-item:hover .cause-report-field,
+button.cause-report-item:focus-visible .cause-report-field {
+	color: var(--accent);
+}
+.cause-report-field {
+	color: var(--muted);
+}
+.cause-report-raw > summary {
+	font-size: 12px;
+	color: var(--muted);
+	cursor: pointer;
+}
+.cause-report-raw > pre {
+	margin: 6px 0;
+	font-size: 11px;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	color: var(--faint);
+}
 
 /* ---------- 文件拖放（CP-6）----------
  * 原生 <input type=file> 在三个页面里直接上了屏（英文 “Choose Files / No file
