@@ -8,8 +8,6 @@ import (
 	"github.com/zzjcool/anotify/internal/protocol"
 )
 
-// TestLeaseTTLAppliesToGrantAndRenew 是验收 ① 的「合法值生效」：configured TTL 必须
-// 真的写进 lease_until（grant 与 renew 两个写入点同口径），未配置则回落协议下限。
 func TestLeaseTTLAppliesToGrantAndRenew(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -35,7 +33,7 @@ func TestLeaseTTLAppliesToGrantAndRenew(t *testing.T) {
 	}
 
 	ttl := int64(protocol.DefaultLeaseTTL / time.Second)
-	renewAt := now + ttl - 60 // 仍然有效（lease_until = now+ttl）
+	renewAt := now + ttl - 60
 	renewed, err := db.RenewLeaseAuthorized(ctx, v4Auth(t, db, node.ID), task.ID, attempt, leaseID, renewAt)
 	if err != nil {
 		t.Fatalf("续租: %v", err)
