@@ -159,6 +159,7 @@ func (f *TaskEmitAckFrame) Validate() error {
 // emitErrorCodes 是 EmitError.Error 的封闭集合（见 emit.go 的文档注释）。
 var emitErrorCodes = map[string]bool{
 	ReasonTargetNotDeclared: true,
+	ReasonParamType:         true,
 	ReasonMissingTarget:     true,
 	ReasonTokenInvalid:      true,
 	ReasonTaskNotRunning:    true,

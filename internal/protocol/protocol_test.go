@@ -958,3 +958,18 @@ func TestNoProjectDependencies(t *testing.T) {
 // intPtrTest / boolPtrTest 是 presence 字段的测试夹具（0 / false 都是合法值）。
 func intPtrTest(v int) *int    { return &v }
 func boolPtrTest(v bool) *bool { return &v }
+
+// param_type 是网关会真发的 400（--data 不是 JSON 对象），必须在封闭集合里：
+// 否则 CLI 用 IsEmitErrorCode 判「服务端码是否可信」时会把 param_type 改写成
+// emit_unreachable（结果未知），与本包的退出码表自相矛盾（#634 review 第 2 轮）。
+func TestEmitErrorCodesCoverParamType(t *testing.T) {
+	if !IsEmitErrorCode(ReasonParamType) {
+		t.Fatalf("param_type 必须在 emitErrorCodes 封闭集合里")
+	}
+	if got := EmitExitCode(ReasonParamType); got != EmitExitBadRequest {
+		t.Fatalf("param_type 退出码 = %d，期望 %d", got, EmitExitBadRequest)
+	}
+	if got := EmitHTTPStatus(ReasonParamType); got != 400 {
+		t.Fatalf("param_type HTTP 状态 = %d，期望 400", got)
+	}
+}
