@@ -1251,8 +1251,10 @@ components:
           type: string
           description: |
             剪枝原因（封闭集合，`internal/protocol/enums.go` 的 pruneReasons）：
-            `param_missing` / `param_schema` / `param_type`（emit 路径）或
-            `no_target` / `event_schema`（源投递路径）。
+            `param_missing` / `param_schema` / `param_type` / `capability_disabled` / `no_match`（emit 路径）或
+            `no_target` / `event_schema`（源投递路径）；
+            `max_hops` / `budget` 是派发预算（CONTRACT.md A7）：环合法，所以 `review → fix → review`
+            第二圈会真的跑，到跳数 / 单 trace 任务数上限时改成这个剪枝——仍是 200 + `taskId:null`，不是 4xx。
         detail:
           type: string
           description: 人话补充（可以变，不参与任何判断）

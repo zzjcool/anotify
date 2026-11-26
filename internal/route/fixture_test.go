@@ -36,6 +36,8 @@ func testNamespace(t *testing.T, db *store.DB) *store.Namespace {
 type capOpts struct {
 	Params string
 	Next   []string
+	// MaxPerNode 抬 concurrency.maxPerNode（默认 1：同能力不能在一条机器上并行两条）。
+	MaxPerNode int
 }
 
 func testCapability(t *testing.T, db *store.DB, namespaceID, name string, version int, opts capOpts) *store.CapabilityVersion {
@@ -51,6 +53,9 @@ func testCapability(t *testing.T, db *store.DB, namespaceID, name string, versio
 			Entrypoint: "run.sh",
 			Files:      map[string]string{"run.sh": "#!/bin/sh\nexit 0\n"},
 		},
+	}
+	if opts.MaxPerNode > 0 {
+		spec.Concurrency = artifact.Concurrency{MaxPerNode: &opts.MaxPerNode}
 	}
 	capability := &store.CapabilityVersion{
 		NamespaceID: namespaceID, Name: name, Version: version, Spec: spec,

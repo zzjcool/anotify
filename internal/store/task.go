@@ -267,9 +267,7 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 }
 
 // CreateTasks 在单个事务内批量建任务：扇出必须原子（要么全成要么全不成）。
-//
 // 空入参是 no-op（不是错误）：扇出的每条边都可能被剪枝，最后一条不剩是正常情况。
-// 建出来的行一律是 pending、attempt=0、没有任何租约事实。
 func (d *DB) CreateTasks(ctx context.Context, ts []*Task) error {
 	if len(ts) == 0 {
 		return nil
@@ -627,6 +625,31 @@ func (d *DB) CountTasksByTrace(ctx context.Context, namespaceID, traceID string)
 		return 0, fmt.Errorf("count tasks by trace: %w", err)
 	}
 	return n, nil
+}
+
+const maxAncestorDepth = 64 // 递归上限：parent_task_id 被写坏成环时不许打穿
+
+// AncestorDepth 返回任务深度（含自身：根 = 1；查不到 = 0）：派发预算用它算 hop。
+func (d *DB) AncestorDepth(ctx context.Context, namespaceID, taskID string) (int, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return 0, ErrNamespaceRequired
+	}
+	if taskID == "" {
+		return 0, nil
+	}
+	var depth int
+	if err := d.queryRowContext(ctx,
+		`WITH RECURSIVE ancestors(id, parent_task_id, depth) AS (
+		     SELECT id, parent_task_id, 1 FROM tasks WHERE namespace_id = ? AND id = ?
+		     UNION ALL
+		     SELECT t.id, t.parent_task_id, a.depth + 1
+		       FROM tasks t JOIN ancestors a ON t.id = a.parent_task_id
+		      WHERE t.namespace_id = ? AND a.depth < ?)
+		 SELECT COALESCE(MAX(depth), 0) FROM ancestors`,
+		namespaceID, taskID, namespaceID, maxAncestorDepth).Scan(&depth); err != nil {
+		return 0, fmt.Errorf("ancestor depth: %w", err)
+	}
+	return depth, nil
 }
 
 // ListDispatchableTasks 取出「此刻可以派发」的 pending 任务（跨命名空间，调度器用）。

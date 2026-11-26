@@ -28,7 +28,7 @@ func Render(pkg *Package, values map[string]any) (*RenderResult, error) {
 
 // RenderForRelease 是带 release 身份的渲染：① 补 schema 默认 ② 校验 values
 // ③ 结构内插值（`{{values.点号路径}}` 与 `{{release.name}}`，未知形态 400）。
-// 渲染后立即走单建校验（D6，不设第二套），再查包内同名 / 成环 / 数量上限。 **纯函数**：只读包体、values 与 release，不读库、不判冲突、不产生回执。
+// 渲染后立即走单建校验（D6，不设第二套），再查包内同名 / 数量上限（环合法，打包期不拒绝）。 **纯函数**：只读包体、values 与 release，不读库、不判冲突、不产生回执。
 func RenderForRelease(pkg *Package, values map[string]any, release string) (*RenderResult, error) {
 	if pkg == nil {
 		return nil, errf(CodeInvalidPlaybook, "Render 需要一个包（nil 不是空包）")
@@ -103,9 +103,6 @@ func RenderForRelease(pkg *Package, values map[string]any, release string) (*Ren
 		out.Files[p] = renderedBody
 	}
 
-	if err := checkCycle(out.Capabilities); err != nil {
-		return nil, err
-	}
 	return out, nil
 }
 
@@ -582,75 +579,10 @@ func sortedValueKeys(m map[string]any) []string {
 	return out
 }
 
-// ---------- 包视角校验：环 ----------
+// ---------- 引用 ----------
 
-// checkCycle 在**渲染后的包内闭合子图**上做环检测（§3.2 / §2.2）。
-//
-// 指向包外的名字不参与（外面长什么样我们不知道）。`name@version` 也按**名字**闭合：
-// v4 的边按名字解析、版本由 latest 决定，所以"指向谁"由名字定（§3.2 的"名字"就是这个意思）。
-func checkCycle(caps []*artifact.Artifact) error {
-	index := make(map[string]int, len(caps))
-	names := make([]string, 0, len(caps))
-	for i, a := range caps {
-		index[a.Metadata.Name] = i
-		names = append(names, a.Metadata.Name)
-	}
-	edges := make([][]int, len(caps))
-	for i, a := range caps {
-		for _, ref := range a.Spec.Next {
-			name := refName(ref)
-			if j, ok := index[name]; ok {
-				edges[i] = append(edges[i], j)
-			}
-		}
-	}
-
-	const (
-		white = 0
-		gray  = 1
-		black = 2
-	)
-	color := make([]int, len(caps))
-	stack := make([]int, 0, len(caps))
-	var walk func(int) error
-	walk = func(i int) error {
-		color[i] = gray
-		stack = append(stack, i)
-		for _, j := range edges[i] {
-			switch color[j] {
-			case gray:
-				// 找到回边：把栈上从 j 到 i 的那一段连成环。
-				cycle := make([]string, 0, len(stack))
-				for k := len(stack) - 1; k >= 0; k-- {
-					cycle = append([]string{names[stack[k]]}, cycle...)
-					if stack[k] == j {
-						break
-					}
-				}
-				cycle = append(cycle, names[j])
-				return errf(CodeCycle,
-					"渲染后的包内 next 图成环：%s（包外名字不参与判定；跨包成环由 store 的边环检测兜底）",
-					strings.Join(cycle, " → "))
-			case white:
-				if err := walk(j); err != nil {
-					return err
-				}
-			}
-		}
-		stack = stack[:len(stack)-1]
-		color[i] = black
-		return nil
-	}
-	for i := range caps {
-		if color[i] != white {
-			continue
-		}
-		if err := walk(i); err != nil {
-			return err
-		}
-	}
-	return nil
-}
+// 包内 next 成环合法（`review → fix → review` 是正常编排）：兜底是中枢派发预算
+// `max_hops` / `budget`（CONTRACT.md A7），打包期拒绝环会拒掉合法编排。
 
 // refName 取 `name@version` 的名字部分。
 func refName(ref string) string {

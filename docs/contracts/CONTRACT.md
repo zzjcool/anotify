@@ -1291,7 +1291,7 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | `param_missing` | 路由 | 参数引用的路径在 payload / 别名表里取不到（含 payload 里的显式 `null`），且没有 `default`（§5.5） |
 | `param_type` | 路由 | 取值结果转不成目标 `params_schema` 要求的类型（§5.5） |
 | `param_schema` | 路由 | 参数不过目标能力 `params_schema` |
-| `path` | 路由 | 目标能力已在 `path` 里（环剪枝） |
+| `max_hops` / `budget` | 路由 | 派发预算到顶（§9 A7）；**环不是剪枝原因**——平台允许环，由预算兜底 |
 | `no_node` | 路由 | 没有节点声明该能力 |
 | `foreign_user` | 路由 | `params.to` 指向的用户不属于本组织 |
 | `invalid_transition` | 状态机 | 非法状态迁移 |
@@ -1309,7 +1309,7 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | ⑤ | `param_schema` | 是 | 参数不过目标能力 schema |
 | ⑥ | `no_node` | 是 | 有边、参数也对，但没有节点声明该能力 |
 | ⑦ | `foreign_user` | 是 | `params.to` 指向的用户不属于本组织 |
-| ⑧ | `path` | 是 | 目标能力已在路径里（环剪枝） |
+| ⑧ | `max_hops` / `budget` | 是 | 跳数（`parent_task_id` 链长）或单 trace 任务数到顶（§9 A7）；环本身不是剪枝原因 |
 
 **②~⑧ 七种记 `pruned` + `reason`；① 不是剪枝。**
 剪枝是静默的（不打断业务），但**一律留痕**——trace 上能看到 `reason` 和随附证据。
@@ -1344,7 +1344,7 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | A4 | `kind` 不落库 | `grep -E '^\s*kind\s' internal/store/schema.sql` = 0（注意别被 `capability` 误命中） |
 | A5 | 出口封闭 | `edges.from_port` 不在 `outputs` 里 → 配置期拒绝 |
 | A6 | 候选选择 | 一个 `(cap, port)` 有 3 行边 = 3 个**候选**，一次 emit 只派 1 个（最小 priority 组内轮盘）；`balance: all` 才全派（未实现）。**入口边（源 → 能力）仍然全派**，那是源扇出 |
-| A7 | 环合法 + hop 预算 | `review→fix→review` **允许保存**、第二圈真的跑；`depth ≥ ANOTIFY_MAX_HOPS`（默认 16）时 `pruned/max_hops`，单 trace 任务数 ≥ `ANOTIFY_TRACE_TASK_BUDGET`（默认 512）时 `pruned/budget` |
+| A7 | 环合法 + hop 预算 | `review→fix→review` **允许保存**、第二圈真的跑（不做「同名出现就剪」）；派发时先判 hop 再判 budget（`route.Router.checkBudget`，源入口 / 能力 emit / 判决结局三条路径共用）：本次要建的任务深度（`tasks.parent_task_id` 祖先链长，根 = 1）≥ `ANOTIFY_MAX_HOPS`（默认 16）→ `pruned/max_hops`，同 trace **已存在**任务数 ≥ `ANOTIFY_TRACE_TASK_BUDGET`（默认 512）→ `pruned/budget`；两者都命中只记 hop，回执是 `pruned` 不是 4xx |
 | A8 | 产出只走 emit | 0 次 emit → 不派下一跳；emit 的 `port` 按候选选择派发（1:1，见 A6）。result 帧里带 `out` → **忽略**，任务响应里**没有 out 字段**（`tasks.out` 列在 baseline 里就不存在） |
 | A8b | 失败也能继续 | 失败**之前** emit 过 → 那些下游照样建（I4 落地）；失败无 `summary` → 兜底 `"failed"` |
 | A9 | 租约接管 | `kill -9` 节点后 30s 内任务回 `pending` |
@@ -1378,7 +1378,6 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | A3（`node_capabilities`） | 节点申报写 `node_capabilities` | 该表在 v4 baseline **不存在**（store 侧测试把它列进 `removedTables`）；归属只由部署派生 |
 | A5（出口封闭） | `edges.from_port` 必须 ∈ `outputs` | Edge 是 `spec.next` / `source.targets` 的**派生投影**，没有 port / mapping / priority |
 | A6（候选选择轮盘） | 按 priority 组内轮盘派 1 个 | 同一份退役：emit 只按真实解析目标派发；`no_target` 只表示 `Source.targets` 为空 |
-| A7（hop 预算） | `pruned/max_hops`、`pruned/budget` | 配置项仍解析与校验（启动日志写出生效值），但**中枢侧派发不再消费**这两个预算 |
 | A8（emit port 派发） | emit 的 port 决定下一跳 | 下游由 `spec.next` 决定；result 帧里没有 `out` 字段（v4 同样忽略它） |
 | A9（30s 回 pending） | 租约超时置回 pending | 由 attempt / lease / TTL 事实取代（`lease_expired` / `max_attempts_exceeded`）；30s 只是巡检周期 |
 | A10（组织隔离） | `org_id` 隔离 | 组织层已删（见本文头部修订）；命名空间是唯一隔离边界 |

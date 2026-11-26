@@ -229,7 +229,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 四个组件互相引用但都不持有对方的后台循环：Router 只做投影、Hub 做会话与派发、
 	// source.Service 做入口归一化、trigger.Scheduler 只把 cron 到期的源喂给 Service。
 	// 依赖方向单向（scheduler → service → router → store），所以可以在一个地方一次装好。
-	router := route.New(db)
+	router := route.New(db).WithBudget(route.Budget{MaxHops: cfg.MaxHops, TraceTaskBudget: cfg.TraceTaskBudget})
 	hub := ws.NewHub(db, router, ws.WithLogger(slog.Default()))
 	sources := source.New(db, router)
 	sched := trigger.New(db, sources, slog.Default())
@@ -349,13 +349,11 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	app.runBackgroundLoop(ctx, "lease", func(loopCtx context.Context) error {
 		return sweeper.Run(loopCtx, lease.DefaultInterval)
 	})
-	// 派发预算（v3 契约 §2）在 v4 只有配置面（route.Router 不再消费），但启动日志仍要
-	// 把它写出来：运维改了 env 却没生效时，至少要能在日志里看到「配的是多少」。
+	// 派发预算（CONTRACT.md A7）：route.Router 每次派发都判，这里把生效值写进启动日志。
 	slog.Info("dispatch budgets configured",
 		"event", "server.budget.configured",
 		"max_hops", cfg.MaxHops,
 		"trace_task_budget", cfg.TraceTaskBudget,
-		"note", "v4 保留配置与校验；中枢侧派发（route.Router + ws.Hub）不再消费这两个预算",
 	)
 
 	mux := http.NewServeMux()

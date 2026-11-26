@@ -4028,16 +4028,20 @@ test("F2c1 parser: frozen authored block/flow/quoted/literal package uses ONE sh
 	assert.equal(legacy.valuesSchema, null); assert.equal("files" in legacy, false, "no second manifest or res.files adapter");
 });
 
-test("F2c1 package render errors: duplicate names, cycles and invalid typed name reject without changing ALL state", async () => {
+test("F2c1 package render: duplicate names / invalid typed name reject atomically; next cycles render (A7)", async () => {
 	for (const [edit, reason] of [
 		[d => d["capabilities/fixer.yaml"].metadata.name = "{{values.project}}-review", "duplicate_capability"],
-		[d => d["capabilities/fixer.yaml"].spec.next = ["{{values.project}}-review"], "cycle"],
 		[d => { d["playbook.yaml"].spec.values.properties.n = { type: "integer", default: 3 }; d["capabilities/fixer.yaml"].metadata.name = "{{values.n}}"; }, "render_type_mismatch"],
 	]) {
 		const { req, Mock } = loadMock(); await pbCreate(req, playbookFiles({ edit })); const before = allFacts(Mock);
 		assert.equal((await pbAction(req, "render")).body.reason, reason);
 		assert.equal((await pbAction(req, "install")).body.reason, reason); assert.equal(allFacts(Mock), before);
 	}
+	const { req: cycleReq } = loadMock();
+	await pbCreate(cycleReq, playbookFiles({ edit: d => { d["capabilities/fixer.yaml"].spec.next = ["{{values.project}}-review"]; } }));
+	const cycle = await pbAction(cycleReq, "render");
+	assert.equal(cycle.status, 200, JSON.stringify(cycle.body));
+	assert.deepEqual(cycle.body.capabilities.map(c => c.metadata.name).sort(), ["a-fixer", "a-review"]);
 });
 
 /* F2c2: Node/config closure. These requests exercise genuine mock mutations. */

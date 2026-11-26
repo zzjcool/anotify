@@ -27,8 +27,9 @@ type Clock func() int64
 
 // Router 是路由投影的唯一入口。
 type Router struct {
-	db  *store.DB
-	now Clock
+	db     *store.DB
+	now    Clock
+	budget Budget
 }
 
 // New 用真实时钟构造路由器。
@@ -150,11 +151,8 @@ func (p *Plan) PruneInputs() []store.PruneInputs {
 	return out
 }
 
-// FailureInputs 把计划里的未解析目标转成 store 的失败 Task 事实（S1-D1/D2/D3）。
-//
-// Capability 保留**请求里写的引用/名字**（不是解析结果）；Version 只在请求/声明
-// 明确给出时非 0。它建的是 phase=failed、attempt=0 的真实任务 + 错误事件，
-// 不是剪枝。
+// FailureInputs 把未解析目标转成失败 Task 事实：真实任务（phase=failed、
+// attempt=0）+ 错误事件，不是剪枝。Capability 保留**请求里写的引用**，不是解析结果。
 func (p *Plan) FailureInputs() []store.DispatchFailureInputs {
 	out := make([]store.DispatchFailureInputs, 0)
 	for _, target := range p.Targets {
@@ -186,13 +184,9 @@ func (r *Router) resolveCapability(ctx context.Context, namespaceID, ref string)
 	return capability, nil
 }
 
-// PlanFromSource 按源声明的 targets 求值一次事件载荷。
-//
-// 每一行**独立**求值、独立校验（source.md §4.2），顺序是
-// `match → resolve → params → 开关 → ready`：
-// match 不命中 → no_match；参数取不到 → param_missing；目标能力解析不到 →
-// downstream_missing + state=missing；源没有 targets → 单条 no_target
-// （事件照常接收，只是不派发）。
+// PlanFromSource 按源声明的 targets 求值一次事件载荷：每一行**独立**求值、独立校验
+// （source.md §4.2），顺序 `match → resolve → params → 开关 → ready`；源没有 targets
+// → 单条 no_target（事件照常接收，只是不派发）。
 func (r *Router) PlanFromSource(ctx context.Context, src *store.Source, traceID, eventType string, payload map[string]any) (*Plan, error) {
 	if src == nil {
 		return nil, fmt.Errorf("route: nil source")
@@ -203,6 +197,12 @@ func (r *Router) PlanFromSource(ctx context.Context, src *store.Source, traceID,
 	plan := &Plan{NamespaceID: src.NamespaceID, TraceID: traceID}
 	if len(src.Targets) == 0 {
 		plan.Pruned = append(plan.Pruned, Prune{Reason: protocol.ReasonNoTarget, Detail: "源没有 targets"})
+		return plan, nil
+	}
+	if prune, err := r.checkBudget(ctx, src.NamespaceID, traceID, ""); err != nil {
+		return nil, err
+	} else if prune != nil {
+		plan.Pruned = append(plan.Pruned, *prune)
 		return plan, nil
 	}
 	for _, declared := range src.Targets {
@@ -286,12 +286,9 @@ func marshalOutcomes(outcomes map[string][]sourcespec.OutcomeAction) (json.RawMe
 
 // capabilityAccepting 是「能力能否接受新触发」的唯一判定点（capability-lifecycle §6.1）。
 //
-// PlanFromSource 与 PlanFromEmit 共用它，避免两条入口各写一份「这个能力能不能接」。
-// 开关按**能力名**查（不是 `name@version` 引用）：换版本不重置开关，一个名字一个闸门。
-// 无开关行 = enabled（默认接受），所以老库与未操作过的能力没有行为变化。
-//
-// 判定在**计划期**、不在接收/emit 事务内：与既有 sources.enabled 同一位置。
-// 这里只读，不写库、不取消或修改任何在途任务（§3：停用不是暂停）。
+// 开关按**能力名**查（不是 `name@version`）：换版本不重置开关，一个名字一个闸门；
+// 无开关行 = enabled，所以老库与未操作过的能力没有行为变化。判定在**计划期**、
+// 与 sources.enabled 同一位置：这里只读，不写库、不改任何在途任务（§3）。
 func (r *Router) capabilityAccepting(ctx context.Context, namespaceID, name string) (bool, error) {
 	enabled, err := r.db.IsCapabilityEnabled(ctx, namespaceID, name)
 	if err != nil {
@@ -313,10 +310,8 @@ func (p *Plan) pruneNoMatch(ref, detail string) {
 	p.Pruned = append(p.Pruned, Prune{Capability: name, Reason: protocol.ReasonNoMatch, Detail: detail})
 }
 
-// pruneDisabled 把「下游能力已停用」记成一条剪枝（target + 事实），两条入口共用。
-//
-// 停用是**剪枝**不是失败（§1/§6.1）：事件照收、回执 taskId:null、父任务不失败；
-// 剪枝事实是「为什么没跑」的唯一证据，所以 target 与 plan.Pruned 都必须留。
+// pruneDisabled 把「下游能力已停用」记成剪枝（target + 事实）：停用不是失败（§1/§6.1），
+// 事件照收、父任务不失败，但「为什么没跑」要留证据。
 func (p *Plan) pruneDisabled(capability *store.CapabilityVersion, ref, name string) {
 	detail := fmt.Sprintf("下游 %q 已停用", name)
 	p.Targets = append(p.Targets, prunedTarget(capability, ref, protocol.ReasonCapabilityDisabled, detail))
@@ -326,9 +321,7 @@ func (p *Plan) pruneDisabled(capability *store.CapabilityVersion, ref, name stri
 }
 
 // prunedTarget 把一条已解析但被剪枝的目标写成 Target（保留解析出的身份便于预览）。
-//
-// reason 必须由调用方逐条给出：目标是逐行求值的，不能拿 plan.Pruned[0] 的
-// 原因兜给所有 target（多条不同原因时那会把预览/诊断说错）。
+// reason 逐条给：目标是逐行求值的，拿 plan.Pruned[0] 兜给所有 target 会说错原因。
 func prunedTarget(capability *store.CapabilityVersion, ref, reason, detail string) Target {
 	return Target{
 		Ref: ref, Capability: capability.Name, Version: capability.Version,
@@ -368,6 +361,12 @@ func (r *Router) PlanFromEmit(ctx context.Context, parent *store.Task, to string
 			ErrNotDeclared, to, parentCap.Name, parentCap.Spec.Next)
 	}
 	plan := &Plan{NamespaceID: parent.NamespaceID, TraceID: parent.TraceID}
+	if prune, perr := r.checkBudget(ctx, parent.NamespaceID, parent.TraceID, parent.ID); perr != nil {
+		return nil, perr
+	} else if prune != nil {
+		plan.Pruned = append(plan.Pruned, *prune)
+		return plan, nil
+	}
 	// effective 是声明侧的引用（裸 name 跟随 latest / name@v 用 v）；
 	// ResolveRef 的全局 latest 规则不改，选择在 route 本地完成。
 	capability, rerr := r.resolveCapability(ctx, parent.NamespaceID, effective)
@@ -418,10 +417,8 @@ func (r *Router) PlanFromEmit(ctx context.Context, parent *store.Task, to string
 	return plan, nil
 }
 
-// declaredRef 把一次 emit 的 `to` 解析到父 next 的**声明引用**上（R1-C6）。
-//
-// 判据的唯一实现在 sourcespec.DeclaredRef（#522 起 outcome 动作的写入期归属检查
-// 要共用同一份语义：白名单不能有两套）。这里只保留本包的名字，避免调用点改名。
+// declaredRef 把一次 emit 的 `to` 解析到父 next 的**声明引用**上（R1-C6）：判据唯一
+// 实现在 sourcespec.DeclaredRef（白名单不能有两套），这里只保留本包的名字。
 func declaredRef(next []string, to string) (string, bool) {
 	return sourcespec.DeclaredRef(next, to)
 }

@@ -32,6 +32,12 @@ func (r *Router) PlanFromOutcome(ctx context.Context, parent *store.Task, decisi
 			ErrOutcomeNotDeclaredExec, decision.Outcome, parent.ID, sortedNames(outcomes))
 	}
 	plan := &Plan{NamespaceID: parent.NamespaceID, TraceID: parent.TraceID}
+	if prune, err := r.checkBudget(ctx, parent.NamespaceID, parent.TraceID, parent.ID); err != nil {
+		return nil, err
+	} else if prune != nil {
+		plan.Pruned = append(plan.Pruned, *prune)
+		return plan, nil
+	}
 	for _, action := range actions {
 		ref := action.Capability
 		rendered, missing := sourcespec.RenderDecisionParams(action.Params, decision.Params)

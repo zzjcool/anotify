@@ -3,6 +3,7 @@ package playbook
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -342,8 +343,9 @@ func TestRenderDuplicateNames(t *testing.T) {
 	})
 }
 
-// TestRenderCycle 验 §3.2：包内闭合子图成环 = cycle；包外名字不参与。
-func TestRenderCycle(t *testing.T) {
+// TestRenderCycleAllowed 验环合法（CONTRACT.md A7）：包内 `a-cap → b-cap → a-cap` 必须**渲染成功**——
+// 兜底是中枢派发预算 `max_hops` / `budget`，打包期不再拒绝环。
+func TestRenderCycleAllowed(t *testing.T) {
 	capDoc := func(name, next string) string {
 		return `
 apiVersion: anotify/v1
@@ -357,27 +359,29 @@ spec:
     files: {run.sh: "#!/usr/bin/env bash\ntrue\n"}
 `
 	}
-	t.Run("direct_cycle", func(t *testing.T) {
-		b := newBundle().
-			cap("capabilities/a.yaml", capDoc("a-cap", "b-cap")).
-			cap("capabilities/b.yaml", capDoc("b-cap", "a-cap"))
-		assertCode(t, renderErr(t, b.pkg(t), baseValues()), CodeCycle)
-	})
-	t.Run("cycle_via_pinned_version", func(t *testing.T) {
-		// `a-cap@2` 与 `a-cap` 是同一个名字 → 参与同一个图（边按名字解析）。
-		b := newBundle().
-			cap("capabilities/a.yaml", capDoc("a-cap", "b-cap@2")).
-			cap("capabilities/b.yaml", capDoc("b-cap", "a-cap"))
-		assertCode(t, renderErr(t, b.pkg(t), baseValues()), CodeCycle)
-	})
-	t.Run("outside_name_does_not_participate", func(t *testing.T) {
-		b := newBundle().
-			cap("capabilities/a.yaml", capDoc("a-cap", "outside")).
-			cap("capabilities/b.yaml", capDoc("b-cap", "a-cap"))
-		if _, err := Render(b.pkg(t), baseValues()); err != nil {
-			t.Fatalf("指向包外的名字不该参与环判定: %v", err)
-		}
-	})
+	for _, tc := range []struct {
+		label string
+		caps  [][2]string // {能力名, 它的 next}
+	}{
+		{"direct_cycle", [][2]string{{"a-cap", "b-cap"}, {"b-cap", "a-cap"}}},
+		// `b-cap@2` 按名字闭合（边按名字解析），同样是环。
+		{"cycle_via_pinned_version", [][2]string{{"a-cap", "b-cap@2"}, {"b-cap", "a-cap"}}},
+		{"outside_name", [][2]string{{"a-cap", "outside"}, {"b-cap", "a-cap"}}},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			b := newBundle()
+			want := make([]string, 0, len(tc.caps))
+			for _, c := range tc.caps {
+				b = b.cap("capabilities/"+c[0]+".yaml", capDoc(c[0], c[1]))
+				want = append(want, c[0])
+			}
+			slices.Sort(want)
+			out := mustRender(t, b.pkg(t), baseValues())
+			if got := capNames(out.Capabilities); !slices.Equal(got, want) {
+				t.Fatalf("环里的能力都要渲染出来: got %v, want %v", got, want)
+			}
+		})
+	}
 }
 
 // TestRenderPostValidation 验渲染后走**单建校验**（§2.2 / D6：不设第二套）。
