@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/zzjcool/anotify/internal/protocol"
 )
 
 var builtOld, builtNew string
@@ -164,6 +166,24 @@ func TestEmitEveryExitCodePrunedAndNoCredentialLeaks(t *testing.T) {
 				t.Fatal("pruned receipt lost")
 			}
 		})
+	}
+}
+func TestEmitInvalidDataReasonIsParamType(t *testing.T) {
+	for _, data := range []string{"[1]", "1", "null", `"str"`, "{x", "{} {}"} {
+		var out, stderr bytes.Buffer
+		code := emit([]string{"sink", "--data", data}, &out, &stderr)
+		if code != 2 {
+			t.Fatalf("--data %q => 退出码 %d，期望 2", data, code)
+		}
+		var got struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil || got.Error != protocol.ReasonParamType {
+			t.Fatalf("--data %q => %q（解析错误 %v），期望 error=%s", data, out.String(), err, protocol.ReasonParamType)
+		}
+		if strings.Count(out.String(), "\n") != 1 || strings.Count(stderr.String(), "\n") != 1 {
+			t.Fatalf("--data %q: stdout/stderr 各只能一行，实际 %q / %q", data, out.String(), stderr.String())
+		}
 	}
 }
 func TestEmitMissingTargetStrictObjectAndNetworkTimeout(t *testing.T) {

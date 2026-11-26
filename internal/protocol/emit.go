@@ -63,8 +63,8 @@ type EmitResponse struct {
 //
 // 它不是公共 API 的 Status：不要拿它当 HTTP 资源的错误信封。
 type EmitError struct {
-	// Error 是封闭码（target_not_declared / missing_target / token_invalid /
-	// task_not_running / emit_id_conflict / emit_unreachable）。
+	// Error 是封闭码（target_not_declared / missing_target / param_type /
+	// token_invalid / task_not_running / emit_id_conflict / emit_unreachable）。
 	Error string `json:"error"`
 	// Message 是人话，可以变，不参与任何判断。
 	Message string `json:"message,omitempty"`
@@ -78,7 +78,7 @@ type EmitError struct {
 const (
 	// EmitExitOK 接受，任务已建（或剪枝：taskId=null + pruned）。
 	EmitExitOK = 0
-	// EmitExitBadRequest 目标不在 next 里 / 没给目标（400）。
+	// EmitExitBadRequest 目标不在 next 里 / 没给目标 / data 不是 JSON 对象（400）。
 	EmitExitBadRequest = 2
 	// EmitExitTokenInvalid 令牌无效或过期（401）。
 	EmitExitTokenInvalid = 3
@@ -99,7 +99,7 @@ func EmitExitCode(reason string) int {
 	switch reason {
 	case "":
 		return EmitExitOK
-	case ReasonTargetNotDeclared, ReasonMissingTarget:
+	case ReasonTargetNotDeclared, ReasonMissingTarget, ReasonParamType:
 		return EmitExitBadRequest
 	case ReasonTokenInvalid:
 		return EmitExitTokenInvalid
@@ -118,7 +118,7 @@ func EmitHTTPStatus(reason string) int {
 	switch reason {
 	case "":
 		return 200
-	case ReasonTargetNotDeclared, ReasonMissingTarget:
+	case ReasonTargetNotDeclared, ReasonMissingTarget, ReasonParamType:
 		return 400
 	case ReasonTokenInvalid:
 		return 401

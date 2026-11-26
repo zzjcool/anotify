@@ -613,6 +613,7 @@ func TestEmitExitCodes(t *testing.T) {
 		"":                      EmitExitOK,
 		ReasonTargetNotDeclared: EmitExitBadRequest,
 		ReasonMissingTarget:     EmitExitBadRequest,
+		ReasonParamType:         EmitExitBadRequest,
 		ReasonTokenInvalid:      EmitExitTokenInvalid,
 		ReasonTaskNotRunning:    EmitExitTaskNotRunning,
 		ReasonEmitIDConflict:    EmitExitIDConflict,
@@ -634,6 +635,7 @@ func TestEmitExitCodes(t *testing.T) {
 		"":                      200,
 		ReasonTargetNotDeclared: 400,
 		ReasonMissingTarget:     400,
+		ReasonParamType:         400,
 		ReasonTokenInvalid:      401,
 		ReasonTaskNotRunning:    409,
 		ReasonEmitIDConflict:    409,
@@ -956,3 +958,15 @@ func TestNoProjectDependencies(t *testing.T) {
 // intPtrTest / boolPtrTest 是 presence 字段的测试夹具（0 / false 都是合法值）。
 func intPtrTest(v int) *int    { return &v }
 func boolPtrTest(v bool) *bool { return &v }
+
+func TestEmitErrorCodesCoverParamType(t *testing.T) {
+	if !IsEmitErrorCode(ReasonParamType) {
+		t.Fatalf("param_type 必须在 emitErrorCodes 封闭集合里（漏登记会被 CLI 改写成 emit_unreachable）")
+	}
+	if got := EmitExitCode(ReasonParamType); got != EmitExitBadRequest {
+		t.Fatalf("param_type 退出码 = %d，期望 %d", got, EmitExitBadRequest)
+	}
+	if got := EmitHTTPStatus(ReasonParamType); got != 400 {
+		t.Fatalf("param_type HTTP 状态 = %d，期望 400", got)
+	}
+}
