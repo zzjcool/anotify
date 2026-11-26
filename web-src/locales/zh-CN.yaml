@@ -1543,6 +1543,18 @@ nodes:
     save: '保存'
     reload: "明确重载最新配置"
     reload_confirm: "重载会替换当前草稿，继续？"
+    save_confirm_title: "确认修改数据保留期？"
+    save_confirm_line: "{label} {from} → {to}"
+    save_confirm_line_same: "{label} 不变"
+    save_confirm_impact_forever: "（改为永久保留，磁盘只增不减）"
+    save_confirm_impact_shrink: "（超出新窗口的将被清理，不可恢复）"
+    save_confirm_impact_extend: "（延长，不会删除已有数据）"
+    save_confirm_note: "确认后立刻对清理任务生效，已清理的数据不能恢复。"
+    save_confirm_ok: "确认并保存"
+    ttl_forever: "永久保留"
+    ttl_days: "{n} 天"
+    ttl_hours: "{n} 小时"
+    ttl_seconds: "{n} 秒"
     saved: "已保存；节点配置须等待节点 apply，命名空间值仅影响下一个任务。"
     stale: '内容已被别处修改，草稿完整保留。请先刷新再重试，不会自动覆盖。'
     error: "请求失败"
