@@ -6,6 +6,8 @@ metadata:
   displayName: '{{values.project}} 修复并提 PR'
 
 spec:
+  concurrency:
+    maxPerNode: 2
   params:
     type: object
     required: [repo, issue]
