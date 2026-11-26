@@ -1750,7 +1750,10 @@
         const banner = $("cap-banner");
         banner.className = "cap-banner" + (kind === "warn" ? " is-warn" : "");
         $("cap-banner-title").textContent = title == null ? "" : String(title);
-        $("cap-banner-text").textContent = text == null ? "" : String(text);
+        const holder = $("cap-banner-text");
+        holder.replaceChildren();
+        if (text && text.nodeType) holder.append(text);
+        else holder.textContent = text == null ? "" : String(text);
         const box = $("cap-banner-actions");
         box.replaceChildren();
         for (const a of actions || []) box.append(a);
@@ -1763,9 +1766,45 @@
         const banner = $("cap-banner");
         if (banner) banner.className = "cap-banner hidden";
       }
+      const CAUSE_FIELDS = {
+        name: "cap-name",
+        "metadata.name": "cap-name",
+        displayName: "cap-display-name",
+        "metadata.displayName": "cap-display-name",
+        version: "cap-version",
+        "metadata.version": "cap-version",
+        params: "cap-params",
+        "run.files": "cap-files",
+        "run.entrypoint": "cap-entrypoint",
+        "run.script": "cap-entrypoint",
+        run: "cap-entrypoint",
+        "run.workDir": "cap-workdir",
+        next: "cap-next",
+        requires: "cap-requires-commands",
+        lifecycle: "cap-idempotent",
+        concurrency: "cap-concurrency",
+      };
+      function causeStep(control) {
+        for (const body of wizardBodies()) {
+          if (body.contains(control)) return Number(body.getAttribute("data-cap-step")) || 0;
+        }
+        return 0;
+      }
+      function jumpToCause(control) {
+        const step = causeStep(control);
+        if (WIZARD.on && step) wizardGo(step);
+        A.focusCause(control);
+      }
       function showWriteError(e) {
         /* 新建只有一个写动作（POST），409 就是「这个名字已被占用」，400 是输入问题；
            两种都把服务端结论原样说清楚，输入一律保留、不自动重试。 */
+        const body = $("cap-modal") && $("cap-modal").querySelector(".modal-body");
+        const res = A.applyCauses(body, e, CAUSE_FIELDS);
+        if (res.causes.length) {
+          showBanner("error", "", A.causeReport(e, res, { jump: jumpToCause }), []);
+          if (res.fields.length) jumpToCause(res.fields[0].control);
+          return;
+        }
         const reason = e && e.reason ? e.reason : e && e.status ? "HTTP " + e.status : "—";
         showBanner("error", sub(t("caps.error.title", "保存失败：{reason}"), { reason }), statusLine(e), []);
       }

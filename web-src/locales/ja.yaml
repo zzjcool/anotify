@@ -13,6 +13,9 @@ common:
   server_error: 'サーバーエラー HTTP {code}'
   request_rejected: 'リクエスト拒否 HTTP {code}'
   request_failed: 'リクエスト失敗'
+  save_failed_fields: '保存できませんでした：{n} か所の修正が必要です'
+  save_failed_raw: 'JSON 原文'
+  save_failed_copy: 'コピー'
   unknown: '不明'
   err:
     title:

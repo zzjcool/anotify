@@ -2518,8 +2518,264 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return btn;
 	}
 
-	/* 同时存在的错误条上限：错误不自动消失，连点几次失败就会堆满屏。
-	 * 超过就丢**最旧**的（最新的那次失败才是用户刚才做的事）。 */
+	/* #645：fieldMap 的键是去掉 `spec.` 前缀的文档路径，值是控件 id / 选择器；前缀命中即可。
+	 * 命中 → aria-invalid + 红框 + 下一行 message（第一条 focus），没命中留在 rest[]。 */
+	const CAUSE_MARKS = new WeakMap();
+	const CAUSE_HINT_ATTR = "data-cause-for";
+	let CAUSE_SLOT_SEQ = 0;
+
+	const CAUSE_MESSAGE_PREFIXES = [
+		"create source: ",
+		"update source: ",
+		"patch source: ",
+		"invalid source config: ",
+		"create capability: ",
+		"update capability: ",
+	];
+
+	function causeMessage(message) {
+		let text = message == null ? "" : String(message).trim();
+		for (let guard = 0; guard < CAUSE_MESSAGE_PREFIXES.length; guard++) {
+			const lower = text.toLowerCase();
+			const hit = CAUSE_MESSAGE_PREFIXES.find((prefix) =>
+				lower.startsWith(prefix),
+			);
+			if (!hit) break;
+			text = text.slice(hit.length).trim();
+		}
+		return text;
+	}
+
+	function causeFieldKey(field) {
+		const raw = field == null ? "" : String(field).trim();
+		return raw.startsWith("spec.") ? raw.slice(5) : raw;
+	}
+
+	function causeMapKey(map, path) {
+		let hit = "";
+		for (const key of Object.keys(map || {})) {
+			if (!key) continue;
+			const nested =
+				path === key || path.startsWith(key + ".") || path.startsWith(key + "[");
+			if (nested && key.length > hit.length) hit = key;
+		}
+		return hit;
+	}
+
+	function causeControl(root, target) {
+		if (!target) return null;
+		if (typeof target !== "string") return target.nodeType ? target : null;
+		const selector =
+			target.startsWith("#") || target.startsWith("[")
+				? target
+				: '[id="' + target.replace(/["\\]/g, "\\$&") + '"]';
+		try {
+			return root.querySelector(selector) || document.querySelector(selector);
+		} catch (e) {
+			return null;
+		}
+	}
+
+	function causeLabel(root, control, fallback) {
+		const id = control && control.id ? String(control.id) : "";
+		let label = null;
+		if (id) {
+			try {
+				label = root.querySelector(
+					'label[for="' + id.replace(/["\\]/g, "\\$&") + '"]',
+				);
+			} catch (e) {
+				label = null;
+			}
+		}
+		if (!label && control && typeof control.closest === "function") {
+			const field = control.closest(".field");
+			if (field) label = field.querySelector(".field-label");
+		}
+		const text = label ? String(label.textContent || "").trim() : "";
+		const aria = control && control.getAttribute ? control.getAttribute("aria-label") : "";
+		return text || String(aria || "").trim() || fallback || "";
+	}
+
+	function clearCauseMarks(root) {
+		const marks = CAUSE_MARKS.get(root);
+		if (!marks) return;
+		for (const mark of marks) {
+			mark.control.removeAttribute("aria-invalid");
+			mark.control.classList.toggle("is-invalid", mark.hadInvalid);
+			if (mark.created) mark.hint.remove();
+			else {
+				mark.hint.textContent = mark.prev.text;
+				mark.hint.classList.toggle("hidden", mark.prev.hidden);
+			}
+		}
+		CAUSE_MARKS.delete(root);
+	}
+
+	function markCause(root, control, message) {
+		const id = control.id ? String(control.id) : "";
+		let hint = null;
+		if (id) {
+			try {
+				hint = root.querySelector('[id="' + id.replace(/["\\]/g, "\\$&") + '-error"]');
+			} catch (e) {
+				hint = null;
+			}
+		}
+		const slot = id || "slot-" + ++CAUSE_SLOT_SEQ;
+		if (!hint) hint = root.querySelector("[" + CAUSE_HINT_ATTR + '="' + slot + '"]');
+		const created = !hint;
+		if (created) {
+			hint = el("p", { class: "field-error", role: "alert" });
+			hint.setAttribute(CAUSE_HINT_ATTR, slot);
+			if (typeof control.after === "function") control.after(hint);
+			else if (control.parentElement) control.parentElement.append(hint);
+		}
+		const marks = CAUSE_MARKS.get(root) || [];
+		marks.push({
+			control,
+			hint,
+			created,
+			hadInvalid: control.classList.contains("is-invalid"),
+			prev: { text: hint.textContent, hidden: hint.classList.contains("hidden") },
+		});
+		CAUSE_MARKS.set(root, marks);
+		control.setAttribute("aria-invalid", "true");
+		control.classList.add("is-invalid");
+		hint.textContent = message;
+		hint.classList.remove("hidden");
+	}
+
+	function focusCause(control) {
+		if (!control || typeof control.focus !== "function") return;
+		let folded =
+			typeof control.closest === "function"
+				? control.closest("details:not([open])")
+				: null;
+		while (folded) {
+			folded.open = true;
+			folded =
+				folded.parentElement && typeof folded.parentElement.closest === "function"
+					? folded.parentElement.closest("details:not([open])")
+					: null;
+		}
+		try {
+			control.focus({ preventScroll: true });
+		} catch (e) {
+			control.focus();
+		}
+		if (typeof control.scrollIntoView === "function") {
+			control.scrollIntoView({ block: "center", inline: "nearest" });
+		}
+	}
+
+	function applyCauses(root, err, fieldMap) {
+		const host = root && root.querySelector ? root : document;
+		const map = fieldMap && typeof fieldMap === "object" ? fieldMap : {};
+		const causes = (
+			err && err.details && Array.isArray(err.details.causes)
+				? err.details.causes
+				: []
+		).filter((cause) => cause && typeof cause === "object");
+		const out = { causes, fields: [], rest: [] };
+		clearCauseMarks(host);
+		const grouped = new Map();
+		for (const cause of causes) {
+			const key = causeFieldKey(cause.field);
+			const control = key ? causeControl(host, map[causeMapKey(map, key)]) : null;
+			if (!control) {
+				out.rest.push({ cause, label: key });
+				continue;
+			}
+			let entry = grouped.get(control);
+			if (!entry) {
+				entry = { control, label: causeLabel(host, control, key), messages: [] };
+				grouped.set(control, entry);
+			}
+			const message = causeMessage(cause.message);
+			if (message && !entry.messages.includes(message)) entry.messages.push(message);
+			out.fields.push({ cause, control, label: entry.label });
+		}
+		for (const entry of grouped.values()) {
+			markCause(host, entry.control, entry.messages.join("；"));
+		}
+		if (out.fields.length) focusCause(out.fields[0].control);
+		return out;
+	}
+
+	function causeReport(err, result, opts) {
+		const o = opts && typeof opts === "object" ? opts : {};
+		const res =
+			result && Array.isArray(result.causes)
+				? result
+				: applyCauses(document, err, null);
+		const jump = (control) => {
+			if (typeof o.jump === "function") o.jump(control);
+			else focusCause(control);
+		};
+		const box = el("div", { class: "cause-report", role: "alert" });
+		const title = el("p", { class: "cause-report-title" });
+		const n = res.causes.length;
+		title.textContent = n
+			? t("common.save_failed_fields", "保存失败：{n} 处需要修改").replace(
+					"{n}",
+					String(n),
+				)
+			: t("common.request_failed", "请求失败");
+		box.append(title);
+		const fields = new Map((res.fields || []).map((item) => [item.cause, item]));
+		const rest = new Map((res.rest || []).map((item) => [item.cause, item]));
+		const list = el("ul", { class: "cause-report-list" });
+		for (const cause of res.causes) {
+			const hit = fields.get(cause);
+			const missed = rest.get(cause);
+			const label = (hit && hit.label) || (missed && missed.label) || "";
+			const message = causeMessage(cause.message);
+			const li = el("li");
+			const row = hit
+				? el("button", { type: "button", class: "cause-report-item" })
+				: el("p", { class: "cause-report-item" });
+			if (label) row.append(el("span", { class: "cause-report-field", text: label + "：" }));
+			row.append(el("span", { text: message }));
+			if (hit) {
+				row.setAttribute("data-cause-jump", hit.control.id || "");
+				row.addEventListener("click", () => jump(hit.control));
+			}
+			li.append(row);
+			list.append(li);
+		}
+		if (res.causes.length) box.append(list);
+		const raw = JSON.stringify(
+			{
+				status: err && err.status != null ? err.status : undefined,
+				reason: err && err.reason ? err.reason : undefined,
+				message: err && err.message ? causeMessage(err.message) : undefined,
+				details: err && err.details ? err.details : undefined,
+			},
+			null,
+			2,
+		);
+		if (raw !== undefined) {
+			const fold = el("details", { class: "cause-report-raw" });
+			fold.append(el("summary", null, t("common.save_failed_raw", "JSON 原文")));
+			const pre = el("pre");
+			const code = el("span");
+			code.setAttribute("data-raw-content", "");
+			code.textContent = raw;
+			pre.append(code);
+			fold.append(pre);
+			fold.append(
+				copyButton(
+				raw,
+				t("common.save_failed_copy", "复制"),
+				"btn btn-ghost btn-sm",
+			),
+			);
+			box.append(fold);
+		}
+		return box;
+	}
+
 	const ERROR_BAR_MAX = 4;
 
 	/**
@@ -4648,6 +4904,10 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		theme: themeApi,
 		api,
 		copyText,
+		applyCauses,
+		causeReport,
+		causeMessage,
+		focusCause,
 		toast,
 		t,
 		pruneReason,

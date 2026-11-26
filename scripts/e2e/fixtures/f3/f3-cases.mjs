@@ -13,6 +13,7 @@ import { sourceEditJump } from './f3-source-edit.mjs';
 import { sourcePoll } from './f3-source-poll.mjs';
 import { sourcePollEdit } from './f3-source-poll-edit.mjs';
 import { sourceDetailGraph } from './f3-source-graph.mjs';
+import { sourceSaveCauses } from './f3-save-causes.mjs';
 import { playbook } from './f3-playbook.mjs';
 import { nodeRetained } from './f3-node-retained.mjs';
 import { nsScopeTopbar } from './f3-ns-scope.mjs';
@@ -74,6 +75,10 @@ add('source-edit-jump',sourceEditJump,{lang:'zh-CN'});
 add('source-poll',sourcePoll,{lang:'zh-CN'});
 add('source-detail-graph',sourceDetailGraph,{lang:'zh-CN'}); // #652 源详情页链路图：源 + 三个能力 + 三条边，以及图库缺失时的一行降级说明
 add('source-poll-edit',sourcePollEdit,{lang:'zh-CN'});
+add('source-save-causes',sourceSaveCauses,{lang:'zh-CN',expectHttpStatus:[
+  {status:400,path:'/v1/namespaces/default/sources',exact:true,note:'invalid_source_config：坏 config 的 400 是要验的行为（causes 必须标到 url/schedule/timeoutMs）'},
+  {status:404,path:'/v1/namespaces/default/sources/save-causes-e2e',exact:true,note:'被拒绝的源必须没有落库（收尾探一次 404）'},
+]});
 add('observe-index-all',overviewAll);
 // observe-errors：pending 任务没有日志档案（410 no_local_archive）；并发取消之后再放弃
 // 必须 409（task_not_running）——两条都是用例要的拒绝路径。

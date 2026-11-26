@@ -13,6 +13,9 @@ common:
   server_error: 'server error HTTP {code}'
   request_rejected: 'request rejected HTTP {code}'
   request_failed: 'request failed'
+  save_failed_fields: 'Couldn''t save: {n} fields need attention'
+  save_failed_raw: 'Raw JSON'
+  save_failed_copy: 'Copy'
   unknown: 'Unknown'
   err:
     title:

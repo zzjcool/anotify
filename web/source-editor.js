@@ -391,8 +391,33 @@ const json = (box, optional=false) => {
   return value;
 };
 
+const CAUSE_FIELDS={
+  name:"f-name",
+  displayName:"f-display",
+  kind:"f-kind",
+  "config.url":"f-poll-url",
+  "config.schedule":"f-expr",
+  "config.schedule.expr":"f-expr",
+  "config.schedule.tz":"f-tz",
+  "config.timeoutMs":"f-poll-timeout",
+  "config.maxItems":"f-poll-maxitems",
+  "config.headers":"f-poll-headers",
+  "config.secretRef":"f-poll-cred-name",
+  "config.secret":"f-poll-secret",
+  "config.envelope":"f-env-items",
+  "config.payload":"f-payload",
+  "config.payloadSchema":"f-payload-schema",
+  "config.expr":"f-expr",
+  "config.tz":"f-tz",
+  targets:"f-targets",
+};
 function error(box, err){
-  box.replaceChildren(el("p","source-error",[err.reason,err.message].filter(Boolean).join(": ")));
+  const res=A.applyCauses($("src-modal-body"),err,CAUSE_FIELDS);
+  if(res.causes.length){
+    box.replaceChildren(A.causeReport(err,res));
+    return;
+  }
+  box.replaceChildren(el("p","source-error",[err.reason,A.causeMessage(err.message)].filter(Boolean).join(": ")));
 }
 
 function preview(box, res){
@@ -768,9 +793,11 @@ function flagField(id,message){
       await (CTX.onSaved ? CTX.onSaved() : Promise.resolve());
     }catch(err){
       error($("form-result"),err);
-      // 校验类错误：字段红框 + 立即可见的 toast（W2-4）
+      /* 校验类错误：字段红框 + 立即可见的 toast（W2-4）；带 causes 时 toast 只报条数。 */
+      const causes=err.details&&Array.isArray(err.details.causes)?err.details.causes:[];
       if(err.field)flagField(err.field,err.message);
-      else A.toast([err.reason,err.message].filter(Boolean).join(": ")||t("save_failed"),"error");
+      else if(causes.length)A.toast(A.t("common.save_failed_fields","保存失败：{n} 处需要修改").replace("{n}",String(causes.length)),"error");
+      else A.toast([err.reason,A.causeMessage(err.message)].filter(Boolean).join(": ")||t("save_failed"),"error");
       if(err.field==="targets")A.toast(err.message,"error");
       if(A.isConflict(err)||err.reason==="resource_version_required"){
         $("form-result").append(el("p","field-hint",t("draft_preserved")));

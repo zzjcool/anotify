@@ -2153,11 +2153,33 @@
         }
         $("cap-form-msg").textContent = message;
       }
+      const CAUSE_FIELDS = {
+        name: "cap-form-name",
+        "metadata.name": "cap-form-name",
+        displayName: "cap-display-name",
+        "metadata.displayName": "cap-display-name",
+        version: "cap-version",
+        "metadata.version": "cap-version",
+        params: "cap-params",
+        "run.files": "cap-files",
+        "run.entrypoint": "cap-entrypoint",
+        "run.script": "cap-entrypoint",
+        run: "cap-entrypoint",
+        "run.workDir": "cap-workdir",
+        next: "cap-next",
+        requires: "cap-requires-commands",
+        lifecycle: "cap-idempotent",
+        concurrency: "cap-concurrency",
+      };
+
       function showBanner(kind, title, text, actions) {
         const banner = $("cap-banner");
         banner.className = "cap-banner" + (kind === "warn" ? " is-warn" : "");
         $("cap-banner-title").textContent = title == null ? "" : String(title);
-        $("cap-banner-text").textContent = text == null ? "" : String(text);
+        const holder = $("cap-banner-text");
+        holder.replaceChildren();
+        if (text && text.nodeType) holder.append(text);
+        else holder.textContent = text == null ? "" : String(text);
         const box = $("cap-banner-actions");
         box.replaceChildren();
         for (const a of actions || []) box.append(a);
@@ -2201,6 +2223,12 @@
             t("caps.error.immutable", "这个显式版本的内容已经存在且不可变：改 run/params/requires/lifecycle/concurrency 必须换一个版本（next/displayName 例外）。") + (e.message ? " " + e.message : ""),
             [],
           );
+          return;
+        }
+        const body = $("cap-modal") && $("cap-modal").querySelector(".modal-body");
+        const res = A.applyCauses(body, e, CAUSE_FIELDS);
+        if (res.causes.length) {
+          showBanner("error", "", A.causeReport(e, res), []);
           return;
         }
         const reason = e && e.reason ? e.reason : e && e.status ? "HTTP " + e.status : "—";
