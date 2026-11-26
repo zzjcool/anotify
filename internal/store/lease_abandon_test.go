@@ -7,7 +7,6 @@ import (
 	"testing"
 )
 
-// #660：abandon 必须同事务收敛 attempt.reaped_at 与 node_instances.busy_*。
 func TestLeaseSweepAbandonSettlesBothLedgers(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -172,4 +171,42 @@ func TestConvergeAbandonedLedgersIsIdempotent(t *testing.T) {
 	if *reapedAgain.ReapedAt != *reaped.ReapedAt || reapedAgain.ReclaimReason != reaped.ReclaimReason {
 		t.Fatalf("二次收敛不得改行：before %+v after %+v", reaped, reapedAgain)
 	}
+}
+
+// #660 读时兜底：终态任务的遗留 attempt（reaped NULL、槽行已删）不许再钉死预算。
+func TestTerminalUnreapedAttemptDoesNotBlockBudget(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	c := v4Cap(t, db, nsID, "abandon-legacy", 1)
+	node := v4Node(t, db, "legacy-node", 1)
+
+	stuck := v4Task(t, db, nsID, c, "tr_legacy_stuck", "")
+	_, _, stuckAttempt := v4Grant(t, db, stuck.ID, node.ID, "asg-stuck")
+	running := v4MustPhase(t, db, nsID, stuck.ID, TaskRunning)
+	if err := db.RequestAbandon(ctx, stuck.ID, "e2e 放弃", Now()); err != nil {
+		t.Fatalf("request abandon: %v", err)
+	}
+	if _, _, err := db.RecoverLostLeases(ctx, *running.LeaseUntil+1); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	v4MustPhase(t, db, nsID, stuck.ID, TaskAbandoned)
+	if att, err := db.GetTaskAttempt(ctx, stuck.ID, stuckAttempt); err != nil || att.ReapedAt != nil {
+		t.Fatalf("取消在飞的 attempt 应仍未回收：%+v err=%v", att, err)
+	}
+	if _, err := db.Exec(`UPDATE node_instances SET busy_task = NULL, busy_attempt = 0,
+		busy_lease_id = '', busy_assignment_id = '', busy_expires_at = 0 WHERE node_id = ?`, node.ID); err != nil {
+		t.Fatalf("清槽行: %v", err)
+	}
+
+	next := v4Task(t, db, nsID, c, "tr_legacy_next", "")
+	slot := v4FreeSlot(t, db, node.ID)
+	if err := db.AssignTask(ctx, next.ID, node.ID, "asg-next", 1); err != nil {
+		t.Fatalf("assign next: %v", err)
+	}
+	if _, _, _, _, _, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
+		next.ID, "asg-next", 1, slot, Now()); err != nil {
+		t.Fatalf("终态任务的遗留 attempt 不得再占预算（#660），得到 %v", err)
+	}
+	v4MustPhase(t, db, nsID, next.ID, TaskRunning)
 }
