@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // nodeYAMLFixture 建一台带完整 spec 的节点并返回它的 YAML 文本。
@@ -240,6 +242,34 @@ func TestNodeYAMLPutRequiresCAS(t *testing.T) {
 	doc := "apiVersion: anotify/v1\nkind: Node\nmetadata:\n  name: hw\nspec: {}\n"
 	wantStatus(t, env.do(http.MethodPut, "/v1/nodes/hw/yaml", map[string]any{"yaml": doc}),
 		http.StatusBadRequest, reasonResourceVersionRequired)
+}
+
+func TestNodeYAMLScalarEscapingIsV3Readable(t *testing.T) {
+	cases := []struct{ what, emitted, want string }{ // #646：JS 侧写什么，yaml.v3 就得读回什么（与 scripts/yamldoc.test.mjs 同一张表互为外键）
+		{"以冒号结尾", `"a:"`, "a:"},
+		{"URL 以冒号结尾", `"http://x:"`, "http://x:"},
+		{"冒号在中间", "k:v", "k:v"},
+		{"指数形态", `"1e3"`, "1e3"},
+		{"八进制形态", `"010"`, "010"},
+		{"超 2^53 的整数", `"12345678901234567890"`, "12345678901234567890"},
+	}
+	for _, c := range cases {
+		doc := "apiVersion: anotify/v1\nkind: Node\nmetadata:\n  name: hw\nspec:\n  vars:\n    K: " + c.emitted + "\n"
+		var parsed nodeYAMLDoc
+		if err := yaml.Unmarshal([]byte(doc), &parsed); err != nil {
+			t.Fatalf("%s：web/yamldoc.js 写出的 %s 必须能被 yaml.v3 读回，实际 %v", c.what, c.emitted, err)
+		}
+		if got := parsed.Spec.Vars["K"]; got != c.want {
+			t.Fatalf("%s：%s 读成 %q，期望 %q", c.what, c.emitted, got, c.want)
+		}
+	}
+	for _, bare := range []string{"a:", "http://x:"} {
+		doc := "apiVersion: anotify/v1\nkind: Node\nmetadata:\n  name: hw\nspec:\n  vars:\n    K: " + bare + "\n"
+		var parsed nodeYAMLDoc
+		if err := yaml.Unmarshal([]byte(doc), &parsed); err == nil {
+			t.Fatalf("裸写 %q 必须被 yaml.v3 拒绝，否则「以冒号结尾必须加引号」这条判据不再说明问题", bare)
+		}
+	}
 }
 
 // TestNodeYAMLPutStaleCAS 旧令牌 → 409 + details.current（页面据此提示刷新，不覆盖别人）。

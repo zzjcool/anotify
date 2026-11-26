@@ -66,6 +66,83 @@ test('scalar：唯一一份标量转义（裸写 / 双引号 / 保留字 / 数�
 	assert.equal(YD.scalar(false), 'false');
 });
 
+test('#646 冒号：以冒号结尾的标量必须走双引号（裸写会被 yaml.v3 读成 key，`k: a:` 直接语法错）', () => {
+	for (const text of ['a:', 'http://x:', '说明:', 'a::b']) {
+		assert.equal(YD.scalar(text), JSON.stringify(text), JSON.stringify(text) + ' 的冒号在末尾（或连续）→ 双引号标量');
+	}
+	assert.equal(YD.scalar('k:v'), 'k:v', '冒号在中间且其后不是空白 → yaml.v3 读得回来，可以裸写');
+	assert.equal(YD.scalar('rv1:uid-p86c:7'), 'rv1:uid-p86c:7', '正常形态的 resourceVersion 不受影响');
+	assert.equal(YD.scalar('x:-y'), 'x:-y');
+});
+
+test('#646 回归：vars 值以冒号结尾时写回的文档仍是一座可解析的文档（原来整份 400）', () => {
+	const model = {
+		apiVersion: 'anotify/v1',
+		kind: 'Node',
+		metadata: { name: 'n' },
+		spec: { vars: { NOTE: '说明:', HOOK: 'http://host:' } },
+	};
+	const text = YD.render('Node', model);
+	assert.match(text, /^    NOTE: "说明:"$/m, '值以冒号结尾 → 双引号（裸写就是服务端 400 的那一份文本）');
+	assert.match(text, /^    HOOK: "http:\/\/host:"$/m);
+	assert.deepEqual(plain(YD.parse('Node', text).model.spec.vars), { NOTE: '说明:', HOOK: 'http://host:' });
+
+	const edited = YD.edit('Node', text, { spec: { vars: { NOTE: '说明:', OTHER: 'k:v' } } });
+	assert.deepEqual(plain(edited.problems), []);
+	assert.match(edited.text, /^    OTHER: k:v$/m, '中间冒号的值照旧裸写');
+	assert.deepEqual(plain(YD.parse('Node', edited.text).model.spec.vars), { NOTE: '说明:', OTHER: 'k:v' });
+});
+
+test('#646 标量表：与 internal/server 的 yaml.v3 夹具同一张表（这 6 个值是 issue 的实测清单）', () => {
+	const TABLE = {
+		'a:': '"a:"',
+		'http://x:': '"http://x:"',
+		'k:v': 'k:v',
+		'1e3': '"1e3"',
+		'010': '"010"',
+		'12345678901234567890': '"12345678901234567890"',
+	};
+	const vars = {};
+	let i = 0;
+	for (const [value, emitted] of Object.entries(TABLE)) {
+		assert.equal(YD.scalar(value), emitted, JSON.stringify(value) + ' 的写面形态');
+		vars['K' + i++] = value;
+	}
+	const text = YD.render('Node', { apiVersion: 'anotify/v1', kind: 'Node', metadata: { name: 'n' }, spec: { vars } });
+	assert.deepEqual(plain(YD.parse('Node', text).model.spec.vars), vars, '整份文档往返：值逐字不变');
+	assert.doesNotMatch(text, /^\s+\w+: .*:$/m, '文档里不许出现「值以裸冒号结尾」的行');
+});
+
+test('#646 大整数：解析保留原文，写回不静默改值（也不让改过的 double 冒充整数）', () => {
+	const doc = [
+		'apiVersion: anotify/v1',
+		'kind: Node',
+		'metadata:',
+		'  name: hw',
+		'  resourceVersion: 9007199254740993',
+		'spec:',
+		'  limits:',
+		'    total: 9007199254740993',
+		'    perCapability:',
+		'      safe: 9007199254740991',
+		'',
+	].join('\n');
+	const parsed = YD.parse('Node', doc);
+	assert.deepEqual(plain(parsed.problems), []);
+	assert.equal(parsed.model.metadata.resourceVersion, '9007199254740993', '字符串字段：原文照抄，不经 Number');
+	assert.equal(parsed.model.spec.limits.total, '9007199254740993', '超 2^53-1 → 保留原文（Number 会改成 …992）');
+	assert.equal(parsed.model.spec.limits.perCapability.safe, 9007199254740991, '2^53-1 仍是安全整数 → 仍是数字');
+
+	const text = YD.render('Node', parsed.model);
+	assert.match(text, /^  resourceVersion: "9007199254740993"$/m);
+	assert.match(text, /^    total: "9007199254740993"$/m);
+	assert.doesNotMatch(text, /9007199254740992/, '被改过的值（…992）一个字符都不许出现');
+
+	assert.equal(YD.scalar(12345678901234567890), '"12345678901234567000"', '已经进过 Number 的整数不冒充整数写回（双引号 = 服务端按类型 400）');
+	assert.equal(YD.scalar(9007199254740991), '9007199254740991', '安全整数照旧写成数字');
+	assert.equal(YD.scalar(1.5), '1.5', '浮点不受影响');
+});
+
 test('Node：读服务端原文，表单只改一个键，其余字段逐字保真', () => {
 	const parsed = YD.parse('Node', NODE_DOC);
 	assert.deepEqual(plain(parsed.problems), [], '服务端自己的规范文本必须读得回来');
