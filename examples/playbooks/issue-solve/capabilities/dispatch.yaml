@@ -36,6 +36,10 @@ spec:
         mkdir -p "${ANOTIFY_ARTIFACT_DIR}"
         art_dir=${ANOTIFY_ARTIFACT_DIR}
 
+        json_str() {
+          printf '%s' "$1" | tr '\n\t' '  ' | sed 's/\\/\\\\/g; s/"/\\"/g'
+        }
+
         work_order=$(printf '{
           "kind": "issue-work-order",
           "repo": "%s",
@@ -54,7 +58,7 @@ spec:
             "gates": ["typecheck", "test", "e2e-affected"],
             "report": "docs/reports/<slug>.md"
           }
-        }' "${repo}" "${issue}" "${title}" "${note}" '{{values.branchPrefix}}')
+        }' "${repo}" "${issue}" "$(json_str "${title}")" "$(json_str "${note}")" '{{values.branchPrefix}}')
 
         printf '%s\n' "${work_order}" > "${art_dir}/work-order.json"
         echo "dispatch: POST ${url}"

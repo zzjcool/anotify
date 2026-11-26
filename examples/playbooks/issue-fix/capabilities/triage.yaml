@@ -88,7 +88,7 @@ spec:
         if [ "$outcome" = invalid ]; then
           reason=$(sed -n 's/.*"reason": *"\([^"]*\)".*/\1/p' "$verdict" | head -1)
           gh issue close "$issue" --repo "$repo" --comment "按自动判定关闭：${reason:-issue 不成立}"
-          anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"closed\",\"findings\":\"${reason:-issue 不成立}\"}"
+          anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"closed\"}"
           exit 0
         fi
 

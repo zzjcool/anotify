@@ -40,10 +40,13 @@ spec:
         art_dir=${ANOTIFY_ARTIFACT_DIR}
         mkdir -p "$art_dir"
 
+        review_notes=$(gh issue view "$issue" --repo "$repo" --comments --json comments \
+          --jq '[.comments[].body] | join("\n---\n")' | tail -c 4000)
+
         prompt="review 在仓库 $repo 的 issue #$issue 修复 PR${pr:+（$pr）}上提了问题，你要逐条修掉。
 
-        review 意见：
-        $findings
+        review 意见（本 issue 的评论，新→旧）：
+        $review_notes
 
         硬性要求：
         1. 在**同一个分支**${branch:+（$branch）}上继续改，不要另开分支、不要重开 PR。
@@ -85,7 +88,8 @@ spec:
           exit 0
         fi
         reason=$(sed -n 's/.*"reason": *"\([^"]*\)".*/\1/p' "$verdict" | head -1)
-        anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"stuck\",\"findings\":\"${reason:-fix 没做成}\"}"
+        gh issue comment "$issue" --repo "$repo" --body "fix 没能完成：${reason:-见 agent.log}" || true
+        anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"stuck\"}"
     env:
       REPO_DIR: '{{values.repoDir}}'
       AGENT_CMD: '{{values.agentCmd}}'

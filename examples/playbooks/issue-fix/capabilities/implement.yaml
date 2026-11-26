@@ -87,7 +87,8 @@ spec:
           anode emit '{{values.project}}-review' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"round\":$round,\"pr\":\"$pr\",\"branch\":\"$branch\"}"
         else
           reason=$(sed -n 's/.*"reason": *"\([^"]*\)".*/\1/p' "$verdict" | head -1)
-          anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"stuck\",\"findings\":\"${reason:-implement 没做成}\"}"
+          gh issue comment "$issue" --repo "$repo" --body "implement 没能完成：${reason:-见 agent.log}" || true
+          anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"stuck\"}"
         fi
     env:
       REPO_DIR: '{{values.repoDir}}'
