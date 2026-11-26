@@ -14,6 +14,7 @@ common:
   request_rejected: 'request rejected HTTP {code}'
   request_failed: 'request failed'
   save_failed_fields: 'Couldn''t save: {n} fields need attention'
+  preview_failed_fields: 'Dry run failed: {n} fields need attention'
   save_failed_raw: 'Raw JSON'
   save_failed_copy: 'Copy'
   unknown: 'Unknown'

@@ -2516,32 +2516,23 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	}
 
 	/* #645：fieldMap 的键是去掉 `spec.` 前缀的文档路径，值是控件 id / 选择器；前缀命中即可。
-	 * 命中 → aria-invalid + 红框 + 下一行 message（第一条 focus），没命中留在 rest[]。 */
+	 * 命中 → aria-invalid + 红框 + 下一行 message（第一条 focus），没命中留在 rest[]；message 原样展示（`create source: ` 这类定位前缀由后端 `sourceConfigMessage` 剪，前端再抄一张表就是第二份真相）。 */
 	const CAUSE_MARKS = new WeakMap();
 	const CAUSE_HINT_ATTR = "data-cause-for";
 	let CAUSE_SLOT_SEQ = 0;
 
-	const CAUSE_MESSAGE_PREFIXES = [
-		"create source: ",
-		"update source: ",
-		"patch source: ",
-		"invalid source config: ",
-		"create capability: ",
-		"update capability: ",
-	];
+	/* 标题按动作走：同一份清单挂在保存与试运行两个入口上，试运行失败不能冒「保存失败」；0 条本来就没清单（调用点先数条数）。 */
+	const CAUSE_TITLES = {
+		save: ["common.save_failed_fields", "保存失败：{n} 处需要修改"],
+		preview: ["common.preview_failed_fields", "试运行失败：{n} 处需要修改"],
+	};
 
-	function causeMessage(message) {
-		let text = message == null ? "" : String(message).trim();
-		for (let guard = 0; guard < CAUSE_MESSAGE_PREFIXES.length; guard++) {
-			const lower = text.toLowerCase();
-			const hit = CAUSE_MESSAGE_PREFIXES.find((prefix) =>
-				lower.startsWith(prefix),
-			);
-			if (!hit) break;
-			text = text.slice(hit.length).trim();
-		}
-		return text;
+	function causeTitle(action, n) {
+		const entry = CAUSE_TITLES[action] || CAUSE_TITLES.save;
+		return t(entry[0], entry[1]).replace("{n}", String(n));
 	}
+
+	const causeText = (message) => (message == null ? "" : String(message).trim());
 
 	function causeFieldKey(field) {
 		const raw = field == null ? "" : String(field).trim();
@@ -2650,17 +2641,6 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 
 	function focusCause(control) {
 		if (!control || typeof control.focus !== "function") return;
-		let folded =
-			typeof control.closest === "function"
-				? control.closest("details:not([open])")
-				: null;
-		while (folded) {
-			folded.open = true;
-			folded =
-				folded.parentElement && typeof folded.parentElement.closest === "function"
-					? folded.parentElement.closest("details:not([open])")
-					: null;
-		}
 		try {
 			control.focus({ preventScroll: true });
 		} catch (e) {
@@ -2694,7 +2674,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 				entry = { control, label: causeLabel(host, control, key), messages: [] };
 				grouped.set(control, entry);
 			}
-			const message = causeMessage(cause.message);
+			const message = causeText(cause.message);
 			if (message && !entry.messages.includes(message)) entry.messages.push(message);
 			out.fields.push({ cause, control, label: entry.label });
 		}
@@ -2717,13 +2697,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		};
 		const box = el("div", { class: "cause-report", role: "alert" });
 		const title = el("p", { class: "cause-report-title" });
-		const n = res.causes.length;
-		title.textContent = n
-			? t("common.save_failed_fields", "保存失败：{n} 处需要修改").replace(
-					"{n}",
-					String(n),
-				)
-			: t("common.request_failed", "请求失败");
+		title.textContent = causeTitle(o.action, res.causes.length);
 		box.append(title);
 		const fields = new Map((res.fields || []).map((item) => [item.cause, item]));
 		const rest = new Map((res.rest || []).map((item) => [item.cause, item]));
@@ -2732,7 +2706,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			const hit = fields.get(cause);
 			const missed = rest.get(cause);
 			const label = (hit && hit.label) || (missed && missed.label) || "";
-			const message = causeMessage(cause.message);
+			const message = causeText(cause.message);
 			const li = el("li");
 			const row = hit
 				? el("button", { type: "button", class: "cause-report-item" })
@@ -2751,7 +2725,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			{
 				status: err && err.status != null ? err.status : undefined,
 				reason: err && err.reason ? err.reason : undefined,
-				message: err && err.message ? causeMessage(err.message) : undefined,
+				message: err && err.message ? causeText(err.message) : undefined,
 				details: err && err.details ? err.details : undefined,
 			},
 			null,
@@ -4909,7 +4883,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		applyCauses,
 		clearCauses,
 		causeReport,
-		causeMessage,
+		causeTitle,
 		focusCause,
 		toast,
 		t,

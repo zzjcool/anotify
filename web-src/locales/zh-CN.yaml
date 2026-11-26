@@ -14,6 +14,7 @@ common:
   request_rejected: '请求被拒绝 HTTP {code}'
   request_failed: '请求失败'
   save_failed_fields: '保存失败：{n} 处需要修改'
+  preview_failed_fields: '试运行失败：{n} 处需要修改'
   save_failed_raw: 'JSON 原文'
   save_failed_copy: '复制'
   unknown: '未知'

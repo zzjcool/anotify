@@ -411,13 +411,13 @@ const CAUSE_FIELDS={
   "config.tz":"f-tz",
   targets:"f-targets",
 };
-function error(box, err){
+function error(box, err, action){
   const res=A.applyCauses($("src-modal-body"),err,CAUSE_FIELDS);
   if(res.causes.length){
-    box.replaceChildren(A.causeReport(err,res));
+    box.replaceChildren(A.causeReport(err,res,{action}));
     return;
   }
-  box.replaceChildren(el("p","source-error",[err.reason,A.causeMessage(err.message)].filter(Boolean).join(": ")));
+  box.replaceChildren(el("p","source-error",[err.reason,err.message].filter(Boolean).join(": ")));
 }
 
 function preview(box, res){
@@ -800,12 +800,12 @@ function flagField(id,message){
       closeEditor();
       await (CTX.onSaved ? CTX.onSaved() : Promise.resolve());
     }catch(err){
-      error($("form-result"),err);
+      error($("form-result"),err,"save");
       /* 校验类错误：字段红框 + 立即可见的 toast（W2-4）；带 causes 时 toast 只报条数。 */
       const causes=err.details&&Array.isArray(err.details.causes)?err.details.causes:[];
       if(err.field)flagField(err.field,err.message);
-      else if(causes.length)A.toast(A.t("common.save_failed_fields","保存失败：{n} 处需要修改").replace("{n}",String(causes.length)),"error");
-      else A.toast([err.reason,A.causeMessage(err.message)].filter(Boolean).join(": ")||t("save_failed"),"error");
+      else if(causes.length)A.toast(A.causeTitle("save",causes.length),"error");
+      else A.toast([err.reason,err.message].filter(Boolean).join(": ")||t("save_failed"),"error");
       if(err.field==="targets")A.toast(err.message,"error");
       if(A.isConflict(err)||err.reason==="resource_version_required"){
         $("form-result").append(el("p","field-hint",t("draft_preserved")));
@@ -820,9 +820,8 @@ function flagField(id,message){
     const btn=$("btn-dry");
     btn.disabled=true;
     try{
-      /* 未保存源的 dry-run 请求体是 InlinePreviewBody：`source` 是 InlineSourceDraft，
-       * metadata 只认 name/displayName（additionalProperties:false），把写信封的
-       * metadata.namespace 一起发过去会被严格解码拒掉。所以只挑草稿允许的键。 */
+      /* 未保存源的 dry-run 请求体是 InlinePreviewBody：`source` 是 InlineSourceDraft，metadata
+       * 只认 name/displayName（additionalProperties:false），多塞 namespace 会被严格解码拒掉。 */
       const envelope=writeSource();
       const source={
         apiVersion:envelope.apiVersion,
@@ -838,8 +837,10 @@ function flagField(id,message){
         payload
       })));
     }catch(err){
-      error($("form-result"),err);
-      A.toast([err.reason,err.message].filter(Boolean).join(": ")||t("save_failed"),"error");
+      error($("form-result"),err,"preview");
+      const causes=err.details&&Array.isArray(err.details.causes)?err.details.causes:[];
+      if(causes.length)A.toast(A.causeTitle("preview",causes.length),"error");
+      else A.toast([err.reason,err.message].filter(Boolean).join(": ")||t("save_failed"),"error");
     }finally{
       btn.disabled=false;
     }

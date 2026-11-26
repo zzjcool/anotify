@@ -3,6 +3,27 @@ import assert from 'node:assert/strict';
 const NAME = 'save-causes-e2e';
 const POST = '/v1/namespaces/default/sources';
 
+const reportOf = (page) =>
+	page.evaluate(() => {
+		const box = document.querySelector('#form-result .cause-report');
+		if (!box) return null;
+		return {
+			title: (box.querySelector('.cause-report-title')?.textContent || '').trim(),
+			rows: [...box.querySelectorAll('.cause-report-item')].map((n) => (n.textContent || '').trim()),
+			jumps: [...box.querySelectorAll('[data-cause-jump]')].map((n) => n.getAttribute('data-cause-jump')),
+			raw: (box.querySelector('.cause-report-raw pre')?.textContent || '').trim(),
+		};
+	});
+
+const lastToast = (page) =>
+	page.evaluate(() => {
+		const bars = document.querySelectorAll('[data-error-bar]');
+		const bar = bars[bars.length - 1];
+		if (!bar) return null;
+		const message = bar.children[1];
+		return { text: (message && message.textContent ? message.textContent : '').trim(), whole: (bar.textContent || '').trim() };
+	});
+
 const hintOf = (page, id) =>
 	page.evaluate((fieldId) => {
 		const own = document.getElementById(fieldId + '-error');
@@ -62,30 +83,38 @@ export async function sourceSaveCauses(d) {
 	const focused = await page.evaluate(() => (document.activeElement && document.activeElement.id) || '');
 	assert.equal(focused, 'f-poll-url', '焦点必须落到第一个出错的控件，实际 ' + focused);
 
-	const report = await page.evaluate(() => {
-		const box = document.querySelector('#form-result .cause-report');
-		if (!box) return null;
-		return {
-			title: (box.querySelector('.cause-report-title')?.textContent || '').trim(),
-			rows: [...box.querySelectorAll('.cause-report-item')].map((n) => (n.textContent || '').trim()),
-			jumps: [...box.querySelectorAll('[data-cause-jump]')].map((n) => n.getAttribute('data-cause-jump')),
-			raw: (box.querySelector('.cause-report-raw pre')?.textContent || '').trim(),
-		};
-	});
+	const report = await reportOf(page);
 	assert.ok(report, '#form-result 里必须有原因清单（不是一行协议串）');
-	assert.ok(/\d+\s*处需要修改/.test(report.title), '横幅标题要说「N 处需要修改」，实际 ' + report.title);
-	assert.equal(report.rows.length, causes.length, '每条 cause 一行，实际 ' + JSON.stringify(report.rows));
+	assert.equal(report.title, '保存失败：' + causes.length + ' 处需要修改', '横幅标题必须逐字是「保存失败：N 处需要修改」，实际 ' + report.title);
+	const labels = await page.evaluate((ids) => {
+		const out = {};
+		for (const id of ids) {
+			const label = document.querySelector('label[for="' + id + '"]');
+			out[id] = label ? (label.textContent || '').trim() : '';
+		}
+		return out;
+	}, ['f-poll-url', 'f-expr', 'f-poll-timeout']);
+	const controlOf = {
+		'spec.config.url': 'f-poll-url',
+		'spec.config.schedule': 'f-expr',
+		'spec.config.timeoutMs': 'f-poll-timeout',
+	};
+	const expectedRows = causes.map((cause) => labels[controlOf[cause.field]] + '：' + String(cause.message || '').trim());
+	assert.deepEqual(
+		report.rows,
+		expectedRows,
+		'每条 cause 一行，内容必须逐字是「字段人话名：服务端 message」（不许叠前缀、不许改字），实际 ' + JSON.stringify(report.rows),
+	);
 	assert.deepEqual(report.jumps, ['f-poll-url', 'f-expr', 'f-poll-timeout']);
+	const toast = await lastToast(page);
+	assert.equal(toast.text, report.title, '保存失败的 toast 必须与横幅同口径，实际 ' + JSON.stringify(toast));
 	await page.locator('#form-result [data-cause-jump="f-poll-timeout"]').click();
 	const jumped = await page.evaluate(() => (document.activeElement && document.activeElement.id) || '');
 	assert.equal(jumped, 'f-poll-timeout', '点清单里的一行必须跳到那个控件，实际 ' + jumped);
-	check('SAVE-CAUSES-03 banner lists one row per cause and each row jumps to its control');
+	check('SAVE-CAUSES-03 banner + toast say 保存失败：N 处需要修改，rows are exactly 人话名：message and jump to their control');
 
-	const shown = await page.locator('#form-result').innerText();
-	assert.equal(shown.includes('create source:'), false, '展示文案不许带 create source: 前缀，实际 ' + shown);
-	assert.equal(shown.includes('invalid_source_config'), false, 'reason 码不进人话列表，实际 ' + shown);
 	assert.ok(report.raw.includes('invalid_source_config'), '折叠里的机器原文要保留 reason 码，实际 ' + report.raw);
-	check('SAVE-CAUSES-04 human list drops the locator prefixes; reason stays in the raw-JSON fold');
+	check('SAVE-CAUSES-04 reason code stays in the raw-JSON fold, not in the human list');
 
 	await page.locator('#modal-cancel').click();
 	await page.locator('#src-modal').waitFor({ state: 'hidden', timeout: 20000 });
