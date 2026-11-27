@@ -69,6 +69,29 @@ common:
   brand:
     name: Anotify
     tagline: Notifica cuando tu agente termina
+  # #576: un único componente «no encontrado» para 404 / falta de parámetros
+  # (notFoundState en web/partials.js). {kind} es el sustantivo localizado del
+  # recurso (ver kind.*), {name} es el nombre del enlace (dato del usuario, <code>).
+  notfound:
+    title: 'No se encontró: {kind} «{name}»'
+    title_plain: 'No se encontró: {kind}'
+    why: 'Puede que se haya eliminado o que el nombre del enlace sea incorrecto.'
+    why_retention: 'Puede que se haya limpiado al superar el periodo de retención o que el nombre del enlace sea incorrecto.'
+    why_incomplete: 'Al enlace le falta un parámetro, así que la página no sabe qué elemento mostrar.'
+    other_ns: 'Probar otro espacio de nombres'
+    ns_label: 'Espacio de nombres'
+    badge: 'No encontrado'
+    incomplete: 'Enlace incompleto: falta el nombre de {kind}'
+    kind_generic: 'elemento'
+    kind:
+      capability: capacidad
+      source: fuente
+      playbook: playbook
+      release: instancia
+      node: nodo
+      task: tarea
+      trace: traza
+      namespace: espacio de nombres
   nav:
     overview: Resumen
     events: Flujo de eventos
@@ -2644,3 +2667,15 @@ release:
   restore_pinned_gone: Se eliminó una versión de capacidad de la instantánea, así que no se puede restaurar.
   restore_pin_missing_source: Una fuente de la instantánea no existe en este espacio de nombres; cree la fuente y vuelva a restaurar.
   restore_conflict: Ya existe una capacidad con el mismo nombre y versión pero con otro contenido, así que no se puede restaurar.
+
+# #576: página 404 del sitio (web-src/pages/404.html); internal/server/static.go la
+# devuelve con estado 404 para rutas inexistentes. Una página estática no puede
+# conocer la dirección solicitada en tiempo de compilación, así que el script de
+# la página rellena lo que va tras path_label (esa línea no se muestra sin JS).
+site:
+  notfound:
+    title: Esta página no existe
+    body: Esa dirección no es una página de este sitio.
+    path_label: Dirección
+    home: Volver al resumen
+    docs: Abrir la documentación de integración

@@ -65,47 +65,12 @@
         min-width: 0;
       }
 
-      /* 加载 / 错误 / 空态宿主 */
+      /* 加载 / 错误 / 空态宿主。
+         #576：404 与缺参数用共享的 .empty 组件（Anotify.notFoundState），
+         本页只留「已删除 + 撤销」那个带图标的状态 —— 它也走 .empty，不再自己一套 .cap-empty*。 */
       .cap-loading {
         padding: 24px;
         color: var(--muted);
-      }
-      .cap-empty {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 10px;
-        padding: 40px 20px;
-        text-align: center;
-      }
-      .cap-empty-ico {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 44px;
-        height: 44px;
-        border-radius: var(--r-full);
-        background: var(--surface-2);
-        border: 1px solid var(--line);
-        color: var(--faint);
-      }
-      .cap-empty-title {
-        font-size: 15px;
-        font-weight: 600;
-        color: var(--text);
-      }
-      .cap-empty-desc {
-        max-width: 46ch;
-        font-size: 13px;
-        line-height: 1.6;
-        color: var(--muted);
-      }
-      .cap-empty-acts {
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: center;
-        gap: 8px;
-        margin-top: 4px;
       }
 
       /* ---------- 详情区块 ---------- */
@@ -1142,15 +1107,16 @@
         box.append(head, pre);
         return box;
       }
-      /* 空态（缺 name / 已删除）：图标 + 标题 + 说明 + 返回列表。 */
+      /* 空态（已删除 · 可撤销）：图标 + 标题 + 说明 + 返回列表。
+         404 / 缺参数不再走这里 —— 那是共享的 A.notFoundState（#576）。 */
       const EMPTY_ICON =
         '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
       function emptyState(title, desc) {
-        const box = el("div", { class: "cap-empty" });
-        const ico = el("div", { class: "cap-empty-ico" });
+        const box = el("div", { class: "empty" });
+        const ico = el("span", { class: "empty-icon", "aria-hidden": "true" });
         ico.innerHTML = EMPTY_ICON;
-        box.append(ico, txt("div", "cap-empty-title", title), txt("p", "cap-empty-desc", desc));
-        const acts = el("div", { class: "cap-empty-acts" });
+        box.append(ico, txt("p", "empty-title", title), txt("p", "empty-desc", desc));
+        const acts = el("div", { class: "empty-actions" });
         const back = el("a", { class: "btn", href: listHref(), text: t("caps.detail.back", "返回能力列表") });
         acts.append(back);
         box.append(acts);
@@ -1470,7 +1436,7 @@
           return wrap;
         }
         if (st.bodyErr) {
-          wrap.append(loadErrorNode(st.bodyErr, () => loadVersionBody(st.bodyVersion)));
+          wrap.append(loadErrorNode(st.bodyErr, () => loadVersionBody(st.bodyVersion), { inline: true }));
           return wrap;
         }
         const body = st.body || {};
@@ -2854,26 +2820,33 @@
       };
 
       async function load() {
+        /* 名字在 catch 里也要用（404 的空态标题要带它），所以提前取一次。 */
+        const name = new URLSearchParams(location.search).get("name") || "";
         try {
           await initScope();
           $("cap-back").href = listHref();
-          const name = new URLSearchParams(location.search).get("name");
           if (!name) {
-            // 缺 name：空态（含返回列表），不请求、不编 id。
+            // 缺 name："链接不完整"空态（含返回列表），不请求、不编 id。
             $("cap-badges").replaceChildren();
             $("cap-actions").replaceChildren();
             $("cap-body").replaceChildren();
             $("cap-body").classList.add("hidden");
             const state = $("cap-state");
             state.classList.remove("hidden");
-            state.replaceChildren(emptyState(t("caps.detail.no_name", "缺少能力名（URL 应该有 ?name=…）"), t("caps.detail.no_name_hint", "从能力列表点一个能力进来，或在地址里带上 ?namespace=<ns>&name=<name>。")));
+            state.replaceChildren(A.notFoundState({
+              incomplete: true,
+              kind: t("common.notfound.kind.capability", "能力"),
+              back: listHref(),
+              backLabel: t("caps.detail.back", "返回能力列表"),
+            }));
             return;
           }
           const res = await nsApi("capabilities", name);
           render(res);
         } catch (err) {
-          // 404 与其它失败都落到同一套错误态：只给中文说明 + 「重试 / 返回列表」。
-          // 服务端的 reason / message 是英文协议串，不拼进页面文案（排查看请求 ID 与日志）。
+          // 404 就是「东西不在了」（#576）：走共享的「找不到」组件，与世界其它页面一致。
+          // 其它失败仍是分级错误态：只给中文说明 + 「重试 / 返回列表」，服务端的
+          // reason / message 是英文协议串，不拼进页面文案（排查看请求 ID 与日志）。
           CAP = null;
           META = null;
           $("cap-badges").replaceChildren();
@@ -2882,6 +2855,15 @@
           $("cap-body").classList.add("hidden");
           const state = $("cap-state");
           state.classList.remove("hidden");
+          if (err && err.status === 404) {
+            state.replaceChildren(A.notFoundState({
+              kind: t("common.notfound.kind.capability", "能力"),
+              name,
+              back: listHref(),
+              backLabel: t("caps.detail.back", "返回能力列表"),
+            }));
+            return;
+          }
           const pageErr = isObj(err) ? { status: err.status, requestId: err.requestId } : {};
           state.replaceChildren(loadErrorNode(pageErr, () => load(), { back: listHref() }));
         }

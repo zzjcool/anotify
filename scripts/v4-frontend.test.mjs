@@ -3717,7 +3717,10 @@ test("F2b2 controllers: offline/error/empty are distinct, never automatic mock f
   assert.equal(traceFailure.get('trace-content').children.length, 0);
   assert.ok(traceFailure.get('trace-error').children.length);
   const missing = await b2Page('message', '?namespace=prod&id=tsk_mock_2');
-  assert.match(b2Text(missing.get('msg-error')), /不属于此命名空间/);
+  // #576：任务 404 走统一的「找不到」组件 —— 任务说「已过保留期被清理」（推送通知里的旧链接
+  // 就是这条路径），不再是本页私有的一句「不属于此命名空间」。
+  assert.match(b2Text(missing.get('msg-error')), /找不到任务/);
+  assert.match(b2Text(missing.get('msg-error')), /保留期/);
 });
 
 test("F2b2 final index: event read failure is graph error, actual Source root, no invented execution trends", async () => {
@@ -5786,13 +5789,64 @@ for (const lang of ['zh-CN', 'en', 'ja', 'es']) {
   });
 }
 
+test('E1a loadErrorNode 404 routes to the shared not-found component (#576)', () => {
+  const { A } = loadAnotify();
+
+  // ① 不传 kind/name（面板内调用）：仍然是「找不到」，不是「载入失败」，服务端原文不上屏。
+  const bare = A.loadErrorNode({ status: 404, message: 'source not found' }, () => {});
+  assert.equal(bare.getAttribute('data-not-found'), 'missing');
+  assert.doesNotMatch(textOf(bare), /载入失败|source not found/, 'no load-failed wording, no raw server text: ' + textOf(bare));
+  const bareBack = attrNode(bare, 'data-notfound-action', 'back');
+  assert.ok(bareBack, '404 always offers a way back to the list');
+  assert.equal(attrNode(bare, 'data-err-action', 'copy'), null, '404 has no machine facts worth copying');
+  assert.equal(attrNode(bare, 'data-err-action', 'retry'), null, '404 has nothing to retry');
+
+  // ② 带 kind/name：标题是「找不到X「名字」」，名字是用户数据（<code> + data-raw-content）。
+  const box = A.loadErrorNode(
+    { status: 404, message: 'capability not found', requestId: 'rid-404' },
+    () => {},
+    { kind: '能力', name: 'nope-cap', namespace: 'prod', back: 'capabilities.html?namespace=prod', backLabel: '返回能力列表' },
+  );
+  assert.equal(box.getAttribute('data-not-found'), 'missing');
+  const title = findNode(box, n => n.className === 'empty-title');
+  assert.ok(title, '标题是 .empty-title（统一组件，不是分级错误的 <p>）');
+  const titleParts = (title.children || []).map(n => n.textContent || '');
+  assert.equal(titleParts[0], '找不到能力「');
+  assert.equal(titleParts[titleParts.length - 1], '」');
+  const name = (title.children || []).find(n => n.tagName === 'CODE');
+  assert.ok(name, '名字用 <code> 单独成节点（可省略、是用户数据）');
+  assert.equal(name.textContent, 'nope-cap');
+  assert.ok(name.hasAttribute('data-raw-content'));
+  assert.equal(textOf(box).includes('capability not found'), false, '服务端英文原文不进页面');
+  assert.equal(textOf(box).includes('rid-404'), false, '404 不印 requestId（它不是故障）');
+  const back = attrNode(box, 'data-notfound-action', 'back');
+  assert.equal(back.getAttribute('href'), 'capabilities.html?namespace=prod');
+  assert.equal(back.textContent, '返回能力列表');
+  // 命名空间摆在正文里（跨 ns 打错 ns 是 404 最常见的原因）。
+  assert.match(textOf(box), /命名空间 #prod/);
+
+  // ③ 保留期语义（任务 / 事件 / 链路）：说「已过保留期被清理」，不是「系统故障」。
+  const retained = A.loadErrorNode({ status: 404 }, () => {}, { kind: '任务', name: 'tsk_x', retention: true });
+  assert.match(textOf(retained), /保留期/);
+
+  // ④ 缺参数与 404 是同一个组件、不同状态：标题说「链接不完整」，仍然给返回列表。
+  const incomplete = A.loadErrorNode({ status: 404 }, () => {}, { incomplete: true, kind: '预案' });
+  assert.equal(incomplete.getAttribute('data-not-found'), 'incomplete');
+  assert.match(textOf(incomplete), /链接不完整：缺少预案名/);
+
+  // ⑤ 面板内子资源要 opt-in 退回分级错误（{inline:true}）：大号空态塞进小卡片只会撑坏那一块。
+  const inline = A.loadErrorNode({ status: 404, message: 'version body' }, () => {}, { inline: true });
+  assert.equal(inline.getAttribute('data-not-found'), null);
+  assert.equal(inline.children[0].textContent, '载入失败：找不到这个内容');
+});
+
 test('E1a loadErrorNode classifies 401/403/404/409/410/5xx/offline and accepts only message strings', () => {
   const { A } = loadAnotify();
   const cases = [
     // [error, 标题, 下一步提示包含, 必须有, 必须没有]
     [{ status: 401, message: 'identity error' }, '登录已过期', null, 'login', 'retry'],
     [{ status: 403, message: 'forbidden: namespace mismatch' }, '你没有权限执行这个操作', '命名空间所有者', 'copy', 'retry'],
-    [{ status: 404, message: 'not found' }, '找不到这个内容', null, 'back', null],
+    // 404 不再走分级错误：它在下面那条 #576 用例里（notFoundState）。
     [{ status: 409, message: 'conflict' }, '内容已被别人改过', null, 'retry', null],
     [{ status: 410, message: 'task log archive is unavailable or expired' }, '内容已过期', null, 'back', 'retry'],
     [{ status: 503, message: 'upstream unavailable' }, '服务端出错', null, 'retry', null],

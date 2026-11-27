@@ -428,6 +428,82 @@ func TestStaticPathSemantics(t *testing.T) {
 // Content-Type（契约 §3.3）
 // ---------------------------------------------------------------------------
 
+// TestStaticNotFoundPage 钉住 #576 的站点级 404 页。
+//
+// 判据（缺一条就是「整站唯一没有外壳的页面」回来了）：
+//   - 状态码仍是 404（不是 200：SEO / 客户端判据全看它）；
+//   - 正文是站点 404 页，不是标准库那行纯文本；
+//   - 语言按路径前缀选（/en/… → en/404.html），不硬编码语言清单；
+//   - no-store（404 按 URL 缓存，部署后新入口不该被旧页按住）；
+//   - 产物里没有 404.html 时退回纯文本，**不递归**。
+func TestStaticNotFoundPage(t *testing.T) {
+	_, h := unitStaticNew(t, map[string]string{
+		"index.html":    "<!doctype html><p>ROOT",
+		"en/index.html": "<!doctype html><p>EN",
+		"404.html":      "<!doctype html><p>NOT-FOUND-DEFAULT",
+		"en/404.html":   "<!doctype html><p>NOT-FOUND-EN",
+	})
+
+	cases := []struct {
+		name    string
+		target  string
+		body    string
+		comment string
+	}{
+		{"根语言不存在的 .html", "/nonexistent.html", "NOT-FOUND-DEFAULT", "验收面：/x.html"},
+		{"英文站点的 .html", "/en/nonexistent.html", "NOT-FOUND-EN", "验收面：/en/x.html"},
+		{"不存在的子目录", "/assets/nope.html", "NOT-FOUND-DEFAULT", "前缀不是语言目录 → 默认语言"},
+		{"不存在的深层路径", "/de/a/b/deep.html", "NOT-FOUND-DEFAULT", "只看第一段是不是语言目录"},
+		{"缺失的静态资源也走站点 404", "/assets/missing.c84903a0.js", "NOT-FOUND-DEFAULT", "浏览器忽略多余正文；比纯文本多一条回去的路"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := unitStaticDo(h, "GET", c.target)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("GET %s = %d want 404（%s）", c.target, w.Code, c.comment)
+			}
+			if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+				t.Errorf("GET %s 的 Content-Type=%q want text/html（否则浏览器按纯文本显示源码）", c.target, ct)
+			}
+			if !strings.Contains(w.Body.String(), c.body) {
+				t.Errorf("GET %s 的 body = %q，期望站点 404 页（含 %q）", c.target, w.Body.String(), c.body)
+			}
+			if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
+				t.Errorf("GET %s 的 404 Cache-Control=%q want no-store", c.target, cc)
+			}
+			if strings.Contains(w.Body.String(), "404 page not found") {
+				t.Errorf("GET %s 退回了标准库纯文本（站点 404 页没接上）", c.target)
+			}
+		})
+	}
+
+	t.Run("HEAD 不带正文但带 Content-Length", func(t *testing.T) {
+		w := unitStaticDo(h, "HEAD", "/nonexistent.html")
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("HEAD = %d want 404", w.Code)
+		}
+		if w.Body.Len() != 0 {
+			t.Errorf("HEAD 的正文应为空，得到 %q", w.Body.String())
+		}
+		if cl := w.Header().Get("Content-Length"); cl == "" || cl == "0" {
+			t.Errorf("HEAD 的 Content-Length=%q，应等于 404 页字节数", cl)
+		}
+	})
+
+	t.Run("产物没有 404.html → 退回纯文本，不递归", func(t *testing.T) {
+		_, bare := unitStaticNew(t, map[string]string{
+			"index.html": "<!doctype html><p>ROOT",
+		})
+		w := unitStaticDo(bare, "GET", "/nonexistent.html")
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("GET /nonexistent.html = %d want 404", w.Code)
+		}
+		if !strings.Contains(w.Body.String(), "404 page not found") {
+			t.Errorf("没有 404.html 时应退回标准库纯文本，得到 %q", w.Body.String())
+		}
+	})
+}
+
 func TestStaticContentTypeTable(t *testing.T) {
 	const sniffable = "weird.c84903a0.zzz"
 	files := map[string]string{

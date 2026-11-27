@@ -151,13 +151,38 @@
     return value;
   }
 
+  /* #576：不存在的命名空间名不得进 h1 / document.title —— 以前 `?name=nope` 会把
+     「nope」当成标题显示，读起来就像「这个 ns 存在，只是没数据」。 */
+  let nsMissing = '';
   function paintHead() {
-    $('ns-name').textContent = selectedNamespace || t('title');
-    document.title = (selectedNamespace || t('title')) + ' · Anotify';
+    const head = selectedNamespace && selectedNamespace !== nsMissing ? selectedNamespace : t('title');
+    $('ns-name').textContent = head;
+    document.title = head + ' · Anotify';
     $('ns-sub').textContent = t('subtitle');
     for (const [id, page] of [['link-caps', 'capabilities.html'], ['link-sources', 'sources.html'], ['link-events', 'events.html']]) {
-      $(id).href = page + (selectedNamespace ? '?namespace=' + encodeURIComponent(selectedNamespace) : '');
+      $(id).href = page + (selectedNamespace && selectedNamespace !== nsMissing ? '?namespace=' + encodeURIComponent(selectedNamespace) : '');
     }
+  }
+
+  /* #576：404 / 缺参用共享的「找不到」组件。命名空间自己不在时没有「当前 ns」可显示，
+     所以显式传 namespace:''（否则会印出「#<那个不存在的 ns>」，把不存在当成存在）。 */
+  function nsNotFound(name) {
+    return A.notFoundState({
+      kind: A.t('common.notfound.kind.namespace', '命名空间'),
+      name,
+      namespace: '',
+      back: 'namespaces.html',
+      backLabel: t('back'),
+    });
+  }
+  function nsIncomplete() {
+    return A.notFoundState({
+      incomplete: true,
+      kind: A.t('common.notfound.kind.namespace', '命名空间'),
+      namespace: '',
+      back: 'namespaces.html',
+      backLabel: t('back'),
+    });
   }
 
   /* ---------- vars（CAS + ABA，逐字沿用节点页上的那份逻辑） ---------- */
@@ -502,9 +527,11 @@
   }
   $('namespace-yaml-copy').onclick = () => A.copyText($('namespace-yaml-copy'), () => $('namespace-yaml-text').textContent);
   async function loadAll(force = false) {
+    nsMissing = '';
     if (!selectedNamespace) {
       $('ns-body').hidden = true;
-      $('ns-load-state').replaceChildren(t('no_param'));
+      paintHead();
+      $('ns-load-state').replaceChildren(nsIncomplete());
       return;
     }
     paintHead();
@@ -513,8 +540,12 @@
       if (!doc || !Array.isArray(doc.items)) throw new Error(A.t('common.request_failed'));
       const namespaces = doc.items;
       if (!namespaces.some(row => row.metadata.name === selectedNamespace)) {
+        /* 不在列表里 = 这个 ns 不存在（或已被删除）：统一的「找不到」态，
+           标题区不再把不存在的名字当标题（paintHead 看 nsMissing）。 */
         $('ns-body').hidden = true;
-        $('ns-load-state').textContent = t('not_found');
+        nsMissing = selectedNamespace;
+        paintHead();
+        $('ns-load-state').replaceChildren(nsNotFound(selectedNamespace));
         return;
       }
       paintPickers(namespaces);

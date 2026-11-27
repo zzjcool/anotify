@@ -336,6 +336,67 @@ func (h *staticFileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	serveStaticEntry(w, r, h.publish(e, info))
 }
 
+// serveNotFound 写完一个 404 响应：有站点 404 页（sitegen 从 web-src/pages/404.html 生成，
+// 每种语言一份）就回那份 HTML —— 状态码仍然是 404；没有（老 dist / 只挂了 assets 的目录）
+// 就退回标准库那行纯文本，**绝不递归**（404.html 自己打不开时不能再去找 404.html）。
+//
+// 为什么不用 http.NotFound 了（#576）：整站唯一「没有外壳、没有导航、没有回去的路」的
+// 页面就是它 —— 用户点失效链接后看到的是白底黑字 `404 page not found`，连品牌都不在。
+func (h *staticFileServer) serveNotFound(w http.ResponseWriter, r *http.Request) {
+	body, ok := h.readPage(h.notFoundPageFor(r.URL.Path))
+	if !ok {
+		http.Error(w, "404 page not found", http.StatusNotFound)
+		return
+	}
+	// 404 页会随部署变（新入口、新文案），而 404 是**按 URL** 缓存的：被 CDN/浏览器
+	// 按住之后，修好了用户还会继续看到旧页。所以不缓存。
+	hdr := w.Header()
+	hdr.Set("Cache-Control", "no-store")
+	hdr.Set("Content-Type", "text/html; charset=utf-8")
+	hdr.Set("X-Content-Type-Options", "nosniff")
+	hdr.Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusNotFound)
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(body)
+}
+
+// notFoundPageFor 选这次 404 该用哪份页面：路径的**语言前缀**下有 404.html 就用它
+// （/en/… → /en/404.html），否则用默认语言的 /404.html。
+//
+// 不硬编码语言清单：语言集合由 sitegen 的 -langs 决定，写死一份名单后加一门语言时
+// 「英文站点的 404 悄悄变回中文」不会有任何测试变红。
+func (h *staticFileServer) notFoundPageFor(upath string) string {
+	segs := strings.Split(strings.TrimPrefix(upath, "/"), "/")
+	if len(segs) > 1 && segs[0] != "" && segs[0] != "." && segs[0] != ".." {
+		candidate := "/" + segs[0] + "/404.html"
+		if f, err := h.fsys.Open(candidate); err == nil {
+			_ = f.Close()
+			return candidate
+		}
+	}
+	return "/404.html"
+}
+
+// readPage 读一个入口 HTML 的字节（不走缓存：404 页是一份小文件，读它比维护缓存便宜）。
+func (h *staticFileServer) readPage(name string) ([]byte, bool) {
+	f, err := h.fsys.Open(name)
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = f.Close() }()
+	st, err := f.Stat()
+	if err != nil || st.IsDir() {
+		return nil, false
+	}
+	body, err := io.ReadAll(io.LimitReader(f, staticInlineMax+1))
+	if err != nil || int64(len(body)) > staticInlineMax {
+		return nil, false
+	}
+	return body, true
+}
+
 // resolve 把清理后的 URL 路径解析成一个可服务的普通文件。
 //
 // 已自行写完响应（缺尾斜杠 301 / 不存在 404）时 ok=false。
@@ -344,13 +405,13 @@ func (h *staticFileServer) resolve(w http.ResponseWriter, r *http.Request, name 
 	for i := 0; i < 2; i++ {
 		file, err := h.fsys.Open(name)
 		if err != nil {
-			http.NotFound(w, r)
+			h.serveNotFound(w, r)
 			return nil, nil, "", false
 		}
 		st, err := file.Stat()
 		if err != nil {
 			_ = file.Close()
-			http.NotFound(w, r)
+			h.serveNotFound(w, r)
 			return nil, nil, "", false
 		}
 		if !st.IsDir() {
@@ -368,7 +429,7 @@ func (h *staticFileServer) resolve(w http.ResponseWriter, r *http.Request, name 
 		// **不再 autoindex**（契约 §6）：只暴露具名资源，别把目录结构当接口。
 		name = path.Join(name, "index.html")
 	}
-	http.NotFound(w, r)
+	h.serveNotFound(w, r)
 	return nil, nil, "", false
 }
 

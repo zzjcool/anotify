@@ -124,7 +124,8 @@ const (
 	// bareMountFloor 是 bareMountSpec() 的条目数。
 	bareMountFloor = 24
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底），历史见提交信息。
-	muxPatternCount = 137
+	// 138 = 137 + #576 的 `/v1/`（未注册 API 路径的 404 Status 兜底）。
+	muxPatternCount = 138
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 34
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数（历史区间见 git log）。
@@ -2199,6 +2200,12 @@ type bareMountEntry struct {
 // 映射必须**可被机械验证**（每条都带 handler 源码里的字面量判据 + 反向不漏）。
 func bareMountSpec() []bareMountEntry {
 	return []bareMountEntry{
+		{
+			// #576：/v1 下**未注册**路径的兜底 —— 回 404 Status，不是站点 404 页。
+			// 它不承载任何 spec operation（命中它的恰恰是 spec 里没有的路径），所以只写 Reason。
+			Pattern: "/v1/",
+			Reason:  "未注册 API 路径的兜底：404 Status（/v1 不能落到静态兜底回 HTML）",
+		},
 		{
 			Pattern:     "/v1/auth/",
 			HandlerFile: "auth_handlers.go",

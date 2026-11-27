@@ -495,14 +495,26 @@
       } catch (error) {
         if (graph?.destroy) graph.destroy();
         content.replaceChildren();
-        errorBox.replaceChildren(error && error.traceMissingId
-          ? stateNode({
-            icon: ICON_UNLINK,
-            title: t("trace.no_id_title", "缺少 traceId"),
-            desc: t("trace.no_id", "URL 里没有 traceId。"),
-            back: { href: "events.html", text: t("trace.back", "返回事件流") },
-          })
-          : failureState(error, load));
+        /* 缺参 / 404 走共享的「找不到」组件（#576）：与其余 7 个详情页同一套说法、
+           同一套动作。保留期语义对 trace 适用（保留期过后链路会被清理）。 */
+        if (error && error.traceMissingId) {
+          errorBox.replaceChildren(A.notFoundState({
+            incomplete: true,
+            kind: t("common.notfound.kind.trace", "链路"),
+            back: A.listHref(),
+            backLabel: t("trace.back", "返回事件流"),
+          }));
+        } else if (error && error.status === 404) {
+          errorBox.replaceChildren(A.notFoundState({
+            kind: t("common.notfound.kind.trace", "链路"),
+            name: uid,
+            retention: true,
+            back: A.listHref(),
+            backLabel: t("trace.back", "返回事件流"),
+          }));
+        } else {
+          errorBox.replaceChildren(failureState(error, load));
+        }
       } finally {
         content.removeAttribute("aria-busy");
         button.disabled = false;

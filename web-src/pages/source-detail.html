@@ -15,11 +15,7 @@
 .sd-loading{padding:24px;color:var(--muted)}
 .sd-skel{display:grid;gap:8px;max-width:520px;margin-bottom:8px}
 .sd-skel .skeleton{height:12px;border-radius:var(--r-sm)}
-.sd-empty{display:flex;flex-direction:column;align-items:center;gap:10px;padding:40px 20px;text-align:center}
-.sd-empty-ico{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:var(--r-full);background:var(--surface-2);border:1px solid var(--line);color:var(--faint)}
-.sd-empty-title{font-size:15px;font-weight:600;color:var(--text)}
-.sd-empty-desc{max-width:46ch;font-size:13px;line-height:1.6;color:var(--muted)}
-.sd-empty-acts{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin-top:4px}
+/* #576：404 / 缺参数的「找不到」空态不再是本页私有样式，统一走共享的 .empty 组件。 */
 /* 区块：独立页没有列表行做层级，区块之间补一条细线，标题抬到正文色 */
 .sd-body{display:flex;flex-direction:column;gap:14px;min-width:0}
 .sd-sec{display:flex;flex-direction:column;gap:8px;min-width:0}
@@ -229,18 +225,6 @@ function codeBlock(title, body) {
   const pre = el("pre", { class: "code-body mono" });
   pre.append(rawText(body));
   box.append(head, pre);
-  return box;
-}
-const EMPTY_ICON =
-  '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
-function emptyState(title, desc) {
-  const box = el("div", { class: "sd-empty" });
-  const ico = el("div", { class: "sd-empty-ico" });
-  ico.innerHTML = EMPTY_ICON;
-  box.append(ico, txt("div", "sd-empty-title", title), txt("p", "sd-empty-desc", desc));
-  const acts = el("div", { class: "sd-empty-acts" });
-  acts.append(el("a", { class: "btn", href: listHref(), text: t("sources.v4.back", "返回源列表") }));
-  box.append(acts);
   return box;
 }
 function skeleton() {
@@ -953,27 +937,41 @@ const initScope = async () => {
 };
 
 async function load() {
+  const queried = new URLSearchParams(location.search).get("name") || "";
   try {
     await initScope();
     $("src-detail-back").href = listHref();
-    const name = new URLSearchParams(location.search).get("name");
-    if (!name) {
-      // 缺 name：空态（含返回列表），不请求、不编 id。
+    if (!queried) {
+      // 缺 name：「链接不完整」空态（含返回列表），不请求、不编 id。
       paintState(
-        emptyState(
-          t("sources.v4.no_name", "链接里缺少源名。请从源列表重新打开详情。"),
-          t("source_detail.no_name_hint", "从源列表点一个源的名称进来，或在地址里带上 ?namespace=<ns>&name=<name>。"),
-        ),
+        A.notFoundState({
+          incomplete: true,
+          kind: t("common.notfound.kind.source", "源"),
+          back: listHref(),
+          backLabel: t("sources.v4.back", "返回源列表"),
+        }),
       );
       return;
     }
     paintState(skeleton());
-    const res = await nsApi("sources", name);
+    const res = await nsApi("sources", queried);
     render(res);
     /* 深链 `?edit=1`：数据就绪后再打开，避免弹层里先空一下再被填。 */
     if (new URLSearchParams(location.search).get("edit") === "1") await openEditor();
   } catch (err) {
-    // 404 与其它失败走同一套错误态：说清发生了什么，给「重试 / 返回列表」。
+    // 404 不是故障（#576）：统一「找不到」组件 —— 不给「重新加载 / 复制详情」，
+    // 也不印服务端英文原文（`source not found`）。其它失败仍是分级错误态。
+    if (err && err.status === 404) {
+      paintState(
+        A.notFoundState({
+          kind: t("common.notfound.kind.source", "源"),
+          name: queried,
+          back: listHref(),
+          backLabel: t("sources.v4.back", "返回源列表"),
+        }),
+      );
+      return;
+    }
     paintState(loadErrorNode(err, () => load(), { back: listHref() }));
   }
 }
