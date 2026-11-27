@@ -180,6 +180,31 @@ type OutcomeDispatchInputs struct {
 }
 
 func (d *DB) CreateOutcomeDispatch(ctx context.Context, in OutcomeDispatchInputs) error {
+	if err := prepareOutcomeDispatch(&in); err != nil {
+		return err
+	}
+	if !in.hasActions() {
+		return nil // 空动作结局（drop）不建行：留痕由调用方单独写
+	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("outcome dispatch: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := d.createOutcomeDispatchTx(ctx, tx, in); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("outcome dispatch: commit: %w", err)
+	}
+	return nil
+}
+
+func (in OutcomeDispatchInputs) hasActions() bool {
+	return len(in.Tasks) > 0 || len(in.Failures) > 0 || len(in.Prunes) > 0
+}
+
+func prepareOutcomeDispatch(in *OutcomeDispatchInputs) error {
 	if in.NamespaceID == "" || in.NamespaceID == AllNamespaces {
 		return ErrNamespaceRequired
 	}
@@ -210,14 +235,10 @@ func (d *DB) CreateOutcomeDispatch(ctx context.Context, in OutcomeDispatchInputs
 			return fmt.Errorf("outcome dispatch: prune %d reason %q 不是剪枝码（downstream_missing 走失败 Task）", i, p.Reason)
 		}
 	}
-	if len(in.Tasks) == 0 && len(in.Failures) == 0 && len(in.Prunes) == 0 {
-		return nil // 空动作结局（drop）不建行：留痕由调用方单独写
-	}
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("outcome dispatch: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+	return nil
+}
+
+func (d *DB) createOutcomeDispatchTx(ctx context.Context, tx *sql.Tx, in OutcomeDispatchInputs) error {
 	ex := txExec{tx: tx}
 	if err := d.createTasksTx(ctx, tx, in.Tasks); err != nil {
 		return err
@@ -242,10 +263,58 @@ func (d *DB) CreateOutcomeDispatch(ctx context.Context, in OutcomeDispatchInputs
 			return err
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("outcome dispatch: commit: %w", err)
-	}
 	return nil
+}
+
+// FailureFact 是一次「终态失败事实 + 兜底」的落账；TaskID 是幂等键（一个任务一条事实）。
+type FailureFact struct {
+	TaskID      string
+	Observation Event
+	Dispatch    OutcomeDispatchInputs
+}
+
+// RecordFailureFact 在**同一个事务**里先证「本任务还没有失败事实」，没有才写事实行与兜底
+// 派发（返回 true），已有则一行不写（false）。判据不能留给调用点：cancel.ack 没有回执，
+// 节点离线时把帧存进 pendingCxl、重连即重放，而 events 上没有唯一键（#700）。
+func (d *DB) RecordFailureFact(ctx context.Context, in FailureFact) (bool, error) {
+	if in.TaskID == "" {
+		return false, fmt.Errorf("failure fact: empty task id")
+	}
+	if in.Dispatch.hasActions() {
+		if err := prepareOutcomeDispatch(&in.Dispatch); err != nil {
+			return false, err
+		}
+	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("failure fact: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	ex := txExec{tx: tx}
+	var seen int
+	if err := ex.queryRowContext(ctx,
+		`SELECT COUNT(*) FROM events WHERE namespace_id = ? AND trace_id = ? AND type IN (?, ?)
+		   AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.taskId') END = ?`,
+		in.Observation.NamespaceID, in.Observation.TraceID, protocol.ReasonTaskFailed,
+		protocol.ReasonRouterFailed, in.TaskID).Scan(&seen); err != nil {
+		return false, fmt.Errorf("failure fact: 查重: %w", err)
+	}
+	if seen > 0 {
+		return false, nil
+	}
+	event := in.Observation
+	if err := insertPruneFactEventOn(ctx, ex, &event); err != nil {
+		return false, err
+	}
+	if in.Dispatch.hasActions() {
+		if err := d.createOutcomeDispatchTx(ctx, tx, in.Dispatch); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("failure fact: commit: %w", err)
+	}
+	return true, nil
 }
 
 func (d *DB) InsertRouteObservation(ctx context.Context, namespaceID, traceID, reason string, payload map[string]any) error {

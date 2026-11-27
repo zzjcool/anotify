@@ -1333,7 +1333,7 @@ caps:
     files: 'ファイル'
     idempotent: '再実行可能'
     idle_timeout: '無進捗上限（秒）'
-    idle_timeout_default: 'ノード既定（600）'
+    idle_timeout_default: 'ノード設定（既定は無効）'
     installed_from: '導入元'
     max_attempts: '最大試行'
     next: '下流（next）'

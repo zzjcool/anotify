@@ -1333,7 +1333,7 @@ caps:
     files: 'Files'
     idempotent: 'Repeatable'
     idle_timeout: 'Idle timeout (seconds)'
-    idle_timeout_default: 'Node default (600)'
+    idle_timeout_default: 'Node setting (off by default)'
     installed_from: 'Installed from'
     max_attempts: 'Max attempts'
     next: 'Downstream (next)'

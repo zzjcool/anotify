@@ -2636,7 +2636,8 @@ components:
           description: |
             「无进展」上限（秒）：管道与 `$ANOTIFY_ARTIFACT_DIR` 连续这么久没有新字节 →
             节点按 `no_progress` 提前终止，而不是干等到 `timeoutSec`。省略 = 节点配置的
-            `idleTimeoutSec`（缺省 0 = 关闭）；显式 0 = 关闭。默认关闭是因为参考 playbook
+            `idleTimeoutSec`（节点 `anode.yaml` 的同名键，见 `docs/anode-install.md` §10；
+            节点缺省 0 = 关闭）；显式 0 = 关闭。默认关闭是因为参考 playbook
             把 agent 输出重定向进文件、管道长期静默，默认开启会误杀正常执行。
         onFailure:
           $ref: '#/components/schemas/CapabilityFailureFallback'
@@ -2658,8 +2659,13 @@ components:
           items:
             type: string
           description: |
-            触发兜底的任务失败码（闭集见 `internal/protocol/enums.go`）：省略 = 任何失败都触发。
+            触发兜底的任务失败码（闭集见 `internal/protocol/enums.go`）：省略 = **任何**失败都触发。
             示例 `[timeout, no_progress]` 防止 `script_failed` 等其它失败也套用「因超时终止」的文案。
+
+            省略时也包括**人主动结束的那几种**：`cancelled_by_user`（用户 cancel）、
+            `abandoned_by_user`（用户 abandon）、`node_lost`、`lease_expired` 都是合法失败码。
+            于是一次手工 remove/abandon 也会跑兜底；不需要这种联动就把作用域写窄
+            （参考 playbook 用的是 `[timeout, no_progress]`）。
         params:
           type: object
           additionalProperties: true
@@ -2847,9 +2853,12 @@ components:
             （`target_not_declared`）。
 
             这里比事件信封的 `EventPruneFact` **更宽**：失败事实行（`downstream_missing` /
-            `router_failed` / `task_failed`）的 `payload.taskId` 就是那个失败任务，所以按
-            任务归属会落在它的 `observed.pruned[]` 里——它们是「这一步为什么没往下走」的
-            证据，但不是剪枝（事件信封的 `pruned[]` / `status.pruned` 会把它们过滤掉）。
+            `task_failed`）的 `payload.taskId` 就是那个失败任务，所以按任务归属会落在它的
+            `observed.pruned[]` 里——它们是「这一步为什么没往下走」的证据，但不是剪枝，
+            事件信封的 `pruned[]` / `status.pruned` 会把它们过滤掉。
+
+            `router_failed` 不在此列：它从 #522 起就按剪枝投影（仍在事件信封的 `pruned[]`
+            里），本端点照样把它收进来，两处口径一致（见 events.yaml · EventStatus）。
         detail:
           type: string
           description: "人话补充，可为空串；不参与任何判断"

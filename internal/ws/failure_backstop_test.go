@@ -150,3 +150,60 @@ func TestDuplicateFailedResultDoesNotDispatchTwice(t *testing.T) {
 		t.Fatalf("重复结果不得派第二个兜底：tasks=%d err=%v", len(tasks), err)
 	}
 }
+
+// TestDuplicateCancelAckDoesNotDispatchTwice：cancel.ack 没有回执，节点离线时把帧存进
+// pendingCxl、重连即重放；重复帧在 store 里返回 nil，不能因此再落一条事实、再派一次兜底。
+func TestDuplicateCancelAckDoesNotDispatchTwice(t *testing.T) {
+	e := newEnv(t)
+	e.capability(t, "issue-record", `{"type":"object","required":["repo"],
+		"properties":{"repo":{"type":"string"},"outcome":{"type":"string"}}}`, true, nil)
+	impl := e.capability(t, "issue-implement", `{"type":"object","required":["repo"],
+		"properties":{"repo":{"type":"string"}}}`, false, []string{"issue-record"},
+		func(spec *artifact.Spec) {
+			spec.Lifecycle.OnFailure = &artifact.Fallback{
+				To: "issue-record", Params: map[string]any{"outcome": "abandoned"},
+			}
+		})
+	task := &store.Task{
+		NamespaceID: e.ns.ID, TraceID: "trace-700-cxl-dup",
+		CapabilityID: impl.ID, Capability: impl.Name,
+		Version: impl.Version, Digest: impl.Digest,
+		Params: json.RawMessage(`{"repo":"zzjcool/anotify"}`),
+	}
+	if err := e.db.CreateTasks(context.Background(), []*store.Task{task}); err != nil {
+		t.Fatalf("建任务: %v", err)
+	}
+	conn := e.dial(t)
+	leaseID, _ := e.directGrant(t, task)
+	if err := e.db.RequestAbandon(context.Background(), task.ID, "", e.now); err != nil {
+		t.Fatalf("请求放弃: %v", err)
+	}
+	ack := &protocol.CancelAckFrame{
+		Type: protocol.FrameCancelAck, TaskID: task.ID, Attempt: 1,
+		LeaseID: leaseID, Slot: intPtr(0), ProcessGroupReaped: true,
+	}
+	for i := 0; i < 2; i++ {
+		e.send(t, conn, ack)
+		e.handled(t, conn) // 有序屏障：帧处理（含终态后置动作）已返回
+		facts, tasks := traceFailureFacts(t, e, task.TraceID)
+		if facts != 1 || tasks != 2 {
+			t.Fatalf("第 %d 次 cancel.ack 之后：facts=%d tasks=%d，want facts=1 tasks=2", i+1, facts, tasks)
+		}
+	}
+	if stored := e.task(t, task.ID); stored.Phase != store.TaskAbandoned {
+		t.Fatalf("放弃的 ACK 终态应是 abandoned: %+v", stored)
+	}
+}
+
+func traceFailureFacts(t *testing.T, e *env, traceID string) (facts, tasks int) {
+	t.Helper()
+	if err := e.db.QueryRow(`SELECT COUNT(*) FROM events WHERE namespace_id = ? AND trace_id = ? AND type = ?`,
+		e.ns.ID, traceID, protocol.ReasonTaskFailed).Scan(&facts); err != nil {
+		t.Fatalf("数终态事实行: %v", err)
+	}
+	rows, err := e.db.ListTasksByTrace(context.Background(), e.ns.ID, traceID)
+	if err != nil {
+		t.Fatalf("列 trace 任务: %v", err)
+	}
+	return facts, len(rows)
+}

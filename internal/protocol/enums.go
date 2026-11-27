@@ -336,8 +336,6 @@ const (
 	LeaseRenewRatio = 3
 )
 
-const DefaultIdleTimeout = 10 * time.Minute // 建议值；缺省 0 = 关闭（#700）。
-
 // ValidateLeaseTTL 校验 (ttl, renew) 自洽：非法配置必须**启动即拒**，不能在运行期才表现
 // 为「任务莫名其妙被判失联」。两条判据是不同的事故形态：低于协议下限（一次隧道重建就
 // 够判死）与续租间隔相对太长（丢一两个 ACK 就到期）。

@@ -1730,3 +1730,28 @@ func TestTaskResourceLogsNoLocalArchiveIs410(t *testing.T) {
 		t.Fatalf("410 不该伪造 lines：%s", rr.Body.String())
 	}
 }
+
+func TestTaskResourceAbandonLeavesTerminalFact(t *testing.T) {
+	env := newTaskResEnv(t)
+	// 共享夹具默认不装 Router；补上才走得到 requestStop 的终态后置分支。
+	env.deps.Router = route.New(env.db)
+	taskID := env.insertTask(seededTask{trace: "trace_abandon_fact"})
+	trWant(t, env.do(http.MethodPost, env.taskPath(env.ns, taskID, "/abandon"), `{"reason":"give up"}`), http.StatusOK)
+	countFacts := func() int {
+		t.Helper()
+		var n int
+		if err := env.db.QueryRow(`SELECT COUNT(*) FROM events WHERE namespace_id = ? AND trace_id = ? AND type = ?`,
+			env.ns, "trace_abandon_fact", protocol.ReasonTaskFailed).Scan(&n); err != nil {
+			t.Fatalf("数终态事实行: %v", err)
+		}
+		return n
+	}
+	if got := countFacts(); got != 1 {
+		t.Fatalf("主动放弃必须留一条终态事实，实际 %d 条", got)
+	}
+	trReason(t, env.do(http.MethodPost, env.taskPath(env.ns, taskID, "/abandon"), `{"reason":"give up"}`),
+		http.StatusConflict, reasonConflict)
+	if got := countFacts(); got != 1 {
+		t.Fatalf("重复 abandon 不得落第二条终态事实，实际 %d 条", got)
+	}
+}

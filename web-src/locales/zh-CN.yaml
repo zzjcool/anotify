@@ -1333,7 +1333,7 @@ caps:
     files: '文件'
     idempotent: '可重复执行'
     idle_timeout: '无进展上限（秒）'
-    idle_timeout_default: '节点默认（600）'
+    idle_timeout_default: '跟随节点（缺省关闭）'
     installed_from: '安装来源'
     max_attempts: '最大尝试'
     next: '下游（next）'

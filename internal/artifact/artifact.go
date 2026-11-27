@@ -220,7 +220,8 @@ type Run struct {
 // FieldPath 非空 = 引用机器事实（唯一的取值边界）；否则 Value 是字面量。
 // 空串本身是合法字面量（"空串就是空串"），所以这里不能用 "" 表示「未设置」。
 type EnvValue struct {
-	Value string // 字面量值。
+	// Value 是字面量值。
+	Value string
 	// FieldPath 是 k8s 风格的取值路径（封闭集合见 builtinFieldPaths / vars.<NAME>）。
 	FieldPath string
 }

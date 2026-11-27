@@ -1333,7 +1333,7 @@ caps:
     files: 'Archivos'
     idempotent: 'Repetible'
     idle_timeout: 'Límite sin progreso (segundos)'
-    idle_timeout_default: 'Predeterminado del nodo (600)'
+    idle_timeout_default: 'Configuración del nodo (desactivado por defecto)'
     installed_from: 'Origen de instalación'
     max_attempts: 'Intentos máximos'
     next: 'Destinos (next)'

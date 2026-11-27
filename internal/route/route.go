@@ -97,6 +97,7 @@ type Plan struct {
 	Pruned []Prune
 }
 
+// Ready 返回可以建任务的 target。
 func (p *Plan) Ready() []Target {
 	out := make([]Target, 0, len(p.Targets))
 	for _, t := range p.Targets {

@@ -482,6 +482,7 @@ func TestRequiresValidation(t *testing.T) {
 		})
 	}
 
+	// 合法的 requires 能过。
 	ok := strings.Replace(minimalYAML, "spec:\n",
 		"spec:\n  requires: {commands: [git, jq], values: [vars.SOURCE_ROOT]}\n", 1)
 	if _, err := Parse([]byte(ok)); err != nil {
@@ -817,6 +818,7 @@ func TestParseErrors(t *testing.T) {
 	if _, err := Parse(nil); err == nil {
 		t.Fatal("空文档必须报错")
 	}
+	// 信封错误。
 	if _, err := Parse([]byte(strings.Replace(minimalYAML, "kind: Capability", "kind: Source", 1))); codeOf(t, err) != CodeKindMismatch {
 		t.Fatalf("kind 不对必须报 kind_mismatch，实际 %v", err)
 	}

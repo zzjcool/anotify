@@ -314,6 +314,7 @@ server: wss://hub.example.com
 token: "REPLACE_WITH_EXISTING_NODE_IDENTITY_TOKEN"
 namespaces: [default]
 listen: tcp://127.0.0.1:0            # 默认仅本机、随机实际端口；可用 unix:///run/anode/emit.sock
+idleTimeoutSec: 0                    # 无进展上限（秒）：连这么久没有新字节就按 no_progress 终止；0/省略 = 关闭
 vars:
   SOURCE_ROOT: /srv/project
 limits:
@@ -323,6 +324,12 @@ limits:
 envPassthrough:
   - API_KEY
 ```
+
+`idleTimeoutSec` 是**节点级**的无进展默认：能力可以在自己的 `spec.lifecycle.idleTimeoutSec`
+里覆盖它（能力省略 = 用本键，本键缺省 0 = **关闭**，显式 `0` 也是关闭）。默认关闭是因为参考
+playbook 把 agent 输出重定向进文件、管道长期静默，默认开启会误杀正常执行；真要防「挂死占槽」
+就显式给一个（如 `600`）。配置是 strict YAML：键名写错/类型不对是**启动失败**，不是静默忽略——
+这台机器上只有这一处能配它。
 
 namespaces 是申报，与中枢授权取交集。机器值 local > node，下游 ns defaults 只在任务内存中合并，不落 applied。修改本机 YAML 需重启。能力仅由管理员 **manual deploy** 请求：Node Bearer GET `/v1/node/capabilities/{digest}` 返回直接 Artifact JSON（无 wrapper），验证 refs/spec/digest 后原子缓存；install 与重连都不是自动部署。
 

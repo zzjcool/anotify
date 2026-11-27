@@ -249,3 +249,35 @@ func TestTaskFailureReasonReadsResultBytes(t *testing.T) {
 		t.Fatalf("没有结果时应当是空串，实际 %q", got)
 	}
 }
+
+func TestDispatchFailureIsIdempotentPerTask(t *testing.T) {
+	f := newFailureFixture(t, &artifact.Fallback{
+		To: "issue-record", Params: map[string]any{"outcome": "timeout"},
+	})
+	task := f.seedFailed(t, protocol.ReasonTimeout)
+	for i := 0; i < 3; i++ {
+		if err := New(f.db).DispatchFailure(testCtx(), mustTask(t, f.db, task.ID)); err != nil {
+			t.Fatalf("第 %d 次失败兜底: %v", i+1, err)
+		}
+	}
+	if events := traceEventTypes(t, f.db, f.ns.ID, task.TraceID); events[protocol.ReasonTaskFailed] != 1 {
+		t.Fatalf("重复兜底不得落第二条终态事实：%v", events)
+	}
+	if got := len(traceTasks(t, f.db, f.ns.ID, task.TraceID)); got != 2 {
+		t.Fatalf("重复兜底不得派第二个兜底任务：trace 任务数 %d", got)
+	}
+}
+
+func TestDispatchFailureIsIdempotentForRouterTask(t *testing.T) {
+	f := newRouterFixture(t)
+	task, _ := f.seedRouterTask(t, map[string]any{"issue": map[string]any{"title": "x"}})
+	finish(t, f.db, task.ID, store.TaskFailed)
+	for i := 0; i < 2; i++ {
+		if err := New(f.db).DispatchFailure(testCtx(), mustTask(t, f.db, task.ID)); err != nil {
+			t.Fatalf("第 %d 次失败兜底: %v", i+1, err)
+		}
+	}
+	if events := traceEventTypes(t, f.db, f.ns.ID, task.TraceID); events[protocol.ReasonRouterFailed] != 1 {
+		t.Fatalf("router 任务的失败事实也必须只落一条：%v", events)
+	}
+}

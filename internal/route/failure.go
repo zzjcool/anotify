@@ -27,34 +27,52 @@ func TaskFailureReason(task *store.Task) string {
 	return ""
 }
 
+// DispatchFailure 落一条终态失败事实并（声明允许时）派发兜底；重复调用幂等（一行不写）——
+// 判据在 store 的同一个事务里，因为四个调用点都会因帧重放重复进来。
 func (r *Router) DispatchFailure(ctx context.Context, task *store.Task) error {
 	if task == nil || (task.Phase != store.TaskFailed && task.Phase != store.TaskAbandoned) {
 		return nil
 	}
-	reason := TaskFailureReason(task)
-	if err := r.db.InsertRouteObservation(ctx, task.NamespaceID, task.TraceID, failureObservationReason(task),
-		map[string]any{
-			"taskId": task.ID, "capability": task.Capability, // failureReason 不叫 reason（后者是剪枝码）
-			"phase": task.Phase, "failureReason": reason, "error": task.Error,
-		}); err != nil {
+	fact, planErr := r.failureFact(ctx, task)
+	if _, err := r.db.RecordFailureFact(ctx, fact); err != nil {
 		return err
+	}
+	return planErr
+}
+
+// failureFact 组落账输入；兜底读不出来时仍返回事实（观察行先落），读错误交回调用方。
+func (r *Router) failureFact(ctx context.Context, task *store.Task) (store.FailureFact, error) {
+	reason := TaskFailureReason(task)
+	payload, err := json.Marshal(map[string]any{
+		"taskId": task.ID, "capability": task.Capability, // failureReason 不叫 reason（后者是剪枝码）
+		"phase": task.Phase, "failureReason": reason, "error": task.Error,
+	})
+	if err != nil {
+		return store.FailureFact{}, fmt.Errorf("失败事实: marshal: %w", err)
+	}
+	fact := store.FailureFact{
+		TaskID: task.ID,
+		Observation: store.Event{
+			NamespaceID: task.NamespaceID, TraceID: task.TraceID,
+			Type: failureObservationReason(task), Payload: payload, CreatedAt: r.Now(),
+		},
 	}
 	fallback, err := r.failureFallback(ctx, task)
 	if err != nil {
-		return err
+		return fact, err
 	}
 	if fallback == nil || !fallbackApplies(fallback, reason) {
-		return nil
+		return fact, nil
 	}
 	data, err := fallbackData(task.Params, fallback.Params)
 	if err != nil {
-		return err
+		return fact, err
 	}
 	plan, err := r.PlanFromEmit(ctx, task, fallback.To, data)
 	if err != nil {
-		return err
+		return fact, err
 	}
-	return r.db.CreateOutcomeDispatch(ctx, store.OutcomeDispatchInputs{
+	fact.Dispatch = store.OutcomeDispatchInputs{
 		NamespaceID:  task.NamespaceID,
 		TraceID:      task.TraceID,
 		ParentTaskID: task.ID,
@@ -62,7 +80,8 @@ func (r *Router) DispatchFailure(ctx context.Context, task *store.Task) error {
 		Tasks:        plan.Tasks(task.ID),
 		Failures:     plan.FailureInputs(),
 		Prunes:       plan.PruneInputs(),
-	})
+	}
+	return fact, nil
 }
 
 func fallbackApplies(fallback *artifact.Fallback, reason string) bool {

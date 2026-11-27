@@ -574,8 +574,7 @@ func (a *taskAPI) trace(w http.ResponseWriter, r *http.Request) {
 	for _, e := range rows {
 		env := eventEnvelope(e, a.d.namespaceDisplay(r.Context(), e.NamespaceID), summary, false)
 		view.Events = append(view.Events, env)
-		// pruned[] 只收**纯剪枝**（事件收到了但没派发）；失败事实行是 failed Task
-		// 的伴随行（capability.md §6.2），算进来会让 trace 同时说「派发成功」和「被剪掉」。
+		// pruned[] 只收**纯剪枝**；失败事实行（failed Task 的伴随行）算进来会让 trace 自相矛盾。
 		if e.Source == store.EventPruneSource && !eventIsFailureFact(e) {
 			view.Pruned = append(view.Pruned, env)
 		}
@@ -957,9 +956,7 @@ func taskResultReasonMessage(t *store.Task) (string, string) {
 	return "", ""
 }
 
-// taskResultReasonCode 判断 error 列里的字面是不是一个机器码：是 → 当 reason；
-// 不是 → 当人话（message）。闭集只有一份（protocol.IsTaskFailureReason），#700 的
-// no_progress 自动包含，不再需要在这里维护第二份列表。
+// taskResultReasonCode 判断 error 列里的字面是不是机器码（闭集只有一份：protocol.IsTaskFailureReason）。
 func taskResultReasonCode(s string) bool {
 	return protocol.IsTaskFailureReason(s)
 }
@@ -1071,10 +1068,8 @@ func eventOriginOf(e *store.Event) string {
 	return store.EventOriginSource
 }
 
-// eventIsFailureFact 报告这条观察行是不是**任务失败事实**：downstream_missing（未解析
-// 派发失败）/ task_failed（#700 中枢补写的终态事实）。它们与剪枝留痕共用
-// insertPruneFactEventOn 的 source/reason，只有 type 能区分；投影层必须把它们从
-// Pruned 语义里拿出来，否则 status 会同时说 dispatched>0 和「被剪枝」。
+// eventIsFailureFact 报告这条观察行是不是**任务失败事实**（downstream_missing / task_failed）：
+// 它们与剪枝共用 source/reason，只有 type 能区分，混进 Pruned 会让 status 自相矛盾。
 //
 // router_failed 不在其中：它是 #522 起就在 pruned[] 里的既有行为，本 PR 不改这条
 // 对外语义（api/events.yaml 仍按剪枝投影）。
