@@ -132,6 +132,20 @@ $ (umask 022; make ci)          → MAKE_CI_EXIT=0
 CI runner 的默认 umask 是 0022，所以这不是 PR 的问题，也不是 `make ci` 的真红。
 除它之外那一次跑的所有目标（contract / lint-go / fe / check-dist-fresh / 各守卫）都是绿的。
 
+## 顺带发现（未修，超出 #667 的面）
+
+`make ci` 那次 umask 红点指向一个真问题，不只是「环境差异」：`install.Apply` 建配置目录走
+`EnsureDirectory` → `os.MkdirAll(path, 0o755)`（`cmd/anode/internal/install/install.go:229`），
+`MkdirAll` 会把 mode 与 umask 相与 —— 在加固机上（`umask 0077`）配置目录落成 **0700**，正是
+`TestInstallConfigDirectoryIsTraversableByServiceUser` 防的 R3 形态（以安装者身份跑 systemd
+服务时连目录都进不去，读 0600 配置即 perm denied、`Restart=always` 崩溃循环，而安装器报成功）。
+函数注释说「已存在的目录不改权限」，但**新建**时也没显式 `chmod`，于是结果取决于调用者的 umask；
+测试同样依赖环境 umask 才绿（`umask 022` → ok、`0077` → FAIL，同一棵树只变 umask）。
+
+本 PR 不改它（产品代码不在 #667 的范围，且改了要连带看 `scripts/install-anode.sh` 的 0755 修复与
+systemd 用户的假设），只登记：修法应该是新建后显式 `os.Chmod(path, mode)`（或 `open` + `fchmod`），
+测试里自己钉 umask。
+
 ## 遗留 / 未覆盖
 
 issue 验收第 2 条「`E2E_CONCURRENCY` 拉满下连跑 5 次不红」仍留给 CI 矩阵：本节点连跑 5 轮单套件
