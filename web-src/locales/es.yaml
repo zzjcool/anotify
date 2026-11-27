@@ -315,6 +315,7 @@ graph:
   silk_meta_failed: '{n} fallidas'
   silk_meta_pending: '{n} sin terminar'
   silk_meta_done: 'reproducción terminada · {done}/{n} tareas finalizadas'
+  silk_meta_done_none: reproducción terminada
   silk_clock: 'reproducción {t}'
 
 message:
