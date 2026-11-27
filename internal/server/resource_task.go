@@ -1067,7 +1067,6 @@ func eventOriginOf(e *store.Event) string {
 	return store.EventOriginSource
 }
 
-//
 // router_failed 不在其中：#522 起它就在 pruned[] 里，本 PR 不改这条对外语义。
 func eventIsFailureFact(e *store.Event) bool {
 	if e == nil || e.Source != store.EventPruneSource {
