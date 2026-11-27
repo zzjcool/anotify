@@ -20,13 +20,14 @@ import (
 //
 // 范围是 events / tasks 与**过期的投递去重记录**（event_deliveries）。
 //
-// 两条已裁决的边界（父 D3/D6）：
-//   - **引用组安全**：一条事件只要其 (namespace, trace_id) 还有任务行就不删
-//     （trace 视图里「根还在、链还在跑」是正在被看的东西）；任务被清掉之后
-//     下一轮自然就不再保护它。
-//   - **回执不进自动 sweeper**：`playbook_installs` 是安装审计与 installed_from 的锚点，
-//     它的保留期是产品决策，不是「事件过期」的副作用。本函数一行回执都不删，
-//     只保留调用方显式给 cutoff 的 primitive（DeleteExpiredPlaybookInstalls）。
+// 两条已裁决的边界（父 D3/D6）：引用组安全（一条事件只要其 (namespace, trace_id) 还有任务行就不删，
+// 任务行清掉后下一轮自然不再保护）；回执不进自动 sweeper（`playbook_installs` 是安装审计与
+// installed_from 的锚点，保留期是产品决策，本函数一行回执都不删，见 DeleteExpiredPlaybookInstalls）。
+
+// taskRetainFromSQL 是任务的**可信保留时钟**（收到 Node 结果用 result_accepted_at；未上报终态用
+// finished_at；Node 报告的进程 finish 不驱动保留期）。schema.sql 的 idx_tasks_retain_from 与它
+// 逐字共用（表达式索引按语法树匹配），故不加 `t.` 别名——漂移即退回全表扫（#630）。
+const taskRetainFromSQL = `COALESCE(result_accepted_at, CASE WHEN reported=0 THEN finished_at END)`
 
 // DefaultRetentionBatch 是单条 DELETE 的行数上限（先度量后删除）。
 const DefaultRetentionBatch = 1000
@@ -45,8 +46,7 @@ type RetentionStats struct {
 	TasksDeleted  int64 `json:"tasksDeleted"`
 	// DeliveriesDeleted 是本轮清掉的**过期投递去重记录**数（只清窗口，不删事件实体）。
 	DeliveriesDeleted int64 `json:"deliveriesDeleted"`
-	// EventsSkipped / TasksSkipped 表示对应阶段因 TTL=0 被跳过
-	// （「压根没扫」与「扫了但没东西删」必须能区分开）。
+	// EventsSkipped / TasksSkipped 表示对应阶段因 TTL=0 被跳过（「没扫」≠「扫了没删」）。
 	EventsSkipped bool `json:"eventsSkipped"`
 	TasksSkipped  bool `json:"tasksSkipped"`
 	// Truncated 表示某阶段被批数预算截断（还有积压，下一轮继续）。
@@ -118,10 +118,8 @@ func (d *DB) RunRetention(ctx context.Context, now int64) (RetentionStats, error
 		}
 	}
 
-	// ③ playbook 回执**不在这里删**：回执不是「事件类数据」，它的保留期不是
-	// eventTtlSec，也不是 taskTtlSec（删除动作见 DeleteExpiredPlaybookInstalls，
-	// 由调用方显式给 cutoff）。事件清理顺手删回执 = 删掉安装审计并让
-	// installed_from 悬空，那是数据丢失，不是保留策略。
+	// ③ playbook 回执**不在这里删**：它的保留期是产品决策，不走 TTL；事件清理顺手删回执
+	// = 删掉安装审计并让 installed_from 悬空（删除动作见 DeleteExpiredPlaybookInstalls）。
 	return stats, nil
 }
 
@@ -144,19 +142,10 @@ func (d *DB) DeleteExpiredTasks(ctx context.Context, cutoff int64, limit int) (i
 	if limit <= 0 {
 		return 0, nil
 	}
-	phaseIn, args := terminalPhaseIn()
+	_, args := terminalPhaseIn()
 	args = append(args, cutoff, limit)
 	res, err := d.ExecContext(ctx,
-		`DELETE FROM tasks WHERE id IN (
-		   SELECT t.id FROM tasks t
-		    WHERE COALESCE(t.result_accepted_at, CASE WHEN t.reported=0 THEN t.finished_at END) IS NOT NULL AND t.phase IN (`+phaseIn+`) AND COALESCE(t.result_accepted_at, CASE WHEN t.reported=0 THEN t.finished_at END) < ?
-		      AND NOT EXISTS (SELECT 1 FROM node_instances i WHERE i.busy_task=t.id)
-		      AND NOT EXISTS (SELECT 1 FROM task_artifact_uploads u WHERE u.task_id=t.id AND u.expires_at > unixepoch())
-		      AND NOT EXISTS (
-		            SELECT 1 FROM task_attempts a
-		             WHERE a.task_id = t.id AND a.reaped_at IS NULL)
-		    ORDER BY COALESCE(t.result_accepted_at, CASE WHEN t.reported=0 THEN t.finished_at END)
-		    LIMIT ?)`, args...)
+		`DELETE FROM tasks WHERE id IN (`+deleteExpiredTasksCandidateSQL()+`)`, args...)
 	if err != nil {
 		return 0, fmt.Errorf("delete expired tasks: %w", err)
 	}
@@ -165,6 +154,22 @@ func (d *DB) DeleteExpiredTasks(ctx context.Context, cutoff int64, limit int) (i
 		return 0, fmt.Errorf("delete expired tasks rows affected: %w", err)
 	}
 	return n, nil
+}
+
+// 生产语句的唯一来源：DELETE 与 EXPLAIN 用例跑同一条候选集，过滤/排序键都是 taskRetainFromSQL。
+func deleteExpiredTasksCandidateSQL() string {
+	phaseIn, _ := terminalPhaseIn()
+	return `SELECT t.id FROM tasks t
+	    WHERE ` + taskRetainFromSQL + ` IS NOT NULL
+	      AND t.phase IN (` + phaseIn + `)
+	      AND ` + taskRetainFromSQL + ` < ?
+	      AND NOT EXISTS (SELECT 1 FROM node_instances i WHERE i.busy_task=t.id)
+	      AND NOT EXISTS (SELECT 1 FROM task_artifact_uploads u WHERE u.task_id=t.id AND u.expires_at > unixepoch())
+	      AND NOT EXISTS (
+	            SELECT 1 FROM task_attempts a
+	             WHERE a.task_id = t.id AND a.reaped_at IS NULL)
+	    ORDER BY ` + taskRetainFromSQL + `
+	    LIMIT ?`
 }
 
 // DeleteExpiredEvents 删除 created_at 早于 cutoff 的事件（含剪枝留痕），单次最多 limit 行。
@@ -176,9 +181,8 @@ func (d *DB) DeleteExpiredTasks(ctx context.Context, cutoff int64, limit int) (i
 //
 // **不按 source 过滤**：剪枝行同样是「只进不出」的增长来源，给它开特例等于把泄漏留在库里。
 //
-// 注意本函数**不动去重记录**：去重窗的过期判定在接收路径按 expires_at 现算
-// （见 InsertEvent），与事件实体是否被删无关。清理过期去重记录是另一件事
-// （DeleteExpiredEventDeliveries），它只清窗口记录，绝不删事件实体。
+// 注意本函数**不动去重记录**：去重窗的过期判定在接收路径按 expires_at 现算（见 InsertEvent），
+// 与事件实体是否被删无关；清窗口记录是 DeleteExpiredEventDeliveries 的事。
 //
 // limit <= 0 直接返回 0 而不删：调用方传错时「少删」远好于「删全表」。
 func (d *DB) DeleteExpiredEvents(ctx context.Context, cutoff int64, limit int) (int64, error) {
