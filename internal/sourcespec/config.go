@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/zzjcool/anotify/internal/schema"
 )
 
 // knownFields 是各 kind 认得的 config 字段（source.md §3）。
@@ -400,8 +402,8 @@ func objectField(fields map[string]json.RawMessage, key string) (map[string]any,
 	return obj, nil
 }
 
-// schemaField 取 payloadSchema（必须是 JSON 对象；缺省 / null → nil）。显式 null 合法
-// （= 没有契约）；数组/标量一律拒——那种值到投递时只会变成一条莫名的 event_schema 剪枝。
+// schemaField 取 payloadSchema（缺省 / null → nil）。显式 null 合法（= 没有契约）。
+// 对象的**内部**形状按运行期同一份判据检查（schema.ParseParams，#612）。
 func schemaField(fields map[string]json.RawMessage) (json.RawMessage, error) {
 	raw, ok := fields["payloadSchema"]
 	if !ok || isNull(raw) {
@@ -409,6 +411,17 @@ func schemaField(fields map[string]json.RawMessage) (json.RawMessage, error) {
 	}
 	if _, isObj := decodeObject(raw); !isObj {
 		return nil, errf(`config.payloadSchema 必须是 JSON 对象（如 {"type":"object","required":["environment"]}）`)
+	}
+	if _, problems := schema.ParseParams(raw); len(problems) > 0 {
+		causes := make([]Cause, 0, len(problems))
+		for _, problem := range problems {
+			field := "config.payloadSchema"
+			if problem.Path != "" {
+				field += "." + problem.Path
+			}
+			causes = append(causes, Cause{Field: field, Reason: CauseReasonValueInvalid, Message: problem.Msg})
+		}
+		return nil, &CausesError{Causes: causes}
 	}
 	return append(json.RawMessage(nil), raw...), nil
 }

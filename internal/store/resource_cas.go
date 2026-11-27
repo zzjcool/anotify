@@ -72,7 +72,7 @@ func updateCapabilityOn(ctx context.Context, ex queryExec, cur *CapabilityVersio
 	if patch.Next != nil {
 		updated.Spec.Next = append([]string{}, (*patch.Next)...)
 	}
-	norm, err := normalizeCapability(&updated)
+	norm, err := normalizeCapabilityMetadata(&updated)
 	if err != nil {
 		return nil, err
 	}

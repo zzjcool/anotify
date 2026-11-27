@@ -13,6 +13,7 @@ import { chromium } from 'playwright-core';
 import * as H from '../../lib/harness.mjs';
 import { installTraceEvidence, traceEvidenceTools } from './f3-trace-evidence.mjs';
 import { bringUpFixtureNode, deployApplied, capRef } from './f3-node.mjs';
+import { withDB } from '../../lib/v4.mjs';
 export const ROOT = H.ROOT_DIR;
 export const TEAM = path.join(ROOT, 'scripts/e2e/fixtures/f3');
 export const OUT = path.join(TEAM, 'screenshots/f3');
@@ -114,9 +115,8 @@ export async function ensureNamespace(server, session, name) {
   return { namespace: ns, created: created.status === 201 };
 }
 
-// ensureNamespaceVars 给命名空间写一层真实的 ns 级变量（`PUT …/config`，CAS 必须带
-// 当前 rv）。节点上下文用例要把「切到 prod 读到的有效值」验成真实数据，而不是只验
-// mock 种子里那句 'prod-visible'。
+// ensureNamespaceVars 给命名空间写一层真实的 ns 级变量（`PUT …/config`，CAS 必须带当前
+// rv）：节点上下文用例要把「切到 prod 读到的有效值」验成真实数据，而不是只验 mock 种子。
 async function ensureNamespaceVars(server, session, ns, vars) {
   const path = `/v1/namespaces/${ns}/config`;
   const current = await rawReq(server.base, path, { headers: sessionCookie(session) });
@@ -131,9 +131,8 @@ async function ensureNamespaceVars(server, session, ns, vars) {
   return saved.body;
 }
 
-// realBootstrap 是 real 模式唯一的前置：会话（admin + member）与 default/prod
-// 命名空间。返回给 driver 的 fixtures，后续造数（capability/source/event/task…）
-// 也走真实 API 叠在它上面。
+// realBootstrap 是 real 模式唯一的前置：会话（admin + member）与 default/prod 命名空间；
+// 后续造数（capability/source/event/task…）也走真实 API 叠在它上面。
 async function realBootstrap(server) {
   const member = ensureSession(server, 'f3');
   // 管理员会话：admin.html 的数据面是 /v1/admin/*（adminSession 中间件），
@@ -151,7 +150,6 @@ async function realBootstrap(server) {
 }
 
 // ensureCapability 幂等地建一个能力（真实 POST；同内容重发只会折叠到已有版本）。
-//
 // extra 是「造真实执行事实」需要的 spec 段：params（参数 schema）、requires.values
 // （run.env 引用 vars.* 时**必须**声明，否则服务端 400 undeclared_need）、lifecycle
 // （重试策略）与 run.env（C11 诊断来源层）。全部走产品校验，没有绕过。
@@ -179,6 +177,48 @@ async function ensureCapability(server, session, ns, name, next = [], extra = {}
   });
   assert.equal(created.status, 201, `T1 seam: create ${ns}/${name} capability must be 201, got ${created.status} ${JSON.stringify(created.body)}`);
   return created.body;
+}
+
+function canonicalJSON(value) { // 与 artifact.canonicalizeJSON 同口径：对象 key 递归排序后再序列化
+  if (Array.isArray(value)) return value.map(canonicalJSON);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort().map((k) => [k, canonicalJSON(value[k])]));
+  }
+  return value;
+}
+
+// contentIdentity 复算 foldKey/digest（#612 review r1），只在条件成立时逐字节相等：① 没有会被 json.Marshal
+// 转义的 `<`/`>`/`&`；② 数字没被 JSON.parse→stringify 重排版；③ 子键序 = Go struct 序（只有 params 走了
+// canonicalJSON）。夹具别写含 `&&` 的脚本或浮点 params；seedLegacyParamSchema 的 id 也对不上（由 digest 派生），
+// 且 e2e 里 deployApplied 的守协议节点原样回显 digest——这条自证是**关着的**。
+function contentIdentity(name, spec, version) {
+  const doc = {
+    name,
+    ...(version === undefined ? {} : { version }),
+    params: spec.params,
+    requires: spec.requires,
+    lifecycle: spec.lifecycle,
+    concurrency: spec.concurrency,
+    run: spec.run,
+  };
+  return 'sha256:' + createHash('sha256').update(JSON.stringify(doc)).digest('hex');
+}
+
+// seedLegacyParamSchema 造存量坏行：这份 params 写入期今天会 400（#612），只有直接改库造得出来。
+function seedLegacyParamSchema(server, ns, name, params) {
+  return withDB(server.dbPath, (db) => {
+    const row = db.prepare(`SELECT cv.id AS id, cv.spec AS spec, cv.version AS version FROM capability_versions cv
+      JOIN namespaces n ON n.id = cv.namespace_id
+      WHERE n.slug = ? AND cv.name = ? AND cv.deleted_at IS NULL
+      ORDER BY cv.version DESC LIMIT 1`).get(ns, name);
+    assert.ok(row, `seedLegacyParamSchema: ${ns}/${name} 不存在`);
+    const spec = JSON.parse(row.spec);
+    spec.params = canonicalJSON(params);
+    const digest = contentIdentity(name, spec, row.version);
+    db.prepare('UPDATE capability_versions SET spec = ?, digest = ?, fold_key = ? WHERE id = ?')
+      .run(JSON.stringify(spec), digest, contentIdentity(name, spec), row.id);
+    return { version: row.version, digest };
+  });
 }
 
 // ensureSource 幂等地建一个 webhook 源（真实 POST）。形状和 mock 的 `deploy-hook`
@@ -308,10 +348,8 @@ async function fireMany(server, key, ns, source, times) {
 // 发出去，assert 全部基于产品自己写下的行（不插库、不改相位）。
 
 // chainScenario 造一条**多跳链** + 一个真实失败任务 + 一个真实在跑任务：
-//
 //   chain-hook → chain-root ─emit→ chain-mid ─emit→ chain-leaf
 //                          └─emit→ chain-broken（params schema 非法 → param_schema 剪枝）
-//
 // 三件事实都是产品自己写的：子任务来自 emit 接受事务，剪枝观察来自 route 剪枝行，
 // trace 节点数来自 tasks 行。
 // capability-actions：用例 4 要验「显式版本 2 的正文不可变 → 400 version_content_immutable」，
@@ -390,8 +428,12 @@ async function chainScenario(server, fixtures) {
   const envRef = (name) => ({ valueFrom: { fieldRef: { fieldPath: 'vars.' + name } } });
   const leaf = await ensureCapability(server, s, DEFAULT_NS, 'chain-leaf');
   const mid = await ensureCapability(server, s, DEFAULT_NS, 'chain-mid', ['chain-leaf']);
-  // params schema 非法（type 不是 object）→ 向它的 emit 被 route 以 param_schema 剪枝。
-  const broken = await ensureCapability(server, s, DEFAULT_NS, 'chain-broken', [], { params: { type: 'array' } });
+  // params schema 非法（type 不是 object）→ emit 被 param_schema 剪枝（存量坏行由 seedLegacyParamSchema 造，#612）。
+  const broken = await ensureCapability(server, s, DEFAULT_NS, 'chain-broken', [], {
+    params: { type: 'object', properties: { hop: { type: 'string' } } },
+  });
+  const brokenSeed = seedLegacyParamSchema(server, DEFAULT_NS, 'chain-broken', { type: 'array', items: { type: 'string' } });
+  broken.status = { ...(broken.status || {}), digest: brokenSeed.digest }; // 行内身份被重写：部署 ref 必须跟着换
   const root = await ensureCapability(server, s, DEFAULT_NS, 'chain-root', ['chain-mid', 'chain-broken'], {
     env: { SOURCE_ROOT: envRef('SOURCE_ROOT'), GIT_TERMINAL_PROMPT: envRef('GIT_TERMINAL_PROMPT') },
     requires: { values: ['vars.SOURCE_ROOT', 'vars.GIT_TERMINAL_PROMPT'] },
@@ -473,7 +515,11 @@ async function messageScenario(server, fixtures) {
   const s = fixtures.adminSession;
   const envRef = (name) => ({ valueFrom: { fieldRef: { fieldPath: 'vars.' + name } } });
   const child = await ensureCapability(server, s, DEFAULT_NS, 'msg-child');
-  const broken = await ensureCapability(server, s, DEFAULT_NS, 'msg-broken', [], { params: { type: 'array' } });
+  const broken = await ensureCapability(server, s, DEFAULT_NS, 'msg-broken', [], {
+    params: { type: 'object', properties: { n: { type: 'integer' } } },
+  });
+  const brokenSeed = seedLegacyParamSchema(server, DEFAULT_NS, 'msg-broken', { type: 'array', items: { type: 'string' } });
+  broken.status = { ...(broken.status || {}), digest: brokenSeed.digest }; // 行内身份被重写：部署 ref 必须跟着换
   const root = await ensureCapability(server, s, DEFAULT_NS, 'msg-root', ['msg-child', 'msg-broken'], {
     env: { SOURCE_ROOT: envRef('SOURCE_ROOT'), GIT_TERMINAL_PROMPT: envRef('GIT_TERMINAL_PROMPT') },
     requires: { values: ['vars.SOURCE_ROOT', 'vars.GIT_TERMINAL_PROMPT'] },

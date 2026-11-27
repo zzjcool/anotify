@@ -290,3 +290,44 @@ func TestPrepareParamsBadPatternIsSchemaPrune(t *testing.T) {
 		}
 	}
 }
+
+// unusableSchemas 是 #612 的 A/B 两组：写入期现在会 400 掉的形状。
+var unusableSchemas = []struct {
+	name string
+	raw  string
+}{
+	{"顶层 type 不是 object", `{"type":"string"}`},
+	{"顶层 type 是数组", `{"type":"array","items":{"type":"string"}}`},
+	{"坏 pattern（RE2 编不过）", `{"type":"object","properties":{"repo":{"type":"string","pattern":"(["}}}`},
+	{"pattern 不是字符串", `{"type":"object","properties":{"repo":{"type":"string","pattern":7}}}`},
+	{"required 不是字符串数组", `{"type":"object","required":7}`},
+	{"参数名就叫 pattern（属性值不是对象）", `{"type":"object","properties":{"pattern":3}}`},
+	{"参数名以 .pattern 结尾", `{"type":"object","properties":{"x.pattern":3}}`},
+	{"属性名就叫 pattern 漏写一层对象", `{"type":"object","properties":{"pattern":"^x$"}}`},
+}
+
+// TestRuntimeRejectsUnusableSchemas 是 #612 的运行期一半：这些 schema 写入期已经 400，
+// 但**存量行**仍可能带着它们（升级前落库的）。运行期必须继续按剪枝处理——放行会让
+// 形状未知的载荷进系统，panic/500 会把「配置写错了」报成「服务器坏了」。
+func TestRuntimeRejectsUnusableSchemas(t *testing.T) {
+	for _, tc := range unusableSchemas {
+		t.Run("capability/"+tc.name, func(t *testing.T) {
+			_, prune := PrepareParams(json.RawMessage(tc.raw), map[string]any{})
+			if prune == nil || prune.Reason != protocol.ReasonParamSchema {
+				t.Fatalf("应剪枝 param_schema，得到 %+v", prune)
+			}
+			if strings.TrimSpace(prune.Detail) == "" {
+				t.Fatal("剪枝 detail 必须说清原因（否则只能猜）")
+			}
+		})
+		t.Run("source/"+tc.name, func(t *testing.T) {
+			prune := ValidatePayload(json.RawMessage(tc.raw), map[string]any{})
+			if prune == nil || prune.Reason != protocol.ReasonEventSchema {
+				t.Fatalf("应剪枝 event_schema，得到 %+v", prune)
+			}
+			if !strings.Contains(prune.Detail, "payloadSchema 不可用") {
+				t.Fatalf("detail 必须点明是 payloadSchema 不可用，得到 %q", prune.Detail)
+			}
+		})
+	}
+}

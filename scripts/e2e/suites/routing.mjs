@@ -481,7 +481,7 @@ async function main() {
 	H.eq("② 任务落在源声明的出口上", okFire.json?.tasks?.[0]?.capability, "schema.target");
 	H.eq("② 合规 payload 不产生任何剪枝", (okFire.json?.pruned || []).length, 0);
 
-	// ③ 不可用的 payloadSchema：fail-closed（拒绝派发，但仍然是「事件照收」）
+	// ③ 不可用的 payloadSchema：#612 起写入期就 400（与运行期同一份判据）；存量坏行仍 fail-closed（下面改库造）。
 	const unusableSrc = await V.createSource(
 		server.base,
 		session,
@@ -493,7 +493,41 @@ async function main() {
 			targets: [{ capability: "schema.target" }],
 		}),
 	);
-	V.expectStatus("③ 不可用 schema 建源 → 201（归一化不深判）", unusableSrc, 201);
+	V.expectStatus("③ 不可用 schema 建源 → 400（#612：写入期与运行期同一判据）", unusableSrc, 400);
+	H.eq("③ reason 是 invalid_source_config", V.reasonOf(unusableSrc), "invalid_source_config");
+	const unusableCauses = ((unusableSrc.json || {}).details || {}).causes || [];
+	H.eq(
+		"③ causes 精确指到 spec.config.payloadSchema.type",
+		unusableCauses.map((c) => c?.field).join(","),
+		"spec.config.payloadSchema.type",
+	);
+	V.expectStatus( // 升级前写入的存量行（写入期不再收）：改库造，验运行期仍旧 fail-closed 而不是放行
+		"③ 先建一份合法 schema 的源 → 201（用来造存量坏行）",
+		await V.createSource(
+			server.base,
+			session,
+			NS,
+			V.sourceBody({
+				name: "s.unusable",
+				kind: "manual",
+				config: { payloadSchema: { type: "object", required: ["a"] } },
+				targets: [{ capability: "schema.target" }],
+			}),
+		),
+		201,
+	);
+	V.withDB(server.dbPath, (db) => {
+		const row = db
+			.prepare(
+				`SELECT s.id AS id, s.config AS config FROM sources s JOIN namespaces n ON n.id = s.namespace_id
+				WHERE n.slug = ? AND s.name = ?`,
+			)
+			.get(NS, "s.unusable");
+		if (!row) throw new Error("③ 存量坏行造数失败：s.unusable 不存在");
+		const config = JSON.parse(row.config);
+		config.payloadSchema = { type: "nonsense" };
+		db.prepare("UPDATE sources SET config = ? WHERE id = ?").run(JSON.stringify(config), row.id);
+	});
 	const unusableFire = await fireSource("s.unusable", { payload: { a: 1 } });
 	H.eq("③ 不可用 schema 时事件照收 200", unusableFire.status, 200);
 	H.eq("③ fail-closed：零任务", (unusableFire.json?.tasks || []).length, 0);

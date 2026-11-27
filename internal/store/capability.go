@@ -110,21 +110,30 @@ const capabilityColumns = `id, namespace_id, name, display_name, version, spec, 
 	fold_key, installed_from, resource_version, created_at`
 
 // normalizeCapability 校验并归一正文，返回归一后的产物（默认值已补齐）。
-//
 // 归一化是「省略 ≡ 显式默认」的实现：Normalize 补齐 maxAttempts / resultTtlSec /
 // maxPerNode / params / next / requires 的空缺，所以同一份语义只有一份规范字节。
 // 校验失败是客户端可修的错（ErrCapabilityInvalid → 400）。
 func normalizeCapability(c *CapabilityVersion) (artifact.Artifact, error) {
+	return normalizeCapabilityWith(c, artifact.Validate)
+}
+
+// normalizeCapabilityMetadata 是 PATCH 用的变体：跳过 #612 的 params 可用性判据（PATCH 只改元数据）。
+func normalizeCapabilityMetadata(c *CapabilityVersion) (artifact.Artifact, error) {
+	return normalizeCapabilityWith(c, artifact.ValidateMetadataUpdate)
+}
+
+func normalizeCapabilityWith(c *CapabilityVersion, validate func(*artifact.Artifact) error) (artifact.Artifact, error) {
 	if c == nil {
 		return artifact.Artifact{}, fmt.Errorf("%w: 能力为空", ErrCapabilityInvalid)
 	}
 	a := c.Artifact()
 	norm, err := artifact.Normalize(&a)
 	if err != nil {
-		return artifact.Artifact{}, fmt.Errorf("%w: %s", ErrCapabilityInvalid, err.Error())
+		return artifact.Artifact{}, fmt.Errorf("%w: %w", ErrCapabilityInvalid, err)
 	}
-	if verr := artifact.Validate(norm); verr != nil {
-		return artifact.Artifact{}, fmt.Errorf("%w: %s", ErrCapabilityInvalid, verr.Error())
+	// %w 不用 %s：*artifact.Error 留在链上，handler 才能透出短码与 causes[].field。
+	if verr := validate(norm); verr != nil {
+		return artifact.Artifact{}, fmt.Errorf("%w: %w", ErrCapabilityInvalid, verr)
 	}
 	return *norm, nil
 }

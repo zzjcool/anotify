@@ -207,7 +207,6 @@ const nodeColumns = `id, name, tags, status, token_hash, max_instances, max_conc
 	facts, declared_capabilities, declared_namespaces,
 	COALESCE((SELECT c.resource_version FROM node_configs c WHERE c.node_id = nodes.id), 1)`
 
-// scanNodeRow 从 rows 解析一行。
 func scanNodeRow(rows scanner) (*Node, error) {
 	var (
 		n                         Node

@@ -10,10 +10,8 @@
 // 第 3 条决定了它不能依赖 store（store 会把 sqlite 链进节点二进制）。所以这里
 // **零依赖**：只用标准库。route 与 store 都转发到这里，语义只有一份。
 //
-// 为什么只支持受控子集（不变量 I6：中枢不解释任何用户提供的逻辑）：
-// 完整 JSON Schema 包含 $ref / if-then-else / patternProperties / 远程 $ref 等
-// 需要「求值」的特性，会把中枢变成一个可以无限扩展的攻击面。这里只支持
-// **声明式、可一次扫描判定**的关键字，遇到不认识的**一律忽略**（不报错）。
+// 为什么只支持受控子集（不变量 I6：中枢不解释任何用户提供的逻辑）：$ref / if-then-else /
+// patternProperties 等「求值」特性会把中枢变成可无限扩展的攻击面；不认识的键一律忽略。
 //
 // 支持的子集：
 //
@@ -43,8 +41,7 @@ import (
 
 // FromRaw 解析一份原始 schema。
 //
-// 三种结果：nil schema + nil error（没声明 = 不校验）、map + nil、nil + error（坏了）。
-// 坏 schema 必须由调用方明确处理——「拿坏契约放行」是最坏的降级方式。
+// 三种结果：nil + nil（没声明 = 不校验）、map + nil、nil + error（坏了，调用方必须处理）。
 func FromRaw(raw json.RawMessage) (map[string]any, error) {
 	if len(raw) == 0 {
 		return nil, nil
@@ -168,11 +165,11 @@ func checkType(raw any, v any, path string) string {
 	return fmt.Sprintf("%s: want type %s, got %s", path, strings.Join(wanted, "|"), TypeName(v))
 }
 
-// TypeMatches 判定值是否属于某个 JSON Schema type。
+// TypeMatches 判定值是否属于某个 JSON Schema type（`Value` 的通用判据：边字面量、
+// 事件载荷、emit 的 data）。未知类型名判 false。
 //
-// 这是**全仓唯一**的类型判定：配置期（边字面量）、入口（事件 payload）、
-// 派发期（参数）、投递期（emit 的 data）都走它。四处的口径必须一致，
-// 否则会出现「存的时候说类型对、派发时被剪枝」这种无法自圆的判定。
+// 参数派发**不走这里**：param.go 的 valueMatchesType 是另一份判据（认 json.Number /
+// int32、integer 拒 `e`/`E`、未知类型名放行）。两处各自自洽，改一处要复查另一处。
 func TypeMatches(want string, v any) bool {
 	switch want {
 	case "object":

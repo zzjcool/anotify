@@ -846,7 +846,6 @@ func taskEnvelope(t *store.Task, nsDisplay string) apiEnvelope {
 	return newEnvelope("Task", meta, taskSpecOf(t), taskStatusOf(t))
 }
 
-// taskSpecOf 从任务行投影 spec。
 func taskSpecOf(t *store.Task) taskSpecDoc {
 	params := t.Params
 	if len(bytes.TrimSpace(params)) == 0 {
@@ -881,7 +880,6 @@ func taskSpecOf(t *store.Task) taskSpecDoc {
 	return doc
 }
 
-// taskStatusOf 从任务行投影 status。
 func taskStatusOf(t *store.Task) taskStatusDoc {
 	artifacts := t.Artifacts
 	if artifacts == nil {

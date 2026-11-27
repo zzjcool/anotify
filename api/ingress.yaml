@@ -553,6 +553,10 @@ components:
             `envelope`（三个维度各自可缺省）与 `signature.scheme`（`github-sha256` 或
             `anotify-sha256`）的形状与规则见 `resource.yaml` 的 `SourceSpec.config`。
             读投影 `hookUrl` / `secretSet` 在预览里被剥离（不当成未知字段报错）。
+
+            这里是**草稿**：不跑写入期校验（`config` 的键集与 `payloadSchema` 判据都不看），
+            不可用的 `payloadSchema` 不 400，而是让预览按 `event_schema` 剪枝并写进
+            `pruned[].detail`。真正的写入期 400 见 `resource.yaml` 的 `SourceSpec.config`（#612）。
         targets:
           type: array
           items:

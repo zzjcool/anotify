@@ -8,7 +8,9 @@ import (
 
 type Problem struct { // 一处 schema 自身的写法问题
 	Path string `json:"path"` // 出错关键字的 JSON 路径（如 properties.a.type）
-	Msg  string `json:"msg"`  // 人话原因
+	// 出错的关键字（param.go 的 Keyword*）：分流只看它不按 Path 文本（参数名可以就叫 pattern）。
+	Keyword string `json:"keyword,omitempty"`
+	Msg     string `json:"msg"` // 人话原因
 }
 
 func (p Problem) String() string { return p.Path + ": " + p.Msg }

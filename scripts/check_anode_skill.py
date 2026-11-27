@@ -15,7 +15,7 @@ v3 的 `scripts/check_agent_skill.py` 守的是 `cmd/agent/skill.md`（内嵌手
 | `--version` 一行且与注入值一致 | `--version` 恰好一行 JSON，`version`/`commit` = 注入值（label 形状＝Makefile 的 VERSION_LABEL） |
 | `--skill` 首行与 `--version` 同一份版本串 | `scripts/install-anode.sh` 的版本校验必须吃得下真输出（允许 `+<commit>` 后缀） |
 | v3 只有一个安装入口 `scripts/install-agent.sh` | `scripts/install-anode.sh` 是**完整安装器**（下载/校验/预检/systemd 生命周期/卸载/升级），且静态服务下发的 `web/install-anode.sh` 与它**字节相同**（UI 那条 `curl … | sh` 命令跑的就是被这里校验过的那份） |
-| `cmd/agent` 不碰 node_capabilities（归属只由部署派生） | `cmd/anode` 只依赖 `internal/protocol` + `internal/artifact`，不 import 中枢包、不直连数据库；中枢也不 import `cmd/anode` |
+| `cmd/agent` 不碰 node_capabilities（归属只由部署派生） | `cmd/anode` 只依赖 `internal/protocol` + `internal/artifact` + `internal/schema`，不 import 中枢包、不直连数据库；中枢也不 import `cmd/anode` |
 
 动态部分一律跑**真二进制**（`-h` / `--version`），不 grep Go 源码：flag 的注册形状会重构，
 `-h` 才是用户和脚本看到的那份事实。
@@ -366,12 +366,16 @@ def check_boundary() -> list[str]:
         return [f"`go list -deps {ANODE_PKG}` 失败（code={code}）：{err.strip() or out.strip()}"]
 
     deps = [line.strip() for line in out.splitlines() if line.strip()]
-    allowed_central = {f"{MODULE}/internal/protocol", f"{MODULE}/internal/artifact"}
+    allowed_central = {  # schema 是零依赖叶子包（只用标准库）：写入期与节点侧校验必须同一份语义
+        f"{MODULE}/internal/protocol",
+        f"{MODULE}/internal/artifact",
+        f"{MODULE}/internal/schema",
+    }
     central = {d for d in deps if d.startswith(f"{MODULE}/internal/")}
     extra = central - allowed_central
     if extra:
         errors.append(
-            "cmd/anode 依赖了中枢包（节点只能依赖 protocol + artifact）："
+            "cmd/anode 依赖了中枢包（节点只能依赖 protocol + artifact + schema）："
             + ", ".join(sorted(extra))
         )
     for forbidden in ("database/sql", "modernc.org/sqlite"):
@@ -422,7 +426,7 @@ def main() -> int:
         f"{len(sub_flags['install'])} 个 install flag、"
         f"版本 {TEST_LABEL}（--version JSON 与 install-anode.sh 的核对一致）；"
         "下发副本 web/install-anode.sh 与 scripts/install-anode.sh 字节一致；"
-        "边界：仅依赖 internal/protocol + internal/artifact，不直连数据库"
+        "边界：仅依赖 internal/protocol + internal/artifact + internal/schema，不直连数据库"
     )
     return 0
 

@@ -408,6 +408,25 @@ func TestCacheStoreLoadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCacheStoreRejectsLegacyBadParamSchema(t *testing.T) {
+	a, _, _ := testArtifact(t, "legacy-bad-params", 1, nil)
+	a.Spec.Params = json.RawMessage(`{"type":"array","items":{"type":"string"}}`)
+	badDigest, err := artifact.Digest(a) // 身份先算对：拒绝必须来自 Validate，不是 digest 不匹配
+	if err != nil {
+		t.Fatalf("Digest: %v", err)
+	}
+	cache := NewCache(t.TempDir())
+	if _, err := cache.Store(a, badDigest); err == nil {
+		t.Fatal("坏 params 产物必须被节点缓存拒绝（deploy ack = Failed）")
+	} else if !strings.Contains(err.Error(), artifact.CodeParamSchemaInvalid) ||
+		!strings.Contains(err.Error(), "schema.type 必须是 object") {
+		t.Fatalf("错误应带 param_schema 与原因，得到 %v", err)
+	}
+	if entries, _ := cache.Entries(); len(entries) != 0 {
+		t.Fatalf("被拒绝的产物不得落盘：%+v", entries)
+	}
+}
+
 func TestCacheStoreRejectsDigestMismatch(t *testing.T) {
 	cache := NewCache(t.TempDir())
 	a, _, _ := testArtifact(t, "greeter", 3, nil)
