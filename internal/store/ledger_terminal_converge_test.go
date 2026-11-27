@@ -195,3 +195,117 @@ func TestConvergeTerminalLedgersRecoversSlotLeakedByRetry(t *testing.T) {
 	v4Grant(t, db, third.ID, node.ID, "asg-retry-3") // 收敛回来的容量必须真的可用
 	v4MustPhase(t, db, nsID, third.ID, TaskRunning)
 }
+
+func TestConvergeTerminalLedgersLeavesNonTerminalPhasesAlone(t *testing.T) {
+	cases := []struct{ name, phase string }{
+		{name: "pending_reservation", phase: TaskPending},
+		{name: "running", phase: TaskRunning},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newTestDB(t)
+			ctx := context.Background()
+			nsID, _ := newTestNS(t, db)
+			c := capWithLimits(t, db, nsID, "nonterminal-"+tc.name, 2, 2)
+			node := v4Node(t, db, "nonterminal-"+tc.name+"-node", 2)
+			task := v4Task(t, db, nsID, c, "tr_nonterminal_"+tc.name, "")
+			_, _, attempt := v4Grant(t, db, task.ID, node.ID, "asg-nonterminal-"+tc.name)
+			now := Now()
+			if tc.phase == TaskPending {
+				running := v4MustPhase(t, db, nsID, task.ID, TaskRunning)
+				if _, _, err := db.RecoverLostLeases(ctx, *running.LeaseUntil+1); err != nil {
+					t.Fatalf("recover 首次租约: %v", err)
+				}
+				v4MustPhase(t, db, nsID, task.ID, TaskPending)
+			}
+			if busy := v4BusySlots(t, db, node.ID); busy != 1 {
+				t.Fatalf("%s 仍占着槽，收敛前应 busy=1，得到 %d", tc.phase, busy)
+			}
+
+			got, err := db.ConvergeTerminalLedgers(ctx, now)
+			if err != nil {
+				t.Fatalf("收敛: %v", err)
+			}
+			if got.AttemptsReaped != 0 || got.SlotsReleased != 0 {
+				t.Fatalf("非终态（%s）的执行不得被收敛，得到 %+v", tc.phase, got)
+			}
+			att, err := db.GetTaskAttempt(ctx, task.ID, attempt)
+			if err != nil {
+				t.Fatalf("读 attempt: %v", err)
+			}
+			if att.ReapedAt != nil {
+				t.Fatalf("非终态（%s）的 attempt 不该写 reaped：%+v", tc.phase, att)
+			}
+			if busy := v4BusySlots(t, db, node.ID); busy != 1 {
+				t.Fatalf("非终态（%s）的槽位不得被释放，得到 busy=%d", tc.phase, busy)
+			}
+			v4MustPhase(t, db, nsID, task.ID, tc.phase)
+		})
+	}
+}
+
+func TestConvergeTerminalLedgersReclaimsAfterAckReportsNotReaped(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	c := capWithLimits(t, db, nsID, "terminal-ack-not-reaped", 1, 1)
+	node := v4Node(t, db, "terminal-ack-not-reaped-node", 1)
+	task := v4Task(t, db, nsID, c, "tr_terminal_ack_not_reaped", "")
+	_, _, attempt := v4Grant(t, db, task.ID, node.ID, "asg-ack-not-reaped")
+	running := v4MustPhase(t, db, nsID, task.ID, TaskRunning)
+	if err := db.RequestCancel(ctx, task.ID, "(取消)", Now()); err != nil {
+		t.Fatalf("request cancel: %v", err)
+	}
+	if _, _, err := db.RecoverLostLeases(ctx, *running.LeaseUntil+1); err != nil {
+		t.Fatalf("recover 租约: %v", err)
+	}
+	v4MustPhase(t, db, nsID, task.ID, TaskCancelled)
+
+	in := v4ReapInput(t, db, node.ID, task.ID, attempt)
+	in.Now = Now()
+	if err := db.AckCancelAuthorized(ctx, v4Auth(t, db, node.ID), in, false); err != nil {
+		t.Fatalf("ack cancel（processGroupReaped=false）: %v", err)
+	}
+	v4MustPhase(t, db, nsID, task.ID, TaskCancelled)
+	if busy := v4BusySlots(t, db, node.ID); busy != 1 {
+		t.Fatalf("ack 明说没回收时不得释槽，得到 busy=%d", busy)
+	}
+	kept, err := db.GetTaskAttempt(ctx, task.ID, attempt)
+	if err != nil {
+		t.Fatalf("读 attempt: %v", err)
+	}
+	if kept.ReapedAt != nil {
+		t.Fatalf("ack 明说没回收时不得写 reaped：%+v", kept)
+	}
+
+	now := Now()
+	fresh, err := db.ConvergeTerminalLedgers(ctx, now)
+	if err != nil {
+		t.Fatalf("宽限内收敛: %v", err)
+	}
+	if fresh.AttemptsReaped != 0 || fresh.SlotsReleased != 0 {
+		t.Fatalf("宽限内必须继续等节点回收事实，得到 %+v", fresh)
+	}
+	if busy := v4BusySlots(t, db, node.ID); busy != 1 {
+		t.Fatalf("宽限内槽位不得被释放，得到 busy=%d", busy)
+	}
+
+	stale, err := db.ConvergeTerminalLedgers(ctx, now+terminalSlotGrace+1)
+	if err != nil {
+		t.Fatalf("宽限后收敛: %v", err)
+	}
+	if stale.AttemptsReaped != 1 || stale.SlotsReleased != 1 {
+		t.Fatalf("宽限后仍占槽 = 那一格再也回不来，必须收敛，得到 %+v", stale)
+	}
+	reaped, err := db.GetTaskAttempt(ctx, task.ID, attempt)
+	if err != nil {
+		t.Fatalf("二次读 attempt: %v", err)
+	}
+	if reaped.ReapedAt == nil || reaped.ReclaimReason != ReclaimReasonSweepConverge {
+		t.Fatalf("宽限后必须补 sweep_converge 的 reaped 事实（明确的契约放宽）：%+v", reaped)
+	}
+	if busy := v4BusySlots(t, db, node.ID); busy != 0 {
+		t.Fatalf("宽限后槽位必须收回，得到 busy=%d", busy)
+	}
+	v4MustPhase(t, db, nsID, task.ID, TaskCancelled)
+}

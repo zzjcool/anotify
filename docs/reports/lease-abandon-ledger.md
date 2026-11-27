@@ -1,4 +1,5 @@
 <!-- snapshot-doc: 2026-11-26 #660 交付时的定格（门禁与变异输出原样贴在下文，复算命令见 §6） -->
+<!-- r2（#682 review）：正文符号改用现名 ConvergeTerminalLedgers / TestConvergeTerminalLedgersIsIdempotent；旧名已不存在于仓库，只在本注保留以便考古。 -->
 
 # #660 · 租约 abandon 的两本账收敛
 
@@ -27,7 +28,8 @@
 2. **读时兜底**（`internal/store/execution_auth.go` `countUnreaped`）：统计未回收执行时排除
    **已终态的任务**（`t.phase NOT IN (<terminal>)`）。物理事实仍是 `reaped_at`/`busy_*`，
    这条只影响预算归因——否则一条遗留的 abandoned attempt 就能永久钉死节点，而补它的调用点早就不存在。
-3. **存量收敛**（`internal/store/ledger_converge.go` `ConvergeAbandonedLedgers`）：
+3. **存量收敛**（`internal/store/ledger_converge.go` `ConvergeTerminalLedgers`，当时叫
+   `ConvergeAbandonedLedgers`）：
    补齐 `abandoned` 任务遗留 attempt 的 `reaped_at`（`reclaim_reason='sweep_converge'`），
    清掉指向它们的槽行；一轮一个 `BEGIN IMMEDIATE` 事务，返回两项计数。接进
    `internal/lease` 的 `Sweeper.RunOnce`（`Report.LedgersConverged` + `Info` 日志，只在该轮
@@ -45,7 +47,7 @@
 | ① sweep 后 reaped 非空 + 无占用 | `TestLeaseSweepAbandonSettlesBothLedgers` | `GetTaskAttempt().ReapedAt != nil` 且 `reclaim_reason='lease_abandon'`；`v4BusySlots==0` |
 | ② 连续 abandon 不累积 | `TestConsecutiveLeaseAbandonsDoNotLeakCapacity` | 两轮后第三任务 `GrantLeaseAuthorized` 成功（attempt=1、相位 running） |
 | ③ 反例：正常 running 仍计入预算 | `TestRunningExecutionStillConsumesBudget` | 总量 1、两个真实槽：第二个任务拿到合法槽仍 `ErrSlotUnavailable`（`机器总量预算已满`），槽账不变 |
-| ④ 收敛幂等 | `TestConvergeAbandonedLedgersIsIdempotent` | 首轮 1/1、次轮 0/0；遗留行 reaped、取消在飞的行原样保留 |
+| ④ 收敛幂等 | `TestConvergeTerminalLedgersIsIdempotent` | 首轮 1/1、次轮 0/0；遗留行 reaped、取消在飞的行原样保留 |
 | 读时兜底（issue 的第二本账） | `TestTerminalUnreapedAttemptDoesNotBlockBudget` | 槽行被人工删掉、只剩终态未回收 attempt 时，新任务仍被预算接受 |
 
 ## 4. 变异自证（两条都必红）
