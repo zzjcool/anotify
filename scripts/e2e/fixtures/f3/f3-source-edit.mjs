@@ -15,6 +15,7 @@
 //   4. 编辑流程的请求全部落在**资源自己的 ns**（default），一条 `/v1/namespaces/prod/` 都不许有。
 // 附带同族检查：能力详情页的「返回能力列表」同样落在资源自己的 ns。
 import assert from 'node:assert/strict';
+import { dialogShownEver, noDialogShown, watchDialog } from './f3-dialog-watch.mjs';
 
 /** 把失败时需要的现场（URL / 导航链 / 请求 / localStorage）一次性附在错误里。 */
 const facts = async (d, extra) => {
@@ -104,6 +105,7 @@ export async function sourceEditJump(d) {
 	// ② 保存 → 弹层关闭 + edit=1 移除 + 详情页立刻显示新值。
 	const marker = srcName + '-inline-e2e';
 	await page.locator('#f-display').fill(marker);
+	await watchDialog(page);
 	/* 先挂上等待再点：超时直接抛（比 .catch(()=>null) 更好 —— 失败现场是「没发出 PATCH」本身）。 */
 	const saveRespP = page.waitForResponse(
 		(r) => r.request().method() === 'PATCH' && /\/v1\/namespaces\/default\/sources\//.test(r.url()),
@@ -122,6 +124,8 @@ export async function sourceEditJump(d) {
 	assert.equal(resp.status(), 200, 'PATCH 必须 200，实际 ' + resp.status());
 
 	await page.waitForFunction(() => document.querySelector('#src-modal').classList.contains('hidden'), null, { timeout: 20000 });
+	await noDialogShown(page, '保存成功后不许再弹「放弃未保存的修改」');
+	assert.equal(await dialogShownEver(page), false, '保存成功的整条路径上确认框一次都不许出现');
 	await page.waitForFunction(() => !new URLSearchParams(location.search).get('edit'), null, { timeout: 20000 });
 	try {
 		await page.waitForFunction(

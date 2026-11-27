@@ -3,12 +3,12 @@ kind: Playbook
 
 metadata:
   name: issue-fix
-  displayName: issue 判断 → 修复 ⇄ review（真环，两轮上限）
+  displayName: issue 判断 → 修复 ⇄ review（真环，三轮上限）
   version: 1
   description: |
     手动投一个 issue 号，用 PI 当执行者把这件事从"成立吗"推到"PR 通过 review"：
     判定不成立就关单结束；成立则修、提 PR、由另一个 agent review；
-    有问题回到修复，修完再复审一轮；两轮仍不通过就交回人。
+    有问题回到修复，修完再复审；三轮仍不通过就交回人。
 
 spec:
   values:

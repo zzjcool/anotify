@@ -54,6 +54,10 @@ common:
     cancel: Cancelar
     irreversible: Esto no se puede deshacer.
     undoable: Tendrás 5 segundos para deshacerlo.
+    discard_title: ¿Descartar los cambios sin guardar?
+    discard_body: Los cambios de este formulario no se han guardado.
+    discard_confirm: Descartar
+    keep_editing: Seguir editando
   undo:
     deleted: 'Se eliminó «{name}»'
     revoked: 'Se revocó «{name}»'

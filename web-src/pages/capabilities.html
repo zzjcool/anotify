@@ -816,6 +816,7 @@
       let SEARCH = "";
       let FILTER = "all";
       let EDIT = null; // 新建向导的上下文（只有 create 一种模式）
+      let WIZ_GUARD = null;
       let BUSY = false;
 
       // 四个 condition 的固定顺序（capability.md §2：派生面固定四条）
@@ -1614,6 +1615,7 @@
         wizardPaint();
         openModal($("cap-modal"));
         nameInput.focus();
+        if (WIZ_GUARD) WIZ_GUARD.markClean();
       }
 
       function closeEditor() {
@@ -1623,6 +1625,12 @@
         WIZARD.on = false;
         WIZARD.step = 1;
         hideBanner();
+        if (WIZ_GUARD) WIZ_GUARD.markClean();
+      }
+
+      function requestCloseEditor() {
+        if (WIZ_GUARD) WIZ_GUARD.requestClose();
+        else closeEditor();
       }
 
       /* ---------- 表单 → spec 构造（校验失败给出可显示原因，不清空输入） ---------- */
@@ -1964,18 +1972,22 @@
         $("cap-submit").addEventListener("click", onSubmitClick);
         $("cap-back").addEventListener("click", () => wizardGo(WIZARD.step - 1));
         $("cap-template").addEventListener("change", (e) => applyTemplate(e.target.value));
-        $("cap-cancel").addEventListener("click", closeEditor);
-        $("cap-modal-close").addEventListener("click", closeEditor);
+        $("cap-cancel").addEventListener("click", requestCloseEditor);
+        $("cap-modal-close").addEventListener("click", requestCloseEditor);
         $("cap-modal").addEventListener("click", (e) => {
-          if (e.target === e.currentTarget) closeEditor();
+          if (e.target === e.currentTarget) requestCloseEditor();
         });
+        WIZ_GUARD =
+          typeof A.guardDirty === "function"
+            ? A.guardDirty($("cap-modal"), { onDiscard: closeEditor })
+            : null;
 
         document.addEventListener("keydown", (e) => {
           if (e.key !== "Escape") return;
           const capModal = $("cap-modal");
           if (capModal && !capModal.classList.contains("hidden")) {
             e.preventDefault();
-            closeEditor();
+            requestCloseEditor();
           }
         });
       }

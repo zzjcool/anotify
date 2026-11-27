@@ -54,6 +54,10 @@ common:
     cancel: Cancel
     irreversible: This cannot be undone.
     undoable: You get 5 seconds to undo.
+    discard_title: Discard unsaved changes?
+    discard_body: Your edits in this form have not been saved.
+    discard_confirm: Discard
+    keep_editing: Keep editing
   undo:
     deleted: 'Deleted "{name}"'
     revoked: 'Revoked "{name}"'

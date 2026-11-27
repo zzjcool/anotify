@@ -54,6 +54,10 @@ common:
     cancel: キャンセル
     irreversible: この操作は取り消せません。
     undoable: 実行後 5 秒間は取り消せます。
+    discard_title: 未保存の変更を破棄しますか？
+    discard_body: このフォームの変更はまだ保存されていません。
+    discard_confirm: 破棄
+    keep_editing: 編集を続ける
   undo:
     deleted: 「{name}」を削除しました
     revoked: 「{name}」を無効化しました
