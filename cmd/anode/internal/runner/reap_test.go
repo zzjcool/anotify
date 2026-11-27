@@ -98,7 +98,7 @@ func TestIntentionalPipeCloseIsNotCopyFailure(t *testing.T) {
 }
 
 // V4-10 要求 3 的确定性判据：os.ErrClosed 只在「读端是回收路径关的」前提下不算复制失败，
-// 没这个前提时必须照记（否则那个守卫等于把 ErrClosed 一律吞掉）。
+// 没这个前提时必须照记（否则那段判断等于把 ErrClosed 一律吞掉）。
 func TestCopyLogSeparatesIntentionalCloseFromRealCopyFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
