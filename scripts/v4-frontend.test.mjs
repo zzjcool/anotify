@@ -3498,9 +3498,7 @@ function traceStartup(options = {}) {
     search: options.search || '?namespace=default&traceUID=trace_mock_t1',
   });
   const nodes = new Map();
-  // #582：链路页认了别名之后会把地址规范成 traceUID。vm 沙箱里没有 history（真浏览器
-  // 一定有），这里记下真实写入并同步 location.search —— 断言要看的是「改写成什么」。
-  const replacements = [];
+  const replacements = []; // #582：vm 沙箱没有 history（真浏览器有），记下真实写入并同步 location.search —— 断言看「改写成什么」
   run.sandbox.history = {
     replaceState(_, __, url) {
       replacements.push(String(url));
@@ -3661,8 +3659,9 @@ test("TRACE missing-id (#582): the empty state names the parameter and the prefi
 });
 
 test("TRACE alias (#582): ?traceId= opens the trace and the address is normalized to traceUID", async () => {
-  // 场景：从 API 文档 / CLI 回执拿到 traceId，手动拼 ?traceId=…（页面实际只读 traceUID）。
-  const run = traceStartup({ graphs: true, pathname: '/trace.html', search: '?namespace=default&traceId=trace_mock_t1' });
+  const run = traceStartup({ // 场景：从 API 文档 / CLI 回执拿到 traceId，手动拼 ?traceId=…（页面实际只读 traceUID）
+    graphs: true, pathname: '/trace.html', search: '?namespace=default&traceId=trace_mock_t1',
+  });
   await run.settle();
   await run.fireDomReady();
   await run.settle();
@@ -3675,8 +3674,9 @@ test("TRACE alias (#582): ?traceId= opens the trace and the address is normalize
     'the address is rewritten to the canonical traceUID and keeps the other params',
   );
   assert.equal(run.sandbox.location.search, '?namespace=default&traceUID=trace_mock_t1');
-  // 规范形 (traceUID) 不得再被改写一次 —— 否则每次刷新都会 replaceState。
-  const canonical = traceStartup({ graphs: true, pathname: '/trace.html', search: '?namespace=default&traceUID=trace_mock_t1' });
+  const canonical = traceStartup({ // 规范形（traceUID）不得再改写一次 —— 否则每次刷新都会 replaceState
+    graphs: true, pathname: '/trace.html', search: '?namespace=default&traceUID=trace_mock_t1',
+  });
   await canonical.settle();
   await canonical.fireDomReady();
   await canonical.settle();

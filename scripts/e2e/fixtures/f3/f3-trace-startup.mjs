@@ -1,22 +1,18 @@
 // TRACE-STARTUP · native 启动依赖现场（TRACE-STARTUP 专用，独立 case/run ID）
 //
 // 只读诊断：复用冻结的 f3-driver（explicit-mock 预览 + 真实 Chrome），不改 fixture、
-// 不改生产文件、不复用旧 run。三个 case 各自 openDriver（独立 context/attempt）：
+// 不改生产文件、不复用旧 run。四个 case 各自 openDriver（独立 context/attempt）：
 //
 //   1. trace-startup-delayed-graphs
-//      把 /graphs.js 延迟 900ms（defer 因此晚于 Trace 响应），Trace API 由 mock 快速应答。原码会在图库未赋值时读
-//      window.AnotifyGraphs.taskChain → 真实现场 final-28bbef29 的同一 TypeError；
-//      修复后 7 Task rows + 真实图 DOM + 能力节点点击落到规范化任务。
+//      /graphs.js 延迟 900ms（defer 晚于 Trace 响应）→ 原码在库未赋值时读 window.AnotifyGraphs.taskChain；
+//      真实现场 final-28bbef29 的同一 TypeError，修复后 7 Task rows + 真实图 + 能力节点点击落到规范化任务。
 //   2. trace-startup-missing-graphs
-//      /graphs.js 真实失败（route.abort）→ 必须显示真实可见 error（trace.nolib）+
-//      原重试按钮、0 假 rows；随后真实加载回该脚本（addScriptTag 真 <script src>），
-//      点击原重试按钮必须真的再取一次 Trace API 并画出真图。
+//      /graphs.js 真实失败（route.abort）→ 真实可见 error（trace.nolib）+ 原重试按钮、0 假 rows；随后真实加载回
+//      该脚本（addScriptTag 真 <script src>），点原重试按钮必须真的再取一次 Trace API 并画出真图。
 //   3. trace-startup-loaded-page
 //      正常已加载页面（无注入）成功：7 rows、真实图、无 error、无全局 pageerror。
 //   4. trace-startup-traceid-alias
-//      #582 的别名参数：API 文档 / CLI 回执把 trace 的唯一键叫 traceId，而页面读 traceUID。
-//      用 ?traceId=… 进来也必须真的打开（7 rows、无缺参空态），且地址被规范成 traceUID
-//      （其它参数保留、别名不留在地址里）。
+//      ?traceId=…（API / CLI 的叫法）也打开 7 rows、无缺参空态，地址规范成 traceUID。
 //
 // 有界：每步 Playwright 4.5s 超时、外层 watchdog 55s 真实 exit，无轮询/无忙等。
 // 退出码：0 全部通过；1 断言失败；2 watchdog。
@@ -221,8 +217,7 @@ async function loadedPage(d) {
   return { observed };
 }
 
-// case 4：#582 别名参数 —— 用户照 API / CLI 的叫法拼 ?traceId=… 也必须能打开，地址规范成 traceUID
-async function traceIdAlias(d) {
+async function traceIdAlias(d) { // case 4：#582 别名参数 —— 照 API / CLI 的叫法拼 ?traceId=… 也要能打开，地址规范成 traceUID
   await d.page.goto(d.base + '/trace.html?namespace=default&traceId=trace_mock_t1', { waitUntil: 'domcontentloaded', timeout: 7000 });
   await d.page.waitForFunction(() => document.querySelectorAll('#trace-tasks [data-task]').length === 7, null, { timeout: 4500 });
   const observed = await scene(d);
