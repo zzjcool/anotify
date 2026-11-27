@@ -50,6 +50,7 @@ import (
 
 	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/schema"
+	"github.com/zzjcool/anotify/internal/sourcespec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -163,7 +164,6 @@ var builtinFieldPaths = map[string]bool{
 	"status.homeDir":      true,
 }
 
-// Artifact 是一份能力产物。
 type Artifact struct {
 	APIVersion string   `json:"apiVersion"`
 	Kind       string   `json:"kind"`
@@ -171,8 +171,6 @@ type Artifact struct {
 	Spec       Spec     `json:"spec"`
 }
 
-// Metadata 是产物的身份。
-//
 // version 省略（= 0）表示**内容寻址**：按 (name, 执行正文) 复用已有行；显式给就
 // 永不折叠。displayName 是纯展示，不进 digest。
 type Metadata struct {
@@ -192,8 +190,7 @@ type Spec struct {
 	// 它是路由事实，**不参与 foldKey / digest**。
 	Next []string `json:"next"`
 	// Run 是怎么跑（脚本，唯一实现形式）。
-	Run Run `json:"run"`
-	// Requires 是节点要提供什么。
+	Run      Run      `json:"run"`
 	Requires Requires `json:"requires"`
 	// Lifecycle 是一次运行能活多久、能不能重放。
 	Lifecycle Lifecycle `json:"lifecycle"`
@@ -201,7 +198,6 @@ type Spec struct {
 	Concurrency Concurrency `json:"concurrency"`
 }
 
-// Run 是「怎么跑」。
 type Run struct {
 	// Entrypoint 必须是 Files 里的一个 key，且内容以 "#!" 开头（直接 exec，不经 shell）。
 	Entrypoint string `json:"entrypoint"`
@@ -220,7 +216,6 @@ type Run struct {
 // FieldPath 非空 = 引用机器事实（唯一的取值边界）；否则 Value 是字面量。
 // 空串本身是合法字面量（"空串就是空串"），所以这里不能用 "" 表示「未设置」。
 type EnvValue struct {
-	// Value 是字面量值。
 	Value string
 	// FieldPath 是 k8s 风格的取值路径（封闭集合见 builtinFieldPaths / vars.<NAME>）。
 	FieldPath string
@@ -339,6 +334,10 @@ type Lifecycle struct {
 	ResultTTLSec *int `json:"resultTtlSec,omitempty"`
 	// TimeoutSec 是本地执行超时（从子进程启动起算，0..86400；0 = 不设）。
 	TimeoutSec int `json:"timeoutSec"`
+	// IdleTimeoutSec 是「无进展」上限（秒，省略 = 节点默认 600，0 = 关闭）（#700）。
+	IdleTimeoutSec *int `json:"idleTimeoutSec,omitempty"`
+	// OnFailure 是终态失败的兜底下游（#700）：被 timeout 杀掉的是进程组，脚本回写不了。
+	OnFailure *Fallback `json:"onFailure,omitempty"`
 }
 
 // EffectiveMaxAttempts 返回生效的总尝试次数（省略 → 3）。
@@ -359,6 +358,48 @@ func (l Lifecycle) EffectiveResultTTLSec() int {
 
 // EffectiveTimeoutSec 返回生效的本地执行超时。
 func (l Lifecycle) EffectiveTimeoutSec() int { return l.TimeoutSec }
+
+func (l Lifecycle) EffectiveIdleTimeoutSec(nodeDefault int) int {
+	if l.IdleTimeoutSec == nil {
+		return nodeDefault
+	}
+	return *l.IdleTimeoutSec
+}
+
+// Fallback 是终态失败后的兜底动作（#700）：中枢拿它当一次平台发起的 emit。
+type Fallback struct {
+	// To 必须是本能力 spec.next 里的下游引用（裸名或 name@version）。
+	To string `json:"to"`
+	// Params 是字面参数：与父任务 params 同名合并（这里优先），上下文由父任务带过来。
+	Params map[string]any `json:"params,omitempty"`
+}
+
+// UnmarshalJSON 严格解析兜底动作：拼错的子键不该等到真失败那天才疼。
+func (f *Fallback) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return &fieldError{code: CodeBadRequest,
+			msg: "lifecycle.onFailure 必须是对象（{to,params}），实际 " + compactJSON(data)}
+	}
+	var out Fallback
+	for key, value := range raw {
+		switch key {
+		case "to":
+			if err := json.Unmarshal(value, &out.To); err != nil {
+				return &fieldError{code: CodeBadRequest, msg: "lifecycle.onFailure.to 必须是字符串"}
+			}
+		case "params":
+			if err := json.Unmarshal(value, &out.Params); err != nil {
+				return &fieldError{code: CodeBadRequest, msg: "lifecycle.onFailure.params 必须是 JSON 对象"}
+			}
+		default:
+			return &fieldError{code: CodeBadRequest,
+				msg: fmt.Sprintf("lifecycle.onFailure 不认识的子键 %q（只有 to / params）", key)}
+		}
+	}
+	*f = out
+	return nil
+}
 
 // Concurrency 是「这台节点上最多同时跑几个」。
 type Concurrency struct {
@@ -653,6 +694,7 @@ func validateArtifact(a *Artifact, checkParamUsable bool) error {
 	addProblems(validateRequires(&a.Spec.Requires))
 	addProblems(validateRun(&a.Spec, params))
 	addProblems(validateLifecycle(&a.Spec.Lifecycle))
+	addProblems(validateOnFailure(&a.Spec.Lifecycle, a.Spec.Next))
 	addProblems(validateConcurrency(&a.Spec.Concurrency))
 
 	return errIfLocated(p, fields)
@@ -1175,6 +1217,37 @@ func validateLifecycle(lc *Lifecycle) []string {
 	if lc.TimeoutSec < 0 || lc.TimeoutSec > MaxTimeoutSec {
 		add("lifecycle.timeoutSec 必须在 0..%d 之间（0 = 不设本地执行超时），实际 %d",
 			MaxTimeoutSec, lc.TimeoutSec)
+	}
+	if lc.IdleTimeoutSec != nil && (*lc.IdleTimeoutSec < 0 || *lc.IdleTimeoutSec > MaxTimeoutSec) {
+		add("lifecycle.idleTimeoutSec 必须在 0..%d 之间（0 = 关闭无进展判据），实际 %d",
+			MaxTimeoutSec, *lc.IdleTimeoutSec)
+	}
+	return p
+}
+
+func validateOnFailure(lc *Lifecycle, next []string) []string {
+	if lc == nil || lc.OnFailure == nil {
+		return nil
+	}
+	// 白名单只有 sourcespec.DeclaredRef 一份：兜底不能绕过「只能调自己声明的下游」。
+	var p []string
+	add := func(format string, args ...any) {
+		p = append(p, CodeBadRequest+": "+fmt.Sprintf(format, args...))
+	}
+	to := strings.TrimSpace(lc.OnFailure.To)
+	if to == "" {
+		return append(p, CodeBadRequest+": lifecycle.onFailure.to 不能为空：必须是 spec.next 里的下游引用")
+	}
+	if strings.Contains(to, "$(") {
+		return append(p, CodeBadRequest+": lifecycle.onFailure.to 是静态声明，不能写模板（实际 "+to+"）")
+	}
+	if _, declared := sourcespec.DeclaredRef(next, to); !declared {
+		add("lifecycle.onFailure.to %q 不在 spec.next (%v) 里", to, next)
+	}
+	for name, value := range lc.OnFailure.Params {
+		if s, ok := value.(string); ok && strings.Contains(s, "$(") {
+			add("lifecycle.onFailure.params.%s 只能是字面值（实际 %q）：上下文由父任务 params 带过来", name, s)
+		}
 	}
 	return p
 }

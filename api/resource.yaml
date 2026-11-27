@@ -2629,6 +2629,35 @@ components:
           minimum: 0
           maximum: 86400
           description: "本地执行超时（秒，0 = 不设）"
+        idleTimeoutSec:
+          type: integer
+          minimum: 0
+          maximum: 86400
+          description: |
+            「无进展」上限（秒）：日志连续这么久没有新字节 → 节点按 `no_progress` 提前终止，
+            而不是干等到 `timeoutSec`。省略 = 节点默认 600；显式 0 = 关闭这个判据
+            （只适合合法地长时间一声不响的能力）。
+        onFailure:
+          $ref: '#/components/schemas/CapabilityFailureFallback'
+    CapabilityFailureFallback:
+      type: object
+      required: [to]
+      additionalProperties: false
+      description: |
+        终态失败的兜底动作（#700）：任务 failed 后由**中枢**按一次平台发起的 emit 派发 `to`。
+
+        为什么必须由中枢做：被 `timeoutSec` 杀掉的是整个进程组，脚本里那些
+        `anode emit` / `gh issue comment` 一行都执行不到 —— 回写不能依赖被杀的那一方。
+      properties:
+        to:
+          type: string
+          description: "必须是本能力 `spec.next` 里的下游引用（裸名或 `name@version`）；写入期就校验"
+        params:
+          type: object
+          additionalProperties: true
+          description: |
+            **字面**参数（不接受 `$(…)` 模板）：与父任务 `params` 同名合并，这里优先。
+            于是 `repo` / `issue` 这类上下文由父任务带过来，声明里只补「这一步是兜底」。
     CapabilityConcurrency:
       type: object
       properties:

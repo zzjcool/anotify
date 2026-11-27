@@ -141,10 +141,9 @@ const (
 
 	// 运行期：可判定失败（默认终态，不自动重试）。
 	ReasonMaxAttemptsExceeded = "max_attempts_exceeded"
+	// ReasonNoProgress 是日志连续无新字节的提前终态（#700）。
+	ReasonNoProgress = "no_progress"
 	// ReasonTimeout 是 lifecycle.timeoutSec 到点（capability.md §2.3：failed，不自动重跑）。
-	//
-	// 注意：capability.md §6.2 的表里没有单列这个码（只说「到点 → failed」），
-	// 任务卡要求把它作为可判别原因保留，故在此显式定义（见 DONE 报告的契约说明）。
 	ReasonTimeout            = "timeout"
 	ReasonScriptFailed       = "script_failed"
 	ReasonFilesEscape        = "files_escape"
@@ -189,6 +188,8 @@ const (
 	ReasonNoDecision           = "no_decision"            // router 成功但没提交决策
 	ReasonRouterFailed         = "router_failed"          // router 失败/放弃：不执行结局
 	ReasonOutcomeDropped       = "outcome_dropped"        // 选中空动作结局（drop: []）
+	// ReasonTaskFailed 是没有结局表的任务终态失败的观察行（#700，payload 带原因码）。
+	ReasonTaskFailed = "task_failed"
 )
 
 // pruneReasons 是「事件已接收、下游没建 task」的观察原因（capability.md §8.3）。
@@ -211,6 +212,7 @@ var pruneReasons = []string{
 var routeObservationReasons = []string{
 	ReasonNoDecision,
 	ReasonRouterFailed,
+	ReasonTaskFailed,
 	ReasonOutcomeDropped,
 	ReasonOutcomeNotDeclared,
 }
@@ -306,6 +308,9 @@ const (
 	// LeaseRenewRatio 是「租约时长至少几个续租间隔」：少于 3 个就没有抗抖动余量。
 	LeaseRenewRatio = 3
 )
+
+// DefaultIdleTimeout 是无进展的节点默认上限（#700，能力用 idleTimeoutSec 覆盖，0 关闭）。
+const DefaultIdleTimeout = 10 * time.Minute
 
 // ValidateLeaseTTL 校验 (ttl, renew) 自洽：非法配置必须**启动即拒**，不能在运行期才表现
 // 为「任务莫名其妙被判失联」。两条判据是不同的事故形态：低于协议下限（一次隧道重建就

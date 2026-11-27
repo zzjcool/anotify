@@ -41,6 +41,7 @@ spec:
           approved) line="修复完成，review 通过${pr:+：$pr}（未自动合并，等人看）" ;;
           escalate) line="三轮 review 仍未通过，需要人接手${pr:+：$pr}" ;;
           stuck)    line="执行体没能完成：$findings" ;;
+          timeout)  line="因超时终止：$findings" ;;
           *)        line="流程结束：$outcome" ;;
         esac
 

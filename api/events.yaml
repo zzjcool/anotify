@@ -519,8 +519,9 @@ components:
             封闭原因码，权威定义在 `internal/protocol/enums.go`：剪枝码 `pruneReasons`
             （`no_target` / `event_schema` / `param_schema` / `param_type` / `param_missing` /
             `capability_disabled` / `no_match` / `max_hops` / `budget`）、决策通道观察码
-            `routeObservationReasons`（`no_decision` / `router_failed` / `outcome_dropped` /
-            `outcome_not_declared`），以及被拒绝的 emit 留下的 `target_not_declared`
+            `routeObservationReasons`（`no_decision` / `router_failed` / `task_failed` /
+            `outcome_dropped` / `outcome_not_declared`），以及被拒绝的 emit 留下的
+            `target_not_declared`
             （调用方拿到 400，闭集见 `internal/store/emission.go` 的 `emitRejectionReasons`；
             它进 `pruned[]` 是为了让「为什么下游没跑」可查，不表示这次 emit 被接受）。
 

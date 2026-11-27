@@ -26,6 +26,11 @@ spec:
   lifecycle:
     idempotent: false
     timeoutSec: 3600
+    onFailure:
+      to: '{{values.project}}-record'
+      params:
+        outcome: timeout
+        findings: '因超时终止：lifecycle.timeoutSec 到点被平台终止'
   run:
     entrypoint: run.sh
     files:

@@ -1546,7 +1546,6 @@
           actionMenu([{ label: t("caps.detail.delete", "删除"), act: "delete", run: () => openDelete() }]),
         );
 
-        // 正文
         const body = $("cap-body");
         body.replaceChildren();
         body.classList.remove("hidden");
@@ -1738,6 +1737,9 @@
           kvLine(t("caps.spec.max_attempts", "最大尝试"), lc.maxAttempts == null ? "—" : lc.maxAttempts),
           kvLine(t("caps.spec.result_ttl", "结果保留（秒）"), lc.resultTtlSec == null ? "—" : lc.resultTtlSec),
           kvLine(t("caps.spec.timeout", "执行超时（秒）"), lc.timeoutSec == null ? "—" : lc.timeoutSec),
+          kvLine(t("caps.spec.idle_timeout", "无进展上限（秒）"),
+            lc.idleTimeoutSec == null ? t("caps.spec.idle_timeout_default", "节点默认（600）") : lc.idleTimeoutSec),
+          kvLine(t("caps.spec.on_failure", "失败兜底"), isObj(lc.onFailure) && lc.onFailure.to ? String(lc.onFailure.to) : "—"),
           kvLine(t("caps.spec.concurrency", "单节点并发上限"), conc.maxPerNode == null ? "—" : conc.maxPerNode),
         );
         ssec.append(lcRow);
@@ -2085,6 +2087,8 @@
           run: { entrypoint: entrypoint, files: files },
           requires: { commands: commands, values: values },
           lifecycle: {
+            // 铺开现有 lifecycle：表单只管这四个键，别的（#700 的 idleTimeoutSec/onFailure）原样带走。
+            ...lc,
             idempotent: lcIdem,
             maxAttempts: maxAttempts,
             resultTtlSec: resultTtl,
