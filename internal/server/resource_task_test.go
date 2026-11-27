@@ -1042,9 +1042,9 @@ func TestTaskResourceEventOutcome(t *testing.T) {
 
 	prunedTrace := "trace_outcome_pruned"
 	prunedUID := env.seedEvent(env.ns, prunedTrace, "github", "push", `{"zzz":1}`, "", base)
-	env.seedEvent(env.ns, prunedTrace, store.EventPruneSource, "param_missing",
+	paramUID := env.seedEvent(env.ns, prunedTrace, store.EventPruneSource, "param_missing",
 		`{"reason":"param_missing","detail":"需要 n, tag","capability":"r3cap-req"}`, store.EventReasonPruned, base+1)
-	env.seedEvent(env.ns, prunedTrace, store.EventPruneSource, "no_target",
+	noTargetUID := env.seedEvent(env.ns, prunedTrace, store.EventPruneSource, "no_target",
 		`{"reason":"no_target","detail":"源没有 targets"}`, store.EventReasonPruned, base+2)
 
 	okTrace := "trace_outcome_ok"
@@ -1092,6 +1092,25 @@ func TestTaskResourceEventOutcome(t *testing.T) {
 	console := trWant(t, env.do(http.MethodGet, consoleEventsPath+"?namespace="+env.nsSlug, nil), http.StatusOK)
 	assertOutcome(console, prunedUID, prunedTrace, 0, 2, "param_missing", "需要 n, tag")
 	assertOutcome(console, okUID, okTrace, 2, 0, "", "")
+
+	// 按 trace 查时观察行就在同一份响应里：投递行再借「代表」= 同一份剪枝事实投影两遍。
+	traceList := trWant(t, env.do(http.MethodGet, "/v1/namespaces/"+env.ns+"/events?trace="+prunedTrace, nil), http.StatusOK)
+	if got := len(trArray(t, traceList, "items")); got != 3 {
+		t.Fatalf("?trace= 的事件流 = %d 条, want 3（投递行 + 2 条剪枝观察）", got)
+	}
+	assertOutcome(traceList, prunedUID, prunedTrace, 0, 2, "", "")
+	assertOutcome(traceList, paramUID, prunedTrace, 0, 2, "param_missing", "需要 n, tag")
+	assertOutcome(traceList, noTargetUID, prunedTrace, 0, 2, "no_target", "源没有 targets")
+
+	consoleTrace := trWant(t, env.do(http.MethodGet,
+		consoleEventsPath+"?namespace="+env.nsSlug+"&traceId="+prunedTrace, nil), http.StatusOK)
+	assertOutcome(consoleTrace, prunedUID, prunedTrace, 0, 2, "", "")
+	assertOutcome(consoleTrace, noTargetUID, prunedTrace, 0, 2, "no_target", "源没有 targets")
+
+	// 显式只取投递源的行（观察行被 source 过滤掉）→ 代表照给：这才是它要补的那个缺口。
+	srcList := trWant(t, env.do(http.MethodGet,
+		"/v1/namespaces/"+env.ns+"/events?trace="+prunedTrace+"&source=github", nil), http.StatusOK)
+	assertOutcome(srcList, prunedUID, prunedTrace, 0, 2, "param_missing", "需要 n, tag")
 
 	trace := trWant(t, env.do(http.MethodGet, "/v1/namespaces/"+env.ns+"/traces/"+prunedTrace, nil), http.StatusOK)
 	traceEvents := trArray(t, trace, "events")
