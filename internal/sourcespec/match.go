@@ -1,7 +1,7 @@
 package sourcespec
 
-// targets[].match 的字段级组合子（#519 A2）：`types` 之外加 `all`/`any` 两组叶子判据。三组
-// 同时出现 = AND、`all` 内 AND、`any` 内 OR；叶子取不到值/类型不符判 false 而**不是**错误。
+// targets[].match 的字段级组合子（#519 A2）：`types` 之外加 `all`/`any` 两组叶子判据。三组同时出现 = AND、
+// `all` 内 AND、`any` 内 OR；叶子取不到值/类型不符判 false 而**不是**错误（`_derived.` 见 derived.go）。
 
 import (
 	"bytes"
@@ -78,15 +78,16 @@ func (m *Match) Matches(eventType string, payload map[string]any) (bool, string)
 	if len(m.Types) > 0 && !containsText(m.Types, eventType) {
 		return false, fmt.Sprintf("事件 type %q 不在 match.types %v 里", eventType, m.Types)
 	}
+	derivedValues := &derived{payload: payload}
 	for i, leaf := range m.All {
-		if !leaf.eval(payload) {
+		if !leaf.eval(payload, derivedValues) {
 			return false, fmt.Sprintf("match.all[%d]（%s）不成立", i, leaf.describe())
 		}
 	}
 	if len(m.Any) > 0 {
 		hit := false
 		for _, leaf := range m.Any {
-			if leaf.eval(payload) {
+			if leaf.eval(payload, derivedValues) {
 				hit = true
 				break
 			}
@@ -99,8 +100,8 @@ func (m *Match) Matches(eventType string, payload map[string]any) (bool, string)
 }
 
 // eval 求值一行：字段取不到 → false（`negate` 再翻转）。
-func (l MatchLeaf) eval(payload map[string]any) bool {
-	got, found := LookupPointer(payload, l.Field)
+func (l MatchLeaf) eval(payload map[string]any, d *derived) bool {
+	got, found := l.left(payload, d)
 	ok := false
 	if l.Op == MatchOpExists {
 		ok = found
@@ -111,6 +112,14 @@ func (l MatchLeaf) eval(payload map[string]any) bool {
 		ok = !ok
 	}
 	return ok
+}
+
+// left 取一行的左值：`_derived.` 前缀走派生表，其余是载荷里的指针。
+func (l MatchLeaf) left(payload map[string]any, d *derived) (any, bool) {
+	if name, isDerived := derivedField(l.Field); isDerived {
+		return d.lookup(name)
+	}
+	return LookupPointer(payload, l.Field)
 }
 
 // compareLeaf 是「字段值 vs 字面量」的比较表（类型不符一律 false）。
@@ -396,10 +405,15 @@ func (c *matchCheck) leaf(raw json.RawMessage, path string) (MatchLeaf, bool) {
 	leaf.Field = c.text(fields, "field", path+".field", "必须是非空字符串（点号路径，如 issue.labels.0.name）")
 	if leaf.Field != "" {
 		parsed, err := ParsePointer(leaf.Field)
-		if err != nil {
+		switch {
+		case err != nil:
 			c.add(path+".field", CauseReasonValueInvalid, "%v", err)
-		} else {
+		default:
 			leaf.Field = parsed
+			if name, isDerived := derivedField(parsed); isDerived && !containsText(derivedNames, name) {
+				c.add(path+".field", CauseReasonValueInvalid, "不认识的派生字段 %q（可选：%s）",
+					name, strings.Join(derivedNames, " / "))
+			}
 		}
 	}
 	leaf.Op = c.text(fields, "op", path+".op",

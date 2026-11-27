@@ -76,10 +76,9 @@ const (
 	MaxOutcomeActions = 16
 )
 
-// Spec 是一份源文档的 spec 段（source.md §2）。
-//
-// Config 保持原始字节：本包只判形状与默认值，归一化后的字节由 NormalizeConfig 产出，
-// 调用方拿到什么就存什么——中途重新编码会把用户写的 schema 改写成另一种字节等价形式。
+// Spec 是一份源文档的 spec 段（source.md §2）。Config 保持原始字节：本包只判形状与默认值，归一化后
+// 的字节由 NormalizeConfig 产出，调用方拿到什么就存什么——中途重新编码会把用户写的 schema 改写成另
+// 一种字节等价形式。
 type Spec struct {
 	Kind    string          `json:"kind"`
 	Enabled bool            `json:"enabled"`

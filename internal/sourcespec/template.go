@@ -357,10 +357,8 @@ func rootOf(path string) string {
 	return root
 }
 
-// lookupPath 按点号路径取值（第一段是根名，调用方已按根名选好文档）；任一段取不到 → false。
-//
-// 数字段在数组上当下标用（D11）；在对象上就是普通的数字键。路径走 walkPath，
-// 与 envelope 的指针共用同一份实现。
+// lookupPath 按点号路径取值（第一段是根名，调用方已按根名选好文档）；任一段取不到 → false。数字段在
+// 数组上当下标用（D11）；在对象上就是普通的数字键。路径走 walkPath，与 envelope 的指针共用同一份实现。
 func lookupPath(doc map[string]any, path string) (any, bool) {
 	segs := strings.Split(path, ".")
 	if len(segs) == 1 {
