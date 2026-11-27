@@ -50,14 +50,11 @@ function dbFileBytes(dbPath) {
 	return statSync(dbPath).size;
 }
 
-// hasDeletionLog 判断日志里是否有「真的删了事件」的那一轮清理。
+// hasDeletionLog 判断日志里是否有「真的删了事件」的那一轮清理：只在删了东西时打，所以
+// 「第二轮没有这条」就是「没有重复删」的正向证据。
 //
-// v4 的清理日志是 `slog.Info("retention sweep deleted rows", "events", n, …)`，只在**删了
-// 东西**时打（EventsDeleted/TasksDeleted/DeliveriesDeleted 任一 > 0），所以「第二轮
-// 没有这条」就是「没有重复删」的正向证据。
-//
-// 两种编码都接受：cmd/server 用 JSON handler（`"events":3`），而纯 text handler 是
-// `events=3`。只认一种会让断言在「日志格式换了」时变成假红/假绿。
+// 两种编码都接受：cmd/server 的 JSON handler（`"events":3`）与纯 text handler（`events=3`），
+// 只认一种会在日志格式换了时变成假红/假绿。
 function hasDeletionLog(logText, field = "events") {
 	const re = new RegExp(`(?:"${field}"\\s*:\\s*(\\d+)|\\b${field}=(\\d+))`);
 	for (const line of String(logText).split("\n")) {
@@ -391,16 +388,11 @@ async function runRetentionEnabled() {
 		H.eq("窗口内的事件（刚刚写入）保留", V.eventExists(dbPath, fresh.id), true);
 		H.eq("事件行数 = 清理后剩下的条数", countEvents(dbPath), beforeRows - oldIds.length);
 
-		// 日志断言必须**等**，不能读一次快照就下结论（#667）：删除发生在事务里，
-		// `retention sweep deleted rows` 是事务提交之后由同一个巡检 goroutine 打的（lease.go
-		// 里 `RunRetention` 返回后才 `s.log.Info`）。上面那条 DB 事实一成立就立刻查 stdout，
-		// 两次检查之间没有任何等待 —— 而写锁被占（#630 的全表扫、#617/#628 的读入口
-		// BEGIN IMMEDIATE）会把「提交 → 打日志」这段窗口拉大，于是负载高时必现假红。
-		//
-		// 所以这里与其它断言同样用 `tryPoll` 等真实事实：DB 删干净了，日志迟早会来（同一
-		// goroutine 紧接着就写），等不到才是真红。既不写 known-env，也不调大上面那个 45s。
+		// 日志断言必须**等**（#667）：DB 事实成立只说明事务已提交，`s.log.Info` 是同一个巡检
+		// goroutine 在 RunRetention 返回后才写，中间还夹一次交货 drain 的写锁（#630/#617/#628
+		// 会拉长）。上界 10s ≥ store 的 busy_timeout=5s；等不到才是真红，不写 known-env。
 		const sweepLogged = await V.tryPoll(() => hasDeletionLog(server.log(), "events"), {
-			timeoutMs: 5000,
+			timeoutMs: 10000,
 			intervalMs: 100,
 		});
 		H.check("清理日志给了删了多少（retention sweep deleted rows）", sweepLogged, server.log().slice(-1200));
