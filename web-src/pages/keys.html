@@ -196,6 +196,9 @@
         line-height: 1.6;
         color: var(--muted);
       }
+      .kx-no-match {
+        padding: 0;
+      }
 
       /* ---- 新建 Key 弹层 ---- */
       .kx-modal {
@@ -685,11 +688,25 @@
       let LAST_FOCUS = null; // 弹层关闭后焦点归还到这个元素
       let FETCH_ERROR = null; // 最近一次请求失败的原因（渲染错误态用，不伪造数据）
       /* #377：首屏只拉一页（≤20 条），DOM 不随总条数线性增长；
-         搜索只在已加载的页上本地过滤，加载更多翻下一页。 */
+         搜索只在已加载的页上本地过滤，加载更多翻下一页。
+         #585：`q` / `pages` 写进 URL —— 返回、后退、刷新、分享链接都看到同一份筛选与已加载深度。 */
       const KEYS_PAGE = 20;
+      const listState = window.Anotify.listState({
+        page: "keys.html",
+        keys: ["q", "pages"],
+        defaults: { pages: "1" },
+        bind: { q: "keys-search" },
+      });
       let KEYS_CURSOR = "";
       let KEYS_MORE = false;
-      let KEYS_QUERY = "";
+      let KEYS_QUERY = listState.get("q");
+      let KEYS_PAGES = 1;
+
+      function clearKeySearch() {
+        KEYS_QUERY = "";
+        listState.set("q", "");
+        renderKeys();
+      }
 
       function fmtTime(ts) {
         if (!ts) return t("common.time.never", "从未使用");
@@ -777,6 +794,9 @@
           KEYS_CURSOR = page.cursor;
           KEYS_MORE = !!page.cursor;
           LOAD_ERROR = null;
+          KEYS_PAGES = 1;
+          KEYS_PAGES = await window.Anotify.replayPages(listState.get("pages"), loadMoreKeys);
+          listState.set("pages", String(KEYS_PAGES));
         } else {
           // 失败就是失败：不伪造数据（演示数据只在 make mock 的 /mock.js 里，见 #273）
           KEYS = [];
@@ -788,13 +808,13 @@
       }
 
       async function loadMoreKeys() {
-        if (!KEYS_MORE) return;
+        if (!KEYS_MORE) return false;
         const btn = document.getElementById("keys-load-more");
         if (btn) btn.disabled = true;
         const page = await fetchKeyPage(KEYS_CURSOR);
         if (!page) {
           if (btn) btn.disabled = false;
-          return;
+          return false;
         }
         const seen = new Set(KEYS.map((k) => k.id));
         for (const k of (page.data.keys || []).map(normalizeKey)) {
@@ -804,7 +824,10 @@
         }
         KEYS_CURSOR = page.cursor;
         KEYS_MORE = !!page.cursor;
+        KEYS_PAGES++;
+        listState.set("pages", String(KEYS_PAGES));
         renderKeys();
+        return true;
       }
 
       function visibleKeys() {
@@ -942,6 +965,15 @@
         if (KEYS.length === 0) {
           body.replaceChildren();
           setView("empty");
+          return;
+        }
+        if (!rows.length) {
+          const tr = el("tr");
+          const td = el("td", { colspan: "6", class: "kx-no-match" });
+          td.append(window.Anotify.noMatchNode(clearKeySearch));
+          tr.append(td);
+          body.replaceChildren(tr);
+          setView("ready");
           return;
         }
         body.replaceChildren(...rows.map(keyRow));
@@ -1191,6 +1223,7 @@
       /* #377：搜索只在已加载的页上本地过滤；加载更多翻下一页。 */
       document.getElementById("keys-search").addEventListener("input", (event) => {
         KEYS_QUERY = event.target.value;
+        listState.set("q", KEYS_QUERY);
         renderKeys();
       });
       document.getElementById("keys-load-more").addEventListener("click", loadMoreKeys);

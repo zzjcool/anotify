@@ -35,7 +35,7 @@
 <div id="page-main"><div class="page c2-stack">
   <div class="page-head">
     <div class="min-w-0"><h2 class="page-title" id="ns-name">{{t "namespace.v4.title"}}</h2><p id="ns-sub" class="page-sub">{{t "namespace.v4.subtitle"}}</p></div>
-    <div class="page-actions"><a class="btn btn-ghost" href="namespaces.html">{{t "namespace.v4.back"}}</a><button id="ns-refresh" class="btn btn-ghost" type="button">{{t "nodes.v4.refresh"}}</button></div>
+    <div class="page-actions"><a id="ns-back" class="btn btn-ghost" href="namespaces.html">{{t "namespace.v4.back"}}</a><button id="ns-refresh" class="btn btn-ghost" type="button">{{t "nodes.v4.refresh"}}</button></div>
   </div>
   <div id="ns-load-state" role="status"></div>
   <div id="ns-body" class="c2-stack" hidden>
@@ -110,6 +110,7 @@
   // 布局必须挂：页头/侧栏/语言切换器都在 mountLayout 里生成（漏了它页面只有裸内容，i18n 矩阵的「四个真实语言链接」会 0 !== 4）。
   // scopeParam: 'name' —— 本页范围由 `?name=` 表达；顶栏切 ns 必须跳 `namespace.html?name=<新ns>`，否则顶栏显示 B、表单还在写 A（#455）。
   A.mountLayout({ active: 'namespaces', title: t('title'), subtitle: t('subtitle'), scopeParam: 'name' });
+  $('ns-back').href = A.listBackHref('namespaces.html', 'namespaces.html');
   let selectedNamespace = new URLSearchParams(location.search).get('name') || '';
   let nsConfig = null, nsOriginal = '', nsLoaded = '';
   // 命名空间配置的「当前编辑器身份」：请求代号 + 真正加载进来的范围（与节点页同一套

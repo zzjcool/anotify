@@ -3254,7 +3254,229 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		} catch (e) {
 			ns = "";
 		}
-		return target + (ns ? "?namespace=" + encodeURIComponent(ns) : "");
+		return (
+			listBackHref(target) ||
+			target + (ns ? "?namespace=" + encodeURIComponent(ns) : "")
+		);
+	}
+
+	const LIST_MEMORY_KEY = "anotify.list.from"; // #585：列表状态 ⇄ URL（详情页「返回列表」据此带回筛选）
+
+	function listMemory() {
+		try {
+			const raw = sessionStorage.getItem(LIST_MEMORY_KEY);
+			const map = raw ? JSON.parse(raw) : null;
+			return map && typeof map === "object" && !Array.isArray(map) ? map : {};
+		} catch (e) {
+			return {};
+		}
+	}
+
+	function listState(spec) {
+		const o = spec && typeof spec === "object" ? spec : {};
+		const keys = Array.isArray(o.keys)
+			? o.keys.filter((k) => typeof k === "string" && k)
+			: [];
+		const defaults = o.defaults && typeof o.defaults === "object" ? o.defaults : {};
+		const bindIds = o.bind && typeof o.bind === "object" ? o.bind : {};
+		const drop = Array.isArray(o.drop)
+			? o.drop.filter((k) => typeof k === "string" && k)
+			: [];
+		const page = String(
+			o.page || String(location.pathname || "").split("/").pop() || "index.html",
+		);
+		const state = {};
+		const dflt = (key) =>
+			Object.hasOwn(defaults, key) ? String(defaults[key]) : "";
+		const control = (key) =>
+			bindIds[key] ? document.getElementById(bindIds[key]) : null;
+
+		function accepted(key, raw) {
+			const value = raw == null ? "" : String(raw);
+			const node = control(key);
+			if (node && node.tagName === "SELECT" && node.options) {
+				for (const opt of node.options) if (opt.value === value) return value;
+				return dflt(key); // 控件表达不出来的取值回落默认，免得 URL 与页面各说一套
+			}
+			return value === "" ? dflt(key) : value;
+		}
+
+		function read() {
+			let params;
+			try {
+				params = new URLSearchParams(location.search);
+			} catch (e) {
+				params = new URLSearchParams();
+			}
+			for (const key of keys) {
+				const raw = params.get(key);
+				state[key] = raw == null ? dflt(key) : accepted(key, raw);
+			}
+		}
+
+		function applyKey(key) {
+			const node = control(key);
+			if (!node || node.value === state[key]) return;
+			node.value = state[key];
+		}
+
+		function remember() {
+			try {
+				const map = listMemory();
+				map[page] = location.pathname + location.search;
+				sessionStorage.setItem(LIST_MEMORY_KEY, JSON.stringify(map));
+			} catch (e) {
+				return; // 写不进去只是少了「返回列表」的精确落点
+			}
+		}
+
+		function write() {
+			let params;
+			try {
+				params = new URLSearchParams(location.search);
+			} catch (e) {
+				params = new URLSearchParams();
+			}
+			let changed = false;
+			for (const key of drop) {
+				if (params.has(key)) {
+					params.delete(key);
+					changed = true;
+				}
+			}
+			for (const key of keys) {
+				const value = state[key] == null ? "" : String(state[key]);
+				if (value === "" || value === dflt(key)) {
+					if (params.has(key)) {
+						params.delete(key);
+						changed = true;
+					}
+				} else if (params.get(key) !== value) {
+					params.set(key, value);
+					changed = true;
+				}
+			}
+			if (changed) {
+				const qs = params.toString();
+				const target =
+					location.pathname + (qs ? "?" + qs : "") + (location.hash || "");
+				try {
+					history.replaceState(history.state, "", target);
+				} catch (e) {
+					changed = false; // file:// 等不支持改 URL：查询照常，只是链接不可分享
+				}
+			}
+			remember();
+		}
+
+		const api = {
+			page,
+			keys: keys.slice(),
+			get(key) {
+				return Object.hasOwn(state, key) ? state[key] : dflt(key);
+			},
+			set(key, value) {
+				if (!keys.includes(key)) return api;
+				state[key] = accepted(key, value);
+				applyKey(key);
+				write();
+				return api;
+			},
+			clear() {
+				for (const key of keys) state[key] = dflt(key);
+				for (const key of keys) applyKey(key);
+				write();
+				return api;
+			},
+			activeCount(subset) {
+				const list = Array.isArray(subset) ? subset : keys;
+				return list.filter((key) => {
+					const value = state[key] == null ? "" : String(state[key]);
+					return value !== "" && value !== dflt(key);
+				}).length;
+			},
+		};
+
+		read();
+		for (const key of keys) applyKey(key);
+		write();
+		return api;
+	}
+
+	function listBackHref(page, opts) {
+		const o =
+			typeof opts === "string"
+				? { fallback: opts }
+				: opts && typeof opts === "object"
+					? opts
+					: {};
+		const want = String(page || "").split("/").pop() || "index.html";
+		const base = location.href || location.pathname || "/";
+		const candidates = [];
+		try {
+			const from = new URLSearchParams(location.search).get("from");
+			if (from) candidates.push(from);
+		} catch (e) {
+			candidates.length = 0; // 畸形 query 当作没有来源
+		}
+		const remembered = listMemory()[want];
+		if (remembered) candidates.push(remembered);
+		for (const candidate of candidates) {
+			let url;
+			try {
+				url = new URL(String(candidate), base);
+			} catch (e) {
+				continue; // base 解析不了（单测的假 location）：当作没有来源
+			}
+			if (url.origin !== location.origin) continue;
+			if ((url.pathname.split("/").pop() || "") !== want) continue;
+			let filtered = false;
+			for (const [key] of url.searchParams) if (key !== "namespace") filtered = true;
+			if (!filtered) continue;
+			if (o.namespace && !url.searchParams.get("namespace"))
+				url.searchParams.set("namespace", String(o.namespace));
+			return url.pathname + url.search + url.hash;
+		}
+		return o.fallback ? String(o.fallback) : "";
+	}
+
+	function noMatchNode(onClear) {
+		const box = el("div", { class: "empty" });
+		box.append(
+			el("div", {
+				class: "empty-title",
+				text: t("paging.filtered_empty", "没有符合筛选条件的条目"),
+			}),
+		);
+		if (typeof onClear === "function") {
+			const actions = el("div", { class: "empty-actions" });
+			actions.append(
+				el("button", {
+					type: "button",
+					class: "btn btn-ghost btn-sm",
+					text: t("paging.clear_filters", "清除筛选"),
+					onclick: onClear,
+				}),
+			);
+			box.append(actions);
+		}
+		return box;
+	}
+
+	async function replayPages(want, nextPage) {
+		const target = Math.max(1, Math.min(20, Number(want) || 1)); // pages 只记翻到第几页：游标是服务端不透明串
+		let done = 1;
+		while (done < target) {
+			let more = false;
+			try {
+				more = !!(await nextPage());
+			} catch (e) {
+				more = false;
+			}
+			if (!more) break;
+			done++;
+		}
+		return done;
 	}
 
 	/**
@@ -4970,6 +5192,10 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		undoBar,
 		loginHref,
 		listHref,
+		listState, // #585：列表状态 ⇄ URL + 详情页「返回列表」带回筛选
+		listBackHref,
+		noMatchNode,
+		replayPages,
 		icon,
 		capLabel,
 		sourceKindLabel,

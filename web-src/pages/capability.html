@@ -1009,8 +1009,9 @@
         const qs = new URLSearchParams();
         const ns = resNs();
         if (ns) qs.set("namespace", ns);
-        qs.set("restore", "1");
-        return "capabilities.html?" + qs.toString();
+        const fallback = "capabilities.html" + (qs.toString() ? "?" + qs.toString() : "");
+        // 记忆/来源 URL 可能不带 namespace（列表页 URL 里本来就没有它）：补上资源自己的 ns
+        return A.listBackHref("capabilities.html", { fallback, namespace: ns });
       }
 
       function stateLabel(state) {

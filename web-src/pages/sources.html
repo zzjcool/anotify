@@ -544,9 +544,16 @@ function showActionError(src,err){
 let SOURCES=[], CAPS=[];
 let loaded=false, editHandled=false;
 /* #377：首屏只拉一页（≤20 条），DOM 不随总条数线性增长；
-   「加载更多」翻下一页，搜索只在已加载的页上本地过滤。 */
+   「加载更多」翻下一页，搜索只在已加载的页上本地过滤。
+   #585：`q` / `pages` 写进 URL —— 返回、后退、刷新、分享链接都看到同一份筛选与已加载深度。 */
 const SOURCES_PAGE=20;
-let SOURCES_CURSOR="", SOURCES_MORE=false, SOURCE_QUERY="";
+const state=A.listState({
+  page:"sources.html",
+  keys:["q","pages"],
+  defaults:{pages:"1"},
+  bind:{q:"src-search"}
+});
+let SOURCES_CURSOR="", SOURCES_MORE=false, SOURCE_QUERY=state.get("q"), SOURCES_PAGES=1;
 A.mountLayout({
   active:"sources",title:A.t("sources.title")
 });
@@ -566,9 +573,12 @@ async function load(){
     SOURCES=first.items;
     SOURCES_CURSOR=first.cursor;
     SOURCES_MORE=!!first.cursor;
+    SOURCES_PAGES=1;
     CAPS=caps.items;
     loaded=true;
     render();
+    SOURCES_PAGES=await A.replayPages(state.get("pages"),loadMoreSources);
+    state.set("pages",String(SOURCES_PAGES));
     const edit=new URLSearchParams(location.search).get("edit");
     if(edit && !editHandled){
       editHandled=true;
@@ -588,7 +598,7 @@ async function load(){
   }
 }
 async function loadMoreSources(){
-  if(!SOURCES_MORE)return;
+  if(!SOURCES_MORE)return false;
   const btn=$("src-load-more");
   if(btn)btn.disabled=true;
   try{
@@ -601,10 +611,14 @@ async function loadMoreSources(){
     }
     SOURCES_CURSOR=next.cursor;
     SOURCES_MORE=!!next.cursor;
+    SOURCES_PAGES++;
+    state.set("pages",String(SOURCES_PAGES));
     render();
+    return true;
   }catch(err){
     if(btn)btn.disabled=false;
     $("action-error").replaceChildren(A.loadErrorNode(err,()=>loadMoreSources()));
+    return false;
   }
 }
 function visibleSources(){
@@ -626,7 +640,11 @@ function render(){
       action("new",()=>openEditor(null)));
     $("src-list").append(box);
   }else if(!rows.length){
-    $("src-list").append(el("div","empty",A.t("paging.no_match")));
+    $("src-list").append(A.noMatchNode(()=>{
+      SOURCE_QUERY="";
+      state.set("q","");
+      render();
+    }));
   }
   for(const src of rows){
     const m=A.model.source(src);
@@ -700,6 +718,7 @@ function render(){
 }
 $("src-search").addEventListener("input",event=>{
   SOURCE_QUERY=event.target.value;
+  state.set("q",SOURCE_QUERY);
   render();
 });
 $("btn-new").onclick=()=>openEditor(null);

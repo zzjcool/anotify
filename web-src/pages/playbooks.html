@@ -520,8 +520,10 @@
         await ready();
         $("pb-scope").textContent = t("pb.v4.namespace") + ": " + getScope().namespace;
         const first = await fetchPlaybookPage("");
-        PB_ROWS = first.items; PB_CURSOR = first.cursor; PB_MORE = !!first.cursor;
+        PB_ROWS = first.items; PB_CURSOR = first.cursor; PB_MORE = !!first.cursor; PB_PAGES = 1;
         renderGrid();
+        PB_PAGES = await A.replayPages(state.get("pages"), loadMore);
+        state.set("pages", String(PB_PAGES));
         $("pb-state").replaceChildren();
       } catch (error) {
         $("pb-state").replaceChildren(loadErrorNode(error, load));
@@ -530,9 +532,11 @@
       }
     }
 
-    /* #377：首屏只拉一页（≤20 条），DOM 不随总条数线性增长。 */
+    /* #377：首屏只拉一页（≤20 条），DOM 不随总条数线性增长。
+       #585：`q` / `pages` 写进 URL —— 返回、后退、刷新、分享链接都看到同一份筛选与已加载深度。 */
     const PB_PAGE = 20;
-    let PB_ROWS = [], PB_CURSOR = "", PB_MORE = false, PB_QUERY = "";
+    const state = Anotify.listState({ page: "playbooks.html", keys: ["q", "pages"], defaults: { pages: "1" }, bind: { q: "pb-search" } });
+    let PB_ROWS = [], PB_CURSOR = "", PB_MORE = false, PB_QUERY = state.get("q"), PB_PAGES = 1;
     async function fetchPlaybookPage(cursor) {
       await ready();
       const qs = new URLSearchParams({ limit: String(PB_PAGE) });
@@ -558,7 +562,7 @@
         $("pb-empty").replaceChildren(emptyState());
         $("pb-empty").classList.remove("hidden");
       } else if (!rows.length) {
-        $("pb-grid").append(el("p", "pb-empty-title", t("paging.no_match")));
+        $("pb-grid").append(Anotify.noMatchNode(() => { PB_QUERY = ""; state.set("q", ""); renderGrid(); }));
       }
       /* 用 hidden 属性而不是 .hidden class：.pb-more-wrap 自带 display:flex，
          Tailwind 的 .hidden 与它同特异性，顺序一变就会「按钮明明该藏却显示」。 */
@@ -566,7 +570,7 @@
       $("pb-count").textContent = t("paging.showing").replace("{n}", String(rows.length));
     }
     async function loadMore() {
-      if (!PB_MORE) return;
+      if (!PB_MORE) return false;
       $("pb-load-more").disabled = true;
       try {
         const next = await fetchPlaybookPage(PB_CURSOR);
@@ -576,13 +580,17 @@
           PB_ROWS.push(item); seen.add(item.metadata.name);
         }
         PB_CURSOR = next.cursor; PB_MORE = !!next.cursor;
+        PB_PAGES++;
+        state.set("pages", String(PB_PAGES));
         renderGrid();
+        return true;
       } catch (error) {
         $("pb-load-more").disabled = false;
         $("pb-state").replaceChildren(loadErrorNode(error, () => loadMore()));
+        return false;
       }
     }
-    $("pb-search").addEventListener("input", (event) => { PB_QUERY = event.target.value; renderGrid(); });
+    $("pb-search").addEventListener("input", (event) => { PB_QUERY = event.target.value; state.set("q", PB_QUERY); renderGrid(); });
     $("pb-load-more").addEventListener("click", loadMore);
     async function upload(input, directory) {
       reflectFiles(input);

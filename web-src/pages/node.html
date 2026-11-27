@@ -96,7 +96,7 @@
 {{define "content"}}
 <div id="page-main"><div class="page c2-stack">
   <div class="page-head"><div class="min-w-0"><h2 class="page-title" id="head-name">{{t "nodes.v4.config"}}</h2><p id="head-sub" class="page-sub">{{t "nodes.v4.node_subtitle"}}</p></div>
-    <div class="page-actions"><a class="btn btn-ghost" href="nodes.html">{{t "nodes.v4.back"}}</a><button id="node-refresh" class="btn btn-ghost" type="button">{{t "nodes.v4.refresh"}}</button></div>
+    <div class="page-actions"><a id="node-back" class="btn btn-ghost" href="nodes.html">{{t "nodes.v4.back"}}</a><button id="node-refresh" class="btn btn-ghost" type="button">{{t "nodes.v4.refresh"}}</button></div>
   </div>
   <div id="node-load-state" role="status"></div>
   <div id="node-body" class="c2-stack" hidden>
@@ -178,6 +178,7 @@
   // 页面不再请求任何带 ns 上下文的读面。
   let n, nodeId = '', config;
   A.mountLayout({ active: 'nodes', title: t('config'), subtitle: t('node_subtitle') });
+  $('node-back').href = A.listBackHref('nodes.html', 'nodes.html');
   const make = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
   const msg = (id, text, error = false) => { $(id).textContent = text; $(id).classList.toggle('is-error', error); };
   const errorText = e => e.status === 409 && e.reason === 'resource_version_conflict' ? t('stale') : t('error') + ': ' + (e.reason || '') + ' ' + e.message;

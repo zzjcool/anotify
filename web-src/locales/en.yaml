@@ -2464,6 +2464,8 @@ paging:
   load_more: 'Load more'
   showing: 'Showing {n}'
   no_match: 'No matches'
+  filtered_empty: 'No items match the filters'
+  clear_filters: 'Clear filters'
 
 # Source read-only detail page (source-detail.html): header, four sections, fold blocks.
 source_detail:

@@ -3425,7 +3425,11 @@ test("F2b2 events controller: actual filter/page/refresh/scope clicks reset opaq
   await run.get('ev-namespace').fire('change'); await run.settle();
   assert.match(run.calls.at(-1).url, /namespace=prod/);
   assert.equal(run.calls.at(-1).url.includes('continue='), false);
-  assert.match(b2Text(run.get('ev-list')), /events.v4.empty/);
+  const clear = b2Find(run.get('ev-list'), n => n.tagName === 'BUTTON' && /清除筛选|paging\.clear_filters|Clear filters/.test(n.textContent));
+  assert.equal(clear.length, 1, '筛选后为空必须给「清除筛选」按钮（#585：筛出 0 条不是首次使用的空态）');
+  await clear[0].fire('click'); await run.settle();
+  assert.equal(run.calls.at(-1).url.includes('source='), false);
+  assert.equal(run.calls.at(-1).url.includes('traceId='), false);
 });
 
 test("F2b2 message controller: diagnostics mask env, actual previous logs/emission paging/actions/A1 path safety", async () => {

@@ -350,11 +350,38 @@
     A.mountLayout({ active: "events", title: t("events.title") });
     const node = id => document.getElementById(id);
     const list = node("ev-list");
+    const state = A.listState({
+      page: "events.html",
+      keys: ["source", "traceId", "limit", "pages"],
+      defaults: { limit: "20", pages: "1" },
+      bind: { source: "ev-source", traceId: "ev-trace", limit: "ev-limit" },
+    });
     let rows = new Map();
     let continuation = "";
     let generation = 0;
-    let filters = { source: "", traceId: "", limit: "20" };
+    let windows = 1;
+    let filters = readFilters();
     let busy = false;
+
+    function readFilters() {
+      return { source: state.get("source"), traceId: state.get("traceId"), limit: state.get("limit") };
+    }
+    function syncFilters() {
+      state.set("source", node("ev-source").value.trim());
+      state.set("traceId", node("ev-trace").value.trim());
+      state.set("limit", node("ev-limit").value);
+      filters = readFilters();
+    }
+    function clearFilters() {
+      state.set("source", "").set("traceId", "");
+      node("ev-source").value = "";
+      node("ev-trace").value = "";
+      syncFilters();
+      reset();
+    }
+    function filtering() {
+      return state.activeCount(["source", "traceId"]) > 0;
+    }
 
     function requestPath(token) {
       const params = new URLSearchParams({ namespace: readScope().namespace, limit: filters.limit });
@@ -460,7 +487,9 @@
       const ordered = [...rows.values()].sort((a, b) => String(b.metadata.creationTimestamp).localeCompare(String(a.metadata.creationTimestamp)));
       list.replaceChildren(...ordered.map(eventRow));
       list.classList.toggle("anim-stagger", ordered.length > 0);
-      if (!ordered.length) list.append(el("div", { class: "empty", text: t("events.v4.empty") }));
+      if (!ordered.length) {
+        list.append(filtering() ? A.noMatchNode(clearFilters) : el("div", { class: "empty", text: t("events.v4.empty") }));
+      }
       node("ev-count").textContent = t("events.v4.count").replace("{n}", ordered.length);
       /* 没有下一页就把「加载更多」整块藏起来（不是只置灰：一个点不动的按钮
          只会让用户以为还能翻）。 */
@@ -490,6 +519,10 @@
           rows.set(event.metadata.uid, event);
         }
         if (mode !== "refresh" || !continuation) continuation = doc.metadata.continue || "";
+        if (mode === "more") {
+          windows++;
+          state.set("pages", String(windows));
+        }
         render();
       } catch (error) {
         if (current === generation) {
@@ -512,7 +545,9 @@
       generation++;
       rows = new Map();
       continuation = "";
-      filters = { source: node("ev-source").value.trim(), traceId: node("ev-trace").value.trim(), limit: node("ev-limit").value };
+      filters = readFilters();
+      windows = 1; // 新条件 = 新分页深度
+      state.set("pages", "1");
       // 收起态的「N 个生效」药丸与 filters 同源，随每次 reset 重画（含首屏与切换命名空间）。
       paintFilterCount();
       // 加载中 = 骨架（不是 .empty：那是「真的一条都没有」的语义，ST-8）
@@ -567,6 +602,7 @@
        保留 form 的 submit 只为了支持在输入框里按回车；它走的也是同一个 reset()。 */
     node("ev-filters").addEventListener("submit", event => {
       event.preventDefault();
+      syncFilters();
       reset();
     });
     node("ev-filters-toggle").addEventListener("click", () => {
@@ -580,7 +616,7 @@
     });
     /* 其余三个控件：change 即生效（select 选完就查，输入框是回车/失焦后查）。 */
     for (const id of ["ev-source", "ev-trace", "ev-limit"]) {
-      node(id).addEventListener("change", () => reset());
+      node(id).addEventListener("change", () => { syncFilters(); reset(); });
     }
     node("ev-more").addEventListener("click", () => { if (!busy) load("more"); });
     node("ev-refresh").addEventListener("click", () => { if (!busy) load(); });
@@ -594,7 +630,12 @@
           value: resource.metadata.name, text: resource.metadata.name,
         })));
         node("ev-namespace").value = readScope().namespace;
+        const wantWindows = Number(state.get("pages")) || 1;
         await reset();
+        for (let i = 1; i < wantWindows; i++) {
+          if (!continuation) break;
+          await load("more");
+        }
       } catch (error) {
         list.removeAttribute("aria-busy");
         node("ev-error").replaceChildren(loadErrorNode(error, start));

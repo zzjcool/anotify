@@ -211,6 +211,7 @@
     const { el, api, ready, nsPath, readScope, saveScope, model, t, pruneReason, icon, copyText, loadErrorNode } = A;
     const query = new URLSearchParams(location.search);
     const name = query.get("id") || "";
+    const backToList = () => A.listBackHref("events.html", "events.html");
     if (query.get("namespace")) saveScope({ namespace: query.get("namespace") });
     A.mountLayout({ active: "events", title: t("message.task_title") });
     const node = id => document.getElementById(id);
@@ -270,7 +271,7 @@
         title: t("common.load_failed_prefix", "载入失败：") + facts.title,
         desc: facts.hint + (facts.message ? "\n" + facts.message : ""),
         retry: facts.retry ? retry : undefined,
-        back: { href: "events.html", text: t("message.back_events", "返回事件流") },
+        back: { href: backToList(), text: t("message.back_events", "返回事件流") },
       });
     }
     /* 三种「不是载入失败」的打开方式：缺参 / 404 / 其他，各自给正确的下一步。 */
@@ -280,7 +281,7 @@
           icon: ICON_SEARCH,
           title: t("uxaudit.doc.msg_notfound_title", "任务不存在"),
           desc: t("message.v4.not_found", "任务不存在、已清理或不属于此命名空间。"),
-          back: { href: "events.html", text: t("message.back_events", "返回事件流") },
+          back: { href: backToList(), text: t("message.back_events", "返回事件流") },
         });
       }
       if (error && error.msgMissingId) {
@@ -289,7 +290,7 @@
           icon: ICON_UNLINK,
           title: t("uxaudit.doc.msg_missing_title", "缺少任务 id"),
           desc: t("message.missing_id_hint", "深链需要带上任务 id。"),
-          back: { href: "events.html", text: t("message.back_events", "返回事件流") },
+          back: { href: backToList(), text: t("message.back_events", "返回事件流") },
         });
       }
       return failureState(error, load);
