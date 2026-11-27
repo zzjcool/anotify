@@ -2167,16 +2167,9 @@ html.flograph-fullscreen-open body {
 	border-color: var(--line);
 }
 
-/* 侧栏导航的**唯一**滚动容器（#578）。
- * 以前 nav 与 #admin-nav-section 是两个平级 flex 子项，只有 nav 会收缩/滚动：
- *   761px 以上 nav 是 overflow: visible ⇒ 溢出的导航项画在紧随其后的「管理」组
- *   下面，文字互相压住；760px 以下 nav 内部能滚，但 admin 组不在滚动区里，
- *   永远贴着 nav 盒子底边，挡住本应滚出来的「API 文档 / 账户 / 安全与登录」。
- * 把两者包进同一个 flex 子项后，「能滚的是谁」只有一个答案：内容放得下就不滚
- * （无滚动条），放不下就整体一起滚，而 .app-sidebar-foot 永远在滚动区外。
- * 代价：overflow-y:auto 会连带把 x 轴也变成滚动/裁剪（一轴非 visible，另一轴
- * 就不能是 visible），折叠态的 ::after tooltip 于是伸不出侧栏 —— 退化为
- * partials.js 折叠时给 a.side-link 挂的 title（与原 ≤760px 的退化方案一致）。 */
+/* 侧栏导航的唯一滚动容器（#578）：nav 与 admin 组同属它，footer 在它外面。
+ * 以前 nav 与 admin 组是两个平级 flex 子项，只有 nav 能收缩/滚动，「管理」组
+ * 就压住滚动区里的项；一轴非 visible 会连带裁掉 tooltip，折叠提示由 title 承担。 */
 .app-nav-scroll {
 	flex: 1 1 auto;
 	min-height: 0;
@@ -2404,31 +2397,7 @@ a.side-link svg {
 #app-shell[data-collapsed="true"] .side-user .side-icon-btn {
 	display: none;
 }
-/* tooltip：data-label 是 Worker B 写在 a.side-link 上的属性；不占布局 */
-#app-shell[data-collapsed="true"] a.side-link[data-tip]::after {
-	content: attr(data-tip);
-	position: absolute;
-	left: calc(100% + 10px);
-	top: 50%;
-	transform: translateY(-50%);
-	z-index: var(--z-menu);
-	padding: 4px 8px;
-	border-radius: var(--r-sm);
-	background: var(--panel-overlay);
-	border: 1px solid var(--line-strong);
-	box-shadow: var(--shadow-2);
-	color: var(--text);
-	font-size: 12px;
-	line-height: 1.2;
-	white-space: nowrap;
-	opacity: 0;
-	pointer-events: none;
-	transition: opacity var(--dur-fast) var(--ease);
-}
-#app-shell[data-collapsed="true"] a.side-link[data-tip]:hover::after,
-#app-shell[data-collapsed="true"] a.side-link[data-tip]:focus-visible::after {
-	opacity: 1;
-}
+/* 折叠态提示只走 title；旧的 ::after tooltip 规则随滚动容器一起下线（#578） */
 
 /* ---------- 顶栏 / 主区 / 页脚 ---------- */
 .app-topbar {
@@ -4143,8 +4112,6 @@ html.theme-switching *::after {
 		 * 抽屉实测 1 帧跳完（审计事实）。桌面折叠仍走基类的 width 200ms。 */
 		transition: transform var(--dur-drawer) var(--ease);
 	}
-	/* 抽屉里要能滚动：滚动容器是 .app-nav-scroll（基类已声明），
-	 * 这里不再单独给 .app-nav 开 overflow（那会造出第二层嵌套滚动）。 */
 	/* 折叠按钮只属于桌面 */
 	.app-brand-btn {
 		display: none;
@@ -4225,9 +4192,6 @@ html.theme-switching *::after {
 		font-size: 0.875rem;
 		padding-left: 0.8rem;
 		padding-right: 0.8rem;
-	}
-	#app-shell[data-collapsed="true"] a.side-link[data-tip]::after {
-		display: none;
 	}
 	.page {
 		gap: 20px;
@@ -4584,9 +4548,6 @@ html.theme-switching *::after {
 .skeleton.is-line-sm { height: 10px; }
 .skeleton.is-line-lg { height: 16px; }
 .skeleton.is-block { height: 88px; border-radius: var(--r-md); }
-/* 导航滚动不再按视口高度切换：.app-nav-scroll 永远可滚（#578）。
-   旧的 @media (max-height: 760px) { .app-nav { overflow-y: auto } } 只把 nav 自己
-   变成滚动容器，admin 组留在外面继续挡路 —— 已删除，别再按高度加回来。 */
 
 /* 跳过导航（F21）：键盘用户第一次 Tab 就能直达主内容，不必穿过整条侧栏 /
  * 顶栏。默认移出视口，获得焦点时滑入（transform 不参与布局，不会闪）。 */

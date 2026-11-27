@@ -18,10 +18,7 @@ const SUITES = Object.freeze({
     { id: "shift-collapsed", kind: "shift", lang: "zh-CN", views: 1 },
     { id: "shift-prelayout-expanded", kind: "shift", lang: "zh-CN", views: 1 },
     { id: "shift-prelayout-collapsed", kind: "shift", lang: "zh-CN", views: 1 },
-    /* #578：admin 侧栏在 720–850px 高的视口里「管理」组压住「安全与登录」。
-       矩阵只有 1440×900 / 390×844 两档高度，正好躲开这条 bug 的区间，
-       所以需要一个按高度逐档量的专项 case（判据全是几何，不是截图）。 */
-    { id: "sidebar-nav-fit", kind: "sidebar", lang: "zh-CN", views: 3 },
+    { id: "sidebar-nav-fit", kind: "sidebar", lang: "zh-CN", views: 4 },
     { id: "interact-namespace-switch", kind: "interact", lang: "zh-CN", views: 1 },
     { id: "interact-dialogs", kind: "interact", lang: "zh-CN", views: 1 },
     { id: "interact-error-states", kind: "interact", lang: "zh-CN", views: 2 },
@@ -538,19 +535,8 @@ async function shiftPrelayout(c, collapsed) {
 }
 
 // ---------- real in-page interactions ----------
-/* #578：admin 侧栏在 720–850px 高的视口里会重叠。
-   旧布局里只有 <nav> 能收缩/滚动，#admin-nav-section 是它的平级兄弟：
-     · >760px 时 nav 是 overflow: visible ⇒ 溢出的导航项画在「管理」组下面；
-     · ≤760px 时 nav 内部能滚，但 admin 组贴在 nav 盒子底边，挡住底部几项。
-   修法是两者共用一个滚动容器，所以判据必须按高度逐档量几何，而不是查 class：
-     ① 所有 a.side-link 的矩形两两不相交；
-     ② 每一项滚进可见区后，中心点 elementFromPoint 命中它自己（不是 footer /
-        相邻的「管理」组 / 抽屉遮罩）—— 这一条就是「点不到」的直接判据；
-     ③ .app-sidebar-foot 永远在滚动容器之外、之下；
-     ④ admin 组与 nav 同属 .app-nav-scroll。
-   桌面 1280 宽量 700–900 七档，member 量 700/780（无 admin 组时也不许重叠），
-   移动抽屉量 390×844 与 360×640。缺任何一项都红。 */
 const SIDEBAR_HEIGHTS = [700, 720, 760, 780, 800, 860, 900];
+const SIDEBAR_COLLAPSED = [{ width: 1440, height: 900 }, { width: 1280, height: 700 }];
 async function sidebarNavFit(c) {
   return withDriver(c.id, { lang: "zh-CN", theme: "light" }, async (d, count) => {
     const audit = () => d.page.evaluate(() => {
@@ -561,8 +547,6 @@ async function sidebarNavFit(c) {
       const admin = document.getElementById("admin-nav-section");
       if (!scroller || !foot || !admin) return { error: "sidebar structure missing " + JSON.stringify({ scroller: !!scroller, foot: !!foot, admin: !!admin }) };
       const nav = scroller.querySelector("nav.app-nav");
-      // 只量真的上屏的项：member 的管理组是 display:none，0×0 盒子既不能点，
-      // 也不该参与「两两不相交」（否则拿不可见盒子判红就是假红）。
       const links = [...document.querySelectorAll("#sidebar a.side-link")].filter(a => a.getBoundingClientRect().height > 0);
       const overlap = [];
       for (let i = 0; i < links.length; i++) for (let j = i + 1; j < links.length; j++) {
@@ -612,57 +596,97 @@ async function sidebarNavFit(c) {
       if (opts.scrolls) assert.ok(state.scroll.scrollHeight > state.scroll.clientHeight + 1, label + ": tall content really needs the scroller " + JSON.stringify(state.scroll));
       if (opts.fits) assert.ok(state.scroll.scrollHeight <= state.scroll.clientHeight + 1, label + ": content fits without scrolling " + JSON.stringify(state.scroll));
     };
+    const settle = (width, height) =>
+      d.page.waitForFunction(expect => window.innerWidth === expect.w && window.innerHeight === expect.h, { w: width, h: height }, { timeout: 5000 });
     const views = [];
     await d.goto("index");
     await d.page.waitForFunction(() => !!document.querySelector("#admin-nav-section a.side-link") && !document.getElementById("admin-nav-section").classList.contains("hidden"), null, { timeout: 9000 });
     const heights = [];
     for (const height of SIDEBAR_HEIGHTS) {
       await d.page.setViewportSize({ width: 1280, height });
-      await d.page.waitForTimeout(150);
+      await settle(1280, height);
       const state = await audit();
       assertFit(state, "admin 1280×" + height, { minLinks: 11, scrolls: height <= 780, fits: height === 900 });
       heights.push({ height, links: state.links.length, clientHeight: state.scroll.clientHeight, scrollHeight: state.scroll.scrollHeight });
     }
     d.check("admin sidebar 1280×{700..900}: 11 links (incl. 管理后台) pairwise disjoint and each centre point hits itself");
     views.push({ page: "index", lang: c.lang, theme: "light", viewport: "desktop-1280-heights", attempted: true, ok: true, heights });
-    // member：没有 admin 组，同样不许重叠/点不到（旧 bug 只在 admin 上暴露，
-    // 所以非 admin 的回归守卫必须一起量，防止把「加个 admin 块」当成解法）。
-    await d.page.evaluate(() => sessionStorage.setItem("f3-member", "1"));
-    await d.page.reload({ waitUntil: "domcontentloaded" });
-    await d.page.waitForFunction(() => !!document.getElementById("sidebar") && !!window.Anotify, null, { timeout: 9000 });
-    await d.page.waitForTimeout(200);
-    const memberHeights = [];
-    for (const height of [700, 780]) {
-      await d.page.setViewportSize({ width: 1280, height });
-      await d.page.waitForTimeout(150);
-      const state = await audit();
-      assert.equal(state.adminHidden, true, "member 1280×" + height + ": the admin group stays hidden");
-      assertFit(state, "member 1280×" + height, { minLinks: 10, scrolls: height === 700 });
-      memberHeights.push({ height, links: state.links.length });
-    }
-    d.check("member sidebar 1280×{700,780}: no admin group, no overlap, every link clickable");
-    views.push({ page: "index", lang: c.lang, theme: "light", viewport: "desktop-1280-heights-member", attempted: true, ok: true, heights: memberHeights });
-    // 移动抽屉：两个机型档都要能把每一项滚出来并点中自己（旧布局 360×640 会
-    // 被 footer 挡住最后几项）。
     await d.page.evaluate(() => sessionStorage.removeItem("f3-member"));
     await d.page.reload({ waitUntil: "domcontentloaded" });
     await d.page.waitForFunction(() => !!document.querySelector("#admin-nav-section a.side-link"), null, { timeout: 9000 });
     const drawers = [];
     for (const vp of [{ width: 390, height: 844 }, { width: 360, height: 640 }]) {
       await d.page.setViewportSize(vp);
-      await d.page.waitForTimeout(200);
+      await settle(vp.width, vp.height);
       const opened = await d.page.evaluate(() => !document.getElementById("sidebar").classList.contains("-translate-x-full"));
       if (!opened) {
         await d.page.click("#menu-btn");
         await d.page.waitForFunction(() => !document.getElementById("sidebar").classList.contains("-translate-x-full"), null, { timeout: 5000 });
       }
-      await d.page.waitForTimeout(400); // 滑入动画 300ms 后再量命中
+      await d.page.waitForFunction(() => {
+        const m = getComputedStyle(document.getElementById("sidebar")).transform;
+        return m === "none" || m === "matrix(1, 0, 0, 1, 0, 0)";
+      }, null, { timeout: 5000 });
       const state = await audit();
       assertFit(state, "drawer " + vp.width + "×" + vp.height, { minLinks: 11, scrolls: vp.height === 640 });
       drawers.push({ width: vp.width, height: vp.height, links: state.links.length });
     }
     d.check("mobile drawer 390×844 / 360×640: all 11 links scroll into view and receive their own centre point");
     views.push({ page: "index", lang: c.lang, theme: "light", viewport: "mobile-drawer", attempted: true, ok: true, drawers });
+    if (d.mock) await d.page.evaluate(() => sessionStorage.setItem("f3-member", "1"));
+    else {
+      assert.ok(process.env.E2E_V4_MEMBER_SESSION, "member view requires a real member session under real authority");
+      await d.context.addCookies([{ name: "anotify_session", value: process.env.E2E_V4_MEMBER_SESSION, url: d.base }]);
+    }
+    await d.page.reload({ waitUntil: "domcontentloaded" });
+    await d.page.waitForFunction(() => {
+      const admin = document.getElementById("admin-nav-section");
+      const user = (document.getElementById("sidebar-username")?.textContent || "").trim();
+      return !!admin && admin.classList.contains("hidden") && !admin.querySelector("a.side-link") && user.length > 0 && user !== "…";
+    }, null, { timeout: 9000 });
+    const memberHeights = [];
+    for (const height of [700, 780]) {
+      await d.page.setViewportSize({ width: 1280, height });
+      await settle(1280, height);
+      const state = await audit();
+      assert.equal(state.adminHidden, true, "member 1280×" + height + ": the admin group stays hidden");
+      assert.equal(state.links.length, 10, "member 1280×" + height + ": exactly the 10 primary links, no admin entry");
+      assertFit(state, "member 1280×" + height, { minLinks: 10, scrolls: height === 700 });
+      memberHeights.push({ height, links: state.links.length });
+    }
+    d.check("member sidebar 1280×{700,780}: no admin group, no overlap, every link clickable");
+    views.push({ page: "index", lang: c.lang, theme: "light", viewport: "desktop-1280-heights-member", attempted: true, ok: true, heights: memberHeights });
+    if (d.mock) await d.page.evaluate(() => sessionStorage.removeItem("f3-member"));
+    else await d.context.addCookies([{ name: "anotify_session", value: d.fixtures.adminSession, url: d.base }]);
+    await d.context.addInitScript(() => { try { localStorage.setItem("anotify-sidebar", "collapsed"); } catch { /* storage off */ } });
+    await d.page.setViewportSize({ width: 1440, height: 900 });
+    await d.page.reload({ waitUntil: "domcontentloaded" });
+    await d.page.waitForFunction(() => document.getElementById("app-shell").dataset.collapsed === "true" && Math.round(document.getElementById("sidebar").getBoundingClientRect().width) === 76 && !!document.querySelector("#admin-nav-section a.side-link"), null, { timeout: 9000 });
+    const collapsed = [];
+    for (const vp of SIDEBAR_COLLAPSED) {
+      await d.page.setViewportSize(vp);
+      await settle(vp.width, vp.height);
+      const probe = await d.page.evaluate(() => {
+        const links = [...document.querySelectorAll("#sidebar a.side-link")];
+        const admin = document.querySelector("#admin-nav-section a.side-link");
+        return {
+          collapsed: document.getElementById("app-shell").dataset.collapsed,
+          width: Math.round(document.getElementById("sidebar").getBoundingClientRect().width * 100) / 100,
+          count: links.length,
+          missing: links.filter(a => !(a.getAttribute("title") || "").trim()).map(a => a.dataset.label || a.getAttribute("href") || "?"),
+          adminTitle: admin ? admin.getAttribute("title") || "" : null,
+        };
+      });
+      const label = "collapsed " + vp.width + "×" + vp.height;
+      assert.equal(probe.collapsed, "true", label + ": the shell reports a collapsed sidebar");
+      assert.equal(probe.width, 76, label + ": collapsed sidebar is 76px wide");
+      assert.ok(probe.count >= 11, label + ": every nav link still rendered (" + probe.count + " < 11)");
+      assert.deepEqual(probe.missing, [], label + ": every collapsed link falls back to its title");
+      assert.equal(probe.adminTitle, "管理后台", label + ": the late-injected admin link gets a title too");
+      collapsed.push({ width: vp.width, height: vp.height, links: probe.count, adminTitle: probe.adminTitle });
+    }
+    d.check("collapsed 76px 1440×900 / 1280×700: all 11 links (incl. the late-injected admin link) keep a title fallback");
+    views.push({ page: "index", lang: c.lang, theme: "light", viewport: "desktop-collapsed-titles", attempted: true, ok: true, collapsed });
     await d.finish(); count.inc();
     return ok(count.n, views);
   });

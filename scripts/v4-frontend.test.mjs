@@ -6134,10 +6134,6 @@ test('S1 sidebar DOM mount keeps primary nav before the same role-gated admin se
       const section = ids.get('admin-nav-section'), sidebar = ids.get('sidebar');
       assert.ok(sidebar && section, 'actual mount must create both nodes');
       const column = sidebar.children[0];
-      /* #578：nav 与 admin 组必须是**同一个**滚动容器的子项。以前它们是两个
-         平级 flex 子项，只有 nav 能收缩/滚动 —— admin 组不在滚动区里，在
-         720–850px 高的视口下压住「安全与登录 / API 文档 / API Keys」。
-         所以这里钉的是契约层级： brand / scopeSlot / [app-nav-scroll: nav, admin] / foot。 */
       const scroll = column.children[2];
       assert.ok(scroll && String(scroll.className).includes('app-nav-scroll'), 'existing sidebar has one nav scroll container');
       const nav = scroll.children.find(n => n.tagName === 'NAV');
