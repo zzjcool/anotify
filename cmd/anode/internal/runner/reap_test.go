@@ -67,10 +67,14 @@ func TestIntentionalPipeCloseIsNotCopyFailure(t *testing.T) {
 	att := h.r.running["t1"]
 	h.r.mu.Unlock()
 
-	res := h.waitFrameAdvancing(t, func(f any) bool {
+	// 事件点 = leader 退出后的 5s 宽限：等它武装好再一次性推进，别让等待推过 60s 租约到期（#696）。
+	h.waitUntil(t, "leader 退出且 copy 宽限定时器已武装", func() bool { return h.clk.Pending() >= 2 }, 3*time.Second)
+	h.clk.Advance(protocol.LeaseTermGrace)
+
+	res := h.waitFrame(t, func(f any) bool {
 		r, ok := f.(*protocol.TaskResultFrame)
 		return ok && r.TaskID == "t1" && r.Attempt == 1
-	}, time.Second, 10*time.Second).(*protocol.TaskResultFrame)
+	}, 10*time.Second).(*protocol.TaskResultFrame)
 	if res.Phase != protocol.TaskPhaseSucceeded {
 		t.Fatalf("主动关闭读端不能把成功任务翻成 failed：%+v", res)
 	}

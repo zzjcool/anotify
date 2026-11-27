@@ -333,13 +333,15 @@ func (h *harness) waitFrame(t *testing.T, pred func(any) bool, timeout time.Dura
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatalf("等待帧超时；已收帧：%v", frameTypes(h.sender.snapshot()))
+	t.Fatalf("等待帧超时（%s）；已收帧：%v；最后观察到的状态：%s",
+		timeout, frameTypes(h.sender.snapshot()), h.describeStateSafe())
 	return nil
 }
 
-// waitFrameAdvancing 在等待帧时推进假时钟（租约/超时/宽限都由 clock 驱动）。
+// waitFrameAdvancing 只给决策点之后的收尾（宽限/内核回收）用；决策点先精确推到事件点（#696）。
 func (h *harness) waitFrameAdvancing(t *testing.T, pred func(any) bool, step time.Duration, timeout time.Duration) any {
 	t.Helper()
+	start := h.clk.Now()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if f := h.sender.find(pred); f != nil {
@@ -348,7 +350,8 @@ func (h *harness) waitFrameAdvancing(t *testing.T, pred func(any) bool, step tim
 		h.clk.Advance(step)
 		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatalf("推进时钟等待帧超时；已收帧：%v", frameTypes(h.sender.snapshot()))
+	t.Fatalf("推进时钟等待帧超时（上限 %s，假时钟推进了 %s）；已收帧：%v；最后观察到的状态：%s",
+		timeout, h.clk.Now().Sub(start), frameTypes(h.sender.snapshot()), h.describeStateSafe())
 	return nil
 }
 
@@ -613,13 +616,14 @@ func TestLeaseACKLossReapsGroupAndFreesSlot(t *testing.T) {
 	att := h.r.running["t1"]
 	h.r.mu.Unlock()
 
-	// 20s 续租一次（没有 ACK）。
-	h.waitFrameAdvancing(t, func(f any) bool {
+	h.waitUntil(t, "续租定时器已武装", func() bool { return h.clk.Pending() >= 1 }, 3*time.Second)
+	h.clk.Advance(protocol.LeaseRenewInterval)
+	h.waitFrame(t, func(f any) bool {
 		r, ok := f.(*protocol.LeaseRenewFrame)
 		return ok && r.TaskID == "t1" && r.LeaseID == "lease-1"
-	}, time.Second, 3*time.Second)
+	}, 3*time.Second)
 
-	// 推进过 60s deadline：本地判失联 → TERM（被忽略）→ 5s 后 KILL。
+	h.clk.Advance(protocol.LeaseTTL - protocol.LeaseRenewInterval) // 决策点：租约 deadline → 判失联
 	h.waitFrameAdvancing(t, func(f any) bool {
 		ack, ok := f.(*protocol.CancelAckFrame)
 		return ok && ack.TaskID == "t1" && ack.Attempt == 1 && ack.LeaseID == "lease-1" && ack.Slot != nil && *ack.Slot == att.slot && ack.ProcessGroupReaped
@@ -678,10 +682,14 @@ func TestTimeoutKillsGroupAndIsFailedTimeout(t *testing.T) {
 	h.waitFrame(t, func(any) bool { return hasAccept(h.sender.snapshot(), "t1") }, 2*time.Second)
 	h.grant("t1", 1, "lease-1", "token-1")
 
-	res := h.waitFrameAdvancing(t, func(f any) bool {
+	// 只推进到 lifecycle 超时这一个事件点：旧写法边等边推进，调度延迟 100ms 就够假时钟抢跑到 60s 租约到期（#696）。
+	h.waitUntil(t, "lifecycle 超时定时器已武装", func() bool { return h.clk.Pending() >= 2 }, 3*time.Second)
+	h.clk.Advance(2 * time.Second)
+
+	res := h.waitFrame(t, func(f any) bool {
 		r, ok := f.(*protocol.TaskResultFrame)
 		return ok && r.TaskID == "t1"
-	}, time.Second, 8*time.Second).(*protocol.TaskResultFrame)
+	}, 10*time.Second).(*protocol.TaskResultFrame)
 	if res.Phase != protocol.TaskPhaseFailed || res.Result.Error == nil ||
 		res.Result.Error.Reason != protocol.ReasonTimeout {
 		t.Fatalf("超时必须是 failed/timeout：%+v", res)
