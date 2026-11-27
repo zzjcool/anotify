@@ -1104,25 +1104,17 @@ func (d *DB) completeTaskAuthorized(ctx context.Context, auth NodeAuthorization,
 	return nil
 }
 
-// AckCancelAuthorized 处理 `cancel.ack`：**当前认证身份 + 精确历史绑定**。
-//
-// 它取代了旧的公开 AckCancel（只带 task/attempt/reaped，没有节点身份与历史
-// lease/slot，无法证明「这是哪一次执行的哪个物理槽」）。语义分两种：
-//
-//   - **当前 attempt + 取消在飞**：processGroupReaped=true 时在**同一事务**里把任务
-//     原子终结（cancelled/abandoned，按取消原因）并回收它自己绑定的槽；false 只表示
-//     「收到了」——不改相位、不释放槽、不清租约（等下一次可信回收）。
-//   - **历史 attempt**（任务已重排/已进入新 attempt）：旧授权不需要仍然 active，
-//     但必须证明身份 + 历史 node/task/attempt/lease/slot 全部相符；只回收那个旧槽，
-//     **不**碰新 attempt 的相位/token/槽，也不恢复任何旧 result/emit。当前 attempt 但无
-//     取消意图（running 或已终态，#567）同此：只写回收事实，不改相位/租约/令牌。
+// AckCancelAuthorized 处理 `cancel.ack`：**当前认证身份 + 精确历史绑定**（取代只带
+// task/attempt/reaped、无法证明「哪一次执行的哪个物理槽」的旧 AckCancel）。语义两种：
+//   - **当前 attempt + 取消在飞**：reaped=true 在同一事务里原子终结（按取消原因落
+//     cancelled/abandoned）并回收它自己绑定的槽；false 只表示「收到了」，什么都不动。
+//   - **其余一切**（历史 attempt / 已重排 / 终态 / 节点主动停掉的 running，#567）：
+//     旧授权不必仍 active，但身份 + 历史 node/task/attempt/lease/slot 必须全相符；
+//     只写回收事实并释放它自己那一格，**不**碰相位/token/新 attempt/旧 result/emit。
 //
 // 绑定不符（错 lease/slot/instance/节点）一律 fail closed（ErrLeaseMismatch /
-// ErrNodeIdentityMismatch），不 no-op 假成功。
-//
-// 幂等是**逐字节**的：一次 attempt 只被回收一次（reaped_at IS NULL CAS），重复 ACK
-// 不重写 ReapedAt/reclaim_reason、也不重写历史行的 phase/error/finished_at，更不碰
-// 任务的当前相位/新 attempt 的槽。历史行的失败原因/结果事实是只读的。
+// ErrNodeIdentityMismatch），不 no-op 假成功。幂等是逐字节的：reaped_at IS NULL CAS，
+// 重复 ACK 不重写回收事实，也不重写历史行的 phase/error/finished_at。
 func (d *DB) AckCancelAuthorized(ctx context.Context, auth NodeAuthorization,
 	in ReapedInputs, processGroupReaped bool) error {
 	if in.TaskID == "" || in.Attempt <= 0 {
@@ -1202,8 +1194,7 @@ func (d *DB) AckCancelAuthorized(ctx context.Context, auth NodeAuthorization,
 	currentAttempt := rowAttempt == in.Attempt
 	if currentAttempt && phase == TaskRunning && cancelReq.Valid {
 		if !processGroupReaped {
-			// 收到了但还没回收完：不改相位、不释放槽位、也不清租约（等可信回收事实）。
-			return nil
+			return nil // 收到了但还没回收完：等可信回收事实（槽/相位/租约都不动）。
 		}
 		reason := cancelReason.String
 		if reason == "" {
@@ -1231,16 +1222,14 @@ func (d *DB) AckCancelAuthorized(ctx context.Context, auth NodeAuthorization,
 		return nil
 	}
 
-	// 其余分支都只处理「回收事实」：终态/已重排/历史 attempt/节点主动停掉（running 且无取消
-	// 意图：#567，Drain/升级/lease 失联；节点只发一次，拒掉=永久丢槽）都不改相位或 token。
+	// 其余分支只处理「回收事实」：终态/已重排/历史 attempt/节点主动停掉的 running 都不改相位（#567）。
 	if !processGroupReaped {
 		// 明确的「还没回收」：保持一切现状（槽位/相位/租约都不动）。
 		return nil
 	}
 	// 历史/已重排/已终结/节点主动停掉：只按**精确历史绑定**写 reaped 事实并释放它自己的槽。
-	// 这里不能用 finishAttemptOn：它会把历史行上的失败事实（phase/error/finished_at）
-	// 重写成空 error。reapAttemptOn 的 `reaped_at IS NULL` CAS 保证第一次 ACK 写入
-	// 精确的 ReapedAt/reclaim_reason，重复 ACK（哪怕 now/reason 不同）一行都不改。
+	// 不能用 finishAttemptOn：它会把历史行的失败事实（phase/error/finished_at）重写成空 error；
+	// reapAttemptOn 的 `reaped_at IS NULL` CAS 保证重复 ACK 一行都不改。
 	if _, rerr := reapAttemptOn(ctx, ex, in.TaskID, in.Attempt, row.NodeID, row.LeaseID,
 		row.InstanceID, now, ReclaimReasonCancelAck); rerr != nil {
 		return fmt.Errorf("ack cancel %s: %w", in.TaskID, rerr)

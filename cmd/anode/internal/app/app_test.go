@@ -76,8 +76,7 @@ func testArtifact(t *testing.T) (*artifact.Artifact, string) {
 func intPtr(v int) *int { return &v }
 
 // nodeChainTrace observes the real transport without changing WS reads, writes,
-// deadlines, or reconnect policy. Only metadata/call stacks, never frame bodies
-// or credential headers, are recorded. It is scoped to the full-chain fixture.
+// deadlines, or reconnect policy; only metadata and call stacks are recorded.
 type nodeChainTrace struct {
 	mu          sync.Mutex
 	events      []string
