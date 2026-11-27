@@ -816,8 +816,6 @@
       let SEARCH = "";
       let FILTER = "all";
       let EDIT = null; // 新建向导的上下文（只有 create 一种模式）
-      /* #641：向导的脏检查守卫。由 bind() 用 A.guardDirty 创建，Esc/✕/取消/遮罩
-         全部经它放行，避免「手一抖按了 Esc，三步填写全没了」。 */
       let WIZ_GUARD = null;
       let BUSY = false;
 
@@ -1617,8 +1615,6 @@
         wizardPaint();
         openModal($("cap-modal"));
         nameInput.focus();
-        /* 基线快照必须打在「表单已初始化完」之后（模板列表是 await 来的），
-           否则刚打开就被判成脏的。 */
         if (WIZ_GUARD) WIZ_GUARD.markClean();
       }
 
@@ -1629,11 +1625,9 @@
         WIZARD.on = false;
         WIZARD.step = 1;
         hideBanner();
-        /* 关上即视为干净：下次 openCreate 的快照不能沿用上一轮的残留值。 */
         if (WIZ_GUARD) WIZ_GUARD.markClean();
       }
 
-      /* #641：Esc/✕/取消/遮罩统一走这道门 —— 有未保存修改先确认，没改过仍然直接关。 */
       function requestCloseEditor() {
         if (WIZ_GUARD) WIZ_GUARD.requestClose();
         else closeEditor();
@@ -1983,9 +1977,6 @@
         $("cap-modal").addEventListener("click", (e) => {
           if (e.target === e.currentTarget) requestCloseEditor();
         });
-        /* #641：守卫挂在弹层上（Esc 的 modal:dismiss 由它先接），四个入口再统一问它一遍。
-           partials.js 还没带上 guardDirty 时退回旧的「直接关」——否则 bind() 抛错，
-           整页的列表/搜索/刷新都跟着不绑了（两处改动分属不同提交，合入先后不定）。 */
         WIZ_GUARD =
           typeof A.guardDirty === "function"
             ? A.guardDirty($("cap-modal"), { onDiscard: closeEditor })

@@ -15,6 +15,7 @@ import { sourcePollEdit, sourcePollEditUnreadable } from './f3-source-poll-edit.
 import { sourceDetailGraph } from './f3-source-graph.mjs';
 import { sourceSaveCauses } from './f3-save-causes.mjs';
 import { capabilitySaveCauses } from './f3-capability-causes.mjs';
+import { editorDirtyGuard } from './f3-dirty-guard.mjs';
 import { playbook } from './f3-playbook.mjs';
 import { nodeRetained } from './f3-node-retained.mjs';
 import { nsScopeTopbar } from './f3-ns-scope.mjs';
@@ -84,6 +85,7 @@ add('capability-save-causes',capabilitySaveCauses,{lang:'zh-CN',expectHttpStatus
   {status:400,path:'/v1/namespaces/default/capabilities',exact:true,note:'param_pattern_invalid：向导与详情编辑器都用坏 pattern 触发 causes（必须标到 #cap-params）'},
   {status:404,path:'/v1/namespaces/default/capabilities/cap-cause-wizard',exact:true,note:'被拒绝的新建必须没有落库（收尾探一次 404）'},
 ]});
+add('editor-dirty-guard',editorDirtyGuard,{lang:'zh-CN'});
 add('source-poll-edit-unreadable',sourcePollEditUnreadable,{lang:'zh-CN'});
 add('observe-index-all',overviewAll);
 // observe-errors：pending 任务没有日志档案（410 no_local_archive）；并发取消之后再放弃

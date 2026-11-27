@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { acceptDialog } from './f3-dialogs.mjs';
 
 const WIZARD_NAME = 'cap-cause-wizard';
 const EDIT_NAME = 'cap-cause-edit';
@@ -103,7 +104,7 @@ export async function capabilitySaveCauses(d) {
 	assert.equal(jumped, 'cap-params', '点原因行必须先切回第 2 步再聚焦那个控件，实际焦点 ' + jumped);
 	check('CAP-CAUSES-02 clicking the reason row walks the wizard back to the step holding the control');
 
-	await page.click('#cap-cancel');
+	await acceptDialog(page, () => page.click('#cap-cancel'));
 	await page.locator('#cap-modal').waitFor({ state: 'hidden', timeout: 20000 });
 	await page.click('#caps-new');
 	await page.locator('#cap-modal:not(.hidden)').waitFor({ state: 'visible', timeout: 20000 });
@@ -147,7 +148,7 @@ export async function capabilitySaveCauses(d) {
 	assert.ok(editorMarks.hint && editorMarks.hint.visible, '#cap-params 下方必须出现一行 message（详情编辑器）');
 	check('CAP-CAUSES-04 the detail editor marks #cap-params from the same real 400 (one contract, two pages)');
 
-	await page.click('#cap-cancel');
+	await acceptDialog(page, () => page.click('#cap-cancel'));
 	await page.locator('#cap-modal').waitFor({ state: 'hidden', timeout: 20000 });
 	await page.click('#cap-actions [data-act="edit"]');
 	await page.locator('#cap-modal:not(.hidden)').waitFor({ state: 'visible', timeout: 20000 });

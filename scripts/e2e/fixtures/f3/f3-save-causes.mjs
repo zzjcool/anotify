@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { acceptDialog } from './f3-dialogs.mjs';
 
 const NAME = 'save-causes-e2e';
 const POST = '/v1/namespaces/default/sources';
@@ -116,7 +117,7 @@ export async function sourceSaveCauses(d) {
 	assert.ok(report.raw.includes('invalid_source_config'), '折叠里的机器原文要保留 reason 码，实际 ' + report.raw);
 	check('SAVE-CAUSES-04 reason code stays in the raw-JSON fold, not in the human list');
 
-	await page.locator('#modal-cancel').click();
+	await acceptDialog(page, () => page.locator('#modal-cancel').click());
 	await page.locator('#src-modal').waitFor({ state: 'hidden', timeout: 20000 });
 	const after = await d.response(POST + '/' + NAME);
 	assert.equal(after.status, 404, '被拒绝的源不许落库，实际 ' + after.status);

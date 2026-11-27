@@ -3696,6 +3696,107 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		});
 	}
 
+	function formSnapshot(root) {
+		const out = [];
+		if (!root || typeof root.querySelectorAll !== "function") return "";
+		for (const node of root.querySelectorAll("input, select, textarea")) {
+			if (node.type === "checkbox" || node.type === "radio") out.push(node.checked ? "1" : "0");
+			else out.push(String(node.value == null ? "" : node.value));
+		}
+		return out.join("\u0001");
+	}
+
+	function guardUnload(isDirty) {
+		const handler = (event) => {
+			let dirty = false;
+			try {
+				dirty = !!isDirty();
+			} catch (e) {
+				dirty = false;
+			}
+			if (!dirty) return;
+			event.preventDefault();
+			event.returnValue = "";
+			return "";
+		};
+		window.addEventListener("beforeunload", handler);
+		return () => window.removeEventListener("beforeunload", handler);
+	}
+
+	function guardDirty(modal, opts) {
+		const o = opts || {};
+		const modalEl = typeof modal === "string" ? document.getElementById(modal) : modal;
+		if (!modalEl || !modalEl.classList) return null;
+		const custom = typeof o.isDirty === "function" ? o.isDirty : null;
+		let baseline = null;
+		let confirmPending = false;
+		let discardRunning = false;
+
+		const isDirty = () => {
+			if (custom) return !!custom();
+			if (baseline === null) return false;
+			return formSnapshot(modalEl) !== baseline;
+		};
+		const isClosingOrHidden = () =>
+			modalEl.classList.contains("hidden") || modalEl.classList.contains("is-closing");
+		const markClean = () => {
+			baseline = formSnapshot(modalEl);
+			confirmPending = false;
+		};
+
+		const discard = () => {
+			discardRunning = true;
+			confirmPending = false;
+			try {
+				if (typeof o.onDiscard === "function") o.onDiscard();
+			} finally {
+				discardRunning = false;
+			}
+		};
+
+		const requestClose = () => {
+			if (discardRunning || confirmPending || isClosingOrHidden()) return;
+			if (!isDirty()) {
+				discard();
+				return;
+			}
+			confirmPending = true;
+			confirmDanger({
+				title: o.title || t("common.dialog.discard_title", "放弃未保存的修改？"),
+				body: o.body || t("common.dialog.discard_body", "你在此表单中的修改尚未保存。"),
+				note: "",
+				danger: true,
+				confirmLabel: o.confirmLabel || t("common.dialog.discard_confirm", "放弃修改"),
+				cancelLabel: o.cancelLabel || t("common.dialog.keep_editing", "继续编辑"),
+			}).then(
+				(ok) => {
+					confirmPending = false;
+					if (ok) discard();
+				},
+				() => {
+					confirmPending = false;
+				},
+			);
+		};
+
+		const onDismiss = (event) => {
+			event.preventDefault();
+			requestClose();
+		};
+		modalEl.addEventListener("modal:dismiss", onDismiss);
+		const stopUnload = guardUnload(() => !isClosingOrHidden() && isDirty());
+
+		return {
+			requestClose,
+			isDirty,
+			markClean,
+			release() {
+				modalEl.removeEventListener("modal:dismiss", onDismiss);
+				stopUnload();
+			},
+		};
+	}
+
 	/* ---------- 「已删除 · 撤销」（#378） ----------
 	 * 删除是不可逆的 API 操作，所以撤销**不是**延迟提交（关页面就丢），而是页面在删除成功后
 	 * 用快照重建（见各页 onUndo）。这里只提供条本身：一条 5 秒的撤销窗口 + 手动关闭。
@@ -4864,6 +4965,8 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		errorBar,
 		errorFacts,
 		confirmDanger,
+		guardDirty,
+		guardUnload,
 		undoBar,
 		loginHref,
 		listHref,

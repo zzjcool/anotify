@@ -170,7 +170,6 @@
   const varsTextDraft = () => $('namespace-vars').value !== nsOriginal;
   const varsTableDraft = () => varsDirty || !!varsEditing;
   const confirmDiscardDrafts = async () => (!varsTextDraft() && !varsTableDraft()) || A.confirmDanger({ body: n('reload_confirm') });
-  /* #641：有未保存的 vars 草稿时，刷新/关标签/后退交给浏览器原生确认。 */
   A.guardUnload(() => varsTextDraft() || varsTableDraft());
   async function loadNamespace(scope = selectedNamespace, { force = false } = {}) {
     // 最后一道闸：没被问过的调用（今后新加的入口）自己问，已问过的入口与保存后回读传 force。

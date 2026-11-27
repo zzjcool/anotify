@@ -54,6 +54,10 @@ common:
     cancel: 取消
     irreversible: 这个操作不可撤销。
     undoable: 操作后会给你 5 秒撤销。
+    discard_title: 放弃未保存的修改？
+    discard_body: 你在此表单中的修改尚未保存。
+    discard_confirm: 放弃修改
+    keep_editing: 继续编辑
   undo:
     deleted: 已删除「{name}」
     revoked: 已吊销「{name}」
