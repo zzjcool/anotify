@@ -121,7 +121,7 @@ func TestRunningExecutionStillConsumesBudget(t *testing.T) {
 	}
 }
 
-func TestConvergeAbandonedLedgersIsIdempotent(t *testing.T) {
+func TestConvergeTerminalLedgersIsIdempotent(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
@@ -145,7 +145,7 @@ func TestConvergeAbandonedLedgersIsIdempotent(t *testing.T) {
 	}
 	v4MustPhase(t, db, nsID, stuck.ID, TaskCancelled)
 
-	first, err := db.ConvergeAbandonedLedgers(ctx, Now())
+	first, err := db.ConvergeTerminalLedgers(ctx, Now())
 	if err != nil {
 		t.Fatalf("首次收敛: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestConvergeAbandonedLedgersIsIdempotent(t *testing.T) {
 		t.Fatalf("收敛只清指向 abandoned 的槽，取消在飞那格必须留着，得到 busy=%d", busy)
 	}
 
-	second, err := db.ConvergeAbandonedLedgers(ctx, Now())
+	second, err := db.ConvergeTerminalLedgers(ctx, Now())
 	if err != nil {
 		t.Fatalf("二次收敛: %v", err)
 	}
