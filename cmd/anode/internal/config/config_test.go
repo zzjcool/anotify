@@ -20,6 +20,7 @@ limits:
   perCapability:
     reviewer: 2
 envPassthrough: [SSH_AUTH_SOCK]
+idleTimeoutSec: 900
 `
 
 func mustParse(t *testing.T, yaml string) *Config {
@@ -57,6 +58,21 @@ func TestParseValidConfig(t *testing.T) {
 	}
 	if len(cfg.EnvPassthrough) != 1 || cfg.EnvPassthrough[0] != "SSH_AUTH_SOCK" {
 		t.Fatalf("envPassthrough = %v", cfg.EnvPassthrough)
+	}
+	if cfg.IdleTimeoutSec != 900 {
+		t.Fatalf("idleTimeoutSec = %d", cfg.IdleTimeoutSec)
+	}
+}
+
+func TestIdleTimeoutBounds(t *testing.T) {
+	for _, sec := range []string{"-1", "86401"} {
+		_, err := Parse([]byte("name: a\nserver: wss://h\ntoken: t\nidleTimeoutSec: " + sec + "\n"))
+		if err == nil || !strings.Contains(err.Error(), "idleTimeoutSec") {
+			t.Fatalf("idleTimeoutSec=%s 应当被拒，得到 %v", sec, err)
+		}
+	}
+	if _, err := Parse([]byte("name: a\nserver: wss://h\ntoken: t\nidleTimeoutSec: 0\n")); err != nil {
+		t.Fatalf("0 = 关闭应当合法：%v", err)
 	}
 }
 

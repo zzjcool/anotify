@@ -163,6 +163,7 @@ var builtinFieldPaths = map[string]bool{
 	"status.homeDir":      true,
 }
 
+// Artifact 是一份能力产物。
 type Artifact struct {
 	APIVersion string   `json:"apiVersion"`
 	Kind       string   `json:"kind"`
@@ -170,6 +171,8 @@ type Artifact struct {
 	Spec       Spec     `json:"spec"`
 }
 
+// Metadata 是产物的身份。
+//
 // version 省略（= 0）表示**内容寻址**：按 (name, 执行正文) 复用已有行；显式给就
 // 永不折叠。displayName 是纯展示，不进 digest。
 type Metadata struct {
@@ -189,7 +192,8 @@ type Spec struct {
 	// 它是路由事实，**不参与 foldKey / digest**。
 	Next []string `json:"next"`
 	// Run 是怎么跑（脚本，唯一实现形式）。
-	Run      Run      `json:"run"`
+	Run Run `json:"run"`
+	// Requires 是节点要提供什么。
 	Requires Requires `json:"requires"`
 	// Lifecycle 是一次运行能活多久、能不能重放。
 	Lifecycle Lifecycle `json:"lifecycle"`
@@ -197,6 +201,7 @@ type Spec struct {
 	Concurrency Concurrency `json:"concurrency"`
 }
 
+// Run 是「怎么跑」。
 type Run struct {
 	// Entrypoint 必须是 Files 里的一个 key，且内容以 "#!" 开头（直接 exec，不经 shell）。
 	Entrypoint string `json:"entrypoint"`
@@ -215,7 +220,7 @@ type Run struct {
 // FieldPath 非空 = 引用机器事实（唯一的取值边界）；否则 Value 是字面量。
 // 空串本身是合法字面量（"空串就是空串"），所以这里不能用 "" 表示「未设置」。
 type EnvValue struct {
-	Value string
+	Value string // 字面量值。
 	// FieldPath 是 k8s 风格的取值路径（封闭集合见 builtinFieldPaths / vars.<NAME>）。
 	FieldPath string
 }
@@ -333,7 +338,7 @@ type Lifecycle struct {
 	ResultTTLSec *int `json:"resultTtlSec,omitempty"`
 	// TimeoutSec 是本地执行超时（从子进程启动起算，0..86400；0 = 不设）。
 	TimeoutSec int `json:"timeoutSec"`
-	// IdleTimeoutSec 是「无进展」上限（秒，省略 = 节点默认 600，0 = 关闭）（#700）。
+	// IdleTimeoutSec 是「无进展」上限（秒，省略 = 节点默认，节点缺省 = 关闭；0 = 关闭）（#700）。
 	IdleTimeoutSec *int `json:"idleTimeoutSec,omitempty"`
 	// OnFailure 是终态失败的兜底下游（#700）：被 timeout 杀掉的是进程组，脚本回写不了。
 	OnFailure *Fallback `json:"onFailure,omitempty"`
@@ -365,15 +370,12 @@ func (l Lifecycle) EffectiveIdleTimeoutSec(nodeDefault int) int {
 	return *l.IdleTimeoutSec
 }
 
-// Fallback 是终态失败后的兜底动作（#700）：中枢拿它当一次平台发起的 emit。
 type Fallback struct {
-	// To 必须是本能力 spec.next 里的下游引用（裸名或 name@version）。
-	To string `json:"to"`
-	// Params 是字面参数：与父任务 params 同名合并（这里优先），上下文由父任务带过来。
-	Params map[string]any `json:"params,omitempty"`
+	To      string         `json:"to"`
+	Params  map[string]any `json:"params,omitempty"`
+	Reasons []string       `json:"reasons,omitempty"` // 省略 = 任何失败都触发；零重合不派。
 }
 
-// UnmarshalJSON 严格解析兜底动作：拼错的子键不该等到真失败那天才疼。
 func (f *Fallback) UnmarshalJSON(data []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -391,9 +393,13 @@ func (f *Fallback) UnmarshalJSON(data []byte) error {
 			if err := json.Unmarshal(value, &out.Params); err != nil {
 				return &fieldError{code: CodeBadRequest, msg: "lifecycle.onFailure.params 必须是 JSON 对象"}
 			}
+		case "reasons":
+			if err := json.Unmarshal(value, &out.Reasons); err != nil {
+				return &fieldError{code: CodeBadRequest, msg: "lifecycle.onFailure.reasons 必须是字符串数组"}
+			}
 		default:
 			return &fieldError{code: CodeBadRequest,
-				msg: fmt.Sprintf("lifecycle.onFailure 不认识的子键 %q（只有 to / params）", key)}
+				msg: fmt.Sprintf("lifecycle.onFailure 不认识的子键 %q（只有 to / params / reasons）", key)}
 		}
 	}
 	*f = out
@@ -1228,7 +1234,6 @@ func validateOnFailure(lc *Lifecycle, next []string) []string {
 	if lc == nil || lc.OnFailure == nil {
 		return nil
 	}
-	// 白名单只有 schema.DeclaredRef 一份：兜底不能绕过「只能调自己声明的下游」。
 	var p []string
 	add := func(format string, args ...any) {
 		p = append(p, CodeBadRequest+": "+fmt.Sprintf(format, args...))
@@ -1247,6 +1252,18 @@ func validateOnFailure(lc *Lifecycle, next []string) []string {
 		if s, ok := value.(string); ok && strings.Contains(s, "$(") {
 			add("lifecycle.onFailure.params.%s 只能是字面值（实际 %q）：上下文由父任务 params 带过来", name, s)
 		}
+	}
+	seen := make(map[string]bool, len(lc.OnFailure.Reasons))
+	for _, reason := range lc.OnFailure.Reasons {
+		if !protocol.IsTaskFailureReason(reason) {
+			add("lifecycle.onFailure.reasons 里的 %q 不是任务失败码（允许：%v）",
+				reason, protocol.TaskFailureReasons())
+			continue
+		}
+		if seen[reason] {
+			add("lifecycle.onFailure.reasons 里的 %q 重复", reason)
+		}
+		seen[reason] = true
 	}
 	return p
 }

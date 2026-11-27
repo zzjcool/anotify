@@ -102,3 +102,77 @@ func TestIdleTimeoutDisabledByZero(t *testing.T) {
 	}
 	h.cancel("t1", 1, "lease-1")
 }
+
+func TestIdleTimeoutCountsArtifactGrowth(t *testing.T) {
+	h := newHarness(t)
+	a, digest := h.artifact(func(a *artifact.Artifact) {
+		a.Spec.Run.Files["run.sh"] = "#!/bin/sh\nwhile true; do echo tick >> \"$ANOTIFY_ARTIFACT_DIR/agent.log\"; sleep 0.01; done\n"
+		a.Spec.Lifecycle.IdleTimeoutSec = intPtr(2)
+	})
+	h.dispatch("t1", 1, a, digest)
+	h.waitFrame(t, func(any) bool { return hasAccept(h.sender.snapshot(), "t1") }, 2*time.Second)
+	h.grant("t1", 1, "lease-1", "token-1")
+	stopLease := keepLeaseAlive(h, "t1", "lease-1")
+	defer stopLease()
+
+	for i := 0; i < 6; i++ {
+		h.clk.Advance(time.Second) // 每步都跨过 idle 窗口
+		time.Sleep(60 * time.Millisecond)
+	}
+	if r := findResult(h.sender.snapshot(), "t1", 1); r != nil {
+		t.Fatalf("导出目录还在长时不该判无进展：%+v", r)
+	}
+	h.cancel("t1", 1, "lease-1")
+}
+
+func TestIdleTimeoutDefaultIsDisabled(t *testing.T) {
+	h := newHarness(t)
+	a, digest := h.artifact(func(a *artifact.Artifact) {
+		a.Spec.Run.Files["run.sh"] = "#!/bin/sh\nsleep 1200\n"
+	})
+	h.dispatch("t1", 1, a, digest)
+	h.waitFrame(t, func(any) bool { return hasAccept(h.sender.snapshot(), "t1") }, 2*time.Second)
+	h.grant("t1", 1, "lease-1", "token-1")
+	stopLease := keepLeaseAlive(h, "t1", "lease-1")
+	defer stopLease()
+
+	for i := 0; i < 30; i++ {
+		h.clk.Advance(20 * time.Second)
+		time.Sleep(2 * time.Millisecond)
+	}
+	if r := findResult(h.sender.snapshot(), "t1", 1); r != nil {
+		t.Fatalf("缺省必须关闭无进展判据：%+v", r)
+	}
+	h.cancel("t1", 1, "lease-1")
+}
+
+func TestNoProgressKeepsGrantAndExportsArtifacts(t *testing.T) {
+	h := newHarness(t)
+	h.sender.onResult = func(*protocol.TaskResultFrame) {} // 不 ACK：观察停止后、确认前的状态
+	a, digest := h.artifact(func(a *artifact.Artifact) {
+		a.Spec.Run.Files["run.sh"] = "#!/bin/sh\necho exported > \"$ANOTIFY_ARTIFACT_DIR/out.txt\"\nsleep 1200\n"
+		a.Spec.Lifecycle.IdleTimeoutSec = intPtr(2)
+		a.Spec.Lifecycle.TimeoutSec = 60
+	})
+	h.dispatch("t1", 1, a, digest)
+	h.waitFrame(t, func(any) bool { return hasAccept(h.sender.snapshot(), "t1") }, 2*time.Second)
+	h.grant("t1", 1, "lease-1", "token-1")
+
+	res := h.waitFrameAdvancing(t, func(f any) bool {
+		r, ok := f.(*protocol.TaskResultFrame)
+		return ok && r.TaskID == "t1"
+	}, time.Second, 10*time.Second).(*protocol.TaskResultFrame)
+	if res.Result.Error == nil || res.Result.Error.Reason != protocol.ReasonNoProgress {
+		t.Fatalf("期望 no_progress，得到 %+v", res.Result.Error)
+	}
+	if len(res.Result.Artifacts) != 1 || res.Result.Artifacts[0].Path != "artifacts/out.txt" {
+		t.Fatalf("停止后产物仍要导出，得到 %+v", res.Result.Artifacts)
+	}
+	h.r.mu.Lock()
+	att := h.r.running["t1"]
+	leaseOK := att != nil && att.leaseOK
+	h.r.mu.Unlock()
+	if !leaseOK {
+		t.Fatal("no_progress 不能撤销中枢 grant（leaseOK 必须仍为 true）")
+	}
+}

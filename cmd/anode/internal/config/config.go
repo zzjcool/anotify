@@ -67,6 +67,7 @@ type Config struct {
 	Limits Limits `yaml:"limits"`
 	// EnvPassthrough 是凭证变量**名字**白名单（值留在本机，不上报）。
 	EnvPassthrough []string `yaml:"envPassthrough"`
+	IdleTimeoutSec int      `yaml:"idleTimeoutSec"` // 节点默认；0 = 关闭（能力可用 lifecycle.idleTimeoutSec 覆盖）。
 }
 
 // Limits 是 anode.yaml 里的 limits。
@@ -183,6 +184,10 @@ func (c *Config) normalizeAndValidate() error {
 
 	// envPassthrough：名字 / 数量 / 重复 / 禁用项。
 	p = append(p, validatePassthrough(c.EnvPassthrough)...)
+
+	if c.IdleTimeoutSec < 0 || c.IdleTimeoutSec > 86400 {
+		p = append(p, fmt.Sprintf("idleTimeoutSec 必须在 0..86400 之间（0 = 关闭），实际 %d", c.IdleTimeoutSec))
+	}
 
 	if len(p) > 0 {
 		return &Error{Problems: p}

@@ -11,31 +11,31 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// 失败兜底（#700）：被 timeout 杀掉的进程组不会执行任何回写，收尾只能由中枢落。
-// DispatchFailure 落两件事：trace 里一条终态事实（带原因码），以及能力在
-// `lifecycle.onFailure` 里声明的兜底下游；没有声明时只做前者（平台不猜哪个像收尾）。
-
-// TaskFailureReason 取任务结果里的失败原因码（没有结果 → 空串）。
 func TaskFailureReason(task *store.Task) string {
-	if task == nil || len(task.ResultJSON) == 0 {
+	if task == nil {
 		return ""
 	}
-	var result store.TaskResult
-	if err := json.Unmarshal(task.ResultJSON, &result); err != nil {
-		return ""
+	if len(task.ResultJSON) > 0 {
+		var result store.TaskResult
+		if err := json.Unmarshal(task.ResultJSON, &result); err == nil && result.Reason != "" {
+			return result.Reason
+		}
 	}
-	return result.Reason
+	if protocol.IsTaskFailureReason(task.Error) {
+		return task.Error
+	}
+	return ""
 }
 
 func (r *Router) DispatchFailure(ctx context.Context, task *store.Task) error {
-	if task == nil || task.Phase != store.TaskFailed {
+	if task == nil || (task.Phase != store.TaskFailed && task.Phase != store.TaskAbandoned) {
 		return nil
 	}
+	reason := TaskFailureReason(task)
 	if err := r.db.InsertRouteObservation(ctx, task.NamespaceID, task.TraceID, failureObservationReason(task),
 		map[string]any{
-			// 键名不能叫 `reason`：那是剪枝原因码的事实，同名不同义会污染 status.pruned.reason。
-			"taskId": task.ID, "capability": task.Capability,
-			"phase": task.Phase, "failureReason": TaskFailureReason(task), "error": task.Error,
+			"taskId": task.ID, "capability": task.Capability, // failureReason 不叫 reason（后者是剪枝码）
+			"phase": task.Phase, "failureReason": reason, "error": task.Error,
 		}); err != nil {
 		return err
 	}
@@ -43,7 +43,7 @@ func (r *Router) DispatchFailure(ctx context.Context, task *store.Task) error {
 	if err != nil {
 		return err
 	}
-	if fallback == nil {
+	if fallback == nil || !fallbackApplies(fallback, reason) {
 		return nil
 	}
 	data, err := fallbackData(task.Params, fallback.Params)
@@ -65,6 +65,18 @@ func (r *Router) DispatchFailure(ctx context.Context, task *store.Task) error {
 	})
 }
 
+func fallbackApplies(fallback *artifact.Fallback, reason string) bool {
+	if fallback == nil || len(fallback.Reasons) == 0 {
+		return true
+	}
+	for _, allowed := range fallback.Reasons {
+		if allowed == reason {
+			return true
+		}
+	}
+	return false
+}
+
 func failureObservationReason(task *store.Task) string {
 	if len(task.Outcomes) > 0 {
 		return protocol.ReasonRouterFailed
@@ -72,7 +84,6 @@ func failureObservationReason(task *store.Task) string {
 	return protocol.ReasonTaskFailed
 }
 
-// failureFallback 读父任务钉住版本上的兜底声明；能力行已被删除等于没有声明。
 func (r *Router) failureFallback(ctx context.Context, task *store.Task) (*artifact.Fallback, error) {
 	if task.CapabilityID == "" {
 		return nil, nil
@@ -87,7 +98,6 @@ func (r *Router) failureFallback(ctx context.Context, task *store.Task) (*artifa
 	return capability.Spec.Lifecycle.OnFailure, nil
 }
 
-// fallbackData 合并父任务参数与声明里的字面参数（声明优先）：上下文由父任务带过来。
 func fallbackData(parent json.RawMessage, declared map[string]any) (json.RawMessage, error) {
 	merged := map[string]any{}
 	if len(parent) > 0 {

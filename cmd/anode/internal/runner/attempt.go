@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -614,6 +615,7 @@ func (a *Attempt) idleTimeout() time.Duration {
 }
 
 func (a *Attempt) idleLoop(d time.Duration) {
+	last := a.artifactActivity()
 	for {
 		timer := a.r.clk.NewTimer(d)
 		select {
@@ -623,12 +625,35 @@ func (a *Attempt) idleLoop(d time.Duration) {
 		case <-a.activity:
 			timer.Stop()
 		case <-timer.C():
-			a.r.logf("runner: task=%s attempt=%d 无进展（日志连续 %s 无新字节），TERM/KILL 进程组",
+			if now := a.artifactActivity(); now != last { // 导出目录也算进展（agent.log）
+				last = now
+				continue
+			}
+			a.r.logf("runner: task=%s attempt=%d 无进展（日志与导出目录连续 %s 无新字节），TERM/KILL 进程组",
 				a.taskID, a.attempt, d)
 			a.stop(protocol.ReasonNoProgress, a.r.opts.TermGrace)
 			return
 		}
 	}
+}
+
+func (a *Attempt) artifactActivity() string { // 路径 + 大小 + mtime 指纹（不读内容）。
+	if a.exportDir == "" {
+		return ""
+	}
+	var b strings.Builder
+	_ = filepath.WalkDir(a.exportDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		fmt.Fprintf(&b, "%s:%d:%d;", path, info.Size(), info.ModTime().UnixNano())
+		return nil
+	})
+	return b.String()
 }
 
 type activityReader struct {

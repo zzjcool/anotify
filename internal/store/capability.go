@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/zzjcool/anotify/internal/artifact"
+	"github.com/zzjcool/anotify/internal/schema"
 )
 
 // 能力领域（v4，capability.md §2/§3/§8）。
@@ -201,6 +203,9 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion)
 		case !errors.Is(gerr, ErrNotFound):
 			return fmt.Errorf("lookup explicit capability version: %w", gerr)
 		}
+		if err := validateFallbackParamsOn(ctx, ex, c.NamespaceID, norm.Spec); err != nil {
+			return err
+		}
 		return insertCapabilityOn(ctx, ex, c, &norm)
 	}
 
@@ -229,7 +234,53 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion)
 	}
 	c.Version = next
 	norm.Metadata.Version = next
+	if err := validateFallbackParamsOn(ctx, ex, c.NamespaceID, norm.Spec); err != nil {
+		return err
+	}
 	return insertCapabilityOn(ctx, ex, c, &norm)
+}
+
+func validateFallbackParamsOn(ctx context.Context, ex queryExec, namespaceID string, spec artifact.Spec) error {
+	fb := spec.Lifecycle.OnFailure
+	if fb == nil || strings.TrimSpace(fb.To) == "" {
+		return nil
+	}
+	target, err := resolveRefOn(ctx, ex, namespaceID, fb.To)
+	if errors.Is(err, ErrNotFound) || errors.Is(err, ErrRefUnresolved) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("resolve onFailure target %q: %w", fb.To, err)
+	}
+	down, problems := schema.ParseParams(target.Spec.Params)
+	if down.Permissive || len(problems) > 0 {
+		return nil
+	}
+	parent, problems := schema.ParseParams(spec.Params)
+	if parent.Permissive || len(problems) > 0 {
+		return nil // 父能力自己没有可判的契约：运行期再判
+	}
+	available := make(map[string]bool, len(parent.Properties)+len(fb.Params))
+	for name, prop := range parent.Properties {
+		if parent.Required[name] || prop.HasDefault {
+			available[name] = true
+		}
+	}
+	for name := range fb.Params {
+		available[name] = true
+	}
+	var missing []string
+	for name := range down.Required {
+		if !available[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	return fmt.Errorf("%w: lifecycle.onFailure 指向 %s，但 %v 既不在父能力 params 的必填/默认值里，也不在 onFailure.params 里（真失败时只会落一条 param_missing 剪枝）",
+		ErrCapabilityInvalid, target.Name, missing)
 }
 
 // insertCapabilityOn 落一行能力版本（调用方已确定版本号与归一正文）。

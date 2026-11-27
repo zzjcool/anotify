@@ -3,6 +3,8 @@ package artifact
 import (
 	"strings"
 	"testing"
+
+	"github.com/zzjcool/anotify/internal/protocol"
 )
 
 func parseWithLifecycle(t *testing.T, lifecycle string) (*Artifact, error) {
@@ -58,6 +60,7 @@ func TestLifecycleOnFailureRoundTrip(t *testing.T) {
     timeoutSec: 3600
     onFailure:
       to: issue-record
+      reasons: [timeout, no_progress]
       params: {outcome: timeout, findings: 因超时终止}
 `)
 	if err != nil {
@@ -68,6 +71,11 @@ func TestLifecycleOnFailureRoundTrip(t *testing.T) {
 	}
 	if got := a.Spec.Lifecycle.OnFailure.Params["outcome"]; got != "timeout" {
 		t.Fatalf("onFailure.params.outcome 期望 timeout，实际 %v", got)
+	}
+	if len(a.Spec.Lifecycle.OnFailure.Reasons) != 2 ||
+		a.Spec.Lifecycle.OnFailure.Reasons[0] != protocol.ReasonTimeout ||
+		a.Spec.Lifecycle.OnFailure.Reasons[1] != protocol.ReasonNoProgress {
+		t.Fatalf("onFailure.reasons 没有往返：%v", a.Spec.Lifecycle.OnFailure.Reasons)
 	}
 
 	withFallback, err := Digest(withVersion(t, a))
@@ -87,7 +95,6 @@ func TestLifecycleOnFailureRoundTrip(t *testing.T) {
 	}
 }
 
-// withVersion 给产物钉一个版本（算 digest 的前置条件）。
 func withVersion(t *testing.T, a *Artifact) *Artifact {
 	t.Helper()
 	out, err := Normalize(a)
@@ -100,12 +107,15 @@ func withVersion(t *testing.T, a *Artifact) *Artifact {
 
 func TestLifecycleOnFailureRejectedShapes(t *testing.T) {
 	cases := map[string]string{
-		"to 为空":       "  lifecycle:\n    onFailure: {to: \"\"}\n",
-		"to 不在 next":  "  lifecycle:\n    onFailure: {to: issue-unrelated}\n",
-		"to 写模板":      "  lifecycle:\n    onFailure: {to: \"$(vars.X)\"}\n",
-		"未知子键":        "  lifecycle:\n    onFailure: {to: issue-record, params: {}, x: 1}\n",
-		"params 写模板":  "  lifecycle:\n    onFailure: {to: issue-record, params: {findings: \"$(payload.x)\"}}\n",
-		"params 不是对象": "  lifecycle:\n    onFailure: {to: issue-record, params: 3}\n",
+		"to 为空":        "  lifecycle:\n    onFailure: {to: \"\"}\n",
+		"to 不在 next":   "  lifecycle:\n    onFailure: {to: issue-unrelated}\n",
+		"to 写模板":       "  lifecycle:\n    onFailure: {to: \"$(vars.X)\"}\n",
+		"未知子键":         "  lifecycle:\n    onFailure: {to: issue-record, params: {}, x: 1}\n",
+		"params 写模板":   "  lifecycle:\n    onFailure: {to: issue-record, params: {findings: \"$(payload.x)\"}}\n",
+		"params 不是对象":  "  lifecycle:\n    onFailure: {to: issue-record, params: 3}\n",
+		"未知失败码":        "  lifecycle:\n    onFailure: {to: issue-record, reasons: [not_a_reason]}\n",
+		"reasons 重复":   "  lifecycle:\n    onFailure: {to: issue-record, reasons: [timeout, timeout]}\n",
+		"reasons 不是数组": "  lifecycle:\n    onFailure: {to: issue-record, reasons: timeout}\n",
 	}
 	for name, field := range cases {
 		t.Run(name, func(t *testing.T) {

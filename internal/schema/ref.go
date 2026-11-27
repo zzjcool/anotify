@@ -5,10 +5,7 @@ import (
 	"strings"
 )
 
-// 能力引用的解析与「是否落在 next 声明里」判据：artifact 与 sourcespec 共用，节点侧也复算。
-
-// SplitRef 拆成 (名字, 版本, 是否钉死)；钉死但版本写法非法时 version = -1（fail closed）。
-func SplitRef(ref string) (name string, version int, pinned bool) {
+func SplitRef(ref string) (name string, version int, pinned bool) { // 钉死但版本非法 → version=-1（fail closed）
 	ref = strings.TrimSpace(ref)
 	name, verRaw, found := strings.Cut(ref, "@")
 	if !found {
@@ -21,7 +18,6 @@ func SplitRef(ref string) (name string, version int, pinned bool) {
 	return name, version, true
 }
 
-// DeclaredRef 回答「to 是否落在 next 声明里」；歧义即拒（裸名+钉版混写、同名多钉版）。
 func DeclaredRef(next []string, to string) (string, bool) {
 	toName, toVer, toPinned := SplitRef(to)
 	if toName == "" || (toPinned && toVer < 0) {

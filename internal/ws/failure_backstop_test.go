@@ -90,3 +90,63 @@ func TestFailedResultLeavesTraceFactAndRunsFallback(t *testing.T) {
 		t.Fatalf("兜底要继承父任务上下文并带上声明参数，实际 %v", params)
 	}
 }
+
+func TestDuplicateFailedResultDoesNotDispatchTwice(t *testing.T) {
+	e := newEnv(t)
+	record := e.capability(t, "issue-record", `{"type":"object","required":["repo"],
+		"properties":{"repo":{"type":"string"},"outcome":{"type":"string"}}}`, true, nil)
+	impl := e.capability(t, "issue-implement", `{"type":"object","required":["repo"],
+		"properties":{"repo":{"type":"string"}}}`, false, []string{"issue-record"},
+		func(spec *artifact.Spec) {
+			spec.Lifecycle.OnFailure = &artifact.Fallback{
+				To:     "issue-record",
+				Params: map[string]any{"outcome": "timeout"},
+			}
+		})
+	_ = record
+	task := &store.Task{
+		NamespaceID: e.ns.ID, TraceID: "trace-700-dup",
+		CapabilityID: impl.ID, Capability: impl.Name,
+		Version: impl.Version, Digest: impl.Digest,
+		Params: json.RawMessage(`{"repo":"zzjcool/anotify"}`),
+	}
+	if err := e.db.CreateTasks(context.Background(), []*store.Task{task}); err != nil {
+		t.Fatalf("建任务: %v", err)
+	}
+	conn := e.dial(t)
+	leaseID, _ := e.directGrant(t, task)
+	frame := &protocol.TaskResultFrame{
+		Type: protocol.FrameTaskResult, TaskID: task.ID, Attempt: 1, Node: "node-1",
+		LeaseID: leaseID, Phase: protocol.TaskPhaseFailed,
+		Result: protocol.TaskResult{
+			Artifacts: []protocol.TaskArtifact{},
+			Error:     &protocol.TaskResultError{Reason: protocol.ReasonTimeout, Message: "超时"},
+		},
+		StartedAt: time.Unix(e.now-60, 0).UTC(), FinishedAt: time.Unix(e.now, 0).UTC(),
+	}
+	for i := 0; i < 2; i++ {
+		e.send(t, conn, frame)
+		if ack, ok := e.read(t, conn).(*protocol.ResultAckFrame); !ok || !ack.Accepted {
+			t.Fatalf("第 %d 次失败结果必须 ACK，得到 %+v", i+1, ack)
+		}
+	}
+	ctx := context.Background()
+	if !waitFor(t, 2*time.Second, func() bool {
+		tasks, err := e.db.ListTasksByTrace(ctx, e.ns.ID, task.TraceID)
+		return err == nil && len(tasks) == 2
+	}) {
+		t.Fatalf("兜底任务数不是 2")
+	}
+	var facts int
+	if err := e.db.QueryRow(`SELECT COUNT(*) FROM events WHERE namespace_id = ? AND trace_id = ? AND type = ?`,
+		e.ns.ID, task.TraceID, protocol.ReasonTaskFailed).Scan(&facts); err != nil {
+		t.Fatalf("数观察行: %v", err)
+	}
+	if facts != 1 {
+		t.Fatalf("重复结果不得落第二条终态事实，实际 %d 条", facts)
+	}
+	tasks, err := e.db.ListTasksByTrace(ctx, e.ns.ID, task.TraceID)
+	if err != nil || len(tasks) != 2 {
+		t.Fatalf("重复结果不得派第二个兜底：tasks=%d err=%v", len(tasks), err)
+	}
+}

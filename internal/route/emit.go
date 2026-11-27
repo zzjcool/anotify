@@ -35,12 +35,16 @@ func (e *EmitError) Error() string {
 	return "emit: " + e.Reason
 }
 
+// Unwrap 让 errors.Is/As 能穿透到 store 哨兵。
 func (e *EmitError) Unwrap() error { return e.Err }
 
+// HTTPStatus 是本地 emit 网关应回的状态码（200/400/401/409/500）。
 func (e *EmitError) HTTPStatus() int { return protocol.EmitHTTPStatus(e.Reason) }
 
+// ExitCode 是 CLI 退出码（0/2/3/4/5/6）。
 func (e *EmitError) ExitCode() int { return protocol.EmitExitCode(e.Reason) }
 
+// Body 是本地 emit 网关的错误体（{error,message}，不是公共 API 的 Status）。
 func (e *EmitError) Body() protocol.EmitError {
 	msg := ""
 	if e.Err != nil {
@@ -49,6 +53,7 @@ func (e *EmitError) Body() protocol.EmitError {
 	return protocol.EmitError{Error: e.Reason, Message: msg}
 }
 
+// EmitInput 是一次 emit 的调用事实。
 type EmitInput struct {
 	// Auth 是认证身份 + 当前执行三件套（由 WS 会话从连接凭证构造，绝不来自请求体）。
 	Auth store.EmitAuth
@@ -60,6 +65,7 @@ type EmitInput struct {
 	Data json.RawMessage
 }
 
+// EmitResult 是一次 emit 的结论。
 type EmitResult struct {
 	// Response 是回给节点的回执（含剪枝形状 taskId:null + pruned）。
 	Response protocol.EmitResponse

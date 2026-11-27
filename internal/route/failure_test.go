@@ -137,6 +137,59 @@ func TestDispatchFailureWithoutDeclarationOnlyRecordsFact(t *testing.T) {
 	}
 }
 
+func TestDispatchFailureFallbackHonorsReasonScope(t *testing.T) {
+	f := newFailureFixture(t, &artifact.Fallback{
+		To:      "issue-record",
+		Reasons: []string{protocol.ReasonTimeout},
+		Params:  map[string]any{"outcome": "timeout"},
+	})
+	task := f.seedFailed(t, protocol.ReasonScriptFailed)
+	if err := New(f.db).DispatchFailure(testCtx(), task); err != nil {
+		t.Fatalf("失败兜底: %v", err)
+	}
+	if got := len(traceTasks(t, f.db, f.ns.ID, task.TraceID)); got != 1 {
+		t.Fatalf("script_failed 不在 reasons 作用域里，不该派兜底；trace 任务数 %d", got)
+	}
+	if events := traceEventTypes(t, f.db, f.ns.ID, task.TraceID); events[protocol.ReasonTaskFailed] != 1 {
+		t.Fatalf("不在作用域也必须留终态事实：%v", events)
+	}
+}
+
+func TestDispatchFailureRecordsAbandonedTask(t *testing.T) {
+	f := newFailureFixture(t, &artifact.Fallback{
+		To:      "issue-record",
+		Reasons: []string{protocol.ReasonMaxAttemptsExceeded},
+		Params:  map[string]any{"outcome": "timeout"},
+	})
+	task := f.seedFailed(t, protocol.ReasonTimeout)
+	if _, err := f.db.Exec(`UPDATE tasks SET phase = ?, error = ?, result_json = '{}' WHERE id = ?`,
+		store.TaskAbandoned, protocol.ReasonMaxAttemptsExceeded, task.ID); err != nil {
+		t.Fatalf("置 abandoned: %v", err)
+	}
+	task = mustTask(t, f.db, task.ID)
+	if err := New(f.db).DispatchFailure(testCtx(), task); err != nil {
+		t.Fatalf("abandoned 兜底: %v", err)
+	}
+	var payload struct {
+		FailureReason string `json:"failureReason"`
+	}
+	row := f.db.QueryRow(`SELECT payload FROM events WHERE namespace_id = ? AND trace_id = ? AND type = ?`,
+		f.ns.ID, task.TraceID, protocol.ReasonTaskFailed)
+	var raw string
+	if err := row.Scan(&raw); err != nil {
+		t.Fatalf("中枢推进的 abandoned 也必须有终态事实：%v", err)
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("观察行不是 JSON: %v", err)
+	}
+	if payload.FailureReason != protocol.ReasonMaxAttemptsExceeded {
+		t.Fatalf("失败码应来自 tasks.error，实际 %q", payload.FailureReason)
+	}
+	if got := len(traceTasks(t, f.db, f.ns.ID, task.TraceID)); got != 2 {
+		t.Fatalf("声明了 max_attempts_exceeded 的兜底应当派发，trace 任务数 %d", got)
+	}
+}
+
 func TestFailureFallbackOutsideNextIsRefusedAtWriteTime(t *testing.T) {
 	f := newFailureFixture(t, nil)
 	testCapability(t, f.db, f.ns.ID, "issue-record-2", 1, capOpts{})

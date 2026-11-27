@@ -74,8 +74,9 @@ paths:
             "为什么没跑"就在这里面，所以它不被过滤掉。
           - `tasks`：按建行顺序（时间线按它走）的任务信封。
           - `pruned`：`events` 里**纯剪枝**的那些行（事件收到了但没派发）。
-            **失败事实行**（`downstream_missing` / `router_failed` / `task_failed`）是
-            failed Task 的伴随行，不是剪枝，因此不出现在 `pruned` 里（capability.md §6.2）。
+            **失败事实行**（`downstream_missing` / `task_failed`）是 failed Task 的伴随行，
+            不是剪枝，因此不出现在 `pruned` 里（capability.md §6.2）。`router_failed`
+            沿用 #522 的既有语义，仍按剪枝投影。
 
         每条 `events[]` 的 `status` 同样带 trace 级 `dispatched`（任务数）与 `prunedCount`
         （纯剪枝条数）；但这里的 `pruned` **只对观察行自身非 `null`**（全量已由 `pruned[]`
@@ -420,10 +421,10 @@ components:
           description: |
             观察原因码（与剪枝原因同词表）。**省略**的两种情况：
             ① 普通事件没有 reason 事实；② **失败事实行**（`downstream_missing` /
-            `router_failed` / `task_failed`）——store 把观察行统一写成 `Pruned`，照抄会把
-            "任务失败"报告成"剪枝"，所以宁可不给。这些行的失败码看 `spec.eventType`；
-            `task_failed` 的 payload 把任务失败码放在 `failureReason`（`reason` 这个键
-            属于剪枝留痕，两边不同义）。
+            `task_failed`）——store 把观察行统一写成 `Pruned`，照抄会把"任务失败"报告成
+            "剪枝"，所以宁可不给。这些行的失败码看 `spec.eventType`；`task_failed` 的
+            payload 把任务失败码放在 `failureReason`（`reason` 这个键属于剪枝留痕，
+            两边不同义）。
         eventType:
           type: string
           description: |
@@ -496,9 +497,8 @@ components:
                 **恒为 `null`**：全量就在同一份响应里，再给一个「代表」会让读者以为这条
                 事件被剪了（按行数剪枝事实的客户端也会翻倍）。
 
-            **失败事实行**（`downstream_missing` / `router_failed` / `task_failed`，都是
-            failed Task 的伴随行）不是剪枝，所以它们自己的 `pruned` 恒为 `null`
-            （也不占用「首条代表」）。
+            **失败事实行**（`downstream_missing` / `task_failed`，都是 failed Task 的
+            伴随行）不是剪枝，所以它们自己的 `pruned` 恒为 `null`（也不占用「首条代表」）。
 
             形状保持对象（`{reason, detail}`）而不是数组：既有客户端（trace 视图、
             控制台展开明细）按对象读；条数由 `prunedCount` 承担，全量逐条走 trace 视图。
@@ -506,7 +506,7 @@ components:
           type: integer
           description: |
             该 trace 的**纯剪枝**条数（`source=route` 且不是失败事实行：`downstream_missing` /
-            `router_failed` / `task_failed`）。
+            `task_failed`；`router_failed` 沿用 #522 的剪枝口径）。
             `pruned` 只给其中首条；要逐条诊断走 `GET …/traces/{traceId}` 的 `pruned[]`。
       additionalProperties: false
     EventPruneFact:
@@ -524,16 +524,16 @@ components:
             封闭原因码，权威定义在 `internal/protocol/enums.go`：剪枝码 `pruneReasons`
             （`no_target` / `event_schema` / `param_schema` / `param_type` / `param_missing` /
             `capability_disabled` / `no_match` / `max_hops` / `budget`）、决策通道观察码
-            `routeObservationReasons` 里**没有伴随失败任务**的那几个（`no_decision` /
+            `routeObservationReasons` 的全部（`no_decision` / `router_failed` /
             `outcome_dropped` / `outcome_not_declared`），以及被拒绝的 emit 留下的
             `target_not_declared`
             （调用方拿到 400，闭集见 `internal/store/emission.go` 的 `emitRejectionReasons`；
             它进 `pruned[]` 是为了让「为什么下游没跑」可查，不表示这次 emit 被接受）。
 
-            **失败事实行不在此列**：`downstream_missing`（未解析派发失败）、
-            `router_failed`（router 任务失败）、`task_failed`（普通任务终态失败）都是
-            failed Task 的伴随行，不是剪枝 —— `pruned[]` / `prunedCount` / `status.pruned`
-            会把它们过滤掉（见 trace 响应里 `prunedCount` 的口径）。
+            **失败事实行不在此列**：`downstream_missing`（未解析派发失败）与
+            `task_failed`（普通任务终态失败）都是 failed Task 的伴随行，不是剪枝 ——
+            `pruned[]` / `prunedCount` / `status.pruned` 会把它们过滤掉（见 trace 响应里
+            `prunedCount` 的口径）。`router_failed` 仍属于剪枝观察码。
         detail:
           type: string
           description: 给人看的补充（缺哪个参数、哪个字段类型不对），不参与任何判定
@@ -579,8 +579,7 @@ components:
           type: array
           description: |
             `events` 里的**纯剪枝**子集（原样给事件信封）。失败事实行
-            （`downstream_missing` / `router_failed` / `task_failed`）不算剪枝，
-            所以不会出现在这里。
+            （`downstream_missing` / `task_failed`）不算剪枝，所以不会出现在这里。
           items:
             $ref: '#/components/schemas/Event'
       additionalProperties: false

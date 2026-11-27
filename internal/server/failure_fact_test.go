@@ -8,6 +8,12 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
+func TestNoProgressIsATaskResultReason(t *testing.T) {
+	if !taskResultReasonCode(protocol.ReasonNoProgress) {
+		t.Fatalf("%q 必须被识别为任务结果原因码", protocol.ReasonNoProgress)
+	}
+}
+
 func traceEventRow(t *testing.T, doc map[string]any, uid string) map[string]any {
 	t.Helper()
 	for _, item := range trArray(t, doc, "events") {
@@ -23,7 +29,6 @@ func traceEventRow(t *testing.T, doc map[string]any, uid string) map[string]any 
 	return nil
 }
 
-// TestTaskResourceFailureFactIsNotPrune 钉住 #700 review 的口径：失败终态事实不是剪枝。
 func TestTaskResourceFailureFactIsNotPrune(t *testing.T) {
 	env := newTaskResEnv(t)
 	base := store.Now() - 60
@@ -62,7 +67,6 @@ func TestTaskResourceFailureFactIsNotPrune(t *testing.T) {
 	if got := trNumber(t, fact, "status", "dispatched"); got != 1 {
 		t.Fatalf("失败事实行的 status.dispatched = %v, want 1（任务真的建过）", got)
 	}
-	// 任务失败码留在 payload 的 failureReason 里：不冒充剪枝原因码，也不丢事实。
 	if got := trString(t, fact, "spec", "payload", "failureReason"); got != protocol.ReasonTimeout {
 		t.Fatalf("payload.failureReason = %q, want %q", got, protocol.ReasonTimeout)
 	}
@@ -73,15 +77,16 @@ func TestTaskResourceFailureFactIsNotPrune(t *testing.T) {
 	}
 
 	routerTraceDoc := trWant(t, env.do(http.MethodGet, "/v1/namespaces/"+env.ns+"/traces/"+routerTrace, nil), http.StatusOK)
-	if got := len(trArray(t, routerTraceDoc, "pruned")); got != 0 {
-		t.Fatalf("router 失败事实行同样不许进 pruned[]，实际 %d 条", got)
+	if got := len(trArray(t, routerTraceDoc, "pruned")); got != 1 {
+		t.Fatalf("router_failed 沿用 #522 的剪枝投影，trace pruned[] 应为 1，实际 %d 条", got)
 	}
-	if pruned := trObject(t, traceEventRow(t, routerTraceDoc, routerFactUID), "status")["pruned"]; pruned != nil {
-		t.Fatalf("router 失败事实行的 status.pruned 必须是 null，得到 %v", pruned)
+	factStatus := trObject(t, traceEventRow(t, routerTraceDoc, routerFactUID), "status")
+	if got := trString(t, factStatus["pruned"].(map[string]any), "reason"); got != protocol.ReasonRouterFailed {
+		t.Fatalf("router 失败行的 status.pruned.reason = %q，want %q", got, protocol.ReasonRouterFailed)
 	}
 	if got := trNumber(t, findEventRow(t, trWant(t, env.do(http.MethodGet,
 		"/v1/namespaces/"+env.ns+"/events?trace="+routerTrace, nil), http.StatusOK), routerDeliveryUID),
-		"status", "prunedCount"); got != 0 {
-		t.Fatalf("router 失败 trace 的投递行 prunedCount = %v, want 0", got)
+		"status", "prunedCount"); got != 1 {
+		t.Fatalf("router 失败 trace 的投递行 prunedCount = %v，want 1", got)
 	}
 }

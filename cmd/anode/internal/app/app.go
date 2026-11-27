@@ -140,6 +140,7 @@ func Assemble(opts Options) (*App, error) {
 		WorkRoot:        workRoot,
 		Clock:           opts.Clock,
 		Logf:            logf,
+		IdleTimeout:     time.Duration(opts.Config.IdleTimeoutSec) * time.Second,
 	})
 	if err != nil {
 		_ = listener.Close()

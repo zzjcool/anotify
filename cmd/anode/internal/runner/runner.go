@@ -83,7 +83,7 @@ type Options struct {
 	LeaseTTL      time.Duration
 	RenewInterval time.Duration
 	TermGrace     time.Duration
-	IdleTimeout   time.Duration
+	IdleTimeout   time.Duration // 节点默认（anode.yaml idleTimeoutSec）；0 = 关闭。
 }
 
 // EmitBinding 是 emit 网关需要的「当前运行 attempt」视图。
@@ -198,9 +198,6 @@ func New(opts Options) (*Runner, error) {
 	}
 	if opts.TermGrace <= 0 {
 		opts.TermGrace = protocol.LeaseTermGrace
-	}
-	if opts.IdleTimeout <= 0 {
-		opts.IdleTimeout = protocol.DefaultIdleTimeout
 	}
 	return &Runner{
 		opts:         opts,

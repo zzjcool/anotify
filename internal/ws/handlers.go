@@ -59,6 +59,9 @@ func (h *Hub) handleAccept(ctx context.Context, sess *Session, f *protocol.TaskA
 		if errors.Is(err, store.ErrSlotUnavailable) {
 			h.noteSlotFull(ctx, sess.nodeID, f.TaskID, h.Now())
 		}
+		if errors.Is(err, store.ErrMaxAttemptsExceeded) {
+			h.dispatchTerminalOutcome(ctx, f.TaskID)
+		}
 		return nil
 	}
 	h.clearSlotFullSteer(ctx, sess.nodeID, f.TaskID)
@@ -204,14 +207,14 @@ func (h *Hub) handleResult(ctx context.Context, sess *Session, f *protocol.TaskR
 	})
 }
 
-// dispatchTerminalOutcome 执行终态后置动作：成功走结局表（#522），失败走兜底（#700）。
+// dispatchTerminalOutcome 执行终态后置动作：成功走结局表（#522），失败/放弃走兜底（#700）。
 func (h *Hub) dispatchTerminalOutcome(ctx context.Context, taskID string) {
 	task, err := h.db.GetTaskByID(ctx, taskID)
 	if err != nil {
 		h.log.Warn("terminal outcome: read task failed", "task_id", taskID, "err", err)
 		return
 	}
-	if task.Phase == store.TaskFailed {
+	if task.Phase == store.TaskFailed || task.Phase == store.TaskAbandoned {
 		if err := h.router.DispatchFailure(ctx, task); err != nil {
 			h.log.Warn("terminal outcome: failure backstop failed", "task_id", taskID, "err", err)
 		}
@@ -249,6 +252,10 @@ func (h *Hub) handleCancelAck(ctx context.Context, sess *Session, f *protocol.Ca
 		// 错 lease/slot/缺失历史绑定：fail closed（不清新槽、不改新相位）。
 		h.log.Warn("cancel ack rejected", "node_id", sess.nodeID, "task_id", f.TaskID,
 			"attempt", f.Attempt, "reaped", f.ProcessGroupReaped, "err", err)
+		return nil
+	}
+	if task, err := h.db.GetTaskByID(ctx, f.TaskID); err == nil && task.Phase == store.TaskAbandoned {
+		h.dispatchTerminalOutcome(ctx, f.TaskID)
 	}
 	return nil
 }

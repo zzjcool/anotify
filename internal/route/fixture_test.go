@@ -38,8 +38,7 @@ type capOpts struct {
 	Next   []string
 	// MaxPerNode 抬 concurrency.maxPerNode（默认 1：同能力不能在一条机器上并行两条）。
 	MaxPerNode int
-	// Fallback 是 lifecycle.onFailure（#700 失败兜底）。
-	Fallback *artifact.Fallback
+	Fallback   *artifact.Fallback
 }
 
 func testCapability(t *testing.T, db *store.DB, namespaceID, name string, version int, opts capOpts) *store.CapabilityVersion {

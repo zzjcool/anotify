@@ -249,6 +249,13 @@ func (a *taskAPI) requestStop(w http.ResponseWriter, r *http.Request, intent sto
 	if gerr != nil {
 		updated = task
 	}
+	if updated.Phase == store.TaskAbandoned && a.d.Router != nil {
+		if derr := a.d.Router.DispatchFailure(r.Context(), updated); derr != nil {
+			a.d.logger().Warn("task abandon: failure backstop failed",
+				"event", "task.abandon.fact_failed",
+				"namespace", ns, "task_id", id, "error", derr.Error())
+		}
+	}
 	writeEnvelope(w, http.StatusOK, taskEnvelope(updated, a.d.namespaceDisplay(r.Context(), ns)))
 }
 
@@ -950,40 +957,11 @@ func taskResultReasonMessage(t *store.Task) (string, string) {
 	return "", ""
 }
 
-// taskResultReasonCodes 是「任务结果原因码」的封闭集合（capability.md §6.2）。
-//
-// 只用来判断 error 列里的字面是不是一个机器码：是 → 当 reason；不是 → 当人话（message）。
-// 不用它校验任何输入（这里没有可写面）。
-var taskResultReasonCodes = []string{
-	protocol.ReasonTimeout,
-	protocol.ReasonScriptFailed,
-	protocol.ReasonFilesEscape,
-	protocol.ReasonWorkDirUnavailable,
-	protocol.ReasonHomeUnavailable,
-	protocol.ReasonMissingRequirement,
-	protocol.ReasonArtifactExportInvalid,
-	protocol.ReasonMaxAttemptsExceeded,
-	protocol.ReasonNodeLost,
-	protocol.ReasonLeaseExpired,
-	protocol.ReasonInfraTransient,
-	protocol.ReasonDownstreamMissing,
-	protocol.ReasonCancelledByUser,
-	protocol.ReasonAbandonedByUser,
-	protocol.ReasonStaleConfig,
-	protocol.ReasonSlotUnavailable,
-}
-
-// taskResultReasonCode 报告 s 是否是任务结果原因码。
+// taskResultReasonCode 判断 error 列里的字面是不是一个机器码：是 → 当 reason；
+// 不是 → 当人话（message）。闭集只有一份（protocol.IsTaskFailureReason），#700 的
+// no_progress 自动包含，不再需要在这里维护第二份列表。
 func taskResultReasonCode(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, code := range taskResultReasonCodes {
-		if s == code {
-			return true
-		}
-	}
-	return false
+	return protocol.IsTaskFailureReason(s)
 }
 
 // ---------- wire 形状：Event（§7.7）----------
@@ -1094,15 +1072,18 @@ func eventOriginOf(e *store.Event) string {
 }
 
 // eventIsFailureFact 报告这条观察行是不是**任务失败事实**：downstream_missing（未解析
-// 派发失败）/ router_failed（router 任务失败）/ task_failed（#700 中枢补写的终态事实）。
-// 三者与剪枝留痕共用 insertPruneFactEventOn 的 source/reason，只有 type 能区分；投影层
-// 必须把它们从 Pruned 语义里拿出来，否则 status 会同时说 dispatched>0 和「被剪枝」。
+// 派发失败）/ task_failed（#700 中枢补写的终态事实）。它们与剪枝留痕共用
+// insertPruneFactEventOn 的 source/reason，只有 type 能区分；投影层必须把它们从
+// Pruned 语义里拿出来，否则 status 会同时说 dispatched>0 和「被剪枝」。
+//
+// router_failed 不在其中：它是 #522 起就在 pruned[] 里的既有行为，本 PR 不改这条
+// 对外语义（api/events.yaml 仍按剪枝投影）。
 func eventIsFailureFact(e *store.Event) bool {
 	if e == nil || e.Source != store.EventPruneSource {
 		return false
 	}
 	switch e.Type {
-	case protocol.ReasonDownstreamMissing, protocol.ReasonRouterFailed, protocol.ReasonTaskFailed:
+	case protocol.ReasonDownstreamMissing, protocol.ReasonTaskFailed:
 		return true
 	}
 	return false

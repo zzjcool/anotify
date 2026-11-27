@@ -32,8 +32,9 @@ type Report struct {
 
 // Sweeper 是巡检器。
 type Sweeper struct {
-	db  *store.DB
-	log *slog.Logger
+	db          *store.DB
+	log         *slog.Logger
+	onAbandoned func(ctx context.Context, taskID string) // 终态回调；可空（#700）。
 }
 
 // NewSweeper 构造巡检器。
@@ -42,6 +43,10 @@ func NewSweeper(db *store.DB, logger *slog.Logger) *Sweeper {
 		logger = slog.Default()
 	}
 	return &Sweeper{db: db, log: logger}
+}
+
+func (s *Sweeper) OnAbandoned(fn func(ctx context.Context, taskID string)) {
+	s.onAbandoned = fn
 }
 
 // RunOnce 跑一轮：过期租约回收 → 保留期清理 → 统计维护。
@@ -55,15 +60,20 @@ func (s *Sweeper) RunOnce(ctx context.Context, now int64) (Report, error) {
 	var report Report
 	var runErr error
 
-	requeued, abandoned, err := s.db.RecoverLostLeases(ctx, now)
+	requeued, abandoned, err := s.db.RecoverLostLeasesTracking(ctx, now)
 	report.LeasesRequeued = requeued
-	report.LeasesAbandoned = abandoned
+	report.LeasesAbandoned = len(abandoned)
 	if err != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("lease: 回收过期租约: %w", err))
 	}
-	if requeued > 0 || abandoned > 0 {
+	for _, task := range abandoned {
+		if s.onAbandoned != nil {
+			s.onAbandoned(ctx, task.ID)
+		}
+	}
+	if requeued > 0 || len(abandoned) > 0 {
 		s.log.Info("lease sweep recovered lost leases",
-			"requeued", requeued, "abandoned", abandoned)
+			"requeued", requeued, "abandoned", len(abandoned))
 	}
 	converged, cerr := s.db.ConvergeTerminalLedgers(ctx, now)
 	report.LedgersConverged = converged

@@ -2634,9 +2634,10 @@ components:
           minimum: 0
           maximum: 86400
           description: |
-            「无进展」上限（秒）：日志连续这么久没有新字节 → 节点按 `no_progress` 提前终止，
-            而不是干等到 `timeoutSec`。省略 = 节点默认 600；显式 0 = 关闭这个判据
-            （只适合合法地长时间一声不响的能力）。
+            「无进展」上限（秒）：管道与 `$ANOTIFY_ARTIFACT_DIR` 连续这么久没有新字节 →
+            节点按 `no_progress` 提前终止，而不是干等到 `timeoutSec`。省略 = 节点配置的
+            `idleTimeoutSec`（缺省 0 = 关闭）；显式 0 = 关闭。默认关闭是因为参考 playbook
+            把 agent 输出重定向进文件、管道长期静默，默认开启会误杀正常执行。
         onFailure:
           $ref: '#/components/schemas/CapabilityFailureFallback'
     CapabilityFailureFallback:
@@ -2652,12 +2653,20 @@ components:
         to:
           type: string
           description: "必须是本能力 `spec.next` 里的下游引用（裸名或 `name@version`）；写入期就校验"
+        reasons:
+          type: array
+          items:
+            type: string
+          description: |
+            触发兜底的任务失败码（闭集见 `internal/protocol/enums.go`）：省略 = 任何失败都触发。
+            示例 `[timeout, no_progress]` 防止 `script_failed` 等其它失败也套用「因超时终止」的文案。
         params:
           type: object
           additionalProperties: true
           description: |
             **字面**参数（不接受 `$(…)` 模板）：与父任务 `params` 同名合并，这里优先。
             于是 `repo` / `issue` 这类上下文由父任务带过来，声明里只补「这一步是兜底」。
+            写入期还会检查下游 `params.required` 是否能被「父能力 params + 这里的字面值」满足。
     CapabilityConcurrency:
       type: object
       properties:
