@@ -348,6 +348,12 @@ message:
     current: 現在
   v4:
     diagnostics: "実行診断"
+    pending_title: "待機中 · まだ配信されていません"
+    pending_checking: "原因を確認しています…"
+    pending_reason_label: "原因："
+    pending_unknown: "現在このバージョンを実行できるノードがありません。"
+    pending_next: "能力の詳細を開いてデプロイ"
+    pending_hint: "このバージョンがデプロイされると、次の配信ラウンドでこのタスクが実行されます。"
     attempt: "試行 / 上限"
     cancel: "タスクを取消"
     abandon: "タスクを放棄"
@@ -1166,6 +1172,17 @@ caps:
     submitting: 'デプロイ中…'
     title: '手動デプロイ {name}'
     version: '対象バージョン'
+    banner_title: 'v{v} はまだどのノードにもデプロイされていません'
+    banner_body: '裸の名前で参照しているソースと上流の能力は常に最新バージョンを解決します：このバージョンがデプロイされるまで、それらの新しいタスクは待ち続けます。'
+    banner_deploy: 'v{v} をデプロイ'
+    pick_nodes: 'ノードを選ぶ…'
+  save:
+    and_deploy: '保存して {n} 台のノードにデプロイ'
+    only: '保存のみ（デプロイしない）'
+    warn_title: '保存すると新しいバージョンができます：ノードはまだ旧バージョンを実行しています'
+    warn_text: '{nodes} は v{old} を実行しています。裸の名前で参照しているソースと上流の能力は常に最新バージョンを配信します：それらの新しいタスクは新しいバージョンがデプロイされるまで実行されません。'
+    warn_no_online: '現在オンラインのデプロイ候補がありません：保存後も参照元の新しいタスクは待ち続けます。'
+    deploy_failed_title: 'デプロイに失敗しました：{reason}'
   detail:
     back: '能力一覧に戻る'
     btn: '詳細'

@@ -240,8 +240,31 @@ func TestNodesForCapability(t *testing.T) {
 	if reasons[n1.ID] != protocol.ConditionReasonNodeOffline {
 		t.Fatalf("具体原因应为 %s, 实际 %s", protocol.ConditionReasonNodeOffline, reasons[n1.ID])
 	}
-	if got := NodeAvailabilityReason(reasons); got != protocol.ConditionReasonNodeOffline {
-		t.Fatalf("汇总原因应优先报离线, 实际 %s", got)
+	// #575：混合场景（一台离线 + 一台在线但配置没 apply）先报**在线节点**的问题：
+	// 离线节点解释不了「在线节点为什么也没派出去」，旧顺序会把人引去查网络。
+	if got := NodeAvailabilityReason(reasons); got != protocol.ConditionReasonConfigPending {
+		t.Fatalf("汇总原因应报在线节点的 ConfigPending, 实际 %s", got)
+	}
+}
+
+// TestNodeAvailabilityReasonIgnoresUnrelatedOfflineNode 是 #575 的回归钉：
+// 能力刚保存出新版本、在线节点只持有旧 digest，另有一台无关的离线节点 ——
+// 汇总原因必须是 NotDeployed（「点部署」），不能是 NodeOffline（「去查网络」）。
+func TestNodeAvailabilityReasonIgnoresUnrelatedOfflineNode(t *testing.T) {
+	reasons := map[string]string{
+		"audit-node": protocol.ConditionReasonNotDeployed,
+		"demo-node":  protocol.ConditionReasonNodeOffline,
+	}
+	if got := NodeAvailabilityReason(reasons); got != protocol.ConditionReasonNotDeployed {
+		t.Fatalf("在线节点未部署 + 无关离线节点 → 汇总 %q, want NotDeployed", got)
+	}
+	// 全部离线时仍然如实报离线（不是「没有匹配节点」，也不是 NotDeployed）。
+	allOffline := map[string]string{
+		"a": protocol.ConditionReasonNodeOffline,
+		"b": protocol.ConditionReasonNodeOffline,
+	}
+	if got := NodeAvailabilityReason(allOffline); got != protocol.ConditionReasonNodeOffline {
+		t.Fatalf("全离线 → 汇总 %q, want NodeOffline", got)
 	}
 }
 

@@ -581,6 +581,14 @@
          版本历史开关留在 [data-sec="versions"] 里（与改造前的语义一致）。 -->
     <div id="cap-actions" class="cap-actions"></div>
 
+    <!-- #575：保存出新版本但没有节点持有它时的**常驻**横幅（不是 toast）——
+         内容由 renderDeployBanner 填；不部署就一直挂着，因为引用方的新任务会一直等待。 -->
+    <div id="cap-deploy-banner" class="cap-banner hidden" role="alert">
+      <span id="cap-deploy-banner-title" class="cap-banner-title"></span>
+      <span id="cap-deploy-banner-text"></span>
+      <div id="cap-deploy-banner-actions" class="cap-banner-actions"></div>
+    </div>
+
     <!-- 加载 / 错误 / 空态宿主：内容就绪后清空并隐藏 -->
     <div id="cap-state" class="cap-loading" aria-live="polite">{{t "caps.detail.loading"}}</div>
 
@@ -746,12 +754,20 @@
             </div>
           </div>
         </details>
+
+        <!-- #575：保存会生成新版本的后果（只在「编辑既有能力 + 内容真的变了 + 有节点持有旧版本」时出现）。
+             文案由 refreshSaveAffordance 填：版本号与节点名都是服务端事实，不在这里写死。 -->
+        <div id="cap-version-warn" class="cap-banner hidden" role="note">
+          <span id="cap-version-warn-title" class="cap-banner-title"></span>
+          <span id="cap-version-warn-text"></span>
+        </div>
       </div>
     </div>
 
     <div class="modal-foot cap-modal-foot">
       <span id="cap-form-msg" class="field-hint"></span>
       <button id="cap-cancel" type="button" class="btn btn-ghost">{{t "caps.form.cancel"}}</button>
+      <button id="cap-save-deploy" type="button" class="btn hidden"></button>
       <button id="cap-submit" type="button" class="btn">{{t "caps.form.save"}}</button>
     </div>
   </div>
@@ -1500,6 +1516,7 @@
         const root = $("cap-detail");
         root.setAttribute("data-cap", m.name || "");
         root.setAttribute("data-version", m.version == null ? "" : String(m.version));
+        renderDeployBanner(m);
 
         /* 页头：一个能力只有一份标题（名字 + 显示名），.page-title 只出现一次。 */
         const title = el("span", null, m.displayName ? m.displayName + " · " + m.name : m.name);
@@ -1777,6 +1794,7 @@
       function renderGone() {
         CAP = null;
         META = null;
+        hideDeployBanner();
         const root = $("cap-detail");
         root.setAttribute("data-cap", "");
         root.setAttribute("data-version", "");
@@ -1987,7 +2005,7 @@
 
         renderFiles();
         renderEnv();
-        $("cap-submit").textContent = t("caps.form.save", "保存");
+        refreshSaveAffordance(); // 内容没变 → 隐藏「保存并部署」，按钮回到「保存」
         openModal($("cap-modal"));
         $("cap-display-name").focus();
         if (CAP_GUARD) CAP_GUARD.markClean();
@@ -2188,6 +2206,94 @@
         const holder = $("cap-banner-text");
         if (holder) holder.replaceChildren();
       }
+      /* #575：详情页顶部的**常驻**横幅（与编辑弹层里的 #cap-banner 是两个宿主：
+         弹层关了以后，后果还得看得见）。 */
+      function showDeployBanner(title, text, actions) {
+        const banner = $("cap-deploy-banner");
+        if (!banner) return;
+        // is-warn 在 JS 里挂（与 showBanner 同形）：静态 HTML 里写它会被死类守卫判成「没有定义」。
+        banner.className = "cap-banner is-warn";
+        $("cap-deploy-banner-title").textContent = title == null ? "" : String(title);
+        $("cap-deploy-banner-text").textContent = text == null ? "" : String(text);
+        const box = $("cap-deploy-banner-actions");
+        box.replaceChildren();
+        for (const a of actions || []) box.append(a);
+      }
+      function hideDeployBanner() {
+        const banner = $("cap-deploy-banner");
+        if (banner) banner.classList.add("hidden");
+        const box = $("cap-deploy-banner-actions");
+        if (box) box.replaceChildren();
+      }
+
+      /* deployVersion 发一次人工部署（不带 nodes = 服务端按现有策略选在线候选），
+         返回实际下发的台数（0 台不是「成功」，调用方要如实报）。 */
+      async function deployVersion(name, version) {
+        if (!name || !Number.isInteger(version) || version < 1) return 0;
+        const out = await api(nsPath("capabilities", name) + "/deploy", writeOpts("POST", { version }));
+        const rows = Array.isArray(out && out.deployed) ? out.deployed : out && Array.isArray(out.items) ? out.items : [];
+        return rows.length;
+      }
+
+      /* #575：版本已保存、但没有节点持有它 = 引用方（裸名恒解析到最新版）的新任务派给一个
+         没人跑得动的版本，它们会一直 pending（等久了还把整个实例的写入口压成 503）。
+         所以这条路必须看得见，并且给一条一步就能恢复的路径：部署当前版本。
+         只在「曾经部署过」（status.nodes 非空）时挂：从没部署过的能力没必要被这条横幅占位。 */
+      function renderDeployBanner(m) {
+        if (!m || !m.name || m.version == null || !Array.isArray(m.nodes) || m.nodes.length === 0) {
+          hideDeployBanner();
+          return;
+        }
+        const deployed = (m.conditions || []).find((c) => c && c.type === "Deployed");
+        if (!deployed || deployed.status === "True") {
+          hideDeployBanner();
+          return;
+        }
+        const deploy = el("button", {
+          type: "button",
+          class: "btn btn-sm",
+          text: sub(t("caps.deploy.banner_deploy", "部署 v{v}"), { v: m.version }),
+        });
+        deploy.addEventListener("click", () => deployCurrent());
+        const pick = el("button", {
+          type: "button",
+          class: "btn btn-ghost btn-sm",
+          text: t("caps.deploy.pick_nodes", "选择节点…"),
+        });
+        pick.addEventListener("click", () => openDeploy());
+        showDeployBanner(
+          sub(t("caps.deploy.banner_title", "v{v} 还没有部署到任何节点"), { v: m.version }),
+          t("caps.deploy.banner_body", "用裸名引用它的源与上游能力总是解析到最新版本：它们的新任务会一直等待，直到这个版本被部署。"),
+          [deploy, pick],
+        );
+      }
+
+      async function deployCurrent() {
+        if (BUSY || !META || META.version == null) return;
+        BUSY = true;
+        try {
+          await ready();
+          const count = await deployVersion(META.name, META.version);
+          if (count === 0) {
+            showDeployBanner(
+              sub(t("caps.deploy.banner_title", "v{v} 还没有部署到任何节点"), { v: META.version }),
+              t("caps.deploy.deploy_none", "没有节点可部署（0 台）：先确认节点已授权到本命名空间并在线。"),
+              [],
+            );
+            return;
+          }
+          toast(sub(t("caps.toast.deployed", "已部署（{n} 台）"), { n: count }));
+          await load();
+        } catch (e) {
+          showDeployBanner(
+            sub(t("caps.save.deploy_failed_title", "部署没有成功：{reason}"), { reason: statusLine(e) }),
+            t("caps.deploy.banner_body", "用裸名引用它的源与上游能力总是解析到最新版本：它们的新任务会一直等待，直到这个版本被部署。"),
+            [],
+          );
+        } finally {
+          BUSY = false;
+        }
+      }
       async function reloadAfterConflict() {
         if (!META) return;
         try {
@@ -2232,7 +2338,58 @@
         showBanner("error", sub(t("caps.error.title", "保存失败：{reason}"), { reason }), statusLine(e), []);
       }
 
-      async function submitEditor() {
+      /* #575：内容变了 = 保存会生成**新版本**（内容寻址）。引用方（裸名恒用最新版）的
+         新任务会派给这个新版本，而部署是人工动作 —— 两者组合就是「只保存 = 断流」。
+         所以内容一变就把后果写进表单，并把「保存并部署」做成主按钮。 */
+      function editorContentChanged(form) {
+        if (!EDIT || !EDIT.res) return false;
+        if (!form || form.error) return null; // 输入还没变得可判（错误另由 field 提示）
+        return contentKey(form.spec) !== contentKey(model.capability(EDIT.res).spec);
+      }
+
+      function refreshSaveAffordance() {
+        if (BUSY) return; // 正在提交：按钮上的「保存中…」不能被这轮重算盖掉
+        const warn = $("cap-version-warn");
+        const deployBtn = $("cap-save-deploy");
+        const submit = $("cap-submit");
+        if (!warn || !deployBtn || !submit) return;
+        const m = EDIT && EDIT.res ? model.capability(EDIT.res) : null;
+        const holders = m && Array.isArray(m.nodes) ? m.nodes.map((n) => n.name).filter(Boolean) : [];
+        const online = m && Array.isArray(m.deployCandidates) ? m.deployCandidates.filter((n) => n.online) : [];
+        const changed = editorContentChanged(readForm());
+        const show = changed === true && holders.length > 0;
+        // is-warn 在 JS 里拼（与 showBanner 同形）：静态 class 属性里写它会被死类守卫判成「没有定义」。
+        warn.className = "cap-banner is-warn" + (show ? "" : " hidden");
+        if (show) {
+          $("cap-version-warn-title").textContent = t(
+            "caps.save.warn_title",
+            "保存会生成新版本：节点上跑的仍是当前版本",
+          );
+          let text = sub(
+            t(
+              "caps.save.warn_text",
+              "{nodes} 上跑的是 v{old}。引用它的源与上游能力总是派发最新版本：它们的新任务会等新版本部署后才执行。",
+            ),
+            { nodes: holders.join("、"), old: m.version },
+          );
+          if (!online.length) {
+            text += " " + t("caps.save.warn_no_online", "当前没有在线的部署候选节点：保存后引用方的新任务也会一直等待。");
+          }
+          $("cap-version-warn-text").textContent = text;
+        }
+        if (show && online.length) {
+          deployBtn.classList.remove("hidden");
+          deployBtn.textContent = sub(t("caps.save.and_deploy", "保存并部署到 {n} 台节点"), { n: online.length });
+          submit.className = "btn btn-ghost";
+          submit.textContent = t("caps.save.only", "只保存（暂不部署）");
+        } else {
+          deployBtn.classList.add("hidden");
+          submit.className = "btn";
+          submit.textContent = t("caps.form.save", "保存");
+        }
+      }
+
+      async function submitEditor(mode) {
         if (BUSY || !EDIT) return;
         clearFieldErrors();
         hideBanner();
@@ -2251,8 +2408,31 @@
             // 内容变更 = 新版本（不是 PATCH）：省略 metadata.version 让服务端按内容定版本号，
             // 同一份内容重复保存会折叠到已有版本，不会长出重复行。
             await ready();
-            await api(nsPath("capabilities"), writeOpts("POST", writable(body, { create: true })));
-            toast(sub(t("caps.toast.saved", "已保存能力 {name}"), { name: form.name }));
+            const created = await api(nsPath("capabilities"), writeOpts("POST", writable(body, { create: true })));
+            const newVersion = created && isObj(created.metadata) ? Number(created.metadata.version) : NaN;
+            const wantDeploy = mode === "deploy" && Number.isInteger(newVersion) && newVersion > 0;
+            let deployed = 0;
+            if (wantDeploy) {
+              try {
+                deployed = await deployVersion(form.name, newVersion);
+              } catch (e) {
+                // 版本已经保存成功：不能把一次**部署**失败说成保存失败，也不能丢掉「已保存」这个事实。
+                // 关掉弹层后由常驻横幅继续提示（横幅的可操作性比一条 toast 强得多）。
+                closeEditor();
+                await load();
+                showDeployBanner(
+                  sub(t("caps.save.deploy_failed_title", "部署没有成功：{reason}"), { reason: statusLine(e) }),
+                  t("caps.deploy.banner_body", "用裸名引用它的源与上游能力总是解析到最新版本：它们的新任务会一直等待，直到这个版本被部署。"),
+                  [],
+                );
+                return;
+              }
+            }
+            if (wantDeploy && deployed > 0) {
+              toast(sub(t("caps.toast.deployed", "已部署（{n} 台）"), { n: deployed }));
+            } else {
+              toast(sub(t("caps.toast.saved", "已保存能力 {name}"), { name: form.name }));
+            }
             closeEditor();
             await load();
           } else {
@@ -2275,7 +2455,9 @@
         } finally {
           BUSY = false;
           btn.disabled = false;
-          btn.textContent = t("caps.form.save", "保存");
+          // 失败时输入全部保留：按钮文案也回到当前内容该有的样子（#575：可能是
+          // 「只保存（暂不部署）」+ 生成新版本的提示，而不是笼统的「保存」）。
+          refreshSaveAffordance();
         }
       }
 
@@ -2882,6 +3064,7 @@
           $("cap-body").classList.add("hidden");
           const state = $("cap-state");
           state.classList.remove("hidden");
+          hideDeployBanner();
           const pageErr = isObj(err) ? { status: err.status, requestId: err.requestId } : {};
           state.replaceChildren(loadErrorNode(pageErr, () => load(), { back: listHref() }));
         }
@@ -2905,7 +3088,13 @@
           ENV_ROWS.push({ key: "", mode: "literal", value: "", fieldPath: "" });
           renderEnv();
         });
-        $("cap-submit").addEventListener("click", submitEditor);
+        $("cap-submit").addEventListener("click", () => submitEditor("save"));
+        $("cap-save-deploy").addEventListener("click", () => submitEditor("deploy"));
+        // 内容一改就把「保存会生成新版本」的后果与「保存并部署」摆出来（#575）：
+        // 输入、勾选、行增删都会改变内容，所以三个事件都接；重算本身是幂等的。
+        for (const kind of ["input", "change", "click"]) {
+          $("cap-modal").addEventListener(kind, () => refreshSaveAffordance());
+        }
         $("cap-cancel").addEventListener("click", requestCloseEditor);
         $("cap-modal-close").addEventListener("click", requestCloseEditor);
         $("cap-modal").addEventListener("click", (e) => {

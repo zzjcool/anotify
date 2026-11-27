@@ -348,6 +348,12 @@ message:
     current: 当前
   v4:
     diagnostics: "执行诊断"
+    pending_title: "待执行 · 还没有派发出去"
+    pending_checking: "正在确认原因…"
+    pending_reason_label: "原因："
+    pending_unknown: "中枢暂时找不到能执行这个版本的节点。"
+    pending_next: "到能力详情查看并部署"
+    pending_hint: "部署这个版本后，这条任务会在下一轮派发时被执行。"
     attempt: "尝试 / 上限"
     cancel: "取消任务"
     abandon: "放弃任务"
@@ -1166,6 +1172,17 @@ caps:
     submitting: '部署中…'
     title: '人工部署 {name}'
     version: '目标版本'
+    banner_title: 'v{v} 还没有部署到任何节点'
+    banner_body: '用裸名引用它的源与上游能力总是解析到最新版本：它们的新任务会一直等待，直到这个版本被部署。'
+    banner_deploy: '部署 v{v}'
+    pick_nodes: '选择节点…'
+  save:
+    and_deploy: '保存并部署到 {n} 台节点'
+    only: '只保存（暂不部署）'
+    warn_title: '保存会生成新版本：节点上跑的仍是当前版本'
+    warn_text: '{nodes} 上跑的是 v{old}。引用它的源与上游能力总是派发最新版本：它们的新任务会等新版本部署后才执行。'
+    warn_no_online: '当前没有在线的部署候选节点：保存后引用方的新任务也会一直等待。'
+    deploy_failed_title: '部署没有成功：{reason}'
   detail:
     back: '返回能力列表'
     btn: '详情'

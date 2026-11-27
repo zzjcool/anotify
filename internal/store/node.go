@@ -1597,17 +1597,24 @@ func commandMissing(declared []DeclaredCapability, capName string, capVersion in
 // NodeAvailabilityReason 把 EligibleNodes 的逐节点原因汇总成 NodesAvailable condition 的 reason。
 //
 // 返回 "" = 至少一台可用（condition True / reason Valid）；
-// 否则取**最具体**的那一个（anode.md §6：同时存在离线与解析不出值时先报 NodeOffline）：
-// NodeOffline > NamespaceUnauthorized > ConfigPending > NotDeployed > CommandMissing > ValueMissing。
+// 否则取**最具体**的那一个：
+// NamespaceUnauthorized > ConfigPending > NotDeployed > CommandMissing > ValueMissing，
+// 只有**所有**节点都离线时才报 NodeOffline。
 // 一个节点都没有（reasons 为空）→ NoMatchingNode（capability.md §2.4 的兜底 reason）。
+//
+// 为什么 NodeOffline 排在**在线节点的原因之后**（#575）：NodeOffline 只回答「这台机器现在
+// 不在」，它解释不了「在线节点为什么也没派出去」。旧顺序是「离线一律压住其它原因」，于是
+// 一台与本能力无关的离线节点就能把在线节点的 NotDeployed 盖成 NodeOffline —— 页面于是喊
+// 用户去查网络，而真正要做的是点「部署」。混合场景下先回答在线节点的问题，全部离线才报
+// 离线：这是「该找谁」的最短路径。
 func NodeAvailabilityReason(reasons map[string]string) string {
 	precedence := []string{
-		protocol.ConditionReasonNodeOffline,
 		protocol.ConditionReasonNamespaceUnauthorized,
 		protocol.ConditionReasonConfigPending,
 		protocol.ConditionReasonNotDeployed,
 		protocol.ConditionReasonCommandMissing,
 		protocol.ConditionReasonValueMissing,
+		protocol.ConditionReasonNodeOffline,
 	}
 	sawEligible := false
 	seen := make(map[string]bool, len(precedence))

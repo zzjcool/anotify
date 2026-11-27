@@ -348,6 +348,12 @@ message:
     current: Actual
   v4:
     diagnostics: "Diagnóstico de ejecución"
+    pending_title: "En espera · aún sin despachar"
+    pending_checking: "Comprobando el motivo…"
+    pending_reason_label: "Motivo: "
+    pending_unknown: "Ahora ningún nodo puede ejecutar esta versión."
+    pending_next: "Abrir la capacidad para desplegar"
+    pending_hint: "Cuando esta versión esté desplegada, la tarea se despachará en la siguiente ronda."
     attempt: "Intento / máximo"
     cancel: "Cancelar tarea"
     abandon: "Abandonar tarea"
@@ -1166,6 +1172,17 @@ caps:
     submitting: 'Desplegando…'
     title: 'Despliegue manual de {name}'
     version: 'Versión objetivo'
+    banner_title: 'v{v} aún no está desplegada en ningún nodo'
+    banner_body: 'Las fuentes y capacidades anteriores que la referencian por nombre simple siempre resuelven a la última versión: sus tareas nuevas esperarán hasta que se despliegue esta versión.'
+    banner_deploy: 'Desplegar v{v}'
+    pick_nodes: 'Elegir nodos…'
+  save:
+    and_deploy: 'Guardar y desplegar en {n} nodo(s)'
+    only: 'Solo guardar (sin desplegar)'
+    warn_title: 'Guardar crea una versión nueva: los nodos siguen con la anterior'
+    warn_text: '{nodes} ejecuta v{old}. Las fuentes y capacidades anteriores que la referencian por nombre simple siempre despachan la última versión: sus tareas nuevas esperan a que se despliegue.'
+    warn_no_online: 'Ahora no hay ningún candidato de despliegue en línea: tras guardar, las tareas que la referencian también esperarán.'
+    deploy_failed_title: 'El despliegue falló: {reason}'
   detail:
     back: 'Volver a capacidades'
     btn: 'Detalles'
