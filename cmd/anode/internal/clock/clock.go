@@ -3,12 +3,12 @@
 // 生产默认是真实时间；测试注入假时钟推进 20s / 60s / 5s，而**不把生产默认
 // 缩到测试速度**（contract：lease TTL60 / renew20 / TERM grace5 是协议常量）。
 //
-// 只有两个能力：读当前时间、起一个一次性定时器。没有 Sleep/Ticker：运行器里
-// 的周期行为（续租）由「下一次事件时间 = min(续租间隔, 到期时间)」算出，一个
-// 定时器就够，避免测试时钟里出现「ticker 自己漂移」的不可控因素。
+// 只有两个能力：读当前时间、起一个一次性定时器。没有 Sleep/Ticker：续租由「下一次
+// 事件时间 = min(续租间隔, 到期时间)」算出，一个定时器就够，ticker 自己漂移无从发生。
 package clock
 
 import (
+	"slices"
 	"sync"
 	"time"
 )
@@ -50,9 +50,8 @@ type realTimer struct{ t *time.Timer }
 func (r *realTimer) C() <-chan time.Time { return r.t.C }
 func (r *realTimer) Stop() bool          { return r.t.Stop() }
 
-// Fake 是可推进的假时钟（只在测试里用）。
-//
-// 并发安全：运行器的定时器与测试的 Advance 会在不同 goroutine 上跑。
+// Fake 是可推进的假时钟（只在测试里用）；并发安全：运行器注册定时器与测试的
+// Advance 在不同 goroutine 上跑。
 type Fake struct {
 	mu     sync.Mutex
 	now    time.Time
@@ -93,8 +92,7 @@ func (f *Fake) newTimerAtLocked(target time.Time) Timer {
 		ch:    make(chan time.Time, 1),
 	}
 	if !target.After(f.now) {
-		// Buffered delivery needs no Advance or receiver scheduling. Mark it
-		// fired under the same lock so Stop/Pending see a settled one-shot.
+		// Buffered delivery needs no Advance/receiver scheduling; mark fired under the same lock so Stop/Pending see a settled one-shot.
 		t.fired = true
 		t.ch <- f.now
 	} else {
@@ -103,9 +101,8 @@ func (f *Fake) newTimerAtLocked(target time.Time) Timer {
 	return t
 }
 
-// Advance 把时间往前走 d，并按到期顺序触发定时器。
-//
-// 触发时把定时器从表里摘掉（一次性）。同一个定时器只发一次信号（缓冲 1）。
+// Advance 把时间往前走 d，并按到期顺序触发定时器；触发即从表里摘掉（一次性），
+// 同一个定时器只发一次信号（缓冲 1）。
 func (f *Fake) Advance(d time.Duration) {
 	f.mu.Lock()
 	if d > 0 {
@@ -132,7 +129,8 @@ func (f *Fake) Advance(d time.Duration) {
 	}
 }
 
-// Pending 返回还没触发的定时器数量（测试诊断用）。
+// Pending 返回还没触发的定时器数量（测试诊断用）。它只回答「有几个」：要推进**某一条**
+// 定时器请用 PendingDue（数量会被租约续租/lifecycle 超时/copy 宽限凑出来，anotify#696）。
 func (f *Fake) Pending() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -143,6 +141,22 @@ func (f *Fake) Pending() int {
 		}
 	}
 	return n
+}
+
+// PendingDue 是各条未触发定时器距到点的剩余时间（升序）：测试用它证明**某一条**
+// 武装了（如 leader 退出后的 5s copy 宽限），而不是数「有几个定时器」（#696）。
+func (f *Fake) PendingDue() []time.Duration {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]time.Duration, 0, len(f.timers))
+	for _, t := range f.timers {
+		if t.stopped || t.fired {
+			continue
+		}
+		out = append(out, t.due.Sub(f.now))
+	}
+	slices.Sort(out)
+	return out
 }
 
 type fakeTimer struct {
