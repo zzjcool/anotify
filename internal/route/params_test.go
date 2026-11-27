@@ -331,3 +331,97 @@ func TestRuntimeRejectsUnusableSchemas(t *testing.T) {
 		})
 	}
 }
+
+const keywordParamsSchema = `{
+	"type":"object",
+	"additionalProperties":false,
+	"required":["n","env"],
+	"properties":{
+		"n":{"type":"integer","minimum":1,"maximum":10},
+		"env":{"type":"string","enum":["dev","prod"]},
+		"name":{"type":"string","minLength":3,"maxLength":5},
+		"tags":{"type":"array","maxItems":1,"items":{"type":"string"}}
+	}
+}`
+
+func TestPrepareParamsEnforcesSchemaKeywords(t *testing.T) {
+	cases := []struct {
+		name  string
+		input map[string]any
+		field string
+	}{
+		{"minimum", map[string]any{"n": json.Number("0"), "env": "dev"}, "params.n"},
+		{"maximum", map[string]any{"n": json.Number("100"), "env": "dev"}, "params.n"},
+		{"enum", map[string]any{"n": json.Number("5"), "env": "staging"}, "params.env"},
+		{"minLength", map[string]any{"n": json.Number("5"), "env": "dev", "name": "a"}, "params.name"},
+		{"maxLength", map[string]any{"n": json.Number("5"), "env": "dev", "name": "abcdefgh"}, "params.name"},
+		{"maxItems", map[string]any{"n": json.Number("5"), "env": "dev", "tags": []any{json.Number("1"), json.Number("2")}}, "params.tags"},
+		{"items.type", map[string]any{"n": json.Number("5"), "env": "dev", "tags": []any{json.Number("1")}}, "params.tags"},
+		{"additionalProperties:false", map[string]any{"n": json.Number("5"), "env": "dev", "typo": "x"}, "params.typo"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params, prune := PrepareParams(json.RawMessage(keywordParamsSchema), tc.input)
+			if prune == nil {
+				t.Fatalf("输入 %v 应被拒，实际建出 params %s", tc.input, params)
+			}
+			if prune.Reason != protocol.ReasonParamType {
+				t.Fatalf("reason = %q，want param_type（剪枝码是封闭词表，不新造码）", prune.Reason)
+			}
+			if prune.Field != tc.field {
+				t.Fatalf("field = %q，want %q（detail=%q）", prune.Field, tc.field, prune.Detail)
+			}
+		})
+	}
+	valid := map[string]any{"n": json.Number("10"), "env": "prod", "name": "abcd", "tags": []any{"x"}}
+	if _, prune := PrepareParams(json.RawMessage(keywordParamsSchema), valid); prune != nil {
+		t.Fatalf("合法输入不该被拒：%+v", prune)
+	}
+}
+
+func TestPrepareParamsAdditionalPropertiesSemantics(t *testing.T) {
+	omitted := json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}}}`)
+	params, prune := PrepareParams(omitted, map[string]any{"a": "x", "typo": 1})
+	if prune != nil {
+		t.Fatalf("省略 additionalProperties 时多余字段应忽略：%+v", prune)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(params, &got); err != nil {
+		t.Fatalf("params 不是合法 JSON: %v", err)
+	}
+	if _, ok := got["typo"]; ok {
+		t.Fatalf("多余字段不得进入任务 params：%v", got)
+	}
+	strict := json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"a":{"type":"string"}}}`)
+	if _, prune := PrepareParams(strict, map[string]any{"a": "x", "typo": 1}); prune == nil || prune.Field != "params.typo" {
+		t.Fatalf("additionalProperties:false 下多余字段应被拒（field=params.typo），得到 %+v", prune)
+	}
+}
+
+func TestValidatePayloadEnforcesSchemaKeywords(t *testing.T) {
+	sch := json.RawMessage(`{"type":"object","additionalProperties":false,"required":["env"],
+		"properties":{"env":{"type":"string","enum":["dev","prod"]},"n":{"type":"integer","minimum":1}}}`)
+	cases := []struct {
+		name    string
+		payload map[string]any
+		field   string
+	}{
+		{"enum", map[string]any{"env": "staging"}, "payload.env"},
+		{"minimum", map[string]any{"env": "dev", "n": json.Number("0")}, "payload.n"},
+		{"additionalProperties:false", map[string]any{"env": "dev", "typo": 1}, "payload.typo"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prune := ValidatePayload(sch, tc.payload)
+			if prune == nil || prune.Reason != protocol.ReasonEventSchema {
+				t.Fatalf("应剪枝 event_schema，得到 %+v", prune)
+			}
+			if prune.Field != tc.field {
+				t.Fatalf("field = %q，want %q（detail=%q）", prune.Field, tc.field, prune.Detail)
+			}
+		})
+	}
+	if prune := ValidatePayload(sch, map[string]any{"env": "prod", "n": json.Number("3")}); prune != nil {
+		t.Fatalf("合法载荷不该剪枝：%+v", prune)
+	}
+}

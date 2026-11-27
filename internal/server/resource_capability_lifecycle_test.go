@@ -414,6 +414,61 @@ func TestCapabilityTestParamErrorIs400(t *testing.T) {
 	}
 }
 
+func TestCapabilityTestEnforcesParamSchemaKeywords(t *testing.T) {
+	env := newCapTestEnv(t)
+	body := capabilityBodyWithParams(t, "keyword-check", "#!/bin/sh\necho check\n", map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"n", "env"},
+		"properties": map[string]any{
+			"n":    map[string]any{"type": "integer", "minimum": 1, "maximum": 10},
+			"env":  map[string]any{"type": "string", "enum": []any{"dev", "prod"}},
+			"name": map[string]any{"type": "string", "minLength": 3, "maxLength": 5},
+			"tags": map[string]any{"type": "array", "maxItems": 1, "items": map[string]any{"type": "string"}},
+		},
+	})
+	if rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "", ""), body); rec.Code != http.StatusCreated {
+		t.Fatalf("create: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	cases := []struct {
+		name   string
+		params map[string]any
+		field  string
+	}{
+		{"maximum", map[string]any{"n": 100, "env": "dev"}, "params.n"},
+		{"minimum", map[string]any{"n": 0, "env": "dev"}, "params.n"},
+		{"enum", map[string]any{"n": 5, "env": "staging"}, "params.env"},
+		{"minLength", map[string]any{"n": 5, "env": "dev", "name": "a"}, "params.name"},
+		{"maxLength", map[string]any{"n": 5, "env": "dev", "name": "abcdefgh"}, "params.name"},
+		{"maxItems+items", map[string]any{"n": 5, "env": "dev", "tags": []any{1, 2, 3}}, "params.tags"},
+		{"additionalProperties:false", map[string]any{"n": 5, "env": "dev", "typo": "x"}, "params.typo"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "keyword-check", "test"),
+				map[string]any{"params": tc.params})
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("违反 schema 关键字应 400，实际 %d body=%s", rec.Code, rec.Body.String())
+			}
+			doc := decodeCapJSON(t, rec)
+			if got := capString(t, doc, "reason"); got != "param_type" {
+				t.Fatalf("reason = %q，want param_type", got)
+			}
+			causes := capArray(t, capObject(t, doc["details"], "details")["causes"], "details.causes")
+			first := capObject(t, causes[0], "causes[0]")
+			if field := capString(t, first, "field"); field != tc.field {
+				t.Fatalf("causes[0].field = %q，want %q（body=%s）", field, tc.field, rec.Body.String())
+			}
+		})
+	}
+	rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "keyword-check", "test"),
+		map[string]any{"params": map[string]any{"n": 10, "env": "prod", "name": "abcd", "tags": []any{"x"}}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("合法参数应 200，实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 // ---------- 6) 不存在的版本 / 能力 → 404 ----------
 
 // TestCapabilityTestUnknownVersionIs404 钉住「显式版本不存在」是 404，不是 400 也不是 500。

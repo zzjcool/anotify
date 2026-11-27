@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -139,5 +140,36 @@ func TestFromRawRejectsRootBoolean(t *testing.T) { // 布尔**子** schema 受�
 	}
 	if sch, err := FromRaw(nil); err != nil || sch != nil {
 		t.Fatalf("没声明 schema = 不校验，得到 %v / %v", sch, err)
+	}
+}
+
+func TestValueUnderstandsJSONNumbers(t *testing.T) {
+	sch := map[string]any{"type": "object", "properties": map[string]any{
+		"n":     map[string]any{"type": "integer", "minimum": 1, "maximum": 10},
+		"ratio": map[string]any{"type": "number", "minimum": 0.5},
+	}}
+	good := []map[string]any{
+		{"n": json.Number("10")},
+		{"n": json.Number("3"), "ratio": json.Number("0.5")},
+		{"ratio": json.Number("1e3")},
+	}
+	for i, v := range good {
+		if msg := Value(sch, v, "params"); msg != "" {
+			t.Fatalf("合法输入 #%d %v 被拒：%s", i, v, msg)
+		}
+	}
+	bad := []map[string]any{
+		{"n": json.Number("0")},
+		{"n": json.Number("11")},
+		{"n": json.Number("1.5")},
+		{"ratio": json.Number("0.4")},
+	}
+	for i, v := range bad {
+		if msg := Value(sch, v, "params"); msg == "" {
+			t.Fatalf("非法输入 #%d %v 应被拒", i, v)
+		}
+	}
+	if msg := Value(map[string]any{"enum": []any{json.Number("1"), "a"}}, json.Number("1"), "x"); msg != "" {
+		t.Fatalf("enum 的数值比较应跨 float64/json.Number，得到 %q", msg)
 	}
 }

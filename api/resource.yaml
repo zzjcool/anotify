@@ -2705,6 +2705,20 @@ components:
             `details.causes[].field` 指到 `spec.params.properties.<name>.pattern`。
             试跑与派发期执行 `pattern`：只约束字符串值，整串匹配请自带 `^...$`
             （RE2 默认子串匹配）。
+
+            受控子集里的关键字**真的执行**（#580）：`enum` / `minimum` / `maximum` /
+            `minLength` / `maxLength` / `minItems` / `maxItems` / `minProperties` /
+            `maxProperties` / `items` / `prefixItems`。违反 → 试跑 400 `param_type`
+            （`details.causes[].field` = `params.<name>`）、派发记
+            `pruned[].reason=param_type`（响应仍 200，事件已接收、下游不建 task）。
+            `additionalProperties` 省略或 `true` 时多余字段仍按同名直取忽略；显式
+            `false` 时多余字段是错误（试跑 400 / 派发剪枝），不再悄悄删掉。
+
+            表外关键字（`oneOf` / `anyOf` / `$ref` / `format` / `multipleOf` / …）与
+            未知 `type` 名（如 `"strin"`）写入期就 400 `param_schema`，
+            `details.causes[].field` 指到 `spec.params.properties.<name>.<keyword>`——
+            收下但不执行比拒掉更糟（作者会以为闸存在）。纯注解（`title` / `description` /
+            `examples` 等）接受但不求值。
           additionalProperties: true
         next:
           type: array

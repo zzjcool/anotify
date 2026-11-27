@@ -23,8 +23,23 @@ func TestParseParamsAvailability(t *testing.T) {
 		},
 		{name: "type 数组含 object", raw: `{"type":["object","null"]}`, wantPaths: nil},
 		{
-			name:      "未知类型名", // 运行期放行（JSON Schema 扩展）；写入期不许更严
+			name:      "未知类型名", // #580：笔误（strin）会让类型判定静默失效，不能 201 收下
 			raw:       `{"type":"object","properties":{"x":{"type":"weird"}}}`,
+			wantPaths: []string{"properties.x.type"},
+		},
+		{
+			name:      "表外关键字（oneOf）",
+			raw:       `{"type":"object","properties":{"x":{"oneOf":[{"type":"string"}]}}}`,
+			wantPaths: []string{"properties.x.oneOf"},
+		},
+		{
+			name:      "表外关键字（$ref）",
+			raw:       `{"type":"object","properties":{"x":{"$ref":"#/defs/a"}}}`,
+			wantPaths: []string{"properties.x.$ref"},
+		},
+		{
+			name:      "注释类关键字不参与校验，接受",
+			raw:       `{"type":"object","title":"输入","properties":{"x":{"type":"string","description":"名字","examples":["a"]}}}`,
 			wantPaths: nil,
 		},
 		{name: "type 不是 object", raw: `{"type":"string"}`, wantPaths: []string{"type"}},
@@ -196,5 +211,99 @@ func TestParseParamsKeepsSubsetSemantics(t *testing.T) {
 	}
 	if issue := pat.Properties["p"].Check("p", 3); issue != nil {
 		t.Fatalf("非字符串值不该被 pattern 判失败：%+v", issue)
+	}
+}
+
+func TestParseParamsRejectsUnsupportedKeywordsAnywhere(t *testing.T) {
+	cases := []struct{ name, raw, path string }{
+		{"根节点", `{"type":"object","anyOf":[{"type":"object"}]}`, "anyOf"},
+		{"属性", `{"type":"object","properties":{"a":{"type":"string","format":"uri"}}}`, "properties.a.format"},
+		{"嵌套属性", `{"type":"object","properties":{"a":{"type":"object","properties":{"b":{"type":"number","multipleOf":2}}}}}`, "properties.a.properties.b.multipleOf"},
+		{"items", `{"type":"object","properties":{"a":{"type":"array","items":{"type":"string","const":"x"}}}}`, "properties.a.items.const"},
+		{"prefixItems", `{"type":"object","properties":{"a":{"type":"array","prefixItems":[{"type":"string","uniqueItems":true}]}}}`, "properties.a.prefixItems[0].uniqueItems"},
+		{"additionalProperties 子 schema", `{"type":"object","additionalProperties":{"type":"string","then":{"type":"string"}}}`, "additionalProperties.then"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, problems := ParseParams(json.RawMessage(tc.raw))
+			if len(problems) == 0 {
+				t.Fatalf("%s 应被判为不可用", tc.raw)
+			}
+			if problems[0].Path != tc.path || problems[0].Keyword != KeywordUnsupported {
+				t.Fatalf("首个问题 = {%q %q}，want {%q %q}（全部：%v）",
+					problems[0].Path, problems[0].Keyword, tc.path, KeywordUnsupported, problems)
+			}
+			if !strings.Contains(problems[0].Msg, "enum") {
+				t.Fatalf("400 message 应列出受支持的关键字（至少 enum），得到 %q", problems[0].Msg)
+			}
+		})
+	}
+}
+
+func TestParseParamsAdditionalPropertiesFalse(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want bool
+	}{
+		{`{"type":"object"}`, false},
+		{`{"type":"object","additionalProperties":true}`, false},
+		{`{"type":"object","additionalProperties":false}`, true},
+	}
+	for _, tc := range cases {
+		params, problems := ParseParams(json.RawMessage(tc.raw))
+		if len(problems) > 0 {
+			t.Fatalf("%s 应是合法 schema：%v", tc.raw, problems)
+		}
+		if params.RejectsAdditional != tc.want {
+			t.Fatalf("%s：RejectsAdditional = %v，want %v", tc.raw, params.RejectsAdditional, tc.want)
+		}
+	}
+}
+
+func TestParamPropertyCheckKeywords(t *testing.T) {
+	params, problems := ParseParams(json.RawMessage(`{"type":"object","properties":{
+		"n":{"type":"integer","minimum":1,"maximum":10},
+		"env":{"type":"string","enum":["dev","prod"]},
+		"name":{"type":"string","minLength":3,"maxLength":5},
+		"tags":{"type":"array","maxItems":1,"items":{"type":"string"}},
+		"meta":{"type":"object","additionalProperties":false,"properties":{"dir":{"type":"string"}}}
+	}}`))
+	if len(problems) > 0 {
+		t.Fatalf("合法 schema 不应有问题：%v", problems)
+	}
+	bad := []struct {
+		param string
+		value any
+	}{
+		{"n", json.Number("100")},
+		{"n", json.Number("0")},
+		{"env", "staging"},
+		{"name", "a"},
+		{"name", "abcdefgh"},
+		{"tags", []any{json.Number("1"), json.Number("2")}},
+		{"tags", []any{json.Number("1")}},
+		{"meta", map[string]any{"dir": "a", "typo": true}},
+	}
+	for _, tc := range bad {
+		if issue := params.Properties[tc.param].CheckKeywords(tc.param, tc.value); issue == nil {
+			t.Fatalf("参数 %s = %#v 应被关键字闸拒掉", tc.param, tc.value)
+		} else if issue.Field != tc.param {
+			t.Fatalf("参数 %s issue.Field = %q，want %q", tc.param, issue.Field, tc.param)
+		}
+	}
+	good := []struct {
+		param string
+		value any
+	}{
+		{"n", json.Number("10")},
+		{"env", "prod"},
+		{"name", "abcd"},
+		{"tags", []any{"x"}},
+		{"meta", map[string]any{"dir": "a"}},
+	}
+	for _, tc := range good {
+		if issue := params.Properties[tc.param].CheckKeywords(tc.param, tc.value); issue != nil {
+			t.Fatalf("参数 %s = %#v 不该被拒：%+v", tc.param, tc.value, issue)
+		}
 	}
 }
