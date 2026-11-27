@@ -1500,8 +1500,8 @@ paths:
       description: |
         本文件里**唯一**不以 `/v1/` 开头的路径（`servers` 的 `url` 是 `/`，所以拼出来的就是
         `/agent-login.sh`）。返回 shell 脚本正文（`text/x-sh`），供
-        `curl -fsSL <host>/agent-login.sh | sh` 用：脚本内部走 `POST /v1/cli-auth/sessions`
-        + 轮询领 Key。
+        `curl -fsSL <host>/agent-login.sh | ANOTIFY_BASE_URL=<host> sh` 用（脚本只从该变量或
+        首个位置参数取中枢地址，缺了就退出 1）：脚本内部走 `POST /v1/cli-auth/sessions` + 轮询领 Key。
 
         匿名、`no-store`。脚本文件不存在（静态资源未打包 / 未挂载）时 `404`（「登录脚本暂不可用」），
         读不到大小 `500`。

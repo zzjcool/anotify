@@ -597,6 +597,38 @@ async function webVerify(server, seedSession) {
 		await ctx.close();
 	}
 
+	// AC-36 #577 review r2：上一版是仓内路径 `sh web/agent-login.sh` + 缺 ANOTIFY_BASE_URL，照抄退 1——
+	// 现在断言可见文字 == 「复制」拿到的字，且都是本实例能跑的命令。
+	{
+		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
+		const u = new URL(server.base);
+		await ctx.addCookies([{ name: "anotify_session", value: seedSession, domain: u.hostname, path: "/", httpOnly: true }]);
+		const page = await ctx.newPage();
+		await page.setViewportSize({ width: 1280, height: 800 });
+		const errs = [];
+		page.on("pageerror", (e) => errs.push(String(e)));
+		await page.goto(server.base + "/index.html", { waitUntil: "load", timeout: 15000 });
+		await H.waitForAppReady(page, "overview");
+		H.check("AC-36 首页无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 100));
+		const box = await page.evaluate(() => {
+			const code = document.getElementById("qs-cmd-text");
+			const btn = document.querySelector("#quickstart .qs-cmd [data-copy-text]");
+			return {
+				visible: code ? code.textContent.trim() : null,
+				copied: btn ? String(btn.dataset.copyText || "").trim() : null,
+			};
+		});
+		const cmd = box.visible || "";
+		H.check("AC-36 首页横幅有接入命令", !!cmd, "找不到 #qs-cmd-text");
+		H.eq("AC-36 显示文本 = 复制文本", box.visible, box.copied);
+		H.check("AC-36 命令取本实例分发的脚本", cmd.includes(server.base + "/agent-login.sh"), `cmd=${cmd}`);
+		H.check("AC-36 命令带 ANOTIFY_BASE_URL", cmd.includes("ANOTIFY_BASE_URL=" + server.base), `cmd=${cmd}`);
+		H.check("AC-36 不回落到仓内路径", !cmd.includes("web/agent-login.sh"), `cmd=${cmd}`);
+		await page.close();
+		await ctx.close();
+	}
+
 	await browser.close();
 }
 
@@ -605,9 +637,7 @@ async function scriptE2E(server, seedSession) {
 	console.log("\n  -- 脚本端到端（AC-21/23/26/27）--");
 	const home = H.mkdtempTmp("anotify-script-");
 	try {
-		// 先建一个会话拿到 userCode（脚本会自己建会话，但我们需要在它打印短码后 approve；
-		// 这里改成：直接驱动脚本，脚本建会话后我们无法立即知道 sessionId。
-		// 方案：脚本建会话 → 我们从 stdout 里 grep 出 userCode → 用 seed session 查 by-code 拿 sid → approve）
+		// 驱动脚本 → 从 stdout grep 短码 → 用 seed session 查 by-code 拿 sid → approve
 		const scriptPath = path.join(H.ROOT_DIR, "web/agent-login.sh");
 		const env = Object.assign({}, process.env, {
 			ANOTIFY_BASE_URL: server.base,

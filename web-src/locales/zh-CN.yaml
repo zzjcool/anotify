@@ -245,14 +245,14 @@ index:
     subtitle: Agent 上报 · 事件流 · 任务链
     recommended: 推荐方式
     copy: 复制
-    cmd_install: sh web/agent-login.sh
+    cmd_install: 'curl -fsSL {base}/agent-login.sh | ANOTIFY_BASE_URL={base} sh'
     steps_short: 登录授权 → 建源 → 上报事件
     copy_prompt: 复制完整指引
     docs: 查看文档 →
     curl_example_title: 部署完成
     cmd_a: '请帮我把 Agent 的完成事件接到 Anotify：
 
-      1. 运行 sh web/agent-login.sh，按提示在浏览器批准授权，凭证会写到本机
+      1. 运行 curl -fsSL {base}/agent-login.sh | ANOTIFY_BASE_URL={base} sh，按提示在浏览器批准授权，凭证会写到本机
 
       2. 在 sources.html 新建一个手动源，名字用 agent
 
@@ -739,6 +739,7 @@ docs:
     note: 事件入库即返回 200。即使派发失败也是 200——事件不会因为下游出错而丢失，你可以稍后重放。
     curl:
       title: curl 示例
+      prereq: '示例里的源 <code class="doc-code">agent</code> 必须先建好（见「接入 Agent」第 1 步），否则照抄会得到 404 source not found。'
   node:
     intro: '节点是跑代码的地方。它主动连中枢、声明自己能跑哪些能力，然后接收 assign 帧干活。'
     connect:
@@ -761,6 +762,9 @@ docs:
     step2:
       title: 任务结束时上报
       desc: 在 Agent 结束事件（如 pi 的 <code class="doc-code">agent_settled</code>）或脚本末尾，携带 Key 发 <code class="doc-code">POST /v1/namespaces/{namespace}/events</code>（namespace 换成你的命名空间）。
+    login:
+      title: 也可以用脚本代建 Key
+      note: '在本机运行下面的命令并在浏览器里批准，凭证会写到 <code class="doc-code">~/.config/anotify/credentials.json</code>。<code class="doc-code">ANOTIFY_BASE_URL</code> 与命令里的域名都换成你的中枢地址（两处一致）——脚本只从它或第一个位置参数取地址，缺了就退出。'
     curl:
       title: 最小接入 · 一行 curl 上报一条事件
     journey:
@@ -2315,7 +2319,7 @@ ui:
     delta_na: 暂无对比
     spark: 近 7 日趋势
   index:
-    quickstart_hint: 一句话让 Agent 自动装好
+    quickstart_hint: 一条命令拿到本机上报凭证
     pull_hint: 下拉刷新
     pull_ready: 松开刷新
     pull_loading: 正在刷新…

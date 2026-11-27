@@ -245,14 +245,14 @@ index:
     subtitle: Agent events · event stream · task chains
     recommended: Recommended
     copy: Copy
-    cmd_install: sh web/agent-login.sh
+    cmd_install: 'curl -fsSL {base}/agent-login.sh | ANOTIFY_BASE_URL={base} sh'
     steps_short: Sign in → Create source → Report event
     copy_prompt: Copy full guide
     docs: Docs →
     curl_example_title: Deploy done
     cmd_a: 'Help me wire Agent completion events into Anotify:
 
-      1. Run sh web/agent-login.sh, approve it in the browser when prompted, and the credential is written on this machine
+      1. Run curl -fsSL {base}/agent-login.sh | ANOTIFY_BASE_URL={base} sh, approve it in the browser when prompted, and the credential is written on this machine
 
       2. Create a Manual source named agent on sources.html
 
@@ -739,6 +739,7 @@ docs:
     note: A 200 is returned as soon as the event is stored. Dispatch failures still return 200 — events are never lost because a downstream step failed; you can replay later.
     curl:
       title: curl example
+      prereq: 'The <code class="doc-code">agent</code> source in the example must exist first (step 1 of Connect Agent); otherwise the copied command returns 404 source not found.'
   node:
     intro: 'Nodes run code. A node connects to the hub, declares which capabilities it can run, then takes assign frames.'
     connect:
@@ -761,6 +762,9 @@ docs:
     step2:
       title: Report when the task ends
       desc: On an Agent completion event (e.g. pi's <code class="doc-code">agent_settled</code>) or at the end of a script, include the Key and <code class="doc-code">POST /v1/namespaces/{namespace}/events</code> (namespace = your namespace).
+    login:
+      title: Or let the script create the Key
+      note: 'Run the command below on your machine and approve it in the browser; the credential is written to <code class="doc-code">~/.config/anotify/credentials.json</code>. Replace <code class="doc-code">ANOTIFY_BASE_URL</code> and the domain in the command with your hub URL (both must match) — the script takes the address from that variable or its first positional argument and exits without one.'
     curl:
       title: Minimal setup · one curl to report an event
     journey:
@@ -2313,7 +2317,7 @@ ui:
     delta_na: No comparison yet
     spark: 7-day trend
   index:
-    quickstart_hint: One line and your agent is set up
+    quickstart_hint: One command to get a reporting key on this machine
     pull_hint: Pull to refresh
     pull_ready: Release to refresh
     pull_loading: Refreshing…

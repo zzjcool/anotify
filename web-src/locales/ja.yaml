@@ -245,14 +245,14 @@ index:
     subtitle: Agent のイベント · イベントストリーム · タスク連鎖
     recommended: おすすめ
     copy: コピー
-    cmd_install: sh web/agent-login.sh
+    cmd_install: 'curl -fsSL {base}/agent-login.sh | ANOTIFY_BASE_URL={base} sh'
     steps_short: ログイン承認 → ソース作成 → イベント上報
     copy_prompt: 完全な手順をコピー
     docs: ドキュメント →
     curl_example_title: デプロイ完了
     cmd_a: 'Agent の完了イベントを Anotify に接続してください：
 
-      1. sh web/agent-login.sh を実行し、ブラウザで承認すると証明書が本機に保存されます
+      1. curl -fsSL {base}/agent-login.sh | ANOTIFY_BASE_URL={base} sh を実行し、ブラウザで承認すると証明書が本機に保存されます
 
       2. sources.html で手動ソースを agent という名前で作成
 
@@ -739,6 +739,7 @@ docs:
     note: イベントを保存した時点で 200 を返します。派発に失敗しても 200 です — 下流の失敗でイベントが失われることはなく、後から再送できます。
     curl:
       title: curl の例
+      prereq: '例のソース <code class="doc-code">agent</code> を先に作成してください（「Agent 連携」の手順 1）。無いまま実行すると 404 source not found になります。'
   node:
     intro: 'ノードはコードを実行する側です。ハブに接続し、実行できる能力を宣言して assign フレームを受け取ります。'
     connect:
@@ -761,6 +762,9 @@ docs:
     step2:
       title: タスク終了時に上報
       desc: Agent の終了イベント（例：pi の <code class="doc-code">agent_settled</code>）またはスクリプトの末尾で、Key を添えて <code class="doc-code">POST /v1/namespaces/{namespace}/events</code> を送信します（namespace は自分の名前空間に置き換え）。
+    login:
+      title: スクリプトでキーを作ることもできます
+      note: '次のコマンドを本機で実行してブラウザで承認すると、証明書が <code class="doc-code">~/.config/anotify/credentials.json</code> に保存されます。<code class="doc-code">ANOTIFY_BASE_URL</code> とコマンド内のドメインを自分のハブのアドレスに置き換えてください（2 か所とも同じ値）。スクリプトはこの環境変数か最初の位置引数しか見ないため、無ければ終了します。'
     curl:
       title: 最小構成 · curl 一行でイベントを上報
     journey:
@@ -2313,7 +2317,7 @@ ui:
     delta_na: 比較データなし
     spark: 直近7日間の推移
   index:
-    quickstart_hint: 一行で Agent を導入
+    quickstart_hint: コマンド 1 本で本機の上報用キーを取得
     pull_hint: 引っ張って更新
     pull_ready: 離して更新
     pull_loading: 更新中…

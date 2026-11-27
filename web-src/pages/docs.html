@@ -856,6 +856,19 @@
             </div>
           </div>
 
+          <div class="doc-note">{{tHTML "docs.agent.login.note"}}</div>
+          <div class="code-block">
+            <div class="code-head">
+              <span>{{t "docs.agent.login.title"}}</span
+              ><button class="copy-btn" onclick="copyBlock(this)">
+                {{t "docs.copy"}}
+              </button>
+            </div>
+            <div class="code-body">
+              curl -fsSL https://{{t "docs.your_domain"}}/agent-login.sh | ANOTIFY_BASE_URL=https://{{t "docs.your_domain"}} sh
+            </div>
+          </div>
+
           <div class="code-block mt-4">
             <div class="code-head">
               <span>{{t "docs.agent.curl.title"}}</span
@@ -1125,6 +1138,7 @@
               {{t "docs.events.curl.title"}}
             </summary>
             <div class="doc-fold-body">
+              <div class="doc-note">{{tHTML "docs.events.curl.prereq"}}</div>
               <div class="code-block">
                 <div class="code-head">
                   <span>{{t "docs.events.curl.title"}}</span
@@ -1141,8 +1155,8 @@
                   <span class="tk-str">"Content-Type: application/json"</span> \
                   -d
                   <span class="tk-str"
-                    >'{ "source": "github", "type": "pull_request.opened",
-                    "id": "pr-1234-opened", "payload": { "pr": 1234, "repo":
+                    >'{ "source": "agent", "type": "agent_done",
+                    "id": "delivery-1", "payload": { "repo":
                     "acme/api" } }'</span
                   >
                 </div>
@@ -1282,7 +1296,7 @@ GET /v1/system/config</pre>
   Anotify.mountLayout({
     active: "api",
     title: Anotify.t("docs.title", "接入文档"),
-    subtitle: Anotify.t("docs.subtitle", "Agent 上报 · Web Push · WebSocket"),
+    subtitle: Anotify.t("docs.subtitle", "Agent 上报 · 事件流 · 任务链"),
   });
 
   /* 代码块可横向滚动标记（DOC-1）：

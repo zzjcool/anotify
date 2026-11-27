@@ -245,14 +245,14 @@ index:
     subtitle: Eventos del Agent · flujo de eventos · cadenas de tareas
     recommended: Recomendado
     copy: Copiar
-    cmd_install: sh web/agent-login.sh
+    cmd_install: 'curl -fsSL {base}/agent-login.sh | ANOTIFY_BASE_URL={base} sh'
     steps_short: Iniciar sesión → Crear fuente → Reportar evento
     copy_prompt: Copiar guía completa
     docs: Ver docs →
     curl_example_title: Despliegue listo
     cmd_a: 'Conecta los eventos de finalización del Agent a Anotify:
 
-      1. Ejecuta sh web/agent-login.sh, apruébalo en el navegador y la credencial queda guardada en esta máquina
+      1. Ejecuta curl -fsSL {base}/agent-login.sh | ANOTIFY_BASE_URL={base} sh, apruébalo en el navegador y la credencial queda guardada en esta máquina
 
       2. Crea una fuente Manual llamada agent en sources.html
 
@@ -739,6 +739,7 @@ docs:
     note: Devuelve 200 en cuanto el evento se guarda. Un fallo de despacho también devuelve 200 — los eventos no se pierden por un error posterior; puedes reenviarlos luego.
     curl:
       title: ejemplo curl
+      prereq: 'La fuente <code class="doc-code">agent</code> del ejemplo debe existir primero (paso 1 de Conectar Agent); si no, el comando copiado devuelve 404 source not found.'
   node:
     intro: 'Los nodos ejecutan código. Se conectan al hub, declaran qué capacidades pueden ejecutar y aceptan los frames assign.'
     connect:
@@ -761,6 +762,9 @@ docs:
     step2:
       title: Reportar al terminar la tarea
       desc: En un evento de finalización del Agent (p. ej. <code class="doc-code">agent_settled</code> de pi) o al final del script, incluya la Key y haga <code class="doc-code">POST /v1/namespaces/{namespace}/events</code> (namespace = su espacio de nombres).
+    login:
+      title: O deja que el script cree la Key
+      note: 'Ejecuta el comando en tu máquina y apruébalo en el navegador; la credencial se guarda en <code class="doc-code">~/.config/anotify/credentials.json</code>. Cambia <code class="doc-code">ANOTIFY_BASE_URL</code> y el dominio del comando por la dirección de tu hub (deben coincidir): el script toma la dirección de esa variable o de su primer argumento posicional, y sin ella termina.'
     curl:
       title: Configuración mínima · un curl para reportar un evento
     journey:
@@ -2313,7 +2317,7 @@ ui:
     delta_na: Sin comparación
     spark: Tendencia de 7 días
   index:
-    quickstart_hint: Una línea y tu agente queda listo
+    quickstart_hint: Un comando para obtener la Key de reporte en esta máquina
     pull_hint: Desliza para actualizar
     pull_ready: Suelta para actualizar
     pull_loading: Actualizando…

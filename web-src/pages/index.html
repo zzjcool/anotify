@@ -95,6 +95,14 @@
     color: var(--faint);
     user-select: none;
   }
+  /* 命令含 origin 与 ANOTIFY_BASE_URL，390px 下比卡片宽：折行；必须写在这条 nowrap 之后才不被盖住。 */
+  @media (max-width: 639px) {
+    .qs-cmd > .mono {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      text-overflow: clip;
+    }
+  }
   /* ---- 最新事件链路 ----
      silk 舞台自带边框 / 圆角 / 阴影（.flograph--silk），外层卡只负责留白。
      骨架高度对齐示意图实测值，数据到达时下面的事件流不会往下跳。 */
@@ -870,9 +878,8 @@
     </section>
 
     <!-- ===== 接入横幅（一条命令把 Agent 接进来）=====
-         它以前是右栏里的一张卡：和左侧热力图并排时，收起态只剩标题 + 一行
-         提示，旁边却是 200px+ 的高卡 —— 「右边块那么小」的断崖空白就是它。
-         改成横幅后高度固定，不需要拿邻居的高度凑，也不会把任何一排拉高。 -->
+         横幅而不是右栏卡：高度固定，不必拿邻居的高度凑，也不会把任何一排拉高。
+         命令里的 `{base}` 由页面脚本用 location.origin 填实（可见文字与「复制」一起填）。 -->
     <section id="quickstart" class="card qs-strip">
       <div class="qs-strip-lead">
         <span class="stat-icon stat-icon-neutral" aria-hidden="true">
@@ -899,7 +906,7 @@
         <div class="qs-cmd">
           <code class="mono"
             ><span class="qs-prompt" aria-hidden="true">$ </span
-            ><span>{{t "index.quickstart.cmd_install"}}</span></code
+            ><span id="qs-cmd-text">{{t "index.quickstart.cmd_install"}}</span></code
           >
           <button
             class="copy-btn shrink-0"
@@ -1097,8 +1104,7 @@
      * index.html 链接，默认必须是全部。 */
     const NS = (qs.get("namespace") || "").trim() || "*";
     const ALL = NS === "*";
-    // 旧推送深链 index.html?msg=<taskId>：首页不再有任务弹层，直接转任务详情页。
-    // （历史推送通知的落点曾是 message.html?id=；推送域退役后这里只是不让老链接点成空页。）
+    // 旧推送深链 index.html?msg=<taskId>（推送域已退役）：不让老链接点成空页，直接转任务详情页。
     (function redirectLegacyMsg() {
       const legacyMsg = qs.get("msg");
       if (!legacyMsg) return;
@@ -1785,6 +1791,17 @@
     mountPullRefresh(refresh);
 
 
+
+    /* 横幅命令的 `{base}` 用本页 origin 填实：部署版只有 GET /agent-login.sh，仓内的 web/agent-login.sh 并不存在；可见文字与「复制」一起填。 */
+    (function fillQuickstartCmd() {
+      if (!/^https?:$/.test(location.protocol)) return;
+      const fill = (s) => String(s == null ? "" : s).split("{base}").join(location.origin);
+      const visible = document.getElementById("qs-cmd-text");
+      if (visible) visible.textContent = fill(visible.textContent);
+      document
+        .querySelectorAll("#quickstart [data-copy-text]")
+        .forEach((b) => (b.dataset.copyText = fill(b.dataset.copyText)));
+    })();
 
     /* ================= 复制 ================= */
     // data-copy-text 的属性名是 copyText（dataset 会把连字符转驼峰），
