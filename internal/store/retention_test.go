@@ -12,6 +12,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/protocol"
@@ -292,5 +293,29 @@ func TestRetentionPrimitiveLimits(t *testing.T) {
 	}
 	if n, err := db.DeleteExpiredEventDeliveries(ctx, 10_000_000, -1); err != nil || n != 0 {
 		t.Fatalf("DeleteExpiredEventDeliveries(limit=-1) = %d, %v", n, err)
+	}
+}
+
+func TestTerminalPhaseInMatchesIsTerminalPhase(t *testing.T) {
+	phases, args := terminalPhaseIn()
+	if strings.Count(phases, "?") != len(args) {
+		t.Fatalf("占位符与参数个数不一致：%q / %v", phases, args)
+	}
+	listed := make(map[string]bool, len(args))
+	for _, raw := range args {
+		phase, ok := raw.(string)
+		if !ok || !IsTaskPhase(phase) {
+			t.Fatalf("终态列表必须只含合法相位：%#v", raw)
+		}
+		if listed[phase] {
+			t.Fatalf("终态相位重复：%q", phase)
+		}
+		listed[phase] = true
+	}
+	for _, phase := range TaskPhases() {
+		if listed[phase] != IsTerminalPhase(phase) {
+			t.Fatalf("terminalPhaseIn() 与 IsTerminalPhase(%q) 不一致：SQL %v / Go %v",
+				phase, listed[phase], IsTerminalPhase(phase))
+		}
 	}
 }

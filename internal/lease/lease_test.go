@@ -242,6 +242,39 @@ func TestRunOnceRequeuesExpiredIdempotentLease(t *testing.T) {
 	}
 }
 
+func TestRunOnceConvergesTerminalTaskSlots(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	now := store.Now()
+	capability := f.capability(t, "script-terminal", false, 1)
+	task := f.runningTask(t, capability, now)
+	if _, err := f.db.Exec(`UPDATE tasks SET phase = ?, finished_at = ? WHERE id = ?`, // 已终态但仍占槽的现场
+		store.TaskSucceeded, now, task.ID); err != nil {
+		t.Fatalf("造终局仍占槽的行: %v", err)
+	}
+	report, err := NewSweeper(f.db, nil).RunOnce(ctx, now)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if report.LedgersConverged.AttemptsReaped != 1 || report.LedgersConverged.SlotsReleased != 1 {
+		t.Fatalf("终态任务遗留的两个账都要收回来（#682），得到 %+v", report.LedgersConverged)
+	}
+	instances, err := f.db.ListInstances(ctx, f.node.ID)
+	if err != nil {
+		t.Fatalf("列槽位: %v", err)
+	}
+	if len(instances) != 1 || instances[0].BusyTask != nil {
+		t.Fatalf("巡检之后槽账必须清空（不需要手工清库）: %+v", instances)
+	}
+	again, err := NewSweeper(f.db, nil).RunOnce(ctx, now+1)
+	if err != nil {
+		t.Fatalf("二次 RunOnce: %v", err)
+	}
+	if again.LedgersConverged.AttemptsReaped != 0 || again.LedgersConverged.SlotsReleased != 0 {
+		t.Fatalf("收敛必须幂等，第二轮得到 %+v", again.LedgersConverged)
+	}
+}
+
 func TestRunOnceRetentionHonorsTTLAndKeepsActive(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
