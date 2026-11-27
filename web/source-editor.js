@@ -341,6 +341,7 @@ ${A.t("sources.v4.save")}
   let POLLCFG = null;
   let POLLERR = null;
   let KIND = null;
+  let GUARD = null;
   const POLL_HEADER_MAX = 10;
   const POLL_TIMEOUT_DEFAULT = 10000;
   const POLL_MAXITEMS_DEFAULT = 100;
@@ -503,6 +504,7 @@ async function openEditor(src){
   if(POLLERR)scrollToResult(); // 打开之前滚是空操作（弹层还 hidden），所以补在 openModal 之后
   syncScrollHint();
   suggest();
+  if(GUARD)GUARD.markClean();
   try{
     const events={ items: await loadEvents() };
     if(seq!==editorSeq)return;
@@ -938,6 +940,7 @@ function flagField(id,message){
     syncEditorLocks();
     flagField("f-name","");
     EDITING=null;
+    if (GUARD) GUARD.markClean();
     if (done) {
       try {
         done();
@@ -956,15 +959,16 @@ function syncScrollHint(){
 }
 
   function wire() {
-    /* Esc：openModal 的默认逃生门只切 class，不跑收尾逻辑（凭据/EDITING 都要清）。
-       拦下 modal:dismiss 走 closeEditor（本页没有别的东西需要 Esc 的默认行为）。 */
+    /* Esc：openModal 的默认逃生门只切 class，不跑收尾逻辑（凭据/EDITING 都要清），
+       所以拦下 modal:dismiss 交给脏检查（闸门未就绪时退回直接关，别让 Esc 变死键）。 */
     DOM.addEventListener("modal:dismiss", (event) => {
       event.preventDefault();
-      closeEditor();
+      if (GUARD) GUARD.requestClose();
+      else closeEditor();
     });
     bindActions();
-    $("modal-close").onclick = closeEditor;
-    $("modal-cancel").onclick = closeEditor;
+    $("modal-close").onclick = () => (GUARD ? GUARD.requestClose() : closeEditor());
+    $("modal-cancel").onclick = () => (GUARD ? GUARD.requestClose() : closeEditor());
     $("f-name").addEventListener("input", () => flagField("f-name", ""));
     $("f-kind").onchange = syncKind;
     $("add-target").onclick = () => $("f-targets").append(targetRow());
@@ -999,6 +1003,7 @@ function syncScrollHint(){
     DOM = host.firstElementChild;
     document.body.append(DOM);
     wire();
+    GUARD = A.guardDirty(DOM, { onDiscard: closeEditor });
     return DOM;
   }
 

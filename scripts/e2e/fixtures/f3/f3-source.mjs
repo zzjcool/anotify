@@ -158,7 +158,8 @@ export async function source(d){
   assert.ok(!('eventId' in previewCall.response));
   check('Missing/pruned target draft preview gives reasons and no event/task persistence');
   await shot('missing-pruned-dryrun');
-  await page.locator('#modal-close').click();
+  await acceptDialog(page, () => page.locator('#modal-close').click());
+  await hidden('#src-modal');
   // Actual detail link uses metadata.name + namespace. Mock memory resets on
   // navigation, so use the real seeded Source, not an empty detail fixture.
   const requests = (await page.evaluate(() => __sourceCalls)).map(({ response, ...rest }) => rest);

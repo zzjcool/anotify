@@ -201,6 +201,7 @@
      跳过时只在表格上方留一行说明，下一次真的刷新成功就收掉。 */
   const varsDraft = () => varsDirty || !!varsEditing;
   const varsPaused = on => { $('node-vars-paused').hidden = !on; };
+  A.guardUnload(varsDraft);
   function varsCell(cls, label, text) {
     const cell = make('td', cls, text); cell.dataset.label = label; return cell;
   }

@@ -830,6 +830,19 @@ async function main() {
 			await page.locator('#namespace-effective-vars tr[data-editing="true"] input[data-field="value"]').inputValue(), "pending-639");
 		H.eq("④ 取消整次刷新：没有发出 config 读", configReads.length, readsBeforeTable);
 		await page.locator('#namespace-effective-vars [data-act="vars-cancel"]').click();
+
+		console.log("--- ⑤ 未保存的草稿在刷新/关标签时弹浏览器原生 beforeunload ---");
+		await textarea.fill(DRAFT);
+		await page.keyboard.press("Tab"); // 真 Chrome 的 beforeunload 只在本轮有用户手势后才弹
+		await page.evaluate(() => { window.__varsUnloadSentinel = "alive"; }); // 哨兵：文档没换 = 刷新真被拦下
+		const unloadPrompt = page.waitForEvent("dialog", { timeout: 8000 });
+		page.reload({ timeout: 8000 }).catch(() => "aborted"); // 不 await：dismiss 之后它要等到超时才结算
+		const unloadDialog = await unloadPrompt;
+		H.eq("⑤ 有草稿时刷新 → 先弹原生 beforeunload", unloadDialog.type(), "beforeunload");
+		await unloadDialog.dismiss();
+		H.eq("⑤ 选「留下」→ 页面没刷新（哨兵还在），草稿原样保留",
+			[await page.evaluate(() => window.__varsUnloadSentinel), await textarea.inputValue()], ["alive", DRAFT]);
+
 		H.check("命名空间页无 JS pageerror（#639 阶段）", errs.length === 0, errs[0]?.slice(0, 160));
 		await page.close();
 		await ctx.close();

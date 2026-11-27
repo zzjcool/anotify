@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { acceptDialog } from './f3-dialogs.mjs';
 
 const SOURCE = 'poll-edit';
 const NEW_SOURCE = 'poll-edit-new';
@@ -174,7 +175,7 @@ export async function sourcePollEdit(d) {
   await visible('#f-poll-headers-error:not(.hidden)');
   assert.equal((await page.locator('#f-poll-headers-error').innerText()).startsWith('请求头重名'), true, '请求头重名必须在客户端拦住并说清是哪一个');
   assert.equal(await page.locator('#src-modal').isVisible(), true, '客户端校验失败不许关弹层');
-  await page.locator('#modal-cancel').click();
+  await acceptDialog(page, () => page.locator('#modal-cancel').click());
   await page.locator('#src-modal').waitFor({ state: 'hidden', timeout: 20000 });
   await page.locator('#btn-new').click();
   await visible('#src-modal:not(.hidden)');
