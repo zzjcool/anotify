@@ -4709,6 +4709,12 @@ html.theme-switching *::after {
 	background: var(--error);
 	box-shadow: 0 0 0 3px var(--error-soft);
 }
+/* #579：还有没结束的任务 = 黄灯。绿点只留给「全部成功」—— 一个 pending 都没
+ * 结束的链路曾经也亮绿点，等于把「它根本没跑」画成了正常。 */
+.flograph--silk .flograph-bar-dot.is-warn {
+	background: var(--warn);
+	box-shadow: 0 0 0 3px var(--warn-soft);
+}
 .flograph--silk .flograph-bar-id {
 	flex: 0 1 auto;
 	min-width: 0;

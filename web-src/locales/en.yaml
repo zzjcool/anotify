@@ -313,7 +313,8 @@ graph:
   silk_meta_run: '{n} tasks · replay {t}'
   silk_meta_ok: 'all succeeded'
   silk_meta_failed: '{n} failed'
-  silk_meta_done: '{n} tasks done'
+  silk_meta_pending: '{n} not finished'
+  silk_meta_done: 'replay ended · {done}/{n} tasks finished'
   silk_clock: 'replay {t}'
 
 message:

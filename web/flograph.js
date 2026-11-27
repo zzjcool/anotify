@@ -1609,6 +1609,71 @@
 		);
 	}
 
+	/* ---- 结论判定（#579）-------------------------------------------------
+	 * 结论是**三态**，不是「有失败 / 没失败」。只数失败会把第三种状态（还没
+	 * 结束）并进「全部成功」：能力没部署时任务永远 pending，链路口上却是一句
+	 * 绿色的「全部成功」，正好把「它根本没跑」盖住。
+	 *
+	 * 分档判据是节点 kind（graphs.js 的 kindForStatus 把六态收成视觉组）：
+	 *   failed         → 失败（含 cancelled / abandoned：终态且没成功）
+	 *   end            → 跑完了
+	 *   pipe / running → 还没结束（pending、waiting_*、running）
+	 * pruned（配置里有、这次没走）与 trigger（源节点）不是「这次的任务」：前者
+	 * 永远不会动，算成未完成会让结论永远是黄的；后者根本不是任务。
+	 *
+	 * 三个函数是纯的，就是为了能被测：scripts/v4-frontend.test.mjs 用 vm 切
+	 * 「silkFill → silkDurOf」这一段，pending-only / running 必须不得出「全部
+	 * 成功」—— 去掉任何一个分支那条测试就红。
+	 */
+	function silkTally(nodes) {
+		const t = { failed: 0, ended: 0, pending: 0 };
+		for (const n of nodes || []) {
+			const k = n && n.kind;
+			if (k === "failed") t.failed += 1;
+			else if (k === "end") t.ended += 1;
+			else if (k === "pipe" || k === "running") t.pending += 1;
+		}
+		// closed / tasks 的口径是「图上的任务卡」：一张卡 = 一个能力这次的任务。
+		// 回放节拍（beats）不是这个单位 —— 重试/扇出会算成多拍，但它们是同一张卡。
+		t.closed = t.failed + t.ended;
+		t.tasks = t.closed + t.pending;
+		t.state = t.failed ? "failed" : t.pending ? "pending" : "ok";
+		return t;
+	}
+
+	/** 结论一句话 + 状态灯：失败（红）> 未完成（黄）> 全部成功（绿）。 */
+	function silkVerdict(tally, t) {
+		if (tally.state === "failed") {
+			return {
+				text: silkFill(t("graph.silk_meta_failed", "{n} 个失败"), { n: tally.failed }),
+				cls: "is-fail",
+			};
+		}
+		if (tally.state === "pending") {
+			return {
+				text: silkFill(t("graph.silk_meta_pending", "{n} 个未完成"), { n: tally.pending }),
+				cls: "is-warn",
+			};
+		}
+		return { text: t("graph.silk_meta_ok", "全部成功"), cls: "" };
+	}
+
+	/**
+	 * HUD 底部那句：回放结束 ≠ 任务完成（#579）。
+	 *
+	 * 旧文案是「{n} 个任务完成」，n 取**节拍数** —— 一个永远 pending 的任务也会
+	 * 被算进「完成」。现在只报事实：分子 = 真到终态的任务卡，分母 = 任务卡总数。
+	 */
+	function silkDoneText(tally, t) {
+		const head = silkFill(t("graph.silk_meta_done", "回放结束 · {done}/{n} 个任务已结束"), {
+			done: tally.closed,
+			n: tally.tasks,
+		});
+		return tally.failed
+			? head + " · " + silkFill(t("graph.silk_meta_failed", "{n} 个失败"), { n: tally.failed })
+			: head;
+	}
+
 	/** 从副标题（"succeeded · 4.8s · ×2"）里取时长段；没有就留空。 */
 	function silkDurOf(sub) {
 		const parts = String(sub == null ? "" : sub).split(" \u00b7 ");
@@ -1886,7 +1951,12 @@
 		const beatCaps = new Set(Array.from(firstExec.keys()));
 		const execKey = (id) => (firstExec.has(id) ? firstExec.get(id) : 1e9);
 		const stepNoOf = (id) => (firstExec.has(id) ? firstExec.get(id) + 1 : 0);
-		const failedCount = nodes.filter((n) => n.kind === "failed").length;
+		// 结论的三态计数（#579）：失败 / 已结束 / 未结束。分档规则与理由见
+		// silkTally —— 这里只把结果接到文案与状态灯上，不再自己数一遍。
+		const tally = silkTally(nodes);
+		// 预览没有成败：给一个空结论（文案走 silk_preview_done，灯保持中性），
+		// 这样下面两处不用各自再写一遍 "预览就没结论"。
+		const verdict = preview ? { text: "", cls: "" } : silkVerdict(tally, tt);
 		const totalSec = beats.length * 0.5;
 		const reduceNow = () =>
 			!!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
@@ -1965,21 +2035,18 @@
 				});
 		const barMetaFinal = preview
 			? barMetaPrefix + " · " + tt("graph.silk_preview_done", "预览完成")
-			: barMetaPrefix +
-				" · " +
-				(failedCount
-					? silkFill(tt("graph.silk_meta_failed", "{n} 个失败"), { n: failedCount })
-					: tt("graph.silk_meta_ok", "全部成功"));
+			: barMetaPrefix + " · " + verdict.text;
 		barMeta.textContent = barMetaPrefix;
 		let barSettled = false;
 		const settleBar = () => {
 			if (barSettled) return;
 			barSettled = true;
 			barMeta.textContent = barMetaFinal;
-			// 状态灯同理：绿点 = 全部成功的结论，播放期间先保持中性（默认色），
-			// 灯与文案一起落定，否则又是"结论先于事实"。
+			// 状态灯同理：播放期间先保持中性（默认色），灯与文案一起落定，否则
+			// 又是"结论先于事实"。绿点只属于「全部成功」：有失败是红（is-fail），
+			// 还有没结束的是黄（is-warn）—— #579 之前绿点也发给「一个都还没跑」。
 			// 预览没有成败：灯保持中性，什么都不加。
-			if (!preview && failedCount) barDot.classList.add("is-fail");
+			if (verdict.cls) barDot.classList.add(verdict.cls);
 		};
 		const barSpacer = document.createElement("span");
 		barSpacer.className = "flograph-bar-spacer";
@@ -2974,11 +3041,7 @@
 		const doneLabel = () =>
 			preview
 				? tt("graph.silk_preview_done", "\u9884\u89c8\u5b8c\u6210")
-				: silkFill(tt("graph.silk_meta_done", "{n} 个任务完成"), { n: beats.length }) +
-					(failedCount
-						? " · " +
-							silkFill(tt("graph.silk_meta_failed", "{n} 个失败"), { n: failedCount })
-						: "");
+				: silkDoneText(tally, tt);
 		setProgress(0);
 		hudActive.textContent = tt("graph.silk_ready", "\u51c6\u5907\u56de\u653e");
 
@@ -3502,7 +3565,7 @@
 				// 重播：上一次的结论作废，回到"只说规模"的进行时文案
 				barSettled = false;
 				barMeta.textContent = barMetaPrefix;
-				barDot.classList.remove("is-fail");
+				barDot.classList.remove("is-fail", "is-warn");
 			}
 		}
 

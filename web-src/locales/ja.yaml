@@ -313,7 +313,8 @@ graph:
   silk_meta_run: '{n} 個のタスク · 再生 {t}'
   silk_meta_ok: 'すべて成功'
   silk_meta_failed: '{n} 個失敗'
-  silk_meta_done: '{n} 個のタスク完了'
+  silk_meta_pending: '{n} 個未完了'
+  silk_meta_done: '再生終了 · {done}/{n} 個のタスクが終了'
   silk_clock: '再生 {t}'
 
 message:

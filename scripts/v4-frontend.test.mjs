@@ -5418,6 +5418,59 @@ test('G1 Silk pan defers capture for native clicks and retains horizontal/vertic
   const before = captured.length; ctx.down({ ...event(50), pointerType: 'touch' }); assert.equal(captured.length, before, 'native touch scrolling remains uncaptured');
 });
 
+/* #579：链路图头的结论是**三态**，不是「有失败 / 没失败」。
+ *
+ * 复现（审计 lane=u2-automation）：新建能力但**不部署** → 试跑 → 任务永远
+ * pending（能力没部署，永远不会执行）。这条链路头上写着「1 个任务 · 回放
+ * 0.5s · 全部成功」，进度条底写「1 个任务完成」—— 排障的第一屏正好把「它根本
+ * 没跑」画成了正常。
+ *
+ * 切片：web/flograph.js 里 silkFill → silkDurOf 之间是结论判定的全部实现
+ * （silkTally / silkVerdict / silkDoneText 三个纯函数），所以这里真实调用它们，
+ * 不是 grep 源码。去掉任何一个分支，下面这些断言就红。
+ */
+test('#579 silk verdict keeps pending and running tasks out of "all succeeded"', () => {
+  const source = readFileSync(path.join(ROOT, 'web/flograph.js'), 'utf8');
+  const start = source.indexOf('\tfunction silkFill('), end = source.indexOf('\tfunction silkDurOf(', start);
+  assert.ok(start > 0 && end > start, '切片边界（silkFill → silkDurOf）必须还在');
+  // 用真 locale 的四条文案：断言的是四语言同步过的文本，不是源码里的默认值。
+  const dict = {};
+  for (const line of readFileSync(path.join(ROOT, 'web-src/locales/zh-CN.yaml'), 'utf8').split('\n')) {
+    const m = /^  (silk_meta_(?:ok|failed|pending|done)): '(.*)'$/.exec(line);
+    if (m) dict['graph.' + m[1]] = m[2];
+  }
+  const tt = (k, d) => dict[k] || d;
+  const ctx = vm.createContext({});
+  vm.runInContext(
+    source.slice(start, end) +
+      '\n globalThis.silkTally = silkTally; globalThis.silkVerdict = silkVerdict; globalThis.silkDoneText = silkDoneText;',
+    ctx,
+  );
+  const nodes = (...kinds) => kinds.map((kind, i) => ({ id: 'n' + i, kind }));
+  // vm 里的对象是另一个 realm 的：断言前摊平成本 realm 的普通对象/数组。
+  const verdictOf = (...kinds) => ({ ...ctx.silkVerdict(ctx.silkTally(nodes(...kinds)), tt) });
+  const doneOf = (...kinds) => ctx.silkDoneText(ctx.silkTally(nodes(...kinds)), tt);
+
+  // 复现用例 1：只有一个 pending 任务（能力未部署）—— 不得说「全部成功」
+  assert.deepEqual(verdictOf('trigger', 'pipe'), { text: '1 个未完成', cls: 'is-warn' });
+  assert.equal(doneOf('trigger', 'pipe'), '回放结束 · 0/1 个任务已结束');
+  // 复现用例 2：running + succeeded 也不算「全部成功」（还有没结束的）
+  assert.deepEqual(verdictOf('end', 'running'), { text: '1 个未完成', cls: 'is-warn' });
+  assert.equal(doneOf('end', 'running'), '回放结束 · 1/2 个任务已结束');
+  // 对照组 1：全部 succeeded 才是「全部成功」（灯不加类，绿点照旧）
+  assert.deepEqual(verdictOf('trigger', 'end', 'end'), { text: '全部成功', cls: '' });
+  assert.equal(doneOf('trigger', 'end', 'end'), '回放结束 · 2/2 个任务已结束');
+  // 对照组 2：含失败时既有显示不变（「N 个失败」+ 红灯）
+  assert.deepEqual(verdictOf('end', 'failed'), { text: '1 个失败', cls: 'is-fail' });
+  assert.equal(doneOf('end', 'failed'), '回放结束 · 2/2 个任务已结束 · 1 个失败');
+  // 剪枝（配置里有、这次没走）永远不动，不是「未完成」：它不得把结论染黄
+  assert.deepEqual(verdictOf('trigger', 'end', 'pruned', 'pruned'), { text: '全部成功', cls: '' });
+  // 计数口径：trigger 与 pruned 两边都不进（一张卡 = 一个能力这次的任务）
+  const t = ctx.silkTally(nodes('trigger', 'end', 'pipe', 'failed', 'pruned'));
+  assert.deepEqual([t.closed, t.tasks, t.pending, t.state], [2, 3, 1, 'failed']);
+  assert.deepEqual(Object.keys({ ...t }).sort(), ['closed', 'ended', 'failed', 'pending', 'state', 'tasks']);
+});
+
 test('G1 M3 condition provenance masks a private versioned-next derived name without masking equal public next or unrelated conditions', async () => {
   const { req } = g1Mock();
   const files = playbookFiles({ edit: d => {
