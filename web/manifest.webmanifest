@@ -1,7 +1,7 @@
 {
   "name": "Anotify",
   "short_name": "Anotify",
-  "description": "Agent 完成即通知 · 多端推送",
+  "description": "Agent 完成事件进中枢，能力链在节点上执行",
   "start_url": "login.html",
   "scope": "./",
   "display": "standalone",

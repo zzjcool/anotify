@@ -242,21 +242,21 @@ index:
   quickstart:
     cta: Connect a new Agent
     title: Connect your Agent
-    subtitle: Get notified automatically when your agent finishes
+    subtitle: Agent events · event stream · task chains
     recommended: Recommended
     copy: Copy
-    cmd_install: pi install npm:pi-anotify
-    steps_short: Install → Approve → Get notified
+    cmd_install: 'curl -fsSL {base}/agent-login.sh | ANOTIFY_BASE_URL={base} sh'
+    steps_short: Sign in → Create source → Report event
     copy_prompt: Copy full guide
     docs: Docs →
     curl_example_title: Deploy done
-    cmd_a: 'Install the anotify notification plugin for me:
+    cmd_a: 'Help me wire Agent completion events into Anotify:
 
-      1. Run pi install npm:pi-anotify
+      1. Run curl -fsSL {base}/agent-login.sh | ANOTIFY_BASE_URL={base} sh, approve it in the browser when prompted, and the credential is written on this machine
 
-      2. Run sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh
+      2. Create a Manual source named agent on sources.html
 
-      3. Show me the authorization link or code from the terminal — I''ll approve it in the browser and tell you the result
+      3. Follow the example on docs.html#agent to report an event when the Agent finishes
 
       '
   summary: '{total} events total · {today} today.'
@@ -438,7 +438,7 @@ login:
       err_rate_limited: Too many sign-up attempts. Wait a moment, then try again.
       success: Account created — taking you to the workspace…
   ios_tip_label: 'iOS users: '
-  ios_tip: to receive push notifications, first open this site in Safari, tap Share → Add to Home Screen, then launch from the home screen icon and sign in.
+  ios_tip: first open this site in Safari, tap Share → Add to Home Screen, then launch from the home screen icon and sign in.
   recovery_soon: ''
   recovery:
     toggle: Can't use Passkey? Sign in with a recovery code
@@ -525,10 +525,10 @@ keys:
     subtitle: Give it a name and choose its scopes
     name_label: Name
     name_placeholder: e.g. Local dev / CI pipeline / Production Agent
-    scope_label: Scopes (multi-select, least-privilege)
+    scope_label: Scope
     scope_send_label: Send
-    scope_send_desc: For Agents / CI to POST notifications. Prefix ant_live_
-    scope_hint: 'Least privilege: send and receive are separate, so a leaked Key only affects one side.'
+    scope_send_desc: For Agents / CI to POST events. Prefix ant_live_
+    scope_hint: 'This Key can only report events; it cannot read anything in the console.'
     cancel: Cancel
     generate: Generate Key
     generating: Generating…
@@ -732,14 +732,14 @@ docs:
     optional: Optional
     params:
       title: Event fields
-      source: Event source. It doubles as the origin capability name (github, cron, http).
+      source: The source name inside the namespace (not a capability name). The source must already exist, otherwise 404.
       type: Event type, a name meaningful to that source (e.g. pull_request.opened).
       payload: Event payload, passed through verbatim as the downstream task params.
-      idem: 'De-duplication key. The same source + idemKey produces one event only.'
-      trace: Explicit trace id. A new trace is created when omitted.
+      idem: 'De-duplication key. The same source + id produces one event only.'
     note: A 200 is returned as soon as the event is stored. Dispatch failures still return 200 — events are never lost because a downstream step failed; you can replay later.
     curl:
       title: curl example
+      prereq: 'The <code class="doc-code">agent</code> source in the example must exist first (step 1 of Connect Agent); otherwise the copied command returns 404 source not found.'
   node:
     intro: 'Nodes run code. A node connects to the hub, declares which capabilities it can run, then takes assign frames.'
     connect:
@@ -755,17 +755,20 @@ docs:
   your_domain: your-domain
   agent:
     title: Connect Agent
-    intro: 'Anotify''s core scenario: <b class="doc-em">when an Agent finishes a task, the notification is automatically pushed to all your devices</b>. Setup is two steps — create a reporting Key, then send a POST request when the task ends.'
+    intro: 'Anotify''s core scenario: <b class="doc-em">when an Agent finishes a task, that completion becomes an event in the event stream</b>, dispatched to capabilities along the source''s downstream table. Setup is two steps — create a source and a reporting Key, then send a POST request when the task ends.'
     step1:
-      title: Create a reporting Key
-      desc: Go to the <a href="keys.html" class="doc-link">API Keys</a> page and create a Key with <code class="doc-code">notify:send</code> scope (prefix <code class="doc-code">ant_live_</code>). Save it immediately.
+      title: Create a source and a reporting Key
+      desc: Go to <a href="sources.html" class="doc-link">Sources</a> and create a Manual source (the example uses <code class="doc-code">agent</code>); then go to the <a href="keys.html" class="doc-link">API Keys</a> page and create a Key with <code class="doc-code">notify:send</code> scope. Save it immediately.
     step2:
       title: Report when the task ends
       desc: On an Agent completion event (e.g. pi's <code class="doc-code">agent_settled</code>) or at the end of a script, include the Key and <code class="doc-code">POST /v1/namespaces/{namespace}/events</code> (namespace = your namespace).
+    login:
+      title: Or let the script create the Key
+      note: 'Run the command below on your machine and approve it in the browser; the credential is written to <code class="doc-code">~/.config/anotify/credentials.json</code>. Replace <code class="doc-code">ANOTIFY_BASE_URL</code> and the domain in the command with your hub URL (both must match) — the script takes the address from that variable or its first positional argument and exits without one.'
     curl:
-      title: Minimal setup · one curl to push to all devices
+      title: Minimal setup · one curl to report an event
     journey:
-      title: A notification's journey
+      title: An event's journey
   api:
     title: API overview
     base_url: Base URL
@@ -778,22 +781,22 @@ docs:
       tasks: 'Task list (event stream)'
       notifications: Notification history list
       node_stream: Node WebSocket protocol
-      stream: WebSocket long-poll receiving
+      stream: Node long-poll (node protocol)
       keys_list: API Key list
       keys_create: Create API Key
       passkey: Passkey register / login
   auth:
     title: Authentication
-    intro: 'Two credential types, for two kinds of callers. <b class="doc-em">Least privilege</b>: send and receive are separate, so a leaked Key only affects one side.'
+    intro: 'Two credential types, for two kinds of callers. <b class="doc-em">Least privilege</b>: an API Key can only report events; console reads and writes go through the session Cookie.'
     key:
       title: API Key (Bearer)
-      li1: · For Agent reporting / receiver long-poll connections
+      li1: · For Agent and CI event reporting
       li2: '· Header: <code class="doc-code">Authorization: Bearer ant_…</code>'
       li3: '· scope: <code class="doc-code">notify:send</code> (event ingress <code class="doc-code">POST /v1/namespaces/{ns}/events</code>)'
       li4: · Server stores only an argon2id hash; plaintext is shown once at creation
     passkey:
       title: Session Cookie
-      li1: · For workspace browser access (Overview / Devices / Keys management)
+      li1: · For workspace browser access (Overview / Events / Keys management)
       li2: · WebAuthn passwordless login, biometric or device key
       li3: · httpOnly Cookie; multi-device sessions are independent and individually revocable
       li4: '· Cross-device: platform sync / one-time connection guide / recovery code fallback'
@@ -826,12 +829,8 @@ cliauth:
     switch_prefix: 'Not '
     switch_suffix: '? Sign out and switch account →'
     scopes_label: Permissions (select at least one)
-    scope_send_label: Send notifications
-    scope_send_desc: Allow the agent to send notifications
-    scope_receive_label: Receive notifications
-    scope_receive_desc: Receive / subscribe to notifications
-    scope_read_label: View devices
-    scope_read_desc: View the device list
+    scope_send_label: Report events
+    scope_send_desc: Allow the Agent and CI to report events
     scopes_required: Select at least one permission
     approve: Approve
     deny: Deny
@@ -2320,7 +2319,7 @@ ui:
     delta_na: No comparison yet
     spark: 7-day trend
   index:
-    quickstart_hint: One line and your agent is set up
+    quickstart_hint: One command to get a reporting key on this machine
     pull_hint: Pull to refresh
     pull_ready: Release to refresh
     pull_loading: Refreshing…

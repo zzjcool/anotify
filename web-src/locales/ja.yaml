@@ -242,21 +242,21 @@ index:
   quickstart:
     cta: 新しい Agent を連携
     title: Agent を連携
-    subtitle: Agent のタスク完了を自動で通知
+    subtitle: Agent のイベント · イベントストリーム · タスク連鎖
     recommended: おすすめ
     copy: コピー
-    cmd_install: pi install npm:pi-anotify
-    steps_short: インストール → 承認 → 通知
+    cmd_install: 'curl -fsSL {base}/agent-login.sh | ANOTIFY_BASE_URL={base} sh'
+    steps_short: ログイン承認 → ソース作成 → イベント上報
     copy_prompt: 完全な手順をコピー
     docs: ドキュメント →
     curl_example_title: デプロイ完了
-    cmd_a: 'anotify 通知プラグインをインストールしてください：
+    cmd_a: 'Agent の完了イベントを Anotify に接続してください：
 
-      1. pi install npm:pi-anotify を実行
+      1. curl -fsSL {base}/agent-login.sh | ANOTIFY_BASE_URL={base} sh を実行し、ブラウザで承認すると証明書が本機に保存されます
 
-      2. sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh を実行
+      2. sources.html で手動ソースを agent という名前で作成
 
-      3. ターミナルに表示された認可リンクまたはコードを教えてください。ブラウザで承認して結果を伝えます
+      3. docs.html#agent の例に従い、Agent 終了時にイベントを上報
 
       '
   summary: '累計 {total} 件のイベント、今日 {today} 件。'
@@ -438,7 +438,7 @@ login:
       err_rate_limited: 登録の試行が多すぎます。しばらく待ってからお試しください。
       success: 登録できました。ワークスペースに移動しています…
   ios_tip_label: iOS ユーザー：
-  ios_tip: プッシュ通知を受信するには、まず Safari で本サイトを開き、 「共有 → ホーム画面に追加」を選択し、ホーム画面のアイコンから 起動してログインしてください。
+  ios_tip: まず Safari で本サイトを開き、「共有 → ホーム画面に追加」を選択し、ホーム画面のアイコンから起動してログインしてください。
   recovery_soon: ''
   recovery:
     toggle: Passkey が使えない？リカバリーコードでログイン
@@ -525,10 +525,10 @@ keys:
     subtitle: 名前を付けてスコープを選択
     name_label: 名前
     name_placeholder: 例：ローカル開発 / CI パイプライン / 本番 Agent
-    scope_label: スコープ（複数選択可、最小権限）
+    scope_label: スコープ
     scope_send_label: 送信
-    scope_send_desc: Agent / CI が POST 通知に使用。プレフィックス ant_live_
-    scope_hint: 最小権限：送信と受信は分離され、Key 漏洩時の影響は片側のみ。
+    scope_send_desc: Agent / CI がイベントの POST に使用。プレフィックス ant_live_
+    scope_hint: この Key はイベントの上報のみ可能で、コンソールのデータは読めません。
     cancel: キャンセル
     generate: Key を生成
     generating: 生成中…
@@ -732,14 +732,14 @@ docs:
     optional: 任意
     params:
       title: イベントのフィールド
-      source: イベントの発生元。起点能力名を兼ねます（github、cron、http）。
+      source: イベントの発生元：名前空間内のソース名（能力名ではありません）。ソースが先に存在しないと 404 になります。
       type: イベント種別。その発生元にとって意味のある名前（例：pull_request.opened）。
       payload: イベントのペイロード。下流タスクの params としてそのまま渡されます。
-      idem: '重複排除キー。同じ source + idemKey の再送は 1 つのイベントだけを生みます。'
-      trace: trace を明示。省略すると新規作成されます。
+      idem: '重複排除キー。同じ source + id の再送は 1 つのイベントだけを生みます。'
     note: イベントを保存した時点で 200 を返します。派発に失敗しても 200 です — 下流の失敗でイベントが失われることはなく、後から再送できます。
     curl:
       title: curl の例
+      prereq: '例のソース <code class="doc-code">agent</code> を先に作成してください（「Agent 連携」の手順 1）。無いまま実行すると 404 source not found になります。'
   node:
     intro: 'ノードはコードを実行する側です。ハブに接続し、実行できる能力を宣言して assign フレームを受け取ります。'
     connect:
@@ -755,17 +755,20 @@ docs:
   your_domain: あなたのドメイン
   agent:
     title: Agent 連携
-    intro: Anotify の中核シナリオ：<b class="doc-em">Agent がタスクを完了すると、通知がすべてのデバイスに自動的にプッシュされます</b>。連携は 2 ステップ — 上報用 Key を作成し、タスク終了時に POST リクエストを送るだけです。
+    intro: Anotify の中核シナリオ：<b class="doc-em">Agent がタスクを完了すると、その完了イベントがイベントストリームに入ります</b>。ソースの下流テーブルに沿ってケイパビリティへ配信されます。連携は 2 ステップ — ソースと上報用 Key を作成し、タスク終了時に POST リクエストを送るだけです。
     step1:
-      title: 上報用 Key を作成
-      desc: <a href="keys.html" class="doc-link">API Keys</a> ページで <code class="doc-code">notify:send</code> 権限の Key を新規作成してください（プレフィックス <code class="doc-code">ant_live_</code>）。作成後すぐに保存してください。
+      title: ソースと上報用 Key を作成
+      desc: <a href="sources.html" class="doc-link">ソース</a> ページで手動ソースを新規作成（例では <code class="doc-code">agent</code>）。続いて <a href="keys.html" class="doc-link">API Keys</a> ページで <code class="doc-code">notify:send</code> 権限の Key を作成し、すぐに保存してください。
     step2:
       title: タスク終了時に上報
       desc: Agent の終了イベント（例：pi の <code class="doc-code">agent_settled</code>）またはスクリプトの末尾で、Key を添えて <code class="doc-code">POST /v1/namespaces/{namespace}/events</code> を送信します（namespace は自分の名前空間に置き換え）。
+    login:
+      title: スクリプトでキーを作ることもできます
+      note: '次のコマンドを本機で実行してブラウザで承認すると、証明書が <code class="doc-code">~/.config/anotify/credentials.json</code> に保存されます。<code class="doc-code">ANOTIFY_BASE_URL</code> とコマンド内のドメインを自分のハブのアドレスに置き換えてください（2 か所とも同じ値）。スクリプトはこの環境変数か最初の位置引数しか見ないため、無ければ終了します。'
     curl:
-      title: 最小構成 · curl 一行で全デバイスに通知
+      title: 最小構成 · curl 一行でイベントを上報
     journey:
-      title: 通知の旅
+      title: イベントの旅
   api:
     title: API 概要
     base_url: Base URL
@@ -778,22 +781,22 @@ docs:
       tasks: 'タスク一覧（イベントストリーム）'
       notifications: 通知履歴一覧
       node_stream: ノード WebSocket プロトコル
-      stream: WebSocket ロングポール受信
+      stream: ノードロングポール（ノードプロトコル）
       keys_list: API Key 一覧
       keys_create: API Key 新規作成
       passkey: Passkey 登録 / ログイン
   auth:
     title: 認証方法
-    intro: 2 種類の認証情報があり、呼び出し元に応じて使い分けます。<b class="doc-em">最小権限</b>：上報と受信は分離されており、Key が漏洩しても片方だけの影響で済みます。
+    intro: 2 種類の認証情報があり、呼び出し元に応じて使い分けます。<b class="doc-em">最小権限</b>：API Key はイベントの上報のみ可能で、コンソールの読み書きはセッション Cookie 経由です。
     key:
       title: API Key（Bearer）
-      li1: · Agent 上報 / 受信側ロングポール接続に使用
+      li1: · Agent と CI のイベント上報に使用
       li2: '· Header：<code class="doc-code">Authorization: Bearer ant_…</code>'
       li3: '· scope：<code class="doc-code">notify:send</code>（イベント入口 <code class="doc-code">POST /v1/namespaces/{ns}/events</code>）'
       li4: · サーバーは argon2id ハッシュのみ保存、平文は作成時のみ表示
     passkey:
       title: セッション Cookie
-      li1: · ワークスペースのブラウザアクセスに使用（概要 / デバイス / Keys 管理）
+      li1: · ワークスペースのブラウザアクセスに使用（概要 / イベント / Keys 管理）
       li2: · WebAuthn パスワードレスログイン、生体認証またはデバイスキー
       li3: · httpOnly Cookie、マルチデバイスセッションは独立して個別に取り消し可能
       li4: · クロスデバイス：プラットフォーム同期 / 一時接続ガイド / リカバリーコード
@@ -826,12 +829,8 @@ cliauth:
     switch_prefix: ''
     switch_suffix: ' ではありませんか？ログアウトして切り替え →'
     scopes_label: 権限範囲（少なくとも 1 つ選択）
-    scope_send_label: 通知を送信
-    scope_send_desc: Agent が通知を送信することを許可
-    scope_receive_label: 通知を受信
-    scope_receive_desc: 通知の受信・購読
-    scope_read_label: デバイスを表示
-    scope_read_desc: デバイス一覧の表示
+    scope_send_label: イベントを上報
+    scope_send_desc: Agent と CI のイベント上報を許可
     scopes_required: 少なくとも 1 つの権限を選択してください
     approve: 承認する
     deny: 拒否
@@ -2320,7 +2319,7 @@ ui:
     delta_na: 比較データなし
     spark: 直近7日間の推移
   index:
-    quickstart_hint: 一行で Agent を導入
+    quickstart_hint: コマンド 1 本で本機の上報用キーを取得
     pull_hint: 引っ張って更新
     pull_ready: 離して更新
     pull_loading: 更新中…

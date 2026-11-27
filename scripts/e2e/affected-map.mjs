@@ -183,8 +183,8 @@ export const SUITE_SURFACES = {
 		pages: ["index", "admin", "security", "login", "capability", "message", "node", "nodes", "trace"],
 	},
 	cli_auth: {
-		why: "CLI 设备授权全链路（cli-auth 页 + login 页）",
-		pages: ["cli-auth", "login"],
+		why: "CLI 设备授权全链路（cli-auth 页 + login 页 + 首页横幅那条接入命令）",
+		pages: ["cli-auth", "login", "index"],
 		paths: ["web/agent-login.sh"],
 	},
 	passkey_enroll: {

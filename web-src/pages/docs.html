@@ -856,6 +856,19 @@
             </div>
           </div>
 
+          <div class="doc-note">{{tHTML "docs.agent.login.note"}}</div>
+          <div class="code-block">
+            <div class="code-head">
+              <span>{{t "docs.agent.login.title"}}</span
+              ><button class="copy-btn" onclick="copyBlock(this)">
+                {{t "docs.copy"}}
+              </button>
+            </div>
+            <div class="code-body">
+              curl -fsSL https://{{t "docs.your_domain"}}/agent-login.sh | ANOTIFY_BASE_URL=https://{{t "docs.your_domain"}} sh
+            </div>
+          </div>
+
           <div class="code-block mt-4">
             <div class="code-head">
               <span>{{t "docs.agent.curl.title"}}</span
@@ -870,7 +883,7 @@
               >
               \ -H
               <span class="tk-str">"Content-Type: application/json"</span> \ -d
-              <span class="tk-str">'{"source":"on-push","type":"push","id":"delivery-1","payload":{"repo":"a/b"}}'</span>
+              <span class="tk-str">'{"source":"agent","type":"agent_done","id":"delivery-1","payload":{"repo":"a/b"}}'</span>
             </div>
           </div>
 
@@ -887,14 +900,16 @@
                   </button>
                 </div>
 <pre class="code-body doc-journey">
- Agent(pi)              Anotify              WebPush svc              Device(iOS/Mac)
-    │                        │                        │                        │
-    │ ① agent_settled        │                        │                        │
-    │ ② POST /v1/namespaces/{namespace}/events ────▶│ ③ verify Key → route by next / targets                    │
-    │                        │ ④ filter by tag/level   │                        │
-    │                        │──────── ⑤ encrypt ────▶│── ⑥ APNs/FCM ─────────▶│
-    │                        │                        │     ⑦ SW showNotification
-    │                        │                        │     ⑧ system banner       │</pre>
+ Agent(pi)                                   Anotify                          Node
+    │                                             │                             │
+    │ ① agent_settled                             │                             │
+    │ ② POST /v1/namespaces/{namespace}/events ──▶│                             │
+    │                                             │ ③ verify Key, find source   │
+    │                                             │ ④ plan targets, prune rest  │
+    │                                             │ ⑤ dispatch task ───────────▶│
+    │                                             │                             │ ⑥ run capability
+    │                                             │ ◀──── ⑦ emit / result ──────│
+    │                                             │ ⑧ event → task → trace      │</pre>
               </div>
             </div>
           </details>
@@ -1106,19 +1121,11 @@
                   </tr>
                   <tr>
                     <td>
-                      <span class="param-name">idemKey</span
+                      <span class="param-name">id</span
                       ><span class="opt">{{t "docs.events.optional"}}</span>
                       <div class="param-type mt-1">string</div>
                     </td>
                     <td class="param-desc">{{t "docs.events.params.idem"}}</td>
-                  </tr>
-                  <tr>
-                    <td>
-                      <span class="param-name">traceId</span
-                      ><span class="opt">{{t "docs.events.optional"}}</span>
-                      <div class="param-type mt-1">string</div>
-                    </td>
-                    <td class="param-desc">{{t "docs.events.params.trace"}}</td>
                   </tr>
                 </tbody>
               </table>
@@ -1131,6 +1138,7 @@
               {{t "docs.events.curl.title"}}
             </summary>
             <div class="doc-fold-body">
+              <div class="doc-note">{{tHTML "docs.events.curl.prereq"}}</div>
               <div class="code-block">
                 <div class="code-head">
                   <span>{{t "docs.events.curl.title"}}</span
@@ -1147,8 +1155,8 @@
                   <span class="tk-str">"Content-Type: application/json"</span> \
                   -d
                   <span class="tk-str"
-                    >'{ "source": "github", "type": "pull_request.opened",
-                    "idemKey": "pr-1234-opened", "payload": { "pr": 1234, "repo":
+                    >'{ "source": "agent", "type": "agent_done",
+                    "id": "delivery-1", "payload": { "repo":
                     "acme/api" } }'</span
                   >
                 </div>
@@ -1288,7 +1296,7 @@ GET /v1/system/config</pre>
   Anotify.mountLayout({
     active: "api",
     title: Anotify.t("docs.title", "接入文档"),
-    subtitle: Anotify.t("docs.subtitle", "Agent 上报 · Web Push · WebSocket"),
+    subtitle: Anotify.t("docs.subtitle", "Agent 上报 · 事件流 · 任务链"),
   });
 
   /* 代码块可横向滚动标记（DOC-1）：

@@ -242,21 +242,21 @@ index:
   quickstart:
     cta: Conectar nuevo Agent
     title: Conecta tu Agent
-    subtitle: Recibe avisos automáticos al terminar tu agente
+    subtitle: Eventos del Agent · flujo de eventos · cadenas de tareas
     recommended: Recomendado
     copy: Copiar
-    cmd_install: pi install npm:pi-anotify
-    steps_short: Instalar → Aprobar → Avisos
+    cmd_install: 'curl -fsSL {base}/agent-login.sh | ANOTIFY_BASE_URL={base} sh'
+    steps_short: Iniciar sesión → Crear fuente → Reportar evento
     copy_prompt: Copiar guía completa
     docs: Ver docs →
     curl_example_title: Despliegue listo
-    cmd_a: 'Instálame el plugin de notificaciones de anotify:
+    cmd_a: 'Conecta los eventos de finalización del Agent a Anotify:
 
-      1. Ejecuta pi install npm:pi-anotify
+      1. Ejecuta curl -fsSL {base}/agent-login.sh | ANOTIFY_BASE_URL={base} sh, apruébalo en el navegador y la credencial queda guardada en esta máquina
 
-      2. Ejecuta sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh
+      2. Crea una fuente Manual llamada agent en sources.html
 
-      3. Muéstrame el enlace o código de autorización del terminal — lo apruebo en el navegador y te digo el resultado
+      3. Sigue el ejemplo de docs.html#agent para reportar un evento al terminar el Agent
 
       '
   summary: '{total} eventos en total · {today} hoy.'
@@ -438,7 +438,7 @@ login:
       err_rate_limited: Demasiados intentos de registro. Espera un momento y vuelve a probar.
       success: Cuenta creada. Entrando al espacio de trabajo…
   ios_tip_label: 'Usuarios de iOS: '
-  ios_tip: para recibir notificaciones push, abre primero este sitio en Safari, toca Compartir → Añadir a pantalla de inicio y luego ábrelo desde el icono e inicia sesión.
+  ios_tip: abre primero este sitio en Safari, toca Compartir → Añadir a pantalla de inicio y luego ábrelo desde el icono e inicia sesión.
   recovery_soon: ''
   recovery:
     toggle: ¿No puedes usar Passkey? Entra con un código de recuperación
@@ -525,10 +525,10 @@ keys:
     subtitle: Ponle un nombre y elige sus permisos
     name_label: Nombre
     name_placeholder: ej. Dev local / pipeline CI / Agent producción
-    scope_label: Permisos (selección múltiple, mínimo privilegio)
+    scope_label: Permisos
     scope_send_label: Enviar
-    scope_send_desc: Para que Agents / CI hagan POST de notificaciones. Prefijo ant_live_
-    scope_hint: 'Mínimo privilegio: enviar y recibir van separados, así una Key filtrada solo compromete un lado.'
+    scope_send_desc: Para que Agents / CI hagan POST de eventos. Prefijo ant_live_
+    scope_hint: 'Esta Key solo puede reportar eventos; no puede leer nada de la consola.'
     cancel: Cancelar
     generate: Generar Key
     generating: Generando…
@@ -732,14 +732,14 @@ docs:
     optional: Opcional
     params:
       title: Campos del evento
-      source: Origen del evento. También es el nombre de la capacidad raíz (github, cron, http).
+      source: El nombre de la fuente dentro del espacio de nombres (no un nombre de capacidad). La fuente debe existir antes; si no, devuelve 404.
       type: Evento tipo, un nombre significativo para ese origen (p. ej. pull_request.opened).
       payload: Carga del evento, se pasa tal cual a los params de las tareas siguientes.
-      idem: 'Clave de deduplicación. El mismo source + idemKey produce un solo evento.'
-      trace: Trace explícito. Si se omite, se crea uno nuevo.
+      idem: 'Clave de deduplicación. El mismo source + id produce un solo evento.'
     note: Devuelve 200 en cuanto el evento se guarda. Un fallo de despacho también devuelve 200 — los eventos no se pierden por un error posterior; puedes reenviarlos luego.
     curl:
       title: ejemplo curl
+      prereq: 'La fuente <code class="doc-code">agent</code> del ejemplo debe existir primero (paso 1 de Conectar Agent); si no, el comando copiado devuelve 404 source not found.'
   node:
     intro: 'Los nodos ejecutan código. Se conectan al hub, declaran qué capacidades pueden ejecutar y aceptan los frames assign.'
     connect:
@@ -755,17 +755,20 @@ docs:
   your_domain: su-dominio
   agent:
     title: Conectar Agent
-    intro: 'El escenario principal de Anotify: <b class="doc-em">cuando un Agent termina una tarea, la notificación se envía automáticamente a todos sus dispositivos</b>. La integración son dos pasos: cree una Key de reporte y luego envíe un POST cuando termine la tarea.'
+    intro: 'El escenario principal de Anotify: <b class="doc-em">cuando un Agent termina una tarea, esa finalización entra en el flujo de eventos</b> y se despacha a las capacidades según la tabla descendente de la fuente. La integración son dos pasos: cree una fuente y una Key de reporte, y luego envíe un POST cuando termine la tarea.'
     step1:
-      title: Crear una Key de reporte
-      desc: Vaya a la página <a href="keys.html" class="doc-link">API Keys</a> y cree una Key con permiso <code class="doc-code">notify:send</code> (prefijo <code class="doc-code">ant_live_</code>). Guárdela inmediatamente.
+      title: Crear una fuente y una Key de reporte
+      desc: Vaya a <a href="sources.html" class="doc-link">Fuentes</a> y cree una fuente Manual (el ejemplo usa <code class="doc-code">agent</code>); luego vaya a la página <a href="keys.html" class="doc-link">API Keys</a> y cree una Key con permiso <code class="doc-code">notify:send</code>. Guárdela inmediatamente.
     step2:
       title: Reportar al terminar la tarea
       desc: En un evento de finalización del Agent (p. ej. <code class="doc-code">agent_settled</code> de pi) o al final del script, incluya la Key y haga <code class="doc-code">POST /v1/namespaces/{namespace}/events</code> (namespace = su espacio de nombres).
+    login:
+      title: O deja que el script cree la Key
+      note: 'Ejecuta el comando en tu máquina y apruébalo en el navegador; la credencial se guarda en <code class="doc-code">~/.config/anotify/credentials.json</code>. Cambia <code class="doc-code">ANOTIFY_BASE_URL</code> y el dominio del comando por la dirección de tu hub (deben coincidir): el script toma la dirección de esa variable o de su primer argumento posicional, y sin ella termina.'
     curl:
-      title: Configuración mínima · un curl para enviar a todos los dispositivos
+      title: Configuración mínima · un curl para reportar un evento
     journey:
-      title: El viaje de una notificación
+      title: El viaje de un evento
   api:
     title: Resumen de API
     base_url: Base URL
@@ -778,22 +781,22 @@ docs:
       tasks: 'Lista de tareas (flujo de eventos)'
       notifications: Lista del historial de notificaciones
       node_stream: Protocolo WebSocket de nodo
-      stream: Recepción por WebSocket long-poll
+      stream: Long-poll de nodo (protocolo de nodo)
       keys_list: Lista de API Keys
       keys_create: Crear API Key
       passkey: Registro / login con Passkey
   auth:
     title: Autenticación
-    intro: 'Dos tipos de credenciales, para dos tipos de llamadores. <b class="doc-em">Mínimo privilegio</b>: envío y recepción están separados, por lo que una Key filtrada solo afecta a un lado.'
+    intro: 'Dos tipos de credenciales, para dos tipos de llamadores. <b class="doc-em">Mínimo privilegio</b>: una API Key solo puede reportar eventos; las lecturas y escrituras de la consola van por la Cookie de sesión.'
     key:
       title: API Key (Bearer)
-      li1: · Para reportes del Agent / conexiones long-poll del receptor
+      li1: · Para reportes de eventos del Agent y de CI
       li2: '· Header: <code class="doc-code">Authorization: Bearer ant_…</code>'
       li3: '· scope: <code class="doc-code">notify:send</code> (entrada de eventos <code class="doc-code">POST /v1/namespaces/{ns}/events</code>)'
       li4: · El servidor solo guarda un hash argon2id; el texto plano se muestra una vez al crear
     passkey:
       title: Cookie de sesión
-      li1: · Para acceso al workspace desde el navegador (Resumen / Dispositivos / Keys)
+      li1: · Para acceso al workspace desde el navegador (Resumen / Eventos / Keys)
       li2: · Login sin contraseña con WebAuthn, biometría o clave de dispositivo
       li3: · Cookie httpOnly; las sesiones multi-dispositivo son independientes y revocables individualmente
       li4: '· Multi-dispositivo: sincronización de plataforma / guía de conexión / código de recuperación'
@@ -826,12 +829,8 @@ cliauth:
     switch_prefix: '¿No eres '
     switch_suffix: '? Cierra sesión y cambia de cuenta →'
     scopes_label: Permisos (selecciona al menos uno)
-    scope_send_label: Enviar notificaciones
-    scope_send_desc: Permite al agente enviar notificaciones
-    scope_receive_label: Recibir notificaciones
-    scope_receive_desc: Recibir notificaciones y suscripciones
-    scope_read_label: Ver dispositivos
-    scope_read_desc: Ver la lista de dispositivos
+    scope_send_label: Reportar eventos
+    scope_send_desc: Permite al Agent y a CI reportar eventos
     scopes_required: Selecciona al menos un permiso
     approve: Aprobar
     deny: Denegar
@@ -2320,7 +2319,7 @@ ui:
     delta_na: Sin comparación
     spark: Tendencia de 7 días
   index:
-    quickstart_hint: Una línea y tu agente queda listo
+    quickstart_hint: Un comando para obtener la Key de reporte en esta máquina
     pull_hint: Desliza para actualizar
     pull_ready: Suelta para actualizar
     pull_loading: Actualizando…

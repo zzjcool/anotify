@@ -142,6 +142,38 @@ set -e
 grep -q "用法" "$TMP/usage.log" || { echo "✗ 未提示用法"; exit 1; }
 echo "✓ 用法提示正确"
 
+echo "=== 10. 首页推荐的命令照抄可跑（#577 review r2 回归）==="
+RAW_CMD="$(sed -n 's/^    cmd_install: //p' web-src/locales/zh-CN.yaml | head -n1)"
+CMD="$(printf '%s' "$RAW_CMD" | sed "s|^'||; s|'$||; s|{base}|$BASE|g")"
+echo "  命令=$CMD"
+[ -n "$CMD" ] || { echo "✗ locale 里取不到 index.quickstart.cmd_install"; exit 1; }
+case "$CMD" in
+	*web/agent-login.sh*) echo "✗ 命令指向仓内路径（部署版没有这个文件）"; exit 1 ;;
+esac
+case "$CMD" in
+	*ANOTIFY_BASE_URL=*) : ;;
+	*) echo "✗ 命令没带 ANOTIFY_BASE_URL，脚本会退出 1"; exit 1 ;;
+esac
+CMD_HOME="$TMP/cmd-home"
+mkdir -p "$CMD_HOME"
+if command -v timeout >/dev/null 2>&1; then
+	set +e
+	( cd "$TMP" && HOME="$CMD_HOME" SSH_TTY=1 timeout 8 sh -c "$CMD" ) >"$TMP/cmd.log" 2>&1
+	RC3=$?
+	set -e
+else
+	echo "  · 无 timeout 命令，跳过可执行性断言（形状断言已过）"
+	RC3=0
+fi
+if grep -q "用法" "$TMP/cmd.log" 2>/dev/null; then
+	echo "✗ 照抄后仍是用法错误（命令缺 base）"; cat "$TMP/cmd.log" >&2; exit 1
+fi
+if command -v timeout >/dev/null 2>&1; then
+	grep -q "正在向 $BASE 发起设备授权" "$TMP/cmd.log" \
+		|| { echo "✗ 命令没进到授权流程（rc=${RC3}）"; cat "$TMP/cmd.log" >&2; exit 1; }
+	echo "✓ 首页命令照抄可进到授权流程（rc=${RC3}：限时截断属预期）"
+fi
+
 echo ""
 echo "════════════════════════════════════════"
 echo "  ✅ 冒烟全通过"

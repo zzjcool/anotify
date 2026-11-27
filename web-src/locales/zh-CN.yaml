@@ -245,18 +245,18 @@ index:
     subtitle: Agent 上报 · 事件流 · 任务链
     recommended: 推荐方式
     copy: 复制
-    cmd_install: pi install npm:pi-anotify
-    steps_short: 装插件 → 登录授权 → 收通知
+    cmd_install: 'curl -fsSL {base}/agent-login.sh | ANOTIFY_BASE_URL={base} sh'
+    steps_short: 登录授权 → 建源 → 上报事件
     copy_prompt: 复制完整指引
     docs: 查看文档 →
     curl_example_title: 部署完成
-    cmd_a: '请为我安装 anotify 通知插件：
+    cmd_a: '请帮我把 Agent 的完成事件接到 Anotify：
 
-      1. 运行 pi install npm:pi-anotify
+      1. 运行 curl -fsSL {base}/agent-login.sh | ANOTIFY_BASE_URL={base} sh，按提示在浏览器批准授权，凭证会写到本机
 
-      2. 运行 sh ~/.pi/agent/npm/node_modules/pi-anotify/common/login.sh
+      2. 在 sources.html 新建一个手动源，名字用 agent
 
-      3. 把终端里显示的授权链接或验证码告诉我，我在浏览器批准后告诉你结果
+      3. 按 docs.html#agent 里的示例，在 Agent 结束时上报一条事件
 
       '
   summary: '累计 {total} 条事件，今天 {today} 条。'
@@ -438,7 +438,7 @@ login:
       err_rate_limited: 注册过于频繁，请稍后再试。
       success: 注册成功！正在进入工作台…
   ios_tip_label: iOS 用户：
-  ios_tip: 要接收推送通知，请先用 Safari 打开本站，点「共享 → 添加到主屏幕」，再从主屏幕图标打开并登录。
+  ios_tip: 在 iOS 上请先用 Safari 打开本站，点「共享 → 添加到主屏幕」，再从主屏幕图标打开并登录。
   recovery_soon: ''
   recovery:
     toggle: 无法使用 Passkey？用恢复码登录
@@ -525,10 +525,10 @@ keys:
     subtitle: 给它起个名字，并选择权限范围
     name_label: 名称
     name_placeholder: 例如：本地开发 / CI 流水线 / 生产 Agent
-    scope_label: 权限范围（可多选，最小化原则）
+    scope_label: 权限范围
     scope_send_label: 上报
-    scope_send_desc: Agent / CI 用来 POST 通知。前缀 ant_live_
-    scope_hint: 权限最小化：上报与接收分开，泄露一个 Key 不会波及另一头。
+    scope_send_desc: Agent / CI 用来 POST 事件。前缀 ant_live_
+    scope_hint: 这个 Key 只能上报事件，读不到控制台里的任何数据。
     cancel: 取消
     generate: 生成 Key
     generating: 生成中…
@@ -732,14 +732,14 @@ docs:
     optional: 可选
     params:
       title: 事件字段
-      source: 事件来源。它同时是起点能力的名字（如 github、cron、http）。
+      source: 事件来源：命名空间内的源名（不是能力名）。源必须先存在，否则返回 404。
       type: 事件类型，对该来源有意义的名字（如 pull_request.opened）。
       payload: 事件载荷，原样传给下游任务的 params。
-      idem: '去重键。同一 source + idemKey 重复提交只产生一个事件。'
-      trace: 指定 trace。不填则新建一条。
+      idem: '去重键。同一 source + id 重复提交只产生一个事件。'
     note: 事件入库即返回 200。即使派发失败也是 200——事件不会因为下游出错而丢失，你可以稍后重放。
     curl:
       title: curl 示例
+      prereq: '示例里的源 <code class="doc-code">agent</code> 必须先建好（见「接入 Agent」第 1 步），否则照抄会得到 404 source not found。'
   node:
     intro: '节点是跑代码的地方。它主动连中枢、声明自己能跑哪些能力，然后接收 assign 帧干活。'
     connect:
@@ -755,17 +755,20 @@ docs:
   your_domain: 你的域名
   agent:
     title: 接入 Agent
-    intro: Anotify 的核心场景：<b class="doc-em">Agent 完成任务后，把通知自动送到你的所有设备</b>。接入只需两步——创建一个上报 Key，然后在任务结束时发一个 POST 请求。
+    intro: Anotify 的核心场景：<b class="doc-em">Agent 完成任务后，这条完成事件进入事件流</b>，并沿源的下游表派发给能力。接入只需两步——先建源和上报 Key，然后在任务结束时发一个 POST 请求。
     step1:
-      title: 创建上报 Key
-      desc: 到 <a href="keys.html" class="doc-link">API Keys</a> 页新建一个 <code class="doc-code">notify:send</code> 权限的 Key（前缀 <code class="doc-code">ant_live_</code>），立即保存。
+      title: 创建源与上报 Key
+      desc: 到 <a href="sources.html" class="doc-link">源</a> 页新建一个手动源（示例用 <code class="doc-code">agent</code>）；再到 <a href="keys.html" class="doc-link">API Keys</a> 页新建一个 <code class="doc-code">notify:send</code> 权限的 Key，立即保存。
     step2:
       title: 任务结束时上报
       desc: 在 Agent 结束事件（如 pi 的 <code class="doc-code">agent_settled</code>）或脚本末尾，携带 Key 发 <code class="doc-code">POST /v1/namespaces/{namespace}/events</code>（namespace 换成你的命名空间）。
+    login:
+      title: 也可以用脚本代建 Key
+      note: '在本机运行下面的命令并在浏览器里批准，凭证会写到 <code class="doc-code">~/.config/anotify/credentials.json</code>。<code class="doc-code">ANOTIFY_BASE_URL</code> 与命令里的域名都换成你的中枢地址（两处一致）——脚本只从它或第一个位置参数取地址，缺了就退出。'
     curl:
-      title: 最小接入 · 一行 curl 让通知送到所有设备
+      title: 最小接入 · 一行 curl 上报一条事件
     journey:
-      title: 一条通知的旅程
+      title: 一条事件的旅程
   api:
     title: API 概览
     base_url: Base URL
@@ -778,22 +781,22 @@ docs:
       tasks: '任务列表（事件流）'
       notifications: 通知历史列表
       node_stream: 节点 WebSocket 协议
-      stream: WebSocket 长连接接收
+      stream: 节点长连接（节点协议）
       keys_list: API Key 列表
       keys_create: 新建 API Key
       passkey: Passkey 注册 / 登录
   auth:
     title: 认证方式
-    intro: 两种凭证，对应两类调用方。<b class="doc-em">权限最小化</b>：上报与接收分开，泄露一个 Key 不会波及另一头。
+    intro: 两种凭证，对应两类调用方。<b class="doc-em">权限最小化</b>：API Key 只能上报事件，控制台读写只走会话 Cookie。
     key:
       title: API Key（Bearer）
-      li1: · 用于 Agent 上报 / 接收端长连接
+      li1: · 用于 Agent 与 CI 上报事件
       li2: '· Header：<code class="doc-code">Authorization: Bearer ant_…</code>'
       li3: '· scope：<code class="doc-code">notify:send</code>（事件入口 <code class="doc-code">POST /v1/namespaces/{ns}/events</code>）'
       li4: · 服务端只存 argon2id 哈希，明文仅创建时展示一次
     passkey:
       title: 会话 Cookie
-      li1: · 用于工作台浏览器访问（总览 / 设备 / Keys 管理）
+      li1: · 用于工作台浏览器访问（总览 / 事件 / Keys 管理）
       li2: · WebAuthn 无密码登录，生物识别或设备密钥
       li3: · httpOnly Cookie，多端会话独立、可单独吊销
       li4: · 跨设备：平台同步 / 一次性连接引导 / 恢复码兜底
@@ -826,12 +829,8 @@ cliauth:
     switch_prefix: 不是
     switch_suffix: ？退出并切换账号 →
     scopes_label: 权限范围（至少选择一项）
-    scope_send_label: 发送通知
-    scope_send_desc: 允许 Agent 发送通知
-    scope_receive_label: 接收通知
-    scope_receive_desc: 接收 / 订阅通知
-    scope_read_label: 查看设备
-    scope_read_desc: 查看设备列表
+    scope_send_label: 上报事件
+    scope_send_desc: 允许 Agent 与 CI 上报事件
     scopes_required: 请至少选择一个权限范围
     approve: 批准授权
     deny: 拒绝
@@ -2322,7 +2321,7 @@ ui:
     delta_na: 暂无对比
     spark: 近 7 日趋势
   index:
-    quickstart_hint: 一句话让 Agent 自动装好
+    quickstart_hint: 一条命令拿到本机上报凭证
     pull_hint: 下拉刷新
     pull_ready: 松开刷新
     pull_loading: 正在刷新…
