@@ -208,7 +208,7 @@
   (function () {
     "use strict";
     const A = window.Anotify;
-    const { el, api, ready, nsPath, readScope, saveScope, model, t, icon, copyText, loadErrorNode } = A;
+    const { el, api, ready, nsPath, readScope, saveScope, model, t, pruneReason, icon, copyText, loadErrorNode } = A;
     const query = new URLSearchParams(location.search);
     const name = query.get("id") || "";
     if (query.get("namespace")) saveScope({ namespace: query.get("namespace") });
@@ -635,7 +635,7 @@
             href: "message.html?namespace=" + encodeURIComponent(task.namespace) + "&id=" + encodeURIComponent(fact.taskId),
             text: fact.taskId,
           }));
-          if (fact.pruned) row.append(el("p", { class: "card-sub b2-wrap", text: fact.pruned.reason + ": " },
+          if (fact.pruned) row.append(el("p", { class: "card-sub b2-wrap", text: pruneReason(fact.pruned.reason) + ": " },
             el("span", { "data-raw-content": "", text: fact.pruned.detail })));
           list.append(row);
         }

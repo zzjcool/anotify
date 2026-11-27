@@ -366,7 +366,7 @@ message:
     truncated: "已截断"
     complete: "未截断"
     logs_empty: "此尝试没有日志（或没有上一次尝试）。"
-    emissions: "已接受的 emit 事实"
+    emissions: "emit 事实（含被拒绝的调用）"
     missing: "URL 缺少任务 id。"
     not_found: "任务不存在、已清理或不属于此命名空间。"
     artifact_download: "下载托管产物"
@@ -1405,6 +1405,7 @@ prune:
   no_node: 目标能力没有在线节点
   foreign_user: 跨命名空间/跨用户
   event_schema: '事件载荷不符合源声明的载荷契约'
+  target_not_declared: '目标不在本能力的 next 里（先声明下游再 emit）'
   max_hops: 超出 hop 预算（链路太深）
   budget: 本次 trace 任务数超出预算
   no_impl: 目标是占位实现（noop），中枢不会执行它

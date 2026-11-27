@@ -516,8 +516,16 @@ components:
         reason:
           type: string
           description: |
-            封闭原因码：`no_target` / `event_schema` / `param_schema` / `param_type` /
-            `param_missing` / `downstream_missing`。
+            封闭原因码，权威定义在 `internal/protocol/enums.go`：剪枝码 `pruneReasons`
+            （`no_target` / `event_schema` / `param_schema` / `param_type` / `param_missing` /
+            `capability_disabled` / `no_match` / `max_hops` / `budget`）、决策通道观察码
+            `routeObservationReasons`（`no_decision` / `router_failed` / `outcome_dropped` /
+            `outcome_not_declared`），以及被拒绝的 emit 留下的 `target_not_declared`
+            （调用方拿到 400，闭集见 `internal/store/emission.go` 的 `emitRejectionReasons`；
+            它进 `pruned[]` 是为了让「为什么下游没跑」可查，不表示这次 emit 被接受）。
+
+            `downstream_missing` **不在此列**：未解析派发失败是 failed Task + 观察事件，
+            不是剪枝（`pruned[]` 会把它过滤掉，见 trace 响应里 `prunedCount` 的口径）。
         detail:
           type: string
           description: 给人看的补充（缺哪个参数、哪个字段类型不对），不参与任何判定

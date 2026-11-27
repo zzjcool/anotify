@@ -113,7 +113,6 @@ async function deployToNode(capName) {
 	return applied;
 }
 
-// postEvent 走机器入口（Bearer key + ns 路径）。
 function postEvent(body) {
 	return H.req(server.base, V.P.events(NS), { key: sendKey, body });
 }
@@ -660,19 +659,68 @@ async function main() {
 		AEq("A6", "#636 trace.pruned 里有被拒 emit 的事实", rejectedPrune.length, 1);
 		A(
 			"A6",
-			"#636 拒绝事实点明原因与真实目标",
+			"#636 拒绝事实点明原因与真实目标（读 payload.to，不靠 detail 文案）",
 			rejectedPrune[0]?.status?.pruned?.reason === "target_not_declared" &&
-				String(rejectedPrune[0]?.status?.pruned?.detail || "").includes("c.not.next"),
-			JSON.stringify(rejectedPrune[0]?.status?.pruned),
+				rejectedPrune[0]?.spec?.payload?.to === "c.not.next" &&
+				rejectedPrune[0]?.spec?.payload?.taskId === taskId,
+			JSON.stringify(rejectedPrune[0]?.spec?.payload),
 		);
 		const emissions = (await H.req(server.base, V.P.taskEmissions(NS, taskId), { session })).json?.items || [];
 		const rejectedEmit = emissions.filter((it) => it?.to === "c.not.next" && it?.pruned?.reason === "target_not_declared");
 		AEq("A6", "#636 任务详情 emissions 里能看到被拒的 emit", rejectedEmit.length, 1);
 		A("A6", "#636 被拒的 emit 没有 taskId（B 没建 task）", rejectedEmit[0]?.taskId === null, JSON.stringify(rejectedEmit[0]));
-		A("A6", "#636 被拒的 emit 不带幂等键（--id 不占幂等域）", !rejectedEmit[0]?.id, JSON.stringify(rejectedEmit[0]));
 		// A8：任务信封里没有任何 out 键（v3 的 tasks.out 列与出口语义都已退役）
 		const keys = [Object.keys(done || {}), Object.keys(done?.spec || {}), Object.keys(done?.status || {})].flat();
 		A("A8 Task 信封（含 spec/status）没有 out 键", !keys.includes("out"), JSON.stringify(keys));
+	}
+
+	// ---- #636 拒绝不进幂等域：同一个 --id 被拒两次，修好 next 后重发真的派发 ----
+	{
+		const { traceId, taskId, dispatch } = await startTask("A6 #636 幂等域");
+		const { acks } = await runTask(dispatch, {
+			emits: [
+				{ to: "c.not.next", data: {}, id: "reject-636" }, // 带幂等键被拒
+				{ to: "c.not.next", data: {}, id: "reject-636" }, // 同 id 再拒一次：不能被回放成「已经拒过了」
+				{ to: "c.fin", data: {}, id: "reject-636" }, // 修好 next 后用同一个 id 重发 → 真的派发
+			],
+		});
+		A(
+			"A6",
+			"#636 带幂等键的 emit 被拒仍是 400 target_not_declared",
+			acks[0]?.httpStatus === 400 && acks[0]?.error?.error === "target_not_declared",
+			JSON.stringify(acks[0]),
+		);
+		A(
+			"A6",
+			"#636 同一个 --id 再被拒一次不命中幂等回放（仍 400，不是 200/409）",
+			acks[1]?.httpStatus === 400 && acks[1]?.error?.error === "target_not_declared",
+			JSON.stringify(acks[1]),
+		);
+		A(
+			"A6",
+			"#636 同一个 --id 修好 next 后重发 → 真的派发（200 + taskId）",
+			acks[2]?.httpStatus === 200 && !!acks[2]?.response?.taskId,
+			JSON.stringify(acks[2]),
+		);
+		A("A6", "#636 幂等域用例的任务进 succeeded", !!(await waitPhase(taskId, "succeeded")), "");
+		const items = (await H.req(server.base, V.P.taskEmissions(NS, taskId), { session })).json?.items || [];
+		const rejections = items.filter((it) => it?.to === "c.not.next");
+		AEq("A6", "#636 两次被拒各留一条事实（同一个 --id 没把第二条合并掉）", rejections.length, 2);
+		AEq("A6", "#636 被拒的 emit 一行都不带幂等键", rejections.filter((it) => it?.id).length, 0);
+		AEq("A6", "#636 被拒的 emit 没有 taskId（没建下游任务）", rejections.filter((it) => it?.taskId !== null).length, 0);
+		const tr2 = await traceOf(traceId);
+		AEq(
+			"A6",
+			"#636 每次被拒都在 trace.pruned 各留一条",
+			(tr2.pruned || []).filter((p) => p?.spec?.eventType === "target_not_declared").length,
+			2,
+		);
+		AEq(
+			"A6",
+			"#636 重发只建出 1 个子任务（就是重发那次）",
+			(tr2.tasks || []).filter((t) => t?.spec?.parentTaskId === taskId).length,
+			1,
+		);
 	}
 
 	// ---- A8 不 emit → 没有下游（出口只在 emission 里）----

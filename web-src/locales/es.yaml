@@ -366,7 +366,7 @@ message:
     truncated: "Truncado"
     complete: "Sin truncar"
     logs_empty: "No hay líneas para este intento (o no hay intento anterior)."
-    emissions: "Hechos emit aceptados"
+    emissions: "Hechos emit (incluye rechazos)"
     missing: "Falta el id de tarea en la URL."
     not_found: "Tarea inexistente, eliminada o de otro espacio."
     artifact_download: "Descargar artefacto administrado"
@@ -1405,6 +1405,7 @@ prune:
   no_node: la capacidad destino no tiene nodo en línea
   foreign_user: cruza espacio de nombres/usuario
   event_schema: 'El payload del evento no cumple el contrato que declara el origen'
+  target_not_declared: 'el destino no está declarado en el next de esta capacidad'
   max_hops: presupuesto de saltos agotado (cadena demasiado profunda)
   budget: este trace superó su presupuesto de tareas
   no_impl: el destino es un marcador (noop) — el hub no lo ejecutará
