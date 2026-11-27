@@ -5465,15 +5465,17 @@ test('#579 HUD 完成比与条前缀都按任务卡数、与回放拍同源（tr
   assert.equal(spec.nodes.filter((n) => n.kind !== 'trigger' && n.kind !== 'pruned').length, 5,
     '有底图时节点按能力折叠（run-tests 两张卡 → 一个节点）—— 这正是按节点数会少算的现场');
   const cards = cardPhases(sandbox, trace.body.tasks);
+  const open = cards.filter((p) => !TERMINAL_PHASES.includes(p)).length;
   assert.equal(cards.length, 7, 'fixture：7 张任务卡');
-  assert.equal(cards.filter((p) => !TERMINAL_PHASES.includes(p)).length, 3, 'fixture：tsk_mock_5/6/7 还没结束');
+  assert.equal(open, 3, 'fixture：tsk_mock_5/6/7 还没结束');
   assert.equal(spec.beats.length, cards.length, '一拍一张卡');
   assert.deepEqual(spec.beats.map((b) => b.kind).sort(), ['end', 'end', 'end', 'failed', 'pipe', 'pipe', 'running'],
     '拍的 kind 走 kindForStatus，不是节点的 worst()');
   const { tally, meta, done } = silkTextLayer().text(spec.beats, spec.beats.length * 0.5);
   assert.deepEqual([tally.tasks, tally.closed, tally.failed, tally.pending], [7, 4, 1, 3]);
-  assert.equal(meta, '7 个任务 · 回放 3.5s · 1 个失败', '条前缀的任务数与「回放 3.5s」同源（7 拍 × 0.5s）');
-  assert.equal(done, '回放结束 · 4/7 个任务已结束 · 1 个失败', 'HUD 分母是任务卡数（7），不是图节点数（5）');
+  assert.equal(meta, cards.length + ' 个任务 · 回放 3.5s · 1 个失败', '条前缀的任务数与「回放 3.5s」同源（7 拍 × 0.5s）');
+  assert.equal(done, '回放结束 · ' + (cards.length - open) + '/' + cards.length + ' 个任务已结束 · 1 个失败',
+    'HUD 完成比 = 页面上真实未结束的卡数（4/7），不是图节点数（4/5）');
 });
 
 test('#579 同一能力两拍（一失败一未完成）不折叠：条与 HUD 都按 2 张卡说话', () => {
