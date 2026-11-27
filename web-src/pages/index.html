@@ -1786,14 +1786,14 @@
 
 
 
-    /* ================= 复制 ================= */
-    // data-copy-text 的属性名是 copyText（dataset 会把连字符转驼峰），
-    // 之前读 dataset.copy 拿到 undefined，点一下就在 querySelector(undefined) 上抛错。
+    /* ================= 复制 =================
+     * #584：文本走闭包。之前传的是 b.dataset.copyText（字符串）本身，被当 CSS
+     * 选择器 → 命令文本不是合法选择器，抛 SyntaxError、剪贴板没写。 */
     document
       .querySelectorAll(".copy-btn")
       .forEach((b) =>
         b.addEventListener("click", () =>
-          copyText(b, b.dataset.copyText),
+          copyText(b, () => b.dataset.copyText ?? ""),
         ),
       );
 

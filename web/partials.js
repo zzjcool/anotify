@@ -2422,11 +2422,11 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	}
 
 	/* ---------- 小工具 ---------- */
+	// copyText 的第二个参数：函数 = 取文本的闭包，字符串 = 文本本身。
+	// #584 之前字符串被当成 CSS 选择器（document.querySelector(getText).innerText），
+	// 命令文本不是合法选择器 → SyntaxError、剪贴板没内容。别把选择器分支加回来。
 	function copyText(btn, getText) {
-		const text =
-			typeof getText === "function"
-				? getText()
-				: document.querySelector(getText).innerText;
+		const text = typeof getText === "function" ? getText() : getText;
 		navigator.clipboard.writeText(text).then(() => {
 			const orig = btn.textContent;
 			btn.textContent = t("common.copy.copied", "已复制 ✓");
@@ -2435,14 +2435,11 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	}
 
 	/* 共享 toast（#anotify-toast-host）。时序：入场 180ms → 停留 3600ms →
-	 * 退场 160ms 后 remove。CSS 动画在 ui.css 的 .anotify-toast.is-in/.is-out；
-	 * 位置（顶部居中）与层级（--z-toast，必须高于弹层）也在 ui.css —
-	 * 这里只给类名，避免同一件事在 JS 的 Tailwind 串和 CSS 里各写一份。
-	 * reduce 下不加动画类，直接 remove。退场时长从 --dur-mid 读，避免与
-	 * ui.css 双份硬编码（reviewer minor）。
-	 *
-	 * #378：错误不再走这条自动退场——错误是产品的一部分，3.6s 既读不完也复制不到。
-	 * 错误条见 errorBar()：持久、可关、可复制；成功/警告仍是回执，照旧自动退场。 */
+	 * 退场 160ms 后 remove。CSS 动画（.anotify-toast.is-in/.is-out）、位置
+	 * （顶部居中）与层级（--z-toast）都在 ui.css，这里只给类名，避免双份。
+	 * reduce 下不加动画类，直接 remove；退场时长读 --dur-mid，不与 ui.css 硬编码双份。
+	 * #378：错误不走这条自动退场（错误是产品的一部分，3.6s 读不完也复制不到），
+	 * 见 errorBar()：持久、可关、可复制；成功/警告仍是回执，照旧自动退场。 */
 	function toastExitMs() {
 		const raw = getComputedStyle(document.documentElement)
 			.getPropertyValue("--dur-mid")

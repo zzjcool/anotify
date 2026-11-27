@@ -19,15 +19,11 @@ export async function observability(d, mode) {
  const {page,goto,calls,req,check,shot,clean,archive:archiveCalls}=d;
  const count=sel=>page.locator(sel).count();
  /* 事件面板的「查询已落下」锚点 —— 用真实条件而不是时长。
-  *
-  * 病根（#493）：events 页的查询是**事件驱动**的（change / submit / refresh 各发一轮），
-  * 每一轮先把 `#ev-list` 换成骨架行（reset() → skeletonRows()），再等 fetch 回来才画行。
-  * 骨架行没有文本 ⇒ 这个窗口里 `innerText`/`textContent` 都是空串。断言如果在窗口里读，
-  * 拿到的是空气，红成 `did not match /Ingested/. Input: ''`（= CI 上 observe-events 的偶发红）。
-  *
-  * 所以读面板内容前必须等「这一轮真的画完」：没有 aria-busy、也没有骨架行。
-  * 注意不能靠 `#ev-list article` 计数当锚点：上一轮的旧行在被顶掉之前也满足计数，
-  * 而骨架窗口里计数是 0 —— 计数只说明「某一刻」，不说明「当前这一轮」。 */
+  * 病根（#493）：events 页的查询是**事件驱动**的（change/submit/refresh 各一轮），每轮先
+  * 把 `#ev-list` 换成骨架行（reset() → skeletonRows()）再等 fetch 回来画行；骨架行没有文本
+  * ⇒ 窗口里 innerText/textContent 都是空串，断言读到空气（CI 上 observe-events 的偶发红
+  * `did not match /Ingested/. Input: ''`）。所以读面板前必须等「这一轮真的画完」：没有
+  * aria-busy、没有骨架行。`#ev-list article` 计数不能当锚点：旧行在被顶掉之前也满足计数，骨架窗口里是 0。 */
  const settledList = () => page.waitForFunction(() => {
    const list = document.getElementById('ev-list');
    return !!list && !list.hasAttribute('aria-busy') && !list.querySelector('.ev-skel-row');
