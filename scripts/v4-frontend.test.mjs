@@ -1530,7 +1530,9 @@ test("model.event：v4 信封字段 deliveryId/pruned/signature（W6 console 同
 				payload: { repo: "a/b" },
 			},
 			status: {
+				dispatched: 2,
 				pruned: { reason: "param_missing", detail: "需要 file" },
+				prunedCount: 1,
 				deliveredAt: "2024-01-01T00:00:00Z",
 			},
 		}),
@@ -1545,9 +1547,8 @@ test("model.event：v4 信封字段 deliveryId/pruned/signature（W6 console 同
 	assert.equal(envelope.traceUID, "tr-1");
 	/* EventSpec 没有 signature：模型不得透传（否则「原始 JSON」里是假字段）。 */
 	assert.equal("signature" in envelope, false);
-	/* v4 的 EventStatus 只有 pruned（additionalProperties:false）。model 仍原样透传
-	 * `dispatched`（mock 的 console 形状带着它），但页面**不再展示** —— 在「查看
-	 * 原始 JSON」里印 `"dispatched": []` 是一条服务端从不发送的假事实。 */
+	assert.equal(envelope.dispatched, 2);
+	assert.equal(envelope.prunedCount, 1);
 	// pruned 是对象（playbook/event 语义：{reason,detail}）或 null，不是计数
 	assert.deepEqual(envelope.pruned, { reason: "param_missing", detail: "需要 file" });
 	assert.equal(envelope.deliveredAt, "2024-01-01T00:00:00Z");
@@ -1564,6 +1565,8 @@ test("model.event：v4 信封字段 deliveryId/pruned/signature（W6 console 同
 	assert.equal(row.reason, null);
 	assert.equal(row.deliveryId, null);
 	assert.equal(row.pruned, null);
+	assert.equal(row.dispatched, 0);
+	assert.equal(row.prunedCount, 0);
 });
 
 test("model.trace：{events,tasks,pruned} 缺省 []", () => {
@@ -2398,10 +2401,12 @@ test("mock: stats / console.events 必须显式给 namespace（不再默认全 n
 	assert.equal(rows.body.metadata.continue, "", "W6 metadata.continue, not a flat wrapper");
 	const row = rows.body.items.find(r => r.spec.reason === "Ingested");
 	assert.ok(row.spec.deliveryId, "Event spec deliveryId remains visible");
-	/* v4 的 EventStatus 只有 pruned（additionalProperties:false）；mock 不再伪造成
-	 * 「总有 dispatched 数组」——真实信封里它压根不存在。 */
-	assert.equal("dispatched" in row.status || row.status.dispatched === undefined, true);
-	assert.equal(row.status.pruned, null);
+	assert.ok(row.status.dispatched >= 1, "T1 建过任务 → dispatched 是真实数字");
+	assert.equal(row.status.prunedCount, 1, "T1 有 1 条纯剪枝（param_schema）");
+	assert.deepEqual(row.status.pruned, {
+		reason: "param_schema",
+		detail: "run-tests@3 params.suite: 期望 unit|integration|e2e",
+	});
 	assert.equal(row.metadata.namespace, "default");
 });
 

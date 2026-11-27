@@ -2022,7 +2022,7 @@
 		};
 	}
 
-	function eventResource(ev) {
+	function eventResource(ev, opts) {
 		return {
 			apiVersion: API_VERSION,
 			kind: "Event",
@@ -2044,13 +2044,18 @@
 				payload: clone(ev.payload || {}),
 				signature: ev.signature ? clone(ev.signature) : null,
 			},
-			status: {
-				pruned: ev.prunedCount ? (() => {
-					const facts = state.prunes.filter(p => p.ns === ev.ns && p.event === ev.name);
-					return facts.length ? { reason: facts[0].reason, detail: facts[0].detail } : null;
-				})() : null,
-				deliveredAt: ev.deliveredAt || null,
-			},
+			status: (() => {
+				const tasks = state.tasks.filter((t) => t.traceUID === ev.traceUID && t.ns === ev.ns).length;
+				const facts = state.prunes.filter((p) => p.traceUID === ev.traceUID && p.ns === ev.ns);
+				const own = facts.find((p) => p.event === ev.name) || facts[0];
+				const show = facts.length > 0 && (!(opts && opts.ownPruneOnly) || ev.reason === "Pruned");
+				return {
+					dispatched: tasks,
+					pruned: show ? { reason: own.reason, detail: own.detail } : null,
+					prunedCount: facts.length,
+					deliveredAt: ev.deliveredAt || null,
+				};
+			})(),
 		};
 	}
 
@@ -2072,7 +2077,7 @@
 			kind: "Trace",
 			traceUID: uid,
 			namespace: ns,
-			events: events.map(eventResource),
+			events: events.map((e) => eventResource(e, { ownPruneOnly: true })),
 			tasks: tasks.map(taskResource),
 			pruned: pruned,
 		};
@@ -5010,9 +5015,8 @@
 		const miss = nsMissing(ns);
 		if (miss) return miss;
 		const limit = Number(ctx.query.get("limit") || 100);
-		/* `?source=` 按 involvedObject.name 过滤（api/events.yaml · NamespaceEvents）。
-			源详情页的「近期回执」就用这个参数；mock 不实现它的话，预览会把别的源
-			（甚至任务）的事件算到当前源头上 —— 那是假事实，不是宽松。 */
+		/* `?source=` 按 involvedObject.name 过滤（api/events.yaml · NamespaceEvents）：
+			源详情页的「近期回执」用它；不实现会把别的源的事件算到当前源头上（假事实）。 */
 		const source = ctx.query.get("source");
 		const list = state.events
 			.filter((e) => e.ns === ns && (!source || (e.involvedObject || {}).name === source))
@@ -5093,7 +5097,9 @@
 		list.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || b.name.localeCompare(a.name));
 		const page = pageFacts(list, ctx.query, JSON.stringify(["events", want.ns, source, trace]));
 		if (page.err) return page.err;
-		return json(Object.assign(listOf("EventList", page.items.map(eventResource)), { metadata: page.metadata }));
+		/* 按 trace 查时观察行就在同一份响应里 → 投递行不再借「代表」（与服务端同一判据）。 */
+		const rows = page.items.map((e) => eventResource(e, { ownPruneOnly: Boolean(trace) }));
+		return json(Object.assign(listOf("EventList", rows), { metadata: page.metadata }));
 	});
 
 	// 能力模板（cluster 读模型，公共模板不承载 ns 私有数据）

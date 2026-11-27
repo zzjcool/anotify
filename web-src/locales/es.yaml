@@ -1087,6 +1087,8 @@ events:
     event_uid: 'UID del evento (no es la clave de deduplicación)'
     received: "Recibido"
     dispatched: "Tareas enviadas"
+    outcome_dispatched: '{n} enviadas'
+    outcome_pruned: 'Podado'
     details: "Detalles de envío / poda / carga"
     empty: "No hay eventos en este espacio con estos filtros."
     count: "Mostrando {n} eventos únicos"
@@ -1391,6 +1393,7 @@ caps:
     empty: 'Primero pega un documento YAML'
 prune:
   no_edge: sin candidato conectado
+  no_target: 'La fuente no tiene destinos'
   no_capability: la capacidad destino no existe
   param_schema: los parámetros no cumplen el contrato destino
   param_missing: falta un parámetro obligatorio

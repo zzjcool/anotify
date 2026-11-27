@@ -1087,6 +1087,8 @@ events:
     event_uid: '事件 UID（与去重键不同）'
     received: "接收时间"
     dispatched: "已派发任务数"
+    outcome_dispatched: '已派发 {n}'
+    outcome_pruned: '已剪枝'
     details: "派发 / 剪枝 / 载荷明细"
     empty: "此命名空间与筛选条件下没有事件。"
     count: "已显示 {n} 条唯一事件"
@@ -1391,6 +1393,7 @@ caps:
     empty: '请先粘贴 YAML 文档'
 prune:
   no_edge: 没有接候选
+  no_target: '源没有目标'
   no_capability: 目标能力不存在
   param_schema: 参数不满足目标契约
   param_missing: 缺必填参数

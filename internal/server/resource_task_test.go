@@ -1021,6 +1021,129 @@ func TestTaskResourceEventsAndTrace(t *testing.T) {
 		http.StatusNotFound, reasonNotFound)
 }
 
+func findEventRow(t *testing.T, list map[string]any, uid string) map[string]any {
+	t.Helper()
+	for _, item := range trArray(t, list, "items") {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if trString(t, obj, "metadata", "uid") == uid {
+			return obj
+		}
+	}
+	t.Fatalf("事件流里找不到 %s", uid)
+	return nil
+}
+
+func TestTaskResourceEventOutcome(t *testing.T) {
+	env := newTaskResEnv(t)
+	base := store.Now() - 60
+
+	prunedTrace := "trace_outcome_pruned"
+	prunedUID := env.seedEvent(env.ns, prunedTrace, "github", "push", `{"zzz":1}`, "", base)
+	paramUID := env.seedEvent(env.ns, prunedTrace, store.EventPruneSource, "param_missing",
+		`{"reason":"param_missing","detail":"需要 n, tag","capability":"r3cap-req"}`, store.EventReasonPruned, base+1)
+	noTargetUID := env.seedEvent(env.ns, prunedTrace, store.EventPruneSource, "no_target",
+		`{"reason":"no_target","detail":"源没有 targets"}`, store.EventReasonPruned, base+2)
+
+	okTrace := "trace_outcome_ok"
+	okUID := env.seedEvent(env.ns, okTrace, "github", "push", `{"n":1}`, "", base+3)
+	env.insertTask(seededTask{trace: okTrace})
+	env.insertTask(seededTask{trace: okTrace})
+	env.seedEvent(env.ns, okTrace, store.EventPruneSource, string(protocol.ReasonDownstreamMissing),
+		`{"reason":"downstream_missing","detail":"下游解析不到"}`, store.EventReasonPruned, base+4)
+
+	assertOutcome := func(list map[string]any, uid, wantTrace string, wantDispatched, wantCount float64, wantReason, wantDetail string) {
+		t.Helper()
+		row := findEventRow(t, list, uid)
+		if got := trString(t, row, "spec", "traceUID"); got != wantTrace {
+			t.Fatalf("%s spec.traceUID = %q, want %q", uid, got, wantTrace)
+		}
+		if got := trNumber(t, row, "status", "dispatched"); got != wantDispatched {
+			t.Fatalf("%s status.dispatched = %v, want %v", uid, got, wantDispatched)
+		}
+		if got := trNumber(t, row, "status", "prunedCount"); got != wantCount {
+			t.Fatalf("%s status.prunedCount = %v, want %v", uid, got, wantCount)
+		}
+		pruned, has := trObject(t, row, "status")["pruned"]
+		if wantReason == "" {
+			if !has || pruned != nil {
+				t.Fatalf("%s status.pruned 必须是 null，得到 %v", uid, pruned)
+			}
+			return
+		}
+		fact, ok := pruned.(map[string]any)
+		if !ok {
+			t.Fatalf("%s status.pruned 必须是对象，得到 %T (%v)", uid, pruned, pruned)
+		}
+		if got := trString(t, fact, "reason"); got != wantReason {
+			t.Fatalf("%s status.pruned.reason = %q, want %q", uid, got, wantReason)
+		}
+		if got := trString(t, fact, "detail"); got != wantDetail {
+			t.Fatalf("%s status.pruned.detail = %q, want %q", uid, got, wantDetail)
+		}
+	}
+
+	nsList := trWant(t, env.do(http.MethodGet, "/v1/namespaces/"+env.ns+"/events", nil), http.StatusOK)
+	assertOutcome(nsList, prunedUID, prunedTrace, 0, 2, "param_missing", "需要 n, tag")
+	assertOutcome(nsList, okUID, okTrace, 2, 0, "", "")
+
+	console := trWant(t, env.do(http.MethodGet, consoleEventsPath+"?namespace="+env.nsSlug, nil), http.StatusOK)
+	assertOutcome(console, prunedUID, prunedTrace, 0, 2, "param_missing", "需要 n, tag")
+	assertOutcome(console, okUID, okTrace, 2, 0, "", "")
+
+	// 按 trace 查时观察行就在同一份响应里：投递行再借「代表」= 同一份剪枝事实投影两遍。
+	traceList := trWant(t, env.do(http.MethodGet, "/v1/namespaces/"+env.ns+"/events?trace="+prunedTrace, nil), http.StatusOK)
+	if got := len(trArray(t, traceList, "items")); got != 3 {
+		t.Fatalf("?trace= 的事件流 = %d 条, want 3（投递行 + 2 条剪枝观察）", got)
+	}
+	assertOutcome(traceList, prunedUID, prunedTrace, 0, 2, "", "")
+	assertOutcome(traceList, paramUID, prunedTrace, 0, 2, "param_missing", "需要 n, tag")
+	assertOutcome(traceList, noTargetUID, prunedTrace, 0, 2, "no_target", "源没有 targets")
+
+	consoleTrace := trWant(t, env.do(http.MethodGet,
+		consoleEventsPath+"?namespace="+env.nsSlug+"&traceId="+prunedTrace, nil), http.StatusOK)
+	assertOutcome(consoleTrace, prunedUID, prunedTrace, 0, 2, "", "")
+	assertOutcome(consoleTrace, noTargetUID, prunedTrace, 0, 2, "no_target", "源没有 targets")
+
+	// 显式只取投递源的行（观察行被 source 过滤掉）→ 代表照给：这才是它要补的那个缺口。
+	srcList := trWant(t, env.do(http.MethodGet,
+		"/v1/namespaces/"+env.ns+"/events?trace="+prunedTrace+"&source=github", nil), http.StatusOK)
+	assertOutcome(srcList, prunedUID, prunedTrace, 0, 2, "param_missing", "需要 n, tag")
+
+	trace := trWant(t, env.do(http.MethodGet, "/v1/namespaces/"+env.ns+"/traces/"+prunedTrace, nil), http.StatusOK)
+	traceEvents := trArray(t, trace, "events")
+	if len(traceEvents) != 3 {
+		t.Fatalf("trace.events = %d 条, want 3（投递 + 2 条剪枝）", len(traceEvents))
+	}
+	var noTargetRow map[string]any
+	for _, item := range traceEvents {
+		obj := item.(map[string]any)
+		if got := trString(t, obj, "spec", "eventType"); got == "no_target" {
+			noTargetRow = obj
+		}
+		if got := trNumber(t, obj, "status", "prunedCount"); got != 2 {
+			t.Fatalf("trace.events 每行的 status.prunedCount = %v, want 2（trace 级聚合）", got)
+		}
+	}
+	if noTargetRow == nil {
+		t.Fatal("trace.events 里找不到 no_target 观察行")
+	}
+	if got := trString(t, noTargetRow, "status", "pruned", "reason"); got != "no_target" {
+		t.Fatalf("观察行的 status.pruned.reason = %q, want 自己那条（no_target）", got)
+	}
+	for _, item := range traceEvents {
+		obj := item.(map[string]any)
+		if trString(t, obj, "metadata", "uid") != prunedUID {
+			continue
+		}
+		if got, ok := trObject(t, obj, "status")["pruned"]; !ok || got != nil {
+			t.Fatalf("trace 视图投递行的 status.pruned 必须是 null，得到 %v", got)
+		}
+	}
+}
+
 // TestTaskResourceListFilters 列表过滤走 store.TaskFilter（显式白名单，不引 selector）。
 func TestTaskResourceListFilters(t *testing.T) {
 	env := newTaskResEnv(t)

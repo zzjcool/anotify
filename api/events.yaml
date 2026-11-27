@@ -77,6 +77,11 @@ paths:
             未解析派发失败（`downstream_missing`）是 failed Task + 观察事件，
             不是剪枝，因此不出现在 `pruned` 里（capability.md §6.2）。
 
+        每条 `events[]` 的 `status` 同样带 trace 级 `dispatched`（任务数）与 `prunedCount`
+        （纯剪枝条数）；但这里的 `pruned` **只对观察行自身非 `null`**（全量已由 `pruned[]`
+        给出，再给一个「代表」会让读者以为这条投递事件被剪了）。列表端点则是另一回事，
+        见 `EventStatus.pruned`。
+
         两个信号都空（没有事件、也没有任务）→ 404：trace_id 只由事件/任务产生，
         两者都没有就是"这条 trace 在本命名空间不存在"，不区分"没事件"与"不存在"。
 
@@ -122,6 +127,13 @@ paths:
         响应是 `EventList`：`metadata.continue` 只在还有更旧的行时出现；`items[]` 每项是
         `Event` 信封。`?namespace=*` 时逐行回显事件**自己**的 `metadata.namespace`，
         否则回显请求的命名空间。
+
+        每条的 `status` 与 `GET /v1/namespaces/{namespace}/events` **同一份投影**：
+        `dispatched`（该 trace 的任务数）+ `prunedCount`（纯剪枝条数）+ `pruned`（首条代表）。
+        代表只在响应**看不到观察行**时给（带 `traceId` 时观察行就在同一份响应里，再给代表
+        等于同一份剪枝事实投影两遍）；显式给 `source=route` 时每行报自己的原因，代表无意义。
+        事件中心页面（events.html）读的就是这个端点——两侧口径分叉等于「API 说有剪枝、
+        页面看不出来」。
       parameters:
         - $ref: '#/components/parameters/NamespaceQuery'
         - name: source
@@ -323,6 +335,14 @@ components:
 
           每条的 `metadata.namespace` 是**事件自己**的命名空间（逐条解析），
           不是请求路径的字符串回填。
+
+          每条的 `status` 带**trace 级**派发结果（#638）：`dispatched` = 该 trace 建成的
+          任务数，`prunedCount` = 纯剪枝条数，`pruned` = 首条剪枝代表。事件流（无 `trace`）
+          只回投递行（剪枝观察行被过滤），不聚合的话每条都是 `pruned:null` —— 对一条因为
+          缺必填参数、一个任务都没派发的事件，那是**错误的事实**。代表只在这种「响应里
+          看不到观察行」的窗口里给；`?trace=` 时观察行就在同一份响应里，`pruned` 只属于
+          观察行自己（否则同一份剪枝事实投影两遍）。全量剪枝逐条诊断走 `?trace=`，或
+          `GET …/traces/{traceId}` 的 `pruned[]`。
         parameters:
           - name: trace
             in: query
@@ -442,17 +462,47 @@ components:
       additionalProperties: false
     EventStatus:
       type: object
-      description: 事件的派生状态。只有剪枝留痕行有 `pruned`，其余是 `null`。
-      required: [pruned]
+      description: |
+        事件的派生状态：行级的剪枝事实 + **trace 级**的派发结果（`dispatched` /
+        `prunedCount`）。
+
+        为什么要有 trace 级聚合：一次投递会扇出到多个能力，「建了几个任务」记在同 trace 的
+        Task 行上，「哪几条边被剪」记在 `source=route` 的观察行上。事件流只回投递行
+        （观察行被过滤），不聚合的话每一行都是 `pruned:null`——对一条因缺必填参数、
+        一个任务都没派发的事件，那是**错误的事实**（用户得逐条点进 trace 才知道原因）。
+      required: [dispatched, pruned, prunedCount]
       properties:
+        dispatched:
+          type: integer
+          description: |
+            该事件所在 trace **建成的任务数**（含 running / failed / abandoned：都是真的建过的）。
+            `0` 且 `prunedCount`>0 = 一条都没派发出去；两者都是 0 = 这次投递没留下任务也没有
+            剪枝留痕（例如任务行已被保留期清理）。
         pruned:
           allOf:
             - $ref: '#/components/schemas/EventPruneFact'
           nullable: true
           description: |
-            剪枝观察（事件收到了但没派发）。`null` 表示这条事件不是纯剪枝：
-            普通事件、以及未解析派发失败（`downstream_missing`，它是 failed Task +
-            观察事件，不是剪枝）都是 `null`。
+            剪枝观察（事件收到了但没派发）。一个字段两种来源：
+
+              - 本行是纯剪枝观察行（`source=route`）→ 给**它自己**的原因；
+              - 本行是投递行（两个**列表**端点，且该响应里看不到这个 trace 的观察行）→
+                给同 trace 的**首条**纯剪枝（代表），没有就是 `null`；
+              - 本行是投递行，但响应已含该 trace 的观察行（列表端点带 `?trace=` /
+                `?traceId=` 且没限定投递源；`GET …/traces/{traceId}` 恒如此）→
+                **恒为 `null`**：全量就在同一份响应里，再给一个「代表」会让读者以为这条
+                事件被剪了（按行数剪枝事实的客户端也会翻倍）。
+
+            未解析派发失败（`downstream_missing`）是 failed Task + 观察事件，不是剪枝，
+            所以它自己的 `pruned` 恒为 `null`（也不占用「首条代表」）。
+
+            形状保持对象（`{reason, detail}`）而不是数组：既有客户端（trace 视图、
+            控制台展开明细）按对象读；条数由 `prunedCount` 承担，全量逐条走 trace 视图。
+        prunedCount:
+          type: integer
+          description: |
+            该 trace 的**纯剪枝**条数（`source=route` 且 type 不是 `downstream_missing`）。
+            `pruned` 只给其中首条；要逐条诊断走 `GET …/traces/{traceId}` 的 `pruned[]`。
       additionalProperties: false
     EventPruneFact:
       type: object
