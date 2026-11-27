@@ -75,6 +75,10 @@ func TestExamplePackagesRender(t *testing.T) {
 			if !strings.HasPrefix(body, "#!") {
 				t.Fatalf("%s/%s 的 %s 不以 #! 开头", dir, c.Metadata.Name, c.Spec.Run.Entrypoint)
 			}
+			if strings.Contains(body, "`") {
+				t.Fatalf("%s/%s 的脚本里有反引号：prompt 是双引号字符串，反引号会被 shell 当命令替换执行"+
+					"（实测 `Fixes #12` 直接报 command not found，整跳 0.0min 失败）", dir, c.Metadata.Name)
+			}
 			for key, value := range c.Spec.Run.Env {
 				if value.IsValueFrom() {
 					continue
