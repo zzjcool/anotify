@@ -150,7 +150,6 @@ async function realBootstrap(server) {
 }
 
 // ensureCapability 幂等地建一个能力（真实 POST；同内容重发只会折叠到已有版本）。
-//
 // extra 是「造真实执行事实」需要的 spec 段：params（参数 schema）、requires.values
 // （run.env 引用 vars.* 时**必须**声明，否则服务端 400 undeclared_need）、lifecycle
 // （重试策略）与 run.env（C11 诊断来源层）。全部走产品校验，没有绕过。
@@ -188,8 +187,10 @@ function canonicalJSON(value) { // 与 artifact.canonicalizeJSON 同口径：对
   return value;
 }
 
-// contentIdentity 复算 foldKey/digest（#612 review r1）：只改 spec 不改身份会造出
-// store 认为不可能的行。字节与 artifact 的 digestDocument/foldDocument 同序，params 按 key 排序。
+// contentIdentity 复算 foldKey/digest（#612 review r1），只在条件成立时逐字节相等：① 没有会被 json.Marshal
+// 转义的 `<`/`>`/`&`；② 数字没被 JSON.parse→stringify 重排版；③ 子键序 = Go struct 序（只有 params 走了
+// canonicalJSON）。夹具别写含 `&&` 的脚本或浮点 params；seedLegacyParamSchema 的 id 也对不上（由 digest 派生），
+// 且 e2e 里 deployApplied 的守协议节点原样回显 digest——这条自证是**关着的**。
 function contentIdentity(name, spec, version) {
   const doc = {
     name,
@@ -203,7 +204,8 @@ function contentIdentity(name, spec, version) {
   return 'sha256:' + createHash('sha256').update(JSON.stringify(doc)).digest('hex');
 }
 
-function seedLegacyParamSchema(server, ns, name, params) { // #612：写入期已拒坏 schema，这里造「升级前的存量坏行」
+// seedLegacyParamSchema 造存量坏行：这份 params 写入期今天会 400（#612），只有直接改库造得出来。
+function seedLegacyParamSchema(server, ns, name, params) {
   return withDB(server.dbPath, (db) => {
     const row = db.prepare(`SELECT cv.id AS id, cv.spec AS spec, cv.version AS version FROM capability_versions cv
       JOIN namespaces n ON n.id = cv.namespace_id
@@ -346,10 +348,8 @@ async function fireMany(server, key, ns, source, times) {
 // 发出去，assert 全部基于产品自己写下的行（不插库、不改相位）。
 
 // chainScenario 造一条**多跳链** + 一个真实失败任务 + 一个真实在跑任务：
-//
 //   chain-hook → chain-root ─emit→ chain-mid ─emit→ chain-leaf
 //                          └─emit→ chain-broken（params schema 非法 → param_schema 剪枝）
-//
 // 三件事实都是产品自己写的：子任务来自 emit 接受事务，剪枝观察来自 route 剪枝行，
 // trace 节点数来自 tasks 行。
 // capability-actions：用例 4 要验「显式版本 2 的正文不可变 → 400 version_content_immutable」，

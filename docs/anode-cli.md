@@ -157,8 +157,8 @@ anode --version   # 单行 JSON：{"version":"<label>","commit":"<sha>"}
 
 ## 6. 边界（踩了就错的几条）
 
-- **不写中枢数据库**：`cmd/anode` 只依赖 `internal/protocol` 与 `internal/artifact`
-  两个中枢包（`make check-anode-skill` 会拦），不 import `internal/server` /
+- **不写中枢数据库**：`cmd/anode` 只依赖 `internal/protocol` / `internal/artifact` /
+  `internal/schema` 三个中枢包（`make check-anode-skill` 会拦），不 import `internal/server` /
   `internal/store`，也不直接开 sqlite。
 - **不注册自己**：节点是集群级对象，登记与授权都在中枢（`POST /v1/nodes`）。
 - **不猜宿主环境**：`envPassthrough` 只写变量名，值留在本机；`run.env` 里禁止覆盖 `PATH`。

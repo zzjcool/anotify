@@ -73,6 +73,40 @@ func TestSourceWriteRejectsUnusablePayloadSchema(t *testing.T) {
 		})
 	}
 }
+
+// TestSourceDraftPreviewPrunesUnusablePayloadSchema：dry-run 不跑写入期判据，只按 event_schema 剪枝。
+func TestSourceDraftPreviewPrunesUnusablePayloadSchema(t *testing.T) {
+	env := newSourceResEnv(t)
+	rr := env.request(http.MethodPost, env.sourcesPath()+"/dry-run", map[string]any{
+		"source": map[string]any{
+			"apiVersion": "anotify/v1",
+			"kind":       "Source",
+			"metadata":   map[string]any{"name": "draft-bad-schema"},
+			"spec": map[string]any{
+				"kind":    "manual",
+				"config":  map[string]any{"payloadSchema": map[string]any{"type": "string"}},
+				"targets": []any{},
+			},
+		},
+		"payload": map[string]any{"a": 1},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("草稿预览不校验写入期判据，应 200，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	pruned := sourceResAssertRawArray(t, rr, "pruned")
+	if len(pruned) != 1 {
+		t.Fatalf("应恰好 1 条剪枝，得到 %#v", pruned)
+	}
+	first := sourceResObj(t, pruned[0])
+	if got := first["reason"]; got != "event_schema" {
+		t.Fatalf("pruned[0].reason = %v，want event_schema", got)
+	}
+	detail, _ := first["detail"].(string)
+	if !strings.Contains(detail, "payloadSchema 不可用") {
+		t.Fatalf("pruned[0].detail 应点明 payloadSchema 不可用，得到 %q", detail)
+	}
+}
+
 func TestSourceWriteAcceptsUsablePayloadSchema(t *testing.T) {
 	env := newSourceResEnv(t)
 	schemas := []map[string]any{

@@ -15,7 +15,7 @@ v3 的 `scripts/check_agent_skill.py` 守的是 `cmd/agent/skill.md`（内嵌手
 | `--version` 一行且与注入值一致 | `--version` 恰好一行 JSON，`version`/`commit` = 注入值（label 形状＝Makefile 的 VERSION_LABEL） |
 | `--skill` 首行与 `--version` 同一份版本串 | `scripts/install-anode.sh` 的版本校验必须吃得下真输出（允许 `+<commit>` 后缀） |
 | v3 只有一个安装入口 `scripts/install-agent.sh` | `scripts/install-anode.sh` 是**完整安装器**（下载/校验/预检/systemd 生命周期/卸载/升级），且静态服务下发的 `web/install-anode.sh` 与它**字节相同**（UI 那条 `curl … | sh` 命令跑的就是被这里校验过的那份） |
-| `cmd/agent` 不碰 node_capabilities（归属只由部署派生） | `cmd/anode` 只依赖 `internal/protocol` + `internal/artifact`，不 import 中枢包、不直连数据库；中枢也不 import `cmd/anode` |
+| `cmd/agent` 不碰 node_capabilities（归属只由部署派生） | `cmd/anode` 只依赖 `internal/protocol` + `internal/artifact` + `internal/schema`，不 import 中枢包、不直连数据库；中枢也不 import `cmd/anode` |
 
 动态部分一律跑**真二进制**（`-h` / `--version`），不 grep Go 源码：flag 的注册形状会重构，
 `-h` 才是用户和脚本看到的那份事实。

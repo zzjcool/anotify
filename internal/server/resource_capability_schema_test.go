@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -78,6 +79,61 @@ func TestCapabilityWriteRejectsUnusableParamSchema(t *testing.T) {
 		})
 	}
 }
+
+// seedLegacyParams 绕过产品校验写坏 params：造「升级前接受、升级后被 #612 拒」的存量行。
+func seedLegacyParams(t *testing.T, env *capTestEnv, ns, name string, params map[string]any) {
+	t.Helper()
+	var raw string
+	if err := env.db.QueryRow(`SELECT spec FROM capability_versions
+		WHERE namespace_id = ? AND name = ? AND deleted_at IS NULL
+		ORDER BY version DESC LIMIT 1`, ns, name).Scan(&raw); err != nil {
+		t.Fatalf("读 %s 的 spec: %v", name, err)
+	}
+	spec := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &spec); err != nil {
+		t.Fatalf("解 %s 的 spec: %v", name, err)
+	}
+	spec["params"] = params
+	bad, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatalf("重新序列化 %s 的 spec: %v", name, err)
+	}
+	if _, err := env.db.Exec(`UPDATE capability_versions SET spec = ?
+		WHERE namespace_id = ? AND name = ? AND deleted_at IS NULL`, string(bad), ns, name); err != nil {
+		t.Fatalf("写回 %s 的 spec: %v", name, err)
+	}
+}
+
+// TestCapabilityPatchMetadataOnlyOnLegacyParamSchema：#612 判据只判新写入的内容，存量行必须还能改名 / 改 next。
+func TestCapabilityPatchMetadataOnlyOnLegacyParamSchema(t *testing.T) {
+	env := newCapTestEnv(t)
+	created := env.createCapability(t, env.nsA, "legacy-params", "#!/bin/sh\necho hi\n")
+	meta := capObject(t, created["metadata"], "metadata")
+	token := capString(t, meta, "resourceVersion")
+	badParams := map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+	seedLegacyParams(t, env, env.nsA, "legacy-params", badParams)
+
+	rec := env.do(t, http.MethodPatch, env.capPath(env.nsA, "legacy-params", ""), map[string]any{
+		"metadata": map[string]any{"displayName": "存量坏行", "resourceVersion": token},
+		"spec":     map[string]any{"next": []string{"leaf@2"}},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("存量坏行的 metadata-only PATCH 应 200，得到 %d：%s", rec.Code, rec.Body.String())
+	}
+	doc := decodeCapJSON(t, rec)
+	if got := capString(t, capObject(t, doc["metadata"], "metadata"), "displayName"); got != "存量坏行" {
+		t.Fatalf("displayName = %q，want 存量坏行", got)
+	}
+	next := capArray(t, capObject(t, doc["spec"], "spec")["next"], "spec.next")
+	if len(next) != 1 || next[0] != "leaf@2" {
+		t.Fatalf("spec.next = %#v，want [leaf@2]", next)
+	}
+	got := capObject(t, capObject(t, doc["spec"], "spec")["params"], "spec.params")
+	if got["type"] != "array" {
+		t.Fatalf("PATCH 不得改动存量 params，实际 %#v", got)
+	}
+}
+
 func TestCapabilityWriteAcceptsUsableParamSchema(t *testing.T) {
 	env := newCapTestEnv(t)
 	params := []map[string]any{

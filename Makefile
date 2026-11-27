@@ -296,7 +296,7 @@ contract: ## CONTRACT.md §9 的静态不变量断言（A2/A4/A5/A6/A7）+ opena
 #   · 手册代码块里的每个 `anode <sub>` 与 `--flag` 必须能在**真二进制**的 -h 里找到
 #     （不 grep 源码：flag 的注册形状会重构，-h 才是用户/脚本看到的那份事实）；
 #   · `--version` 的单行 JSON 必须与注入值一致，且 install-anode.sh 的版本校验吃得下；
-#   · 边界：anode 只依赖 internal/protocol + internal/artifact，不 import 中枢包、不开数据库。
+#   · 边界：anode 只依赖 internal/protocol + internal/artifact + internal/schema，不 import 中枢包、不开数据库。
 # 故意写错一个 flag → 这里红。
 check-anode-skill: ## 校验 anode CLI 与 docs/anode-cli.md / install-anode.sh 一致（防漂移）
 	@python3 scripts/check_anode_skill.py

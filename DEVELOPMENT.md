@@ -468,7 +468,7 @@ anode --version   # 单行 JSON：{"version":"<version>+<commit>","commit":"<sha
   改子命令或 flag 必须同步手册与 `scripts/install-anode.sh`：`make ci` 跑
   `scripts/check_anode_skill.py`，拿真二进制的 `-h` / `--version` 对账手册代码块里的每个
   `anode <sub>` 与 `-flag`（写错一个 flag 就红），并守住边界（anode 只依赖
-  `internal/protocol` + `internal/artifact`，不 import 中枢包、不直连数据库）。
+  `internal/protocol` + `internal/artifact` + `internal/schema`，不 import 中枢包、不直连数据库）。
 - `--version` 的第一行 JSON 不能改形状：`scripts/install-anode.sh` 靠
   `"version":"<release>"` **前缀**核对下载到的二进制（允许 `+<commit>` 后缀，与中枢的
   `internal/version.String()` 同一个串）。

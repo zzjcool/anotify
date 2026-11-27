@@ -200,7 +200,8 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		// 保留来源名（`route`）是**调用方输入错误**：v3 钉死它必须 400，不加这条会落 500。
 		writeStatus(w, http.StatusBadRequest, "invalid_source_config", sourceConfigMessage(err), nil)
 	case errors.Is(err, store.ErrCapabilityInvalid):
-		writeStatus(w, http.StatusBadRequest, reasonBadRequest, err.Error(), nil)
+		// store 只包一层「400」；把 artifact 的短码与 causes[].field 透出来（见 capabilitySpecError）。
+		writeAPIError(w, capabilitySpecError(err))
 	case errors.Is(err, store.ErrVersionConflict):
 		writeStatus(w, http.StatusBadRequest, "version_content_immutable", err.Error(), nil)
 	case errors.Is(err, store.ErrSlugTaken):

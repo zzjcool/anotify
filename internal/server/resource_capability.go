@@ -1587,8 +1587,8 @@ func normalizeCapabilitySpec(name string, version int, displayName string, spec 
 // capabilitySpecError 把 artifact 的校验错误翻成 400 + 封闭集合里的 reason
 // （capability.md §6.1：impl_missing / entrypoint_no_shebang / files_invalid / …）。
 //
-// 不复用 store.ErrCapabilityInvalid：那一层只知道「400 BadRequest」，会把具体
-// 机器码（客户端据此定位是哪个字段写坏了）丢成一句笼统的错误。
+// 不**自己**重造机器码：*artifact.Error 已在错误链上（store 用 %w 包），链上取不到
+// 才回落笼统的 400。
 func capabilitySpecError(err error) error {
 	var artifactErr *artifact.Error
 	if errors.As(err, &artifactErr) && len(artifactErr.Problems) > 0 {

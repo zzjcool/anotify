@@ -165,11 +165,11 @@ func checkType(raw any, v any, path string) string {
 	return fmt.Sprintf("%s: want type %s, got %s", path, strings.Join(wanted, "|"), TypeName(v))
 }
 
-// TypeMatches 判定值是否属于某个 JSON Schema type。
+// TypeMatches 判定值是否属于某个 JSON Schema type（`Value` 的通用判据：边字面量、
+// 事件载荷、emit 的 data）。未知类型名判 false。
 //
-// 这是**全仓唯一**的类型判定：配置期（边字面量）、入口（事件 payload）、
-// 派发期（参数）、投递期（emit 的 data）都走它。四处的口径必须一致，
-// 否则会出现「存的时候说类型对、派发时被剪枝」这种无法自圆的判定。
+// 参数派发**不走这里**：param.go 的 valueMatchesType 是另一份判据（认 json.Number /
+// int32、integer 拒 `e`/`E`、未知类型名放行）。两处各自自洽，改一处要复查另一处。
 func TypeMatches(want string, v any) bool {
 	switch want {
 	case "object":

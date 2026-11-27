@@ -74,7 +74,6 @@ type nodeAPI struct {
 	upgrade nodeUpgradeSource
 }
 
-// newNodeAPI 构造 Node 资源域。
 func newNodeAPI(d *serverDeps) *nodeAPI { return &nodeAPI{d: d} }
 
 // setUpgradeSource 注入升级源（装配层专用；不注入 = 功能未启用）。

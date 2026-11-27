@@ -598,7 +598,12 @@ func cloneSpec(spec Spec) Spec {
 func intPtr(v int) *int { return &v }
 
 // Validate 校验一份产物，返回汇总了**全部**问题的 *Error（或 nil）。
-func Validate(a *Artifact) error {
+func Validate(a *Artifact) error { return validateArtifact(a, true) }
+
+// ValidateMetadataUpdate 跳过 #612 的 params 可用性判据（只改元数据，不判新写入的内容）。
+func ValidateMetadataUpdate(a *Artifact) error { return validateArtifact(a, false) }
+
+func validateArtifact(a *Artifact, checkParamUsable bool) error {
 	if a == nil {
 		return &Error{Problems: []string{CodeBadRequest + ": 产物为空"}}
 	}
@@ -638,9 +643,11 @@ func Validate(a *Artifact) error {
 		fields = append(fields, located.field)
 		patternFields[located.field] = struct{}{}
 	}
-	for _, located := range validateParamSchemaUsable(a.Spec.Params, patternFields) {
-		p = append(p, located.problem)
-		fields = append(fields, located.field)
+	if checkParamUsable {
+		for _, located := range validateParamSchemaUsable(a.Spec.Params, patternFields) {
+			p = append(p, located.problem)
+			fields = append(fields, located.field)
+		}
 	}
 	addProblems(validateNext(a.Spec.Next))
 	addProblems(validateRequires(&a.Spec.Requires))
@@ -698,8 +705,7 @@ func validateParams(params json.RawMessage) (paramInfo, []string) {
 	return info, p
 }
 
-// paramEnvName retains the package-local call shape used by template assertions;
-// normalization has exactly one implementation, in shared protocol.
+// paramEnvName 保留包内调用形状；归一化只有 protocol 一份实现。
 func paramEnvName(name string) string { return protocol.ParamEnvName(name) }
 
 type locatedProblem struct {
