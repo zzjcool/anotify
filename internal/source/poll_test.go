@@ -187,10 +187,13 @@ func TestPollFailureKeepsCursorAndBacksOff(t *testing.T) {
 	if src.ConsecutiveFailures != 1 || src.PollCursor != `"v1"` || src.LastError == "" {
 		t.Fatalf("失败必须留痕且不动游标: %+v", src)
 	}
-	if src.NextFireAt == nil || *src.NextFireAt < f.now.Add(time.Duration(base)*time.Second).Unix() {
-		t.Fatalf("第一次失败后应等 base（%ds），next_fire_at=%v now=%d", base, src.NextFireAt, f.now.Unix())
+	if src.NextFireAt == nil {
+		t.Fatal("失败后必须有 next_fire_at")
 	}
-	firstGap := *src.NextFireAt - f.now.Unix()
+	firstGap := *src.NextFireAt - f.now.Unix() // 抖动符号随命名空间 UUID 变 ⇒ 只钉 ±10% 区间（钉「≥ base」会按建库 UUID 半数概率红）
+	if firstGap < base*9/10 || firstGap > base*11/10 {
+		t.Fatalf("第一次失败后应等 base±10%%（%ds），实际 %ds（now=%d）", base, firstGap, f.now.Unix())
+	}
 
 	f.now = time.Unix(*f.source(t).NextFireAt, 0)
 	f.round(t)
@@ -198,8 +201,8 @@ func TestPollFailureKeepsCursorAndBacksOff(t *testing.T) {
 	if src.ConsecutiveFailures != 2 {
 		t.Fatalf("第二次失败后 consecutiveFailures = %d，want 2", src.ConsecutiveFailures)
 	}
-	if gap := *src.NextFireAt - f.now.Unix(); gap < 2*firstGap {
-		t.Fatalf("第二次失败后应 ≥ base*2（%ds），实际 %ds", 2*firstGap, gap)
+	if gap := *src.NextFireAt - f.now.Unix(); gap < 2*firstGap-2 || gap > 2*firstGap+2 {
+		t.Fatalf("第二次失败后应 ≈ base*2（%ds±2s，同一源抖动恒定只缩放不改倍率），实际 %ds", 2*firstGap, gap)
 	}
 
 	retry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -388,42 +391,116 @@ func waitFor(budget time.Duration, cond func() bool) bool {
 
 func TestPollBackoffIsMonotonicRegardlessOfPhase(t *testing.T) {
 	runs := NewPoller(nil, nil, nil)
-	src := &store.Source{
-		NamespaceID: "ns-633", Name: "feed",
-		Config: json.RawMessage(`{"url":"https://example.test/feed","schedule":{"expr":"* * * * *"}}`),
-	}
-	minute := time.Date(2026, 11, 22, 0, 13, 0, 0, time.UTC)
 	capGap := int64((30 * time.Minute).Seconds())
-	gaps := make(map[int][]int64, 2)
-	for _, second := range []int{2, 58} {
-		now := minute.Add(time.Duration(second) * time.Second)
-		for failures := 1; failures <= 6; failures++ {
-			gap := runs.failureNextFire(src, now, failures, 0) - now.Unix()
-			prev := gaps[second]
-			gaps[second] = append(prev, gap)
-			if failures == 1 && gap < 60 {
-				t.Fatalf("xx:xx:%02d 第 1 次失败只等 %ds，短于计划间隔 60s", second, gap)
-			}
-			if gap > capGap {
-				t.Fatalf("xx:xx:%02d 第 %d 次失败等了 %ds，超过 30 分钟封顶", second, failures, gap)
-			}
-			if failures > 1 {
-				last := prev[failures-2]
-				if gap < last {
-					t.Fatalf("xx:xx:%02d 的退避不单调：第 %d 次 %ds < 第 %d 次 %ds",
-						second, failures, gap, failures-1, last)
+	const interval = int64(60) // * * * * * → 相邻两格之差
+	cfg := json.RawMessage(`{"url":"https://example.test/feed","schedule":{"expr":"* * * * *"}}`)
+	minute := time.Date(2026, 11, 22, 0, 13, 0, 0, time.UTC)
+	sources := []string{"feed", "feed-00", "feed-01", "feed-07", "feed-19", "feed-31"} // 覆盖抖动为正/为负两档：只测 p=0 的曲线时，抖动写错（甚至整行删掉）也验不出来
+	for _, name := range sources {
+		src := &store.Source{NamespaceID: "ns-633", Name: name, Config: cfg}
+		gaps := make(map[int][]int64, 2)
+		for _, second := range []int{2, 58} {
+			now := minute.Add(time.Duration(second) * time.Second)
+			for failures := 1; failures <= 6; failures++ {
+				gap := runs.failureNextFire(src, now, failures, 0) - now.Unix()
+				base := interval << (failures - 1)
+				if base > capGap {
+					base = capGap // 抖动作用在封顶后的基数上，不是翻倍后的原始值
 				}
-				if last*2 <= capGap && (gap < last*2-4 || gap > last*2+4) {
-					t.Fatalf("xx:xx:%02d 第 %d 次失败 %ds，want 上次（%ds）的 2 倍（落库取整到秒，容忍 ±4s）",
-						second, failures, gap, last)
+				lo, hi := base-base/10, base+base/10
+				if hi > capGap {
+					hi = capGap
+				}
+				prev := gaps[second]
+				gaps[second] = append(prev, gap)
+				if gap < lo || gap > hi {
+					t.Fatalf("%s @xx:xx:%02d 第 %d 次失败等了 %ds，want ∈ [%d,%d]（基数 %ds ±10%%，封顶 %ds）",
+						name, second, failures, gap, lo, hi, base, capGap)
+				}
+				if failures > 1 {
+					last := prev[failures-2]
+					if gap < last {
+						t.Fatalf("%s @xx:xx:%02d 的退避不单调：第 %d 次 %ds < 第 %d 次 %ds",
+							name, second, failures, gap, failures-1, last)
+					}
+					if base < capGap && (gap < 2*last-2 || gap > 2*last+2) {
+						t.Fatalf("%s @xx:xx:%02d 第 %d 次失败 %ds，want 上次（%ds）的 2 倍（抖动按源恒定只缩放不改倍率；落库取整到秒容忍 ±2s）",
+							name, second, failures, gap, last)
+					}
 				}
 			}
 		}
+		for i, gap := range gaps[2] {
+			if gaps[58][i] != gap {
+				t.Fatalf("%s 退避不该取决于失败发生在哪一秒：第 %d 次 %ds（:02）vs %ds（:58）",
+					name, i+1, gap, gaps[58][i])
+			}
+		}
 	}
-	for i, gap := range gaps[2] {
-		if gaps[58][i] != gap {
-			t.Fatalf("退避不该取决于失败发生在哪一秒：第 %d 次 %ds（:02）vs %ds（:58）",
-				i+1, gap, gaps[58][i])
+}
+
+func TestFailureNextFireJitterIsPerSourceSymmetricWithin10Percent(t *testing.T) {
+	runs := NewPoller(nil, nil, nil)
+	now := time.Date(2026, 11, 22, 0, 13, 30, 0, time.UTC)
+	cfg := json.RawMessage(`{"url":"https://example.test/feed","schedule":{"expr":"*/5 * * * *"}}`)
+	const base = int64(300) // */5 → 基数 300s
+	var below, above int
+	distinct := map[int64]string{}
+	for i := 0; i < 40; i++ {
+		src := &store.Source{NamespaceID: "ns-633", Name: fmt.Sprintf("feed-%02d", i), Config: cfg}
+		gap := runs.failureNextFire(src, now, 1, 0) - now.Unix()
+		if gap < base*9/10 || gap > base*11/10 {
+			t.Fatalf("%s: 抖动越界：%ds，want ∈ [%d,%d]", src.Name, gap, base*9/10, base*11/10)
+		}
+		if again := runs.failureNextFire(src, now, 1, 0) - now.Unix(); again != gap {
+			t.Fatalf("%s: 同源两次算出 %ds / %ds——抖动必须按源确定，否则排期与测试都在抖", src.Name, gap, again)
+		}
+		distinct[gap] = src.Name
+		switch {
+		case gap < base:
+			below++
+		case gap > base:
+			above++
+		}
+	}
+	if len(distinct) < 2 {
+		t.Fatalf("40 个源算出同一个间隔（%v）：抖动没生效", distinct)
+	}
+	if below == 0 || above == 0 {
+		t.Fatalf("抖动应关于基数对称（允许负偏差）：低于 base 的源 %d 个、高于的 %d 个", below, above)
+	}
+}
+
+func TestFailureNextFireJitterSurvivesCap(t *testing.T) {
+	runs := NewPoller(nil, nil, nil)
+	now := time.Date(2026, 11, 22, 0, 13, 30, 0, time.UTC)
+	cfg := json.RawMessage(`{"url":"https://example.test/feed","schedule":{"expr":"*/5 * * * *"}}`)
+	capGap := int64((30 * time.Minute).Seconds())
+	distinct := map[int64]string{}
+	for i := 0; i < 40; i++ {
+		src := &store.Source{NamespaceID: "ns-633", Name: fmt.Sprintf("feed-%02d", i), Config: cfg}
+		gap := runs.failureNextFire(src, now, 12, 0) - now.Unix() // 300s × 2^11 ≫ 封顶
+		if gap > capGap {
+			t.Fatalf("%s: 30min 是硬上限，实际 %ds > %ds", src.Name, gap, capGap)
+		}
+		if gap < capGap*9/10 {
+			t.Fatalf("%s: 封顶档的抖动越界：%ds < %ds", src.Name, gap, capGap*9/10)
+		}
+		distinct[gap] = src.Name
+	}
+	if len(distinct) < 2 {
+		t.Fatalf("封顶档 %d 个源全等（%v）：抖动被第二次 capDelay 裁掉了", 40, distinct)
+	}
+}
+
+func TestFailureNextFireRetryAfterSkipsJitter(t *testing.T) {
+	runs := NewPoller(nil, nil, nil)
+	now := time.Date(2026, 11, 22, 0, 13, 30, 0, time.UTC)
+	cfg := json.RawMessage(`{"url":"https://example.test/feed","schedule":{"expr":"*/5 * * * *"}}`)
+	for i := 0; i < 10; i++ {
+		src := &store.Source{NamespaceID: "ns-633", Name: fmt.Sprintf("feed-%02d", i), Config: cfg}
+		if gap := runs.failureNextFire(src, now, 3, 7*time.Second) - now.Unix(); gap != 7 {
+			t.Fatalf("%s: Retry-After 是上游口径，不该叠抖动：%ds want 7s", src.Name, gap)
 		}
 	}
 }

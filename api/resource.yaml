@@ -3300,8 +3300,11 @@ components:
         cursor:
           type: string
           description: |
-            `kind: poll` 的不透明游标（服务端不解释）：上一次**整轮成功**响应的
-            `ETag` / `Last-Modified`，下一轮作为 `If-None-Match` 发回。失败时不前进，
+            `kind: poll` 的不透明游标（客户端按字符串透传，不解释）：上一次**整轮成功**
+            响应的 `ETag`（优先）或 `Last-Modified`。下一轮按游标形态分流发回：
+            entity-tag 形态 → `If-None-Match`；HTTP-date 形态（上游只给 `Last-Modified`）
+            → `If-Modified-Since`（RFC 9110 §13.1.2：日期串不是 entity-tag，按
+            `If-None-Match` 发永远打不中 304，只会每轮全量拉）。失败时不前进，
             省缺 = 还没有游标。
         lastPollAt:
           type: string

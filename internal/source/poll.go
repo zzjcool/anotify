@@ -23,10 +23,9 @@ const (
 	pollNeverFire    = 366 * 24 * time.Hour
 )
 
-// Poller 是唯一的轮询执行器，靠进程内 in-flight 集合保证不重叠（单实例部署，无 leader 选举）。
+// Poller 是唯一的轮询执行器（单实例、无 leader 选举），靠进程内 in-flight 集合保证不重叠。
 // 三条不变量：① 游标只在整轮成功后前进（失败沿用旧游标，下一轮重抓同一批、靠 deliveryId 幂等去重）；
-// ② 上一轮没结束的 tick 只记 skippedOverlaps，不排队不并发；③ 失败退避 min(计划间隔 << (failures-1), 30min)
-// 加按源 0~10% 抖动（基准是计划间隔而非「距下一格还剩多久」，#633），429 的 Retry-After 优先，成功清零。
+// ② 上一轮没结束的 tick 只记 skippedOverlaps，不排队不并发；③ 退避 min(间隔<<(failures-1), 30min) 叠 ±10% 抖动再裁到 30min，Retry-After 优先。
 type Poller struct {
 	db       *store.DB
 	services *Service
@@ -221,7 +220,7 @@ func (r *Poller) failureNextFire(src *store.Source, now time.Time, failures int,
 	for i := 1; i < failures && delay < pollBackoffCap; i++ {
 		delay *= 2
 	}
-	delay = capDelay(delay)
+	delay = capDelay(delay) // 30min 先作用于基数，否则失败次数继续翻倍后 ±10% 也拉不回封顶以内（抖动在封顶档全被裁掉）
 	delay += time.Duration(int64(delay) * pollJitterPermille(src) / 1000)
 	return now.Add(capDelay(delay)).Unix()
 }
@@ -245,10 +244,11 @@ func pollInterval(src *store.Source, now time.Time) time.Duration {
 	return capDelay(after.Sub(next))
 }
 
+// pollJitterPermille：按「命名空间+源名」确定的 ±10%（-100..+100‰）；同源恒定 ⇒ 等比曲线的倍率不变（单调性不破），异源错开。
 func pollJitterPermille(src *store.Source) int64 {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(src.NamespaceID + "\x00" + src.Name))
-	return int64(h.Sum32() % 101)
+	return int64(h.Sum32()%201) - 100
 }
 
 func (r *Poller) items(cfg sourcespec.Config, doc any) ([]any, error) {
