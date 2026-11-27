@@ -126,3 +126,58 @@ func TestExamplePackagesRender(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordPinsReviewMarkerOnPullRequest：review 不走 GitHub review，合并闸只能读 PR 上的
+// marker 判断「链上 review 判过未通过」。record 一旦不再钉它，闸就又变成只看 CI
+// （2026-11-27：PR #712 CI 双绿 + review 判阻塞，被自动合入）。
+func TestRecordPinsReviewMarkerOnPullRequest(t *testing.T) {
+	dir := "../../examples/playbooks/issue-fix"
+	raw, err := os.ReadFile(filepath.Join(dir, "values.demo.json"))
+	if err != nil {
+		t.Fatalf("读 values.demo.json: %v", err)
+	}
+	var values map[string]any
+	if err := json.Unmarshal(raw, &values); err != nil {
+		t.Fatalf("values.demo.json: %v", err)
+	}
+	files := map[string]string{}
+	_ = filepath.Walk(dir, func(p string, fi os.FileInfo, err error) error {
+		if err != nil || fi.IsDir() {
+			return err
+		}
+		switch filepath.Ext(p) {
+		case ".yaml", ".json", ".md":
+		default:
+			return nil
+		}
+		b, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return rerr
+		}
+		rel, _ := filepath.Rel(dir, p)
+		files[rel] = string(b)
+		return nil
+	})
+	pkg, err := Parse(files)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	res, err := Render(pkg, values)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	var script string
+	for _, c := range res.Capabilities {
+		if strings.HasSuffix(c.Metadata.Name, "-record") {
+			script = c.Spec.Run.Files[c.Spec.Run.Entrypoint]
+		}
+	}
+	if script == "" {
+		t.Fatal("渲染后找不到 record 能力")
+	}
+	for _, want := range []string{"anotify:review-approved", "anotify:review-rejected", "gh pr comment"} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("record 渲染后必须含 %q（合并闸靠它判断 review 结论）：\n%s", want, script)
+		}
+	}
+}
