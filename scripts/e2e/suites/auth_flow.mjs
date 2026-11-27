@@ -263,6 +263,29 @@ async function firstRunCase() {
 	H.check("首跑：恢复码弹窗有「我已保存」勾选", beforeAck.hasAck);
 	H.eq("首跑：勾选默认未选中", beforeAck.checked, false);
 	H.eq("首跑：未勾选时「继续」禁用", beforeAck.disabled, true);
+
+	// #581（回归）：Passkey 注册路径同一个弹层，Esc 也不许绕过（明文只有这一次）。
+	await page.keyboard.press("Escape");
+	await page.waitForTimeout(400); // 关闭是异步的（退场动画），等一拍再断言
+	const codesAfterEsc = await page.evaluate(() => {
+		const modal = document.getElementById("codes-modal");
+		return {
+			visible: !!modal && !modal.classList.contains("hidden"),
+			closing: !!modal && modal.classList.contains("is-closing"),
+			continueDisabled: !!document.getElementById("codes-continue")?.disabled,
+		};
+	});
+	H.check(
+		"首跑 #581：按 Esc → 恢复码弹层仍在",
+		codesAfterEsc.visible && !codesAfterEsc.closing,
+		JSON.stringify(codesAfterEsc),
+	);
+	H.eq(
+		"首跑 #581：按 Esc 后「继续」仍禁用",
+		codesAfterEsc.continueDisabled,
+		true,
+	);
+
 	await page.click("#codes-saved-ack");
 	H.eq(
 		"首跑：勾选后「继续」可用",

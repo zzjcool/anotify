@@ -489,6 +489,28 @@
         margin: 2px 0 0;
         accent-color: var(--accent-strong);
       }
+      /* #581：Esc / 点遮罩被拦下时，提醒句出现 + 勾选框抖一下（视线拉回「我已保存」）。
+         抖动的类由 JS 先摘再回流再加，所以连续按 Esc 每次都会重播。 */
+      .codes-ack.is-nudge {
+        animation: codes-nudge 0.3s var(--ease) both;
+      }
+      @keyframes codes-nudge {
+        0%,
+        100% {
+          transform: translateX(0);
+        }
+        25% {
+          transform: translateX(-4px);
+        }
+        75% {
+          transform: translateX(4px);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .codes-ack.is-nudge {
+          animation: none;
+        }
+      }
 
       .codes-warn {
         margin: 12px 0 0;
@@ -984,6 +1006,8 @@
         <input type="checkbox" id="codes-saved-ack" />
         <span>{{t "login.codes.ack"}}</span>
       </label>
+      <!-- #581：Esc / 点遮罩被拦下时由 JS 填字并显示（role=alert 保证读屏也听得到）。 -->
+      <p id="codes-hint" class="codes-warn hidden" role="alert"></p>
     </div>
     <div class="modal-foot">
       <button type="button" id="codes-copy-all" class="btn btn-ghost btn-sm">
@@ -2008,8 +2032,64 @@
           }
         }
 
+        /* #581：恢复码明文只出现这一次，所以这个弹层是**硬门禁**——
+         * Esc 和点遮罩都不放行，唯一出口是勾选「我已保存」后点 #codes-continue。
+         * 机制：全局 Esc（web/partials.js 的 onModalEscape）向最上层 .modal-backdrop
+         * 派发可取消的 modal:dismiss，监听者 preventDefault() 表示「我自己处理，别关」。
+         * 没有监听者的弹层会被直接 closeModal —— 那正是本 issue 的绕过路径。 */
+        const codesModal = document.getElementById("codes-modal");
+        const codesAck = document.getElementById("codes-saved-ack");
+        const codesHint = document.getElementById("codes-hint");
+        const codesOpen = () =>
+          !!codesModal &&
+          !codesModal.classList.contains("hidden") &&
+          !codesModal.classList.contains("is-closing");
+
+        // 被拦下时说明为什么没关，并把视线拉回勾选框。
+        function nudgeCodesAck() {
+          if (codesHint) {
+            codesHint.textContent = t(
+              "login.codes.ack_required",
+              "请先保存恢复码，勾选后再继续。",
+            );
+            codesHint.classList.remove("hidden");
+          }
+          const label = codesModal && codesModal.querySelector(".codes-ack");
+          if (label) {
+            label.classList.remove("is-nudge");
+            void label.offsetWidth; // 强制回流：连续按 Esc 也要重播动画
+            label.classList.add("is-nudge");
+          }
+          if (codesAck && typeof codesAck.focus === "function") {
+            codesAck.focus({ preventScroll: true });
+          }
+        }
+
+        let codesGuardBound = false;
+        function bindCodesGuard() {
+          if (codesGuardBound || !codesModal) return;
+          codesGuardBound = true;
+          codesModal.addEventListener("modal:dismiss", (event) => {
+            event.preventDefault(); // 弹层不关
+            nudgeCodesAck();
+          });
+          // 点遮罩同样不放行（当前 openModal 不因点遮罩关闭；将来会了也不能变成后门）。
+          codesModal.addEventListener("click", (event) => {
+            if (event.target !== codesModal) return;
+            event.preventDefault();
+            event.stopPropagation();
+            nudgeCodesAck();
+          });
+          // 刷新 / 后退 / 关标签页：先让浏览器问一句，别让明文在无确认下消失。
+          if (typeof Anotify.guardUnload === "function") {
+            Anotify.guardUnload(
+              () => codesOpen() && !(codesAck && codesAck.checked),
+            );
+          }
+        }
+
         function showCodesPanel(codes, onContinue) {
-          const modal = document.getElementById("codes-modal");
+          bindCodesGuard();
           const grid = document.getElementById("codes-grid");
           grid.replaceChildren();
           codes.forEach((c) => {
@@ -2029,20 +2109,22 @@
           });
           const copyAll = document.getElementById("codes-copy-all");
           copyAll.onclick = () => copyText(codes.join("\n"), copyAll);
-          const ack = document.getElementById("codes-saved-ack");
+          const ack = codesAck;
           const cont = document.getElementById("codes-continue");
           // 每次打开都重新问一遍：上一轮的勾选不能代替这一轮（这一组码不同）。
           ack.checked = false;
           cont.disabled = true;
+          if (codesHint) codesHint.classList.add("hidden");
           ack.onchange = () => {
             cont.disabled = !ack.checked;
+            if (ack.checked && codesHint) codesHint.classList.add("hidden");
           };
           cont.onclick = () => {
-            if (!ack.checked) return;
-            Anotify.closeModal(modal);
+            if (!ack.checked) return; // 唯一的出口：勾了才走
+            Anotify.closeModal(codesModal);
             if (typeof onContinue === "function") onContinue();
           };
-          Anotify.openModal(modal);
+          Anotify.openModal(codesModal);
         }
       })();
     </script>

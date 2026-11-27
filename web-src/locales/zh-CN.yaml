@@ -464,6 +464,7 @@ login:
     continue: 已保存，进入工作台
     warn: 这是唯一一次展示机会。没有恢复码且丢失全部 Passkey 设备时，将无法登录。
     ack: 我已保存这些恢复码
+    ack_required: 请先保存恢复码，勾选后再继续。
   trust:
     data_local: 数据仅存于你的服务器
     webauthn: WebAuthn 标准

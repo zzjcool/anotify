@@ -464,6 +464,7 @@ login:
     continue: Saved — enter workspace
     warn: This is the only time these codes are shown. Without them, losing every Passkey device means you cannot sign in.
     ack: I've saved these recovery codes
+    ack_required: Save your recovery codes first, then tick the box to continue.
   trust:
     data_local: Your data stays on your server
     webauthn: WebAuthn standard

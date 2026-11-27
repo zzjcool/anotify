@@ -738,10 +738,63 @@ async function main() {
 		"恢复码未勾「我已保存」前「继续」禁用",
 		await page.isDisabled("#codes-continue"),
 	);
+
+	// #581（回归）：这个门禁不能被 Esc / 点遮罩绕过 —— 明文只出现这一次，绕过就是永久丢失。
+	// 未修复时全局 Esc 会 closeModal，弹层变 hidden，下面第一条就红。
+	const codesUrlBeforeDismiss = page.url();
+	const readCodesPanel = () =>
+		page.evaluate(() => {
+			const modal = document.getElementById("codes-modal");
+			const hint = document.getElementById("codes-hint");
+			return {
+				visible: !!modal && !modal.classList.contains("hidden"),
+				closing: !!modal && modal.classList.contains("is-closing"),
+				continueDisabled: !!document.getElementById("codes-continue")?.disabled,
+				hintShown: !!hint && !hint.classList.contains("hidden"),
+				hintText: (hint?.textContent || "").trim(),
+				url: location.href,
+			};
+		});
+	await page.keyboard.press("Escape");
+	// 关闭是异步的（退场动画 + 计时器）：等一拍再断言，别让「关到一半」被读成没关。
+	await page.waitForTimeout(400);
+	const afterEsc = await readCodesPanel();
+	H.check(
+		"#581：未勾选时按 Esc → 恢复码弹层仍在（未被关闭）",
+		afterEsc.visible && !afterEsc.closing,
+		JSON.stringify(afterEsc),
+	);
+	H.eq("#581：按 Esc 后「继续」仍禁用", afterEsc.continueDisabled, true);
+	H.check(
+		"#581：按 Esc 在弹层里给出「先勾选」提示",
+		afterEsc.hintShown && afterEsc.hintText.length > 0,
+		JSON.stringify(afterEsc),
+	);
+	H.eq("#581：按 Esc 不跳转（URL 未变）", afterEsc.url, codesUrlBeforeDismiss);
+
+	// 点遮罩（弹层边缘）：同样不放行。
+	await page.click("#codes-modal", { position: { x: 4, y: 4 } });
+	await page.waitForTimeout(400);
+	const afterBackdrop = await readCodesPanel();
+	H.check(
+		"#581：点遮罩 → 恢复码弹层仍在（未被关闭）",
+		afterBackdrop.visible && !afterBackdrop.closing,
+		JSON.stringify(afterBackdrop),
+	);
+	H.eq("#581：点遮罩后「继续」仍禁用", afterBackdrop.continueDisabled, true);
+
 	await page.check("#codes-saved-ack");
 	H.check(
 		"勾选“我已保存”后「继续」可用",
 		await page.isEnabled("#codes-continue"),
+	);
+	H.eq(
+		"#581：勾选后（唯一出口打开）提示句收起",
+		await page.evaluate(
+			() =>
+				!!document.getElementById("codes-hint")?.classList.contains("hidden"),
+		),
+		true,
 	);
 	await page.click("#codes-continue");
 	const signupLanded = await waitForWorkspaceNav();
