@@ -508,7 +508,7 @@ func (a *taskAPI) events(w http.ResponseWriter, r *http.Request) {
 		// metadata.namespace 是**对象自身**的命名空间（§3.2）：逐条解析，不拿路径/查询的
 		// ns 去覆盖它（`*` 汇总时那是唯一能归属每条事件的信息）。
 		items = append(items, eventEnvelope(e, a.d.namespaceDisplay(r.Context(), e.NamespaceID),
-			sums[e.TraceID]))
+			sums[e.TraceID], true))
 	}
 	writeList(w, http.StatusOK, "EventList", listMeta{}, items)
 }
@@ -560,14 +560,14 @@ func (a *taskAPI) trace(w http.ResponseWriter, r *http.Request) {
 		Tasks:  make([]apiEnvelope, 0, len(tasks)),
 		Pruned: make([]apiEnvelope, 0, len(rows)),
 	}
-	summary := store.TraceSummary{Tasks: len(tasks), Pruned: make([]*store.Event, 0, len(rows))}
+	summary := store.TraceSummary{Tasks: len(tasks), RouteEvents: make([]*store.Event, 0, len(rows))}
 	for _, e := range rows {
 		if e.Source == store.EventPruneSource {
-			summary.Pruned = append(summary.Pruned, e)
+			summary.RouteEvents = append(summary.RouteEvents, e)
 		}
 	}
 	for _, e := range rows {
-		env := eventEnvelope(e, a.d.namespaceDisplay(r.Context(), e.NamespaceID), summary)
+		env := eventEnvelope(e, a.d.namespaceDisplay(r.Context(), e.NamespaceID), summary, false)
 		view.Events = append(view.Events, env)
 		// pruned[] 只收**纯剪枝**（事件收到了但没派发）。未解析派发失败
 		// （downstream_missing）是 failed Task + 观察事件，不是剪枝（capability.md §6.2）。
@@ -710,7 +710,7 @@ func (a *taskAPI) consoleEvents(w http.ResponseWriter, r *http.Request) {
 			display = a.d.namespaceDisplay(r.Context(), e.NamespaceID)
 		}
 		items = append(items, eventEnvelope(e, display,
-			sums[eventTraceKey{namespaceID: e.NamespaceID, traceID: e.TraceID}]))
+			sums[eventTraceKey{namespaceID: e.NamespaceID, traceID: e.TraceID}], true))
 	}
 	writeList(w, http.StatusOK, "EventList", meta, items)
 }
@@ -1024,7 +1024,7 @@ type pruneFactDoc struct {
 }
 
 // eventEnvelope 组装 Event 信封（sum = 该 trace 的派发聚合，零值 = 只看本行）。
-func eventEnvelope(e *store.Event, nsDisplay string, sum store.TraceSummary) apiEnvelope {
+func eventEnvelope(e *store.Event, nsDisplay string, sum store.TraceSummary, representative bool) apiEnvelope {
 	if e == nil {
 		return newEnvelope("Event", objectMeta{}, nil, nil)
 	}
@@ -1055,15 +1055,15 @@ func eventEnvelope(e *store.Event, nsDisplay string, sum store.TraceSummary) api
 		Origin:         eventOriginOf(e),
 		DeliveryID:     e.DeliveryID,
 		Payload:        payload,
-	}, eventStatusOf(e, sum))
+	}, eventStatusOf(e, sum, representative))
 }
 
-func eventStatusOf(e *store.Event, sum store.TraceSummary) eventStatusDoc {
+func eventStatusOf(e *store.Event, sum store.TraceSummary, representative bool) eventStatusDoc {
 	st := eventStatusDoc{Dispatched: sum.Tasks}
-	for _, row := range sum.Pruned {
+	for _, row := range sum.RouteEvents {
 		if fact := eventPruneFactOf(row); fact != nil {
 			st.PrunedCount++
-			if st.Pruned == nil {
+			if representative && st.Pruned == nil {
 				st.Pruned = fact
 			}
 		}

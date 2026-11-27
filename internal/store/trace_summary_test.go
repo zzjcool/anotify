@@ -7,7 +7,6 @@ import (
 	"testing"
 )
 
-// seedSummaryTask 直插一个任务行（tasks 有 capability 外键 + pin shape 校验，字段写实）。
 func seedSummaryTask(t *testing.T, db *DB, nsID, capID, capName, traceID string) {
 	t.Helper()
 	mustExec(t, db, `INSERT INTO tasks
@@ -16,7 +15,6 @@ func seedSummaryTask(t *testing.T, db *DB, nsID, capID, capName, traceID string)
 		NewTaskID(), nsID, traceID, capID, capName, TaskPending, Now())
 }
 
-// seedSummaryPrune 直插一条剪枝留痕（source='route' / reason='Pruned'，与边写一致）。
 func seedSummaryPrune(t *testing.T, db *DB, nsID, traceID, reason, detail string, createdAt int64) {
 	t.Helper()
 	payload := fmt.Sprintf(`{"capability":"cap","reason":%q,"detail":%q}`, reason, detail)
@@ -26,8 +24,6 @@ func seedSummaryPrune(t *testing.T, db *DB, nsID, traceID, reason, detail string
 		NewEventID(), nsID, traceID, EventPruneSource, reason, payload, EventReasonPruned, createdAt)
 }
 
-// TestSummarizeTraces 钉住事件列表聚合的两份事实：任务数 + 剪枝观察行（按序）、
-// 跨 ns 隔离、空输入与 `*` 拒绝、IN 分块不丢尾巴。
 func TestSummarizeTraces(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
@@ -36,14 +32,11 @@ func TestSummarizeTraces(t *testing.T) {
 	capA := v4Cap(t, db, nsID, "summary-cap", 1)
 	capB := v4Cap(t, db, otherNS, "summary-cap", 1)
 
-	// trace-a：2 个任务 + 2 条剪枝（created_at 决定顺序，id 兜底）。
 	seedSummaryTask(t, db, nsID, capA.ID, capA.Name, "trace-a")
 	seedSummaryTask(t, db, nsID, capA.ID, capA.Name, "trace-a")
 	seedSummaryPrune(t, db, nsID, "trace-a", "param_missing", "需要 n", 100)
 	seedSummaryPrune(t, db, nsID, "trace-a", "downstream_missing", "目标不存在", 200)
-	// trace-b：1 个任务、无剪枝。
 	seedSummaryTask(t, db, nsID, capA.ID, capA.Name, "trace-b")
-	// 另一个 ns 的同名 trace 不得混进来（trace_id 不是全局唯一的收口）。
 	seedSummaryTask(t, db, otherNS, capB.ID, capB.Name, "trace-a")
 	seedSummaryPrune(t, db, otherNS, "trace-a", "no_target", "别的 ns", 100)
 
@@ -58,47 +51,43 @@ func TestSummarizeTraces(t *testing.T) {
 	if a.Tasks != 2 {
 		t.Fatalf("trace-a.Tasks = %d, want 2", a.Tasks)
 	}
-	if len(a.Pruned) != 2 {
-		t.Fatalf("trace-a.Pruned = %d 条, want 2", len(a.Pruned))
+	if len(a.RouteEvents) != 2 {
+		t.Fatalf("trace-a.RouteEvents = %d 条, want 2", len(a.RouteEvents))
 	}
-	if a.Pruned[0].Type != "param_missing" || a.Pruned[1].Type != "downstream_missing" {
-		t.Fatalf("trace-a.Pruned 顺序 = %q,%q（want 按 created_at 升序）",
-			a.Pruned[0].Type, a.Pruned[1].Type)
+	if a.RouteEvents[0].Type != "param_missing" || a.RouteEvents[1].Type != "downstream_missing" {
+		t.Fatalf("trace-a.RouteEvents 顺序 = %q,%q（want 按 created_at 升序）",
+			a.RouteEvents[0].Type, a.RouteEvents[1].Type)
 	}
-	if a.Pruned[0].Source != EventPruneSource || a.Pruned[0].Reason != EventReasonPruned {
-		t.Fatalf("Pruned 行形状 = %+v（want source=route / reason=Pruned）", a.Pruned[0])
+	if a.RouteEvents[0].Source != EventPruneSource || a.RouteEvents[0].Reason != EventReasonPruned {
+		t.Fatalf("RouteEvents 行形状 = %+v（want source=route / reason=Pruned）", a.RouteEvents[0])
 	}
 
 	b := got["trace-b"]
-	if b.Tasks != 1 || len(b.Pruned) != 0 {
+	if b.Tasks != 1 || len(b.RouteEvents) != 0 {
 		t.Fatalf("trace-b = %+v, want 1 task / 0 prune", b)
 	}
 	if _, ok := got["trace-missing"]; ok {
 		t.Fatalf("没有被引用的 trace 不该出现在 map 里（读零值即可）")
 	}
 
-	// 另一个 ns 的同名 trace：1 个任务 + 1 条剪枝，与被查 ns 的 2/2 不同。
 	other, err := db.SummarizeTraces(ctx, otherNS, []string{"trace-a"})
 	if err != nil {
 		t.Fatalf("summarize other ns: %v", err)
 	}
-	if o := other["trace-a"]; o.Tasks != 1 || len(o.Pruned) != 1 || o.Pruned[0].Type != "no_target" {
+	if o := other["trace-a"]; o.Tasks != 1 || len(o.RouteEvents) != 1 || o.RouteEvents[0].Type != "no_target" {
 		t.Fatalf("跨 ns 结果串了：%+v", o)
 	}
 
-	// 空输入 = 空 map（不查库、不报错）。
 	empty, err := db.SummarizeTraces(ctx, nsID, nil)
 	if err != nil || len(empty) != 0 {
 		t.Fatalf("空输入 = %v / %v, want 空 map", empty, err)
 	}
 
-	// `*` 不是查询条件：跨 ns 汇总由调用方逐 ns 取。
 	if _, err := db.SummarizeTraces(ctx, AllNamespaces, []string{"trace-a"}); !errors.Is(err, ErrNamespaceRequired) {
 		t.Fatalf("AllNamespaces 应报 ErrNamespaceRequired, got %v", err)
 	}
 }
 
-// TestSummarizeTracesChunked IN (…) 分块后不能丢尾巴：跨块与末块都要能取到。
 func TestSummarizeTracesChunked(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
@@ -120,7 +109,7 @@ func TestSummarizeTracesChunked(t *testing.T) {
 	if got[ids[0]].Tasks != 1 {
 		t.Fatalf("首块任务数丢了: %+v", got[ids[0]])
 	}
-	if len(got[ids[traceSummaryChunk]].Pruned) != 1 {
+	if len(got[ids[traceSummaryChunk]].RouteEvents) != 1 {
 		t.Fatalf("末块剪枝丢了: %+v", got[ids[traceSummaryChunk]])
 	}
 	if got[ids[len(ids)-1]].Tasks != 1 {

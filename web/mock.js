@@ -2022,7 +2022,7 @@
 		};
 	}
 
-	function eventResource(ev) {
+	function eventResource(ev, opts) {
 		return {
 			apiVersion: API_VERSION,
 			kind: "Event",
@@ -2047,9 +2047,11 @@
 			status: (() => {
 				const tasks = state.tasks.filter((t) => t.traceUID === ev.traceUID && t.ns === ev.ns).length;
 				const facts = state.prunes.filter((p) => p.traceUID === ev.traceUID && p.ns === ev.ns);
+				const own = facts.find((p) => p.event === ev.name) || facts[0];
+				const show = facts.length > 0 && (!(opts && opts.ownPruneOnly) || ev.reason === "Pruned");
 				return {
 					dispatched: tasks,
-					pruned: facts.length ? { reason: facts[0].reason, detail: facts[0].detail } : null,
+					pruned: show ? { reason: own.reason, detail: own.detail } : null,
 					prunedCount: facts.length,
 					deliveredAt: ev.deliveredAt || null,
 				};
@@ -2075,7 +2077,7 @@
 			kind: "Trace",
 			traceUID: uid,
 			namespace: ns,
-			events: events.map(eventResource),
+			events: events.map((e) => eventResource(e, { ownPruneOnly: true })),
 			tasks: tasks.map(taskResource),
 			pruned: pruned,
 		};

@@ -1114,6 +1114,15 @@ func TestTaskResourceEventOutcome(t *testing.T) {
 	if got := trString(t, noTargetRow, "status", "pruned", "reason"); got != "no_target" {
 		t.Fatalf("观察行的 status.pruned.reason = %q, want 自己那条（no_target）", got)
 	}
+	for _, item := range traceEvents {
+		obj := item.(map[string]any)
+		if trString(t, obj, "metadata", "uid") != prunedUID {
+			continue
+		}
+		if got, ok := trObject(t, obj, "status")["pruned"]; !ok || got != nil {
+			t.Fatalf("trace 视图投递行的 status.pruned 必须是 null，得到 %v", got)
+		}
+	}
 }
 
 // TestTaskResourceListFilters 列表过滤走 store.TaskFilter（显式白名单，不引 selector）。

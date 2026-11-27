@@ -77,6 +77,11 @@ paths:
             未解析派发失败（`downstream_missing`）是 failed Task + 观察事件，
             不是剪枝，因此不出现在 `pruned` 里（capability.md §6.2）。
 
+        每条 `events[]` 的 `status` 同样带 trace 级 `dispatched`（任务数）与 `prunedCount`
+        （纯剪枝条数）；但这里的 `pruned` **只对观察行自身非 `null`**（全量已由 `pruned[]`
+        给出，再给一个「代表」会让读者以为这条投递事件被剪了）。列表端点则是另一回事，
+        见 `EventStatus.pruned`。
+
         两个信号都空（没有事件、也没有任务）→ 404：trace_id 只由事件/任务产生，
         两者都没有就是"这条 trace 在本命名空间不存在"，不区分"没事件"与"不存在"。
 
@@ -477,7 +482,10 @@ components:
             剪枝观察（事件收到了但没派发）。一个字段两种来源：
 
               - 本行是纯剪枝观察行（`source=route`）→ 给**它自己**的原因；
-              - 本行是投递行 → 给同 trace 的**首条**纯剪枝（代表），没有就是 `null`。
+              - 本行是投递行（两个**列表**端点）→ 给同 trace 的**首条**纯剪枝（代表），
+                没有就是 `null`；
+              - 本行是投递行（`GET …/traces/{traceId}`）→ **恒为 `null`**：那个视图另有
+                `pruned[]` 全量数组，再给一个「代表」会让读者以为这条事件被剪了。
 
             未解析派发失败（`downstream_missing`）是 failed Task + 观察事件，不是剪枝，
             所以它自己的 `pruned` 恒为 `null`（也不占用「首条代表」）。
