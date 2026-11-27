@@ -40,7 +40,6 @@ let server, session, sendKey, nsId, NS;
 const nodes = []; // 本套件起的 mock 节点（退出前统一关连接）
 
 // ---------- 节点：共享 MockNode（两段式握手 + 部署回执）----------
-//
 // 帧形状的唯一镜像在 lib/nodes.mjs（MockNode）；这里只做套件侧的编排：起节点 → 触发部署 → 等 deployment 收敛成 applied。
 async function connectNode(name, { slots = 2, declared = [] } = {}) {
 	const node = await N.MockNode.connect({
@@ -1898,6 +1897,79 @@ async function main() {
 		auditGhostLocal.text,
 	);
 	V.expectStatus("16.7 匿名 GET 源审计 → 401", await H.req(server.base, auditPath(NS, AUDIT_SRC), {}), 401);
+
+	// ---------- 17. 多节点派发分散（#681）：四单不许全堆在字典序小的那台（现场：另一台一次提议都收不到）----------
+	console.log("--- 17. 多节点派发分散（#681）---");
+	const spreadCap = "spread.spread681";
+	const spreadDoc = await defineCap(spreadCap, { concurrency: { maxPerNode: 1 } });
+	V.expectStatus(
+		"17.1 建 targets=[spread.spread681] 的 manual 源 → 201",
+		await V.createSource(
+			server.base,
+			session,
+			NS,
+			V.sourceBody({ name: "spread.src", kind: "manual", targets: [{ capability: spreadCap }] }),
+		),
+		201,
+	);
+	const spreadA = await connectNode("spread-node-a", { slots: 2, declared: [capRef(spreadDoc)] });
+	const spreadB = await connectNode("spread-node-b", { slots: 2, declared: [capRef(spreadDoc)] });
+	await deployToNode(spreadA, spreadCap);
+	await deployToNode(spreadB, spreadCap);
+
+	const dispatchedOn = (node) =>
+		new Set(node.frames.filter((f) => f.type === "task.dispatch").map((f) => f.taskId));
+	for (let i = 0; i < 4; i++) {
+		const res = await postEvent({ source: "spread.src", type: "spread.go", payload: { i } });
+		V.expectStatus(`17.2 第 ${i + 1} 单入队 → 200`, res, 200);
+		H.eq(`17.2 第 ${i + 1} 单恰好 1 个任务`, (res.json?.tasks || []).length, 1);
+	}
+	await V.tryPoll(() => dispatchedOn(spreadA).size > 0 && dispatchedOn(spreadB).size > 0, { timeoutMs: 10000 });
+	H.eq(
+		"17.3 四单在两台候选上各 2 条提案（不是 4:0）",
+		[dispatchedOn(spreadA).size, dispatchedOn(spreadB).size],
+		[2, 2],
+	);
+
+	const accepted = [];
+	for (const node of [spreadA, spreadB]) {
+		const frame = node.frames.find((f) => f.type === "task.dispatch");
+		H.check(`17.4 ${node.name} 有可接受的提案`, !!frame, JSON.stringify(node.frames.map((f) => f.type)).slice(0, 200));
+		if (!frame) continue;
+		node.accept(frame, 0);
+		const grant = await node.waitGrant(frame.taskId);
+		H.check(
+			`17.5 ${node.name} 的提案拿到 lease.grant（第 1 次执行）`,
+			!!grant && grant.attempt === 1,
+			JSON.stringify(grant).slice(0, 200),
+		);
+		accepted.push({ taskId: frame.taskId });
+	}
+	H.eq("17.5 两台各接受 1 条（maxPerNode=1 时一台最多执行 1 条）", accepted.length, 2);
+	H.eq("17.5 接受的是两条不同任务", new Set(accepted.map((a) => a.taskId)).size, 2);
+
+	const taskStatus = async (taskId) =>
+		(await H.req(server.base, V.P.task(NS, taskId), { session })).json?.status || {};
+	const runningOn = [];
+	for (const { taskId } of accepted) {
+		await V.tryPoll(async () => (await taskStatus(taskId)).phase === "running", { timeoutMs: 5000 });
+		const status = await taskStatus(taskId);
+		H.eq(`17.6 ${taskId} 真的在跑（attempt=1）`, [status.phase, status.attempt], ["running", 1]);
+		runningOn.push(status.nodeName);
+	}
+	H.eq("17.6 两条执行分别落在两台机器上", runningOn, ["spread-node-a", "spread-node-b"]);
+
+	const others = [...dispatchedOn(spreadA), ...dispatchedOn(spreadB)].filter(
+		(id) => !accepted.some((a) => a.taskId === id),
+	);
+	for (const taskId of others) {
+		const status = await taskStatus(taskId);
+		H.check(
+			`17.7 ${taskId} 还在等槽（两条同能力执行不许越过 maxPerNode=1）`,
+			status.phase !== "running",
+			JSON.stringify(status),
+		);
+	}
 
 	for (const srv of feeds.splice(0)) {
 		srv.closeAllConnections();

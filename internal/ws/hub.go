@@ -27,6 +27,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -129,6 +130,8 @@ type Hub struct {
 	mu       sync.Mutex
 	sessions map[string]*Session // nodeID → session（同一节点只保留最新连接）
 	logs     map[string]*logRequest
+
+	steer slotSteer // 「这台节点刚说过这个能力没槽」的调度建议（#681，见 steer.go）
 }
 
 // NewHub 构造 Hub（不启动后台循环；调度由调用方驱动 DispatchOnce 或 RunDispatchLoop）。
@@ -386,16 +389,12 @@ func (h *Hub) sendWelcome(ctx context.Context, sess *Session) error {
 	})
 }
 
-// DispatchOnce 扫描一批可派发任务，为每条任务**稳定**记录一个候选（assignment）
-// 并把 task.dispatch 推给在线节点。
-//
-// 安全性/稳定性（R1-C2）：
-//   - 候选写入走 store.ProposeTaskAssignment：未到期的同 Task 提案原样返回（多
-//     sweep 不 churn）；只有到期才换绑定。派发**不授执行权**：没有 lease / attempt /
-//     token / slot，节点 accept 之后才走 GrantLeaseAuthorized。
-//   - ConfigRevision 与 welcome 同源 —— 真实 node_configs.revision（不是
-//     nodes.resource_version）：真实 anode 用它做 stale_config 判定，取错会让所有
-//     派发永远 stale。
+// DispatchOnce 扫描一批可派发任务，为每条任务**稳定**记录一个候选（assignment）并把
+// task.dispatch 推给在线节点。安全性/稳定性（R1-C2）：
+//   - 候选写入走 store.ProposeTaskAssignment：未到期的同 Task 提案原样返回（多 sweep 不 churn），
+//     到期才换绑定；派发**不授执行权**（没有 lease / attempt / token / slot，accept 后才 grant）。
+//   - ConfigRevision 与 welcome 同源（真实 node_configs.revision，不是 nodes.resource_version）：
+//     取错会让所有派发永远 stale。选点按预算余量排（#681，见 dispatchCandidates）。
 func (h *Hub) DispatchOnce(ctx context.Context, limit int) (int, error) {
 	now := h.Now()
 	tasks, err := h.db.ListDispatchableTasks(ctx, now, limit)
@@ -404,6 +403,7 @@ func (h *Hub) DispatchOnce(ctx context.Context, limit int) (int, error) {
 	}
 	dispatched := 0
 	configRevisions := map[string]string{}
+	memo := &store.DispatchBudgetMemo{} // 一次 sweep 内共享：机器/能力侧读不变，在飞候选按任务重算
 	for _, task := range tasks {
 		if task.CancelRequestedAt != nil {
 			continue
@@ -421,9 +421,18 @@ func (h *Hub) DispatchOnce(ctx context.Context, limit int) (int, error) {
 			h.log.Warn("free slots failed", "task_id", task.ID, "err", err)
 			continue
 		}
+		var budgets map[string]store.DispatchNodeBudget
+		if len(nodes) > 1 { // 单候选时 dispatchCandidates 原样返回：预算表算完就丢，不查（#681 review）。
+			read, berr := h.db.DispatchBudgetsMemoized(ctx, task, nodeIDs(nodes), now, memo)
+			if berr != nil {
+				h.log.Warn("dispatch budgets failed", "task_id", task.ID, "err", berr)
+			} else {
+				budgets = read
+			}
+		}
 		nsVars := h.namespaceVarsFor(ctx, task)
 		proposed := task.Attempt + 1
-		for _, node := range nodes {
+		for _, node := range h.dispatchCandidates(task, nodes, budgets, now) {
 			if free[node.ID] <= 0 {
 				continue
 			}
@@ -479,6 +488,61 @@ func (h *Hub) DispatchOnce(ctx context.Context, limit int) (int, error) {
 		}
 	}
 	return dispatched, nil
+}
+
+// dispatchCandidates 排本轮试点顺序（#681）：未到期的当前候选节点最前，然后「有余量 > 没余量」
+// 「没刚被拒过 > 刚被拒过」；同档内超得少的先派（全满也照派，授权判据不动）。
+func (h *Hub) dispatchCandidates(task *store.Task, nodes []*store.Node,
+	budgets map[string]store.DispatchNodeBudget, now int64) []*store.Node {
+	if len(nodes) < 2 {
+		return nodes
+	}
+	live := ""
+	if task.AssignmentID != "" && task.NodeID != nil && task.AssignmentExpiresAt != nil &&
+		*task.AssignmentExpiresAt > now {
+		live = *task.NodeID
+	}
+	type ranked struct {
+		node *store.Node
+		tier int
+		over int
+	}
+	rank := func(n *store.Node) (tier, over int) {
+		if n.ID == live {
+			return -1, 0
+		}
+		admits, overBy := true, 0
+		if b, ok := budgets[n.ID]; ok {
+			admits, overBy = b.AdmitsOne(), b.OverBy()
+		}
+		steered := h.slotFullRecently(n.ID, task.NamespaceID, task.Capability, now)
+		switch {
+		case admits && !steered:
+			return 0, overBy
+		case admits:
+			return 1, overBy
+		case !steered:
+			return 2, overBy
+		default:
+			return 3, overBy
+		}
+	}
+	cands := make([]ranked, len(nodes))
+	for i, n := range nodes {
+		tier, over := rank(n)
+		cands[i] = ranked{node: n, tier: tier, over: over}
+	}
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].tier != cands[j].tier {
+			return cands[i].tier < cands[j].tier
+		}
+		return cands[i].over < cands[j].over
+	})
+	out := make([]*store.Node, len(cands))
+	for i, c := range cands {
+		out[i] = c.node
+	}
+	return out
 }
 
 // RunDispatchLoop 按 interval 周期扫描派发，直到 ctx 结束。

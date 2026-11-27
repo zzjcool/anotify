@@ -177,8 +177,7 @@ export function seedNodeRows(
 		fail(FN, `capabilityIds 必须是数组，实际是 ${show(capabilityIds)}`);
 	}
 	if (capabilityIds.length > 0) {
-		// 静默忽略 = 套件以为「这台节点装着某能力」，实际库上什么都没有，断言随后
-		// 在派发处失败，看起来像产品 bug。v4 的答案是部署动作，不是插表。
+		// 静默忽略 = 套件以为「这台节点装着某能力」，实际库上没有，派发处的断言随后失败、看起来像产品 bug。
 		fail(
 			FN,
 			`capabilityIds 非空（${capabilityIds.length} 项），但 v4 没有 node_capabilities 表`,
@@ -191,6 +190,8 @@ export function seedNodeRows(
 
 	const db = new DatabaseSync(dbPath);
 	try {
+		// 直插库会与 server 抢写锁：默认 busy_timeout=0，并行矩阵下当场 SQLITE_BUSY（与 V.withDB 同口径）。
+		db.exec("PRAGMA busy_timeout = 10000");
 		db.prepare(
 			`INSERT INTO nodes (id, name, tags, status, token_hash, created_at)
 			 VALUES (?, ?, '[]', 'offline', ?, ?)`,
