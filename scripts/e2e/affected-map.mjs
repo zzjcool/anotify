@@ -153,7 +153,7 @@ export const SUITE_SURFACES = {
 	frontend: {
 		why: "注册 case 逐个起真 server + 真 Chrome（real authority）；web/yamldoc.js 经预览 mock 参与每个页面的文档渲染（它一坏就是页面级 pageerror）",
 		pages: ["admin", "capabilities", "capability", "sources", "source-detail", "events", "trace", "message", "index", "playbooks", "playbook", "release", "nodes", "node", "namespace", "namespaces", "security", "docs", "cli-auth", "login"],
-		paths: ["internal/sitegen/**", "cmd/sitegen/**", "web-src/layouts/**", "web-src/locales/**", "web/yamldoc.js"],
+		paths: ["internal/sitegen/**", "cmd/sitegen/**", "web-src/layouts/**", "web-src/locales/**", "web/yamldoc.js", "web/source-editor.js"],
 	},
 	vars_ui: {
 		why: "#476 节点页/命名空间页的可视化 vars：表格数据 = effectiveVars + requires.values，保存只走 PUT …/yaml（真 server + 真 Chrome，零 /config 写）；文档文本的序列化器是 web/yamldoc.js（#473），改它就会改变这两个页面的写面",
