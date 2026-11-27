@@ -88,7 +88,6 @@ func valueObjectSchema(sch map[string]any, v any, path string) string {
 		}
 	}
 
-	// type
 	if raw, ok := sch["type"]; ok {
 		if msg := checkType(raw, v, path); msg != "" {
 			return msg
@@ -233,7 +232,6 @@ func TypeName(v any) string {
 func valueObject(sch map[string]any, obj map[string]any, path string) string {
 	props, _ := sch["properties"].(map[string]any)
 
-	// required
 	if raw, ok := sch["required"]; ok {
 		if list, ok := raw.([]any); ok {
 			for _, e := range list {
@@ -248,7 +246,6 @@ func valueObject(sch map[string]any, obj map[string]any, path string) string {
 		}
 	}
 
-	// minProperties / maxProperties
 	if msg := checkNumberBound(sch, "minProperties", float64(len(obj)), path, true); msg != "" {
 		return msg
 	}

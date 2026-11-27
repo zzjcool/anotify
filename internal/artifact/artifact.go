@@ -50,7 +50,6 @@ import (
 
 	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/schema"
-	"github.com/zzjcool/anotify/internal/sourcespec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1229,7 +1228,7 @@ func validateOnFailure(lc *Lifecycle, next []string) []string {
 	if lc == nil || lc.OnFailure == nil {
 		return nil
 	}
-	// 白名单只有 sourcespec.DeclaredRef 一份：兜底不能绕过「只能调自己声明的下游」。
+	// 白名单只有 schema.DeclaredRef 一份：兜底不能绕过「只能调自己声明的下游」。
 	var p []string
 	add := func(format string, args ...any) {
 		p = append(p, CodeBadRequest+": "+fmt.Sprintf(format, args...))
@@ -1241,7 +1240,7 @@ func validateOnFailure(lc *Lifecycle, next []string) []string {
 	if strings.Contains(to, "$(") {
 		return append(p, CodeBadRequest+": lifecycle.onFailure.to 是静态声明，不能写模板（实际 "+to+"）")
 	}
-	if _, declared := sourcespec.DeclaredRef(next, to); !declared {
+	if _, declared := schema.DeclaredRef(next, to); !declared {
 		add("lifecycle.onFailure.to %q 不在 spec.next (%v) 里", to, next)
 	}
 	for name, value := range lc.OnFailure.Params {

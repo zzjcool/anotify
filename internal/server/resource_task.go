@@ -567,9 +567,9 @@ func (a *taskAPI) trace(w http.ResponseWriter, r *http.Request) {
 	for _, e := range rows {
 		env := eventEnvelope(e, a.d.namespaceDisplay(r.Context(), e.NamespaceID), summary, false)
 		view.Events = append(view.Events, env)
-		// pruned[] 只收**纯剪枝**（事件收到了但没派发）。未解析派发失败
-		// （downstream_missing）是 failed Task + 观察事件，不是剪枝（capability.md §6.2）。
-		if e.Source == store.EventPruneSource && !eventIsDispatchFailure(e) {
+		// pruned[] 只收**纯剪枝**（事件收到了但没派发）；失败事实行是 failed Task
+		// 的伴随行（capability.md §6.2），算进来会让 trace 同时说「派发成功」和「被剪掉」。
+		if e.Source == store.EventPruneSource && !eventIsFailureFact(e) {
 			view.Pruned = append(view.Pruned, env)
 		}
 	}
@@ -993,9 +993,9 @@ func taskResultReasonCode(s string) bool {
 // `type`（Normal/Warning 严重度）与 `signature`（HMAC 验证结论）**刻意省略**：
 // events 表没有这两列事实，编一个默认值等于把「没验证」说成「已验证」。
 //
-// reason 对**未解析派发失败**的观察事件也省略（见 eventIsDispatchFailure）：store 把
-// 失败观察行统一写成 reason='Pruned'，照抄会把「任务失败」报告成「剪枝」。events 表
-// 没有独立的失败观察 reason 事实，所以宁可不给（§7.7 的封闭值里没有对应项）。
+// reason 对**失败事实行**也省略（见 eventIsFailureFact）：store 把观察行统一写成
+// reason='Pruned'，照抄会把「任务失败」报告成「剪枝」。events 表没有独立的失败观察
+// reason 事实，所以宁可不给（§7.7 的封闭值里没有对应项）。
 type eventSpecDoc struct {
 	Reason         string         `json:"reason,omitempty"`
 	EventType      string         `json:"eventType"`
@@ -1047,8 +1047,8 @@ func eventEnvelope(e *store.Event, nsDisplay string, sum store.TraceSummary, rep
 		payload = json.RawMessage("{}")
 	}
 	reason := e.Reason
-	if eventIsDispatchFailure(e) {
-		// 失败观察行在 store 里的 reason 固定为 'Pruned'（insertPruneFactEventOn 的
+	if eventIsFailureFact(e) {
+		// 失败事实行在 store 里的 reason 固定为 'Pruned'（insertPruneFactEventOn 的
 		// 同一份边写）：直接给出去等于把「任务失败」报告成「剪枝」。省略比编造安全。
 		reason = ""
 	}
@@ -1093,23 +1093,28 @@ func eventOriginOf(e *store.Event) string {
 	return store.EventOriginSource
 }
 
-// eventIsDispatchFailure 报告这条观察行是不是**未解析派发失败**（downstream_missing）。
-//
-// store 的失败观察事件和剪枝留痕共用 `insertPruneFactEventOn`（source='route'、
-// reason='Pruned'），只有 type 能区分：这里 type 就是封闭原因码。capability.md §6.2
-// 把 downstream_missing 定义为「任务失败 + 事件」，不是剪枝，所以投影层必须把它从
-// Pruned 语义里拿出来（store 加独立 reason / 失败标记是后续缺口，owner 见 inventory）。
-func eventIsDispatchFailure(e *store.Event) bool {
-	return e != nil && e.Source == store.EventPruneSource && e.Type == protocol.ReasonDownstreamMissing
+// eventIsFailureFact 报告这条观察行是不是**任务失败事实**：downstream_missing（未解析
+// 派发失败）/ router_failed（router 任务失败）/ task_failed（#700 中枢补写的终态事实）。
+// 三者与剪枝留痕共用 insertPruneFactEventOn 的 source/reason，只有 type 能区分；投影层
+// 必须把它们从 Pruned 语义里拿出来，否则 status 会同时说 dispatched>0 和「被剪枝」。
+func eventIsFailureFact(e *store.Event) bool {
+	if e == nil || e.Source != store.EventPruneSource {
+		return false
+	}
+	switch e.Type {
+	case protocol.ReasonDownstreamMissing, protocol.ReasonRouterFailed, protocol.ReasonTaskFailed:
+		return true
+	}
+	return false
 }
 
 // eventPruneFactOf 从剪枝留痕行取观察原因（非剪枝行 → nil）。
 //
 // 剪枝行的 type 就是原因码（store 保证是封闭集合），payload 里另有一份 reason + detail
 // （+ capability/taskId 等诊断），这里只用 reason/detail：其它字段属于内部链路身份。
-// 失败观察行（downstream_missing）不是剪枝 → status.pruned 必须是 null。
+// 失败事实行（eventIsFailureFact）不是剪枝 → status.pruned 必须是 null。
 func eventPruneFactOf(e *store.Event) *pruneFactDoc {
-	if e == nil || e.Source != store.EventPruneSource || eventIsDispatchFailure(e) {
+	if e == nil || e.Source != store.EventPruneSource || eventIsFailureFact(e) {
 		return nil
 	}
 	var payload struct {

@@ -2081,13 +2081,15 @@
           if (!Number.isInteger(version) || version < 1) return { error: t("caps.form.err_version", "版本必须是 ≥1 的整数"), field: "version" };
         }
 
+        // 表单之外的 lifecycle 键（idleTimeoutSec / onFailure）从被编辑版本原样带走，否则保存时静默丢掉。
+        const edited = EDIT && EDIT.res ? model.capability(EDIT.res) : {};
+        const lc = isObj(edited.spec) && isObj(edited.spec.lifecycle) ? edited.spec.lifecycle : {};
         const spec = {
           params: params,
           next: next,
           run: { entrypoint: entrypoint, files: files },
           requires: { commands: commands, values: values },
           lifecycle: {
-            // 铺开现有 lifecycle：表单只管这四个键，别的（#700 的 idleTimeoutSec/onFailure）原样带走。
             ...lc,
             idempotent: lcIdem,
             maxAttempts: maxAttempts,

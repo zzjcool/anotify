@@ -49,7 +49,7 @@ func TestFailedResultLeavesTraceFactAndRunsFallback(t *testing.T) {
 	}
 
 	var payload struct {
-		Reason string `json:"reason"`
+		FailureReason string `json:"failureReason"`
 	}
 	row := e.db.QueryRow(`SELECT payload FROM events WHERE namespace_id = ? AND trace_id = ? AND type = ?`,
 		e.ns.ID, task.TraceID, protocol.ReasonTaskFailed)
@@ -60,8 +60,8 @@ func TestFailedResultLeavesTraceFactAndRunsFallback(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("观察行不是 JSON: %v", err)
 	}
-	if payload.Reason != protocol.ReasonTimeout {
-		t.Fatalf("观察行要带原因码 timeout，实际 %q", payload.Reason)
+	if payload.FailureReason != protocol.ReasonTimeout {
+		t.Fatalf("观察行要带失败码 timeout（键名 failureReason），实际 %q", payload.FailureReason)
 	}
 
 	ctx := context.Background()

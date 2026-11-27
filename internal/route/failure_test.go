@@ -77,8 +77,9 @@ func TestDispatchFailureRecordsFactAndRunsDeclaredFallback(t *testing.T) {
 		t.Fatalf("必须留一条 %s：%v", protocol.ReasonTaskFailed, events)
 	}
 	var payload struct {
-		TaskID string `json:"taskId"`
-		Reason string `json:"reason"`
+		TaskID        string `json:"taskId"`
+		FailureReason string `json:"failureReason"`
+		Reason        string `json:"reason"`
 	}
 	row := f.db.QueryRow(`SELECT payload FROM events WHERE namespace_id = ? AND trace_id = ? AND type = ?`,
 		f.ns.ID, task.TraceID, protocol.ReasonTaskFailed)
@@ -89,8 +90,11 @@ func TestDispatchFailureRecordsFactAndRunsDeclaredFallback(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("观察行不是 JSON 对象: %v", err)
 	}
-	if payload.TaskID != task.ID || payload.Reason != protocol.ReasonTimeout {
-		t.Fatalf("观察行要带 taskId 与原因码，实际 %+v", payload)
+	if payload.TaskID != task.ID || payload.FailureReason != protocol.ReasonTimeout {
+		t.Fatalf("观察行要带 taskId 与 failureReason（= 任务失败码），实际 %+v", payload)
+	}
+	if payload.Reason != "" {
+		t.Fatalf("payload.reason 属于剪枝原因码，失败事实行不得占用：%q", payload.Reason)
 	}
 
 	tasks := traceTasks(t, f.db, f.ns.ID, task.TraceID)

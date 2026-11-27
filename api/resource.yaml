@@ -2833,10 +2833,14 @@ components:
           type: string
           description: |
             观察原因码（`events.type`，闭集见 `internal/protocol/enums.go`）：剪枝码、
-            决策通道观察码与 `EventPruneFact.reason` 同一套，**另外还会**收到
-            `downstream_missing`（未解析派发失败：那条事件的 `payload.taskId` 就是
-            失败任务自己，所以按任务归属会落在它的 `observed.pruned[]` 里）。
-            被拒绝的 emit（`target_not_declared`）也在其中：它与剪枝共用观察行通道。
+            决策通道观察码（`no_decision` / `router_failed` / `task_failed` /
+            `outcome_dropped` / `outcome_not_declared`），以及被拒绝的 emit
+            （`target_not_declared`）。
+
+            这里比事件信封的 `EventPruneFact` **更宽**：失败事实行（`downstream_missing` /
+            `router_failed` / `task_failed`）的 `payload.taskId` 就是那个失败任务，所以按
+            任务归属会落在它的 `observed.pruned[]` 里——它们是「这一步为什么没往下走」的
+            证据，但不是剪枝（事件信封的 `pruned[]` / `status.pruned` 会把它们过滤掉）。
         detail:
           type: string
           description: "人话补充，可为空串；不参与任何判断"

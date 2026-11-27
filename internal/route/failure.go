@@ -33,8 +33,9 @@ func (r *Router) DispatchFailure(ctx context.Context, task *store.Task) error {
 	}
 	if err := r.db.InsertRouteObservation(ctx, task.NamespaceID, task.TraceID, failureObservationReason(task),
 		map[string]any{
+			// 键名不能叫 `reason`：那是剪枝原因码的事实，同名不同义会污染 status.pruned.reason。
 			"taskId": task.ID, "capability": task.Capability,
-			"phase": task.Phase, "reason": TaskFailureReason(task), "error": task.Error,
+			"phase": task.Phase, "failureReason": TaskFailureReason(task), "error": task.Error,
 		}); err != nil {
 		return err
 	}

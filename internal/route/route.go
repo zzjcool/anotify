@@ -48,7 +48,6 @@ func NewWithClock(db *store.DB, now Clock) *Router {
 // DB 返回底层 store（编排层需要同一份连接）。
 func (r *Router) DB() *store.DB { return r.db }
 
-// Now 返回路由器当前时刻（秒）。
 func (r *Router) Now() int64 {
 	if r.now == nil {
 		return store.Now()
