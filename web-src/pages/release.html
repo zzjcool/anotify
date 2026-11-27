@@ -279,7 +279,11 @@
         $("rd-receipt-state").replaceChildren(loadErrorNode(error, () => receipt(installId)));
       }
     }
-    function gone(titleKey, hintKey, backKey) {
+    /* 「不是载入失败」的两个状态：链接不完整 vs 实例不存在。
+       #576：两者都走共享的「找不到」组件（与其余 7 个详情页同一套说法/动作），
+       本页只留「收起正文 + 禁用写操作」这层外壳 —— 对不存在的实例不能点卸载/改 YAML。
+       #rd-gone-panel 这个 id 保留：e2e 的页面锚点与「卸载不落 gone 面板」的断言靠它。 */
+    function goneState(node) {
       $("rd-content").hidden = true;
       $("rd-groups").hidden = true;
       const host = $("rd-gone");
@@ -287,14 +291,26 @@
       host.replaceChildren();
       const box = el("div", "rd-check");
       box.id = "rd-gone-panel";
-      box.append(el("h3", "card-title", t(titleKey)), el("p", "field-hint", t(hintKey)));
-      const back = el("a", "btn btn-ghost", t(backKey || "release.gone_back"));
-      back.href = name ? scoped("playbook", "id", name) : "playbooks.html";
-      back.id = "rd-gone-back";
-      box.append(back);
+      box.append(node);
       host.append(box);
       $("rd-restore").hidden = true;
       for (const id of ["rd-yaml", "rd-uninstall", "rd-restore"]) $(id).disabled = true;
+    }
+    function goneIncomplete() {
+      goneState(Anotify.notFoundState({
+        incomplete: true,
+        kind: t("common.notfound.kind.release"),
+        back: name ? scoped("playbook", "id", name) : "playbooks.html",
+        backLabel: t("release.missing_back"),
+      }));
+    }
+    function goneNotFound() {
+      goneState(Anotify.notFoundState({
+        kind: t("common.notfound.kind.release"),
+        name: release,
+        back: name ? scoped("playbook", "id", name) : "playbooks.html",
+        backLabel: t("release.gone_back"),
+      }));
     }
     function badge(text, cls) {
       $("rd-badge").textContent = text;
@@ -480,7 +496,7 @@
         await ready();
         if (!name || !release) {
           badge(t("release.no_target_badge"), "badge-neutral");
-          gone("release.missing_target", "release.missing_hint", "release.missing_back");
+          goneIncomplete();
           $("rd-summary").replaceChildren();
           $("rd-load-state").replaceChildren();
           return;
@@ -503,7 +519,7 @@
       } catch (error) {
         if (error.status === 404) {
           badge(t("release.gone_title"), "badge-warn");
-          gone("release.gone_title", "release.gone_hint");
+          goneNotFound();
           $("rd-load-state").replaceChildren();
           $("rd-summary").replaceChildren();
           return;

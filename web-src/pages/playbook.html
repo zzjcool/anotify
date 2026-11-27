@@ -737,17 +737,58 @@
       $("pb-summary").replaceChildren();
       $("pb-summary").hidden = true;
     }
+    /* #576：404 / 缺参 → 共享的「找不到」组件。同时把页级写操作入口全部禁用：
+       对不存在的预案，主按钮「安装 / 升级」（#pb-install-open，抽屉里的 #btn-install）
+       以及渲染/试装都不应该有可点的入口 —— 那是错误操作的入口。 */
+    function missingState(node) {
+      for (const id of ["btn-render", "btn-dry-run", "btn-install", "pb-install-open", "pb-save-template"]) {
+        const b = $(id);
+        if (b) { b.disabled = true; b.setAttribute("aria-disabled", "true"); }
+      }
+      /* 徽章也跟着改：404 上写「载入失败」是在说服务端出错，而事实是东西不在了。 */
+      $("pb-badge").textContent = t("common.notfound.badge");
+      $("pb-badge").className = "badge badge-warn";
+      $("pb-summary").replaceChildren();
+      $("pb-summary").hidden = true;
+      $("pb-load-state").replaceChildren(node);
+    }
+    function notFoundState() {
+      missingState(Anotify.notFoundState({
+        kind: t("common.notfound.kind.playbook"),
+        name,
+        back: scoped("playbooks"),
+        backLabel: t("pb.back"),
+      }));
+    }
+    function incompleteState() {
+      missingState(Anotify.notFoundState({
+        incomplete: true,
+        kind: t("common.notfound.kind.playbook"),
+        back: scoped("playbooks"),
+        backLabel: t("pb.back"),
+      }));
+    }
     async function load() {
       if (loading) return; loading = true; $("btn-rescan").disabled = true;
       loadingBadge(); $("pb-summary").hidden = false;
       $("pb-load-state").textContent = t("pb.v4.loading"); $("pb-summary").setAttribute("aria-busy", "true");
       try {
-        await ready(); if (!name) throw new Error(t("pb.v4.missing_id"));
+        await ready();
+        if (!name) {
+          /* 缺 id：「链接不完整」，**不发**畸形请求（以前会请求 /v1/namespaces/<ns>/playbooks/ 再报
+             「载入失败·缺少安装包 slug」—— 把一个参数缺失说成了服务端失败）。 */
+          failedBadge(); incompleteState(); return;
+        }
         $("pb-back").href = scoped("playbooks"); await refreshSummary();
         // Re-check never destroys a user's unsaved whole-map draft.
         if (!draft) await rawTemplate(true);
         $("pb-content").hidden = false; $("pb-load-state").replaceChildren(); await Promise.all([installs(), versions()]);
-      } catch (error) { failedBadge(); $("pb-load-state").replaceChildren(loadErrorNode(error, load)); }
+      } catch (error) {
+        failedBadge();
+        /* 404 就是「这个预案不在了」（#576）：不给「重试 / 复制详情」，也不印服务端英文原文。 */
+        if (error && error.status === 404) { notFoundState(); return; }
+        $("pb-load-state").replaceChildren(loadErrorNode(error, load));
+      }
       finally { loading = false; $("btn-rescan").disabled = false; $("pb-summary").removeAttribute("aria-busy"); }
     }
     $("pb-file-path").addEventListener("change", () => { const next = $("pb-file-path").value; rememberFile(); filePicker(next); });

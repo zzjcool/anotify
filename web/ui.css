@@ -3708,6 +3708,16 @@ button.cause-report-item:focus-visible .cause-report-field {
 	color: var(--muted);
 	max-width: 46ch;
 }
+/* #576：「找不到 X「<名字>」」里的名字是用户数据（可能手打错、可能是长 id），
+ * 单行省略，不让它把标题撑成两行或顶出 390px 视口。 */
+.nf-name {
+	display: inline-block;
+	max-width: 24ch;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	vertical-align: bottom;
+}
 .empty-actions {
 	display: flex;
 	flex-wrap: wrap;

@@ -14,7 +14,7 @@
  *     空列表为 []
  *  E. 首页 ?msg=<taskId>（历史推送深链）重定向到 message.html?id=<taskId>
  *  F. 未登录点深链 → 跳登录页时 next 保留 message.html?id=
- *  G. 不存在的 id → 页面降级显示「任务不存在」、无 JS pageerror
+ *  G. 不存在的 id → 页面降级到统一的「找不到」组件（#576）、无 JS pageerror
  *
  * 造数走 v4 的真实产品路径：能力（信封）→ 源 targets（入口边）→ 登记节点 + 签发令牌
  * + WS hello + config.applied + 部署回执 → 投递事件。派发证据用 tasks 行的
@@ -337,20 +337,33 @@ async function main() {
 			timeout: 15000,
 		});
 		await H.waitForAppReady(page, "workspace");
-		// v4 的 404 分支把文案放进 #msg-error（标题保持「任务详情」不变）。
+		// v4 的 404 分支把状态放进 #msg-error（标题保持「任务详情」不变）。
+		// #576：8 个详情页共用同一个「找不到」组件，所以断言锚点换成 data-not-found
+		// （比匹配某一版文案稳），文案只验证「标题里带资源类型与名字」。
 		await page
 			.waitForFunction(
 				() => {
 					const el = document.getElementById("msg-error");
-					return el && (el.textContent || "").includes("任务不存在");
+					return el && el.querySelector('[data-not-found="missing"]');
 				},
 				{ timeout: 10000 },
 			)
 			.catch(() => {});
-		const errTxt = await page.evaluate(
-			() => (document.getElementById("msg-error") || {}).textContent || "",
+		const state = await page.evaluate(() => {
+			const el = document.getElementById("msg-error");
+			const nf = el && el.querySelector("[data-not-found]");
+			return {
+				kind: nf ? nf.getAttribute("data-not-found") : null,
+				title: nf ? (nf.querySelector(".empty-title") || {}).textContent || "" : "",
+				text: (el || {}).textContent || "",
+			};
+		});
+		H.check("未命中走统一的「找不到」组件", state.kind === "missing", state.text.slice(0, 200));
+		H.check(
+			"标题含任务类型与不存在的 id",
+			state.title.includes("任务") && state.title.includes("tsk_not_exist"),
+			state.title.slice(0, 200),
 		);
-		H.check("未命中显示「任务不存在」", errTxt.includes("任务不存在"), errTxt.slice(0, 200));
 		H.check(
 			"不存在的 id 无 JS pageerror",
 			errs.length === 0,

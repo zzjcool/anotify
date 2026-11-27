@@ -1,0 +1,65 @@
+<!-- layout: focus -->
+{{define "title"}}{{t "site.notfound.title"}}{{end}}
+{{define "style"}}
+<style>
+  /* 404 页只有一张卡片：内容是 .empty 组件（与详情页的「找不到」同一个），
+     这里只补两点：名字行单行省略、卡片最大宽度（长路径不撑破 390px）。 */
+  .nf-page { width: 100%; max-width: 34rem; }
+  .nf-path {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+</style>
+{{end}}
+{{define "content"}}
+<div class="nf-page">
+  <div class="empty" data-not-found="page">
+    <span class="empty-icon" aria-hidden="true">
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z" />
+        <path d="M21 21l-4.35-4.35" />
+      </svg>
+    </span>
+    <p class="empty-title">{{t "site.notfound.title"}}</p>
+    <p class="empty-desc">{{t "site.notfound.body"}}</p>
+    <!-- 静态页在构建期不知道用户访问的是哪个地址：脚本把 pathname 填进来，
+         填不到（无 JS）时这一行保持 hidden，正文那句仍然是完整的。 -->
+    <p class="empty-desc" id="site-404-path" hidden>
+      <span>{{t "site.notfound.path_label"}}</span>
+      <code class="mono nf-path"></code>
+    </p>
+    <div class="empty-actions">
+      <a class="btn" href="{{.LangPrefix}}/index.html"
+        >{{t "site.notfound.home"}}</a
+      >
+      <a class="btn btn-ghost" href="{{.LangPrefix}}/docs.html"
+        >{{t "site.notfound.docs"}}</a
+      >
+    </div>
+  </div>
+</div>
+{{end}}
+{{define "script"}}
+<script>
+  (function () {
+    "use strict";
+    var box = document.getElementById("site-404-path");
+    var path = (window.location && window.location.pathname) || "";
+    if (!box || !path) return;
+    var code = box.querySelector("code");
+    if (!code) return;
+    code.textContent = path;
+    box.hidden = false;
+  })();
+</script>
+{{end}}

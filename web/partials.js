@@ -3257,6 +3257,170 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return target + (ns ? "?namespace=" + encodeURIComponent(ns) : "");
 	}
 
+	/* 「找不到」组件的图标：放大镜，不是警示三角 —— 失效链接不是故障（#576）。 */
+	const NOTFOUND_ICON =
+		'<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z"/><path d="M21 21l-4.35-4.35"/></svg>';
+
+	/**
+	 * notFoundState 渲染「找不到这个资源」（404）与「链接不完整」（缺参数）的统一空态。
+	 *
+	 * 为什么要有它（#576）：8 个详情页原来各写一套 404 空态 —— 8 种标题、8 种说法，
+	 * 其中几套把服务端英文原文（`source not found`、`not found`）印在中文说明下面，
+	 * 还有的留着「重新加载 / 复制详情」。失效链接是**高频正常场景**（推送通知里的任务
+	 * 过了保留期、同事贴的旧链接、删除后按后退），用户此时只需要三件事：
+	 * **东西不在了、为什么可能不在、去哪儿**。把 404 画成「载入失败」会让人以为系统
+	 * 故障去重试；可复制的机器事实（status/reason/requestId）对 404 也没有意义。
+	 *
+	 * 与 loadErrorNode 的分工：401/403/409/410/5xx/网络错误仍走分级错误态（那边有重试、
+	 * 有 requestId）；只有 404 与缺参数走这里。页面级写操作（预案的「安装 / 升级」、
+	 * 能力的「编辑 / 部署 / 停用」）由调用方在 404 态隐藏或禁用 —— 组件不管页面动作条。
+	 *
+	 * @param {{kind?: string, name?: string, namespace?: string, back?: string,
+	 *   backLabel?: string, retention?: boolean, incomplete?: boolean}} [opts]
+	 *   kind     资源类型的**本地化名词**（能力 / 源 / 预案 …）：服务端 reason 是英文协议串，
+	 *            翻译只能由页面给（各页的 t 前缀不同），默认「内容」
+	 *   name     链接里的名字（用户数据，用 <code> 显示，超长省略）
+	 *   namespace 命名空间级资源：显示当前 ns 并给「换一个命名空间」；传 "" 表示不显示
+	 *   back     返回列表的落点（默认 listHref()，已带 ?namespace=）
+	 *   retention 任务 / 事件 / 链路：说明改用「已过保留期被清理」这一句
+	 *   incomplete 缺参数（不是「不存在」）：标题改为「链接不完整：缺少{kind}名」
+	 * @returns {HTMLElement}
+	 */
+	function notFoundState(opts) {
+		const o = opts && typeof opts === "object" ? opts : {};
+		const kind =
+			typeof o.kind === "string" && o.kind
+				? o.kind
+				: t("common.notfound.kind_generic", "内容");
+		const name = o.name == null ? "" : String(o.name);
+		const incomplete = !!o.incomplete;
+		let ns = "";
+		if (o.namespace != null) {
+			ns = String(o.namespace);
+		} else {
+			try {
+				ns = readScope().namespace || "";
+			} catch (e) {
+				ns = "";
+			}
+		}
+
+		const box = document.createElement("div");
+		box.className = "empty";
+		/* 机器可判的标记：e2e 用它断言「8 个页面用的是同一个组件」，比匹配文案稳。 */
+		box.setAttribute("data-not-found", incomplete ? "incomplete" : "missing");
+
+		const mark = document.createElement("span");
+		mark.className = "empty-icon";
+		mark.setAttribute("aria-hidden", "true");
+		mark.innerHTML = NOTFOUND_ICON;
+		box.appendChild(mark);
+
+		const title = document.createElement("p");
+		title.className = "empty-title";
+		if (incomplete) {
+			title.textContent = t(
+				"common.notfound.incomplete",
+				"链接不完整：缺少{kind}名",
+			).replace("{kind}", kind);
+		} else {
+			const tpl = t(
+				name ? "common.notfound.title" : "common.notfound.title_plain",
+				name ? "找不到{kind}「{name}」" : "找不到{kind}",
+			);
+			const at = name ? tpl.indexOf("{name}") : -1;
+			if (at < 0) {
+				title.textContent = tpl
+					.replace("{kind}", kind)
+					.replace("{name}", name);
+			} else {
+				/* 名字是用户数据：单独一个 <code>（等宽 + 超长省略），也是 data-raw-content ——
+				 * 多语言残留扫描不会把用户的名字当成没翻译的界面字。 */
+				const code = document.createElement("code");
+				code.className = "mono nf-name";
+				code.setAttribute("data-raw-content", "");
+				code.textContent = name;
+				title.append(
+					document.createTextNode(tpl.slice(0, at).replace("{kind}", kind)),
+					code,
+					document.createTextNode(
+						tpl.slice(at + "{name}".length).replace("{kind}", kind),
+					),
+				);
+			}
+		}
+		box.appendChild(title);
+
+		const desc = document.createElement("p");
+		desc.className = "empty-desc";
+		desc.textContent = incomplete
+			? t("common.notfound.why_incomplete", "链接里少一个参数，页面没法知道你要看哪一条。")
+			: o.retention
+				? t(
+						"common.notfound.why_retention",
+						"它可能已过保留期被清理，或者链接里的名字不对。",
+					)
+				: t(
+						"common.notfound.why",
+						"它可能已被删除，或者链接里的名字不对。",
+					);
+		box.appendChild(desc);
+
+		/* 当前命名空间：跨 ns 的链接打错 ns 是「找不到」最常见的原因之一，
+		 * 所以把 ns 摆出来（命名空间自己 404 时调用方传 namespace:""）。 */
+		if (ns && !incomplete) {
+			const scopeLine = document.createElement("p");
+			scopeLine.className = "empty-desc";
+			const code = document.createElement("code");
+			code.className = "mono";
+			code.textContent = "#" + ns;
+			scopeLine.append(
+				document.createTextNode(
+					t("common.notfound.ns_label", "命名空间") + " ",
+				),
+				code,
+			);
+			box.appendChild(scopeLine);
+		}
+
+		const actions = document.createElement("div");
+		actions.className = "empty-actions";
+		/* 主动作 = 回对应的列表（带 ?namespace=）：这是用户此刻唯一能继续的路。 */
+		const back = document.createElement("a");
+		back.className = "btn";
+		back.setAttribute("data-notfound-action", "back");
+		back.setAttribute(
+			"href",
+			typeof o.back === "string" && o.back ? o.back : listHref(),
+		);
+		back.textContent =
+			typeof o.backLabel === "string" && o.backLabel
+				? o.backLabel
+				: t("common.err.back_to_list", "返回列表");
+		actions.appendChild(back);
+		/* 「换一个命名空间」：只在这页真的能切的时候给（侧栏切换器由 mountLayout 建，
+		 * 拿不到命名空间列表时它一直是 hidden —— 那就不给一个点了没反应的按钮）。 */
+		const switcher = document.getElementById("scope-switcher");
+		const trigger =
+			switcher && !switcher.classList.contains("hidden")
+				? switcher.querySelector(".scope-trigger")
+				: null;
+		if (ns && !incomplete && trigger) {
+			const other = document.createElement("button");
+			other.type = "button";
+			other.className = "btn btn-ghost";
+			other.setAttribute("data-notfound-action", "switch-ns");
+			other.textContent = t("common.notfound.other_ns", "换一个命名空间");
+			other.addEventListener("click", () => {
+				trigger.focus();
+				trigger.click();
+			});
+			actions.appendChild(other);
+		}
+		box.appendChild(actions);
+		return box;
+	}
+
 	/**
 	 * loadErrorNode 渲染「载入失败 + 为什么 + 下一步」，是一个 DOM 节点，调用方自己塞进合适的位置。
 	 *
@@ -3269,7 +3433,10 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	 *
 	 * @param {*} err 错误对象 / 字符串
 	 * @param {Function} [onRetry] 重试回调
-	 * @param {{back?: string}} [opts] back 覆盖「返回列表」的落点
+	 * @param {{back?: string, backLabel?: string, kind?: string, name?: string,
+	 *   namespace?: string, retention?: boolean, incomplete?: boolean, inline?: boolean}} [opts]
+	 *   back 覆盖「返回列表」的落点；kind/name/namespace/retention/incomplete 只在 404 时
+	 *   用到（见 notFoundState）；inline=true 表示「面板内子资源」，404 也保留分级错误
 	 */
 	function loadErrorNode(err, onRetry, opts) {
 		const o = opts && typeof opts === "object" ? opts : {};
@@ -3286,6 +3453,20 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			(err && typeof err === "object" && Number(err.status)) || 0;
 		const requestId =
 			(err && typeof err === "object" && err.requestId) || "";
+		/* 404 不是「载入失败」：没有可重试的东西，也没有值得报障的机器事实（#576）。
+		 * 面板内的**子资源**（版本正文、依赖表…）用 {inline:true} 保留分级错误 ——
+		 * 一个大号空态塞进小卡片只会把那一块撑成整页。 */
+		if (status === 404 && !o.inline) {
+			return notFoundState({
+				kind: o.kind,
+				name: o.name,
+				namespace: o.namespace,
+				back: o.back,
+				backLabel: o.backLabel,
+				retention: o.retention,
+				incomplete: o.incomplete,
+			});
+		}
 		const kind = errorKind(status, msg);
 
 		const box = document.createElement("div");
@@ -4961,6 +5142,8 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	window.Anotify = {
 		el,
 		loadErrorNode,
+		// #576：404 / 缺参数的统一「找不到」组件（loadErrorNode 也按 404 分流到它）
+		notFoundState,
 		// #378：错误分级 / 持久错误条 / 统一危险弹层 / 已删除·撤销
 		errorBar,
 		errorFacts,

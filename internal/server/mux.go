@@ -538,6 +538,15 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		slog.Warn("pprof 已开启（性能评估用）", "event", "server.pprof.enabled")
 	}
 
+	// --- /v1 下未注册的路由：不是静态资源，回 JSON Status（#576）---
+	//
+	// 没有这条时它们会落到下面那行静态兜底：以前是标准库的纯文本 `404 page not found`，
+	// 站点 404 页上线后还会变成 **HTML** —— 按 spec 生成的客户端两种都解析不了，
+	// 而同一个 mux 上已注册端点的 404 全是 Status 信封，同一类错误两种响应。
+	// 方法口径（错方法 → 405 + Allow）留给 #600，这里只钉住「/v1 的 404 永远是 Status」。
+	// 更具体的 pattern 优先于 `/v1/`（Go 1.22 的优先级规则），所以它只接住剩下的。
+	mux.Handle("/v1/", noStore(http.HandlerFunc(apiNotFound)))
+
 	// --- 静态资源（CDN 缓存分级）---
 	mux.Handle("/", resolveStatic(cfg))
 

@@ -69,6 +69,29 @@ common:
   brand:
     name: Anotify
     tagline: Agent 完成即通知
+  # #576：404 / 缺参数的统一「找不到」组件（web/partials.js 的 notFoundState）。
+  # title / incomplete 里的 {kind} 是资源类型的本地化名词（见 kind.*），
+  # {name} 是链接里的名字（用户数据，显示成 <code>）。
+  notfound:
+    title: '找不到{kind}「{name}」'
+    title_plain: '找不到{kind}'
+    why: '它可能已被删除，或者链接里的名字不对。'
+    why_retention: '它可能已过保留期被清理，或者链接里的名字不对。'
+    why_incomplete: '链接里少一个参数，页面没法知道你要看哪一条。'
+    other_ns: '换一个命名空间'
+    ns_label: '命名空间'
+    badge: '找不到'
+    incomplete: '链接不完整：缺少{kind}名'
+    kind_generic: '内容'
+    kind:
+      capability: 能力
+      source: 源
+      playbook: 预案
+      release: 实例
+      node: 节点
+      task: 任务
+      trace: 链路
+      namespace: 命名空间
   nav:
     overview: 总览
     events: 事件流
@@ -2647,3 +2670,14 @@ release:
   restore_pinned_gone: 快照里的能力版本已被删除，无法重装。
   restore_pin_missing_source: 快照里的源在这个命名空间里不存在，请先建好源再重装。
   restore_conflict: 同名同版本的能力已存在，内容却与快照不同，无法重装。
+
+# #576：站点级 404 页（web-src/pages/404.html，由 internal/server/static.go 以 404
+# 状态码回给不存在的路径）。静态页在构建期不知道用户访问的是哪个地址，
+# path_label 后面那段由页面脚本在运行时填（无 JS 时不显示这一行）。
+site:
+  notfound:
+    title: 这个页面不存在
+    body: 你访问的地址不在这个站点上。
+    path_label: 你访问的地址
+    home: 回到总览
+    docs: 打开接入文档

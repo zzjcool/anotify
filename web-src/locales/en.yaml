@@ -69,6 +69,29 @@ common:
   brand:
     name: Anotify
     tagline: Get notified when your agents finish
+  # #576: one shared "not found" component for 404 / missing-parameter states
+  # (notFoundState in web/partials.js). {kind} is the localized resource noun
+  # (see kind.*), {name} is the name from the link (user data, shown as <code>).
+  notfound:
+    title: 'Not found: {kind} "{name}"'
+    title_plain: 'Not found: {kind}'
+    why: 'It may have been deleted, or the name in the link is wrong.'
+    why_retention: 'It may have been cleaned up after its retention period, or the name in the link is wrong.'
+    why_incomplete: 'The link is missing a parameter, so the page cannot tell which item you mean.'
+    other_ns: 'Try another namespace'
+    ns_label: 'Namespace'
+    badge: 'Not found'
+    incomplete: 'Incomplete link: missing the {kind} name'
+    kind_generic: 'item'
+    kind:
+      capability: capability
+      source: source
+      playbook: playbook
+      release: release
+      node: node
+      task: task
+      trace: trace
+      namespace: namespace
   nav:
     overview: Overview
     events: Event Stream
@@ -2642,3 +2665,15 @@ release:
   restore_pinned_gone: A capability version from the snapshot has been deleted, so the restore cannot proceed.
   restore_pin_missing_source: A source from the snapshot does not exist in this namespace; create it first, then restore.
   restore_conflict: A capability with the same name and version already exists with different content, so the restore cannot proceed.
+
+# #576: site-level 404 page (web-src/pages/404.html), served with a 404 status by
+# internal/server/static.go for unknown paths. A static page cannot know the
+# requested address at build time, so the page script fills in the part after
+# path_label (that line stays hidden without JS).
+site:
+  notfound:
+    title: This page doesn't exist
+    body: That address isn't a page on this site.
+    path_label: Address
+    home: Back to overview
+    docs: Open the integration docs

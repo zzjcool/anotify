@@ -92,6 +92,15 @@ func writeStatus(w http.ResponseWriter, code int, reason, message string, detail
 	})
 }
 
+// apiNotFound 是 /v1 下**未注册**路径/方法的兜底响应（mux.go 末尾挂在 `/v1/` 前缀上）。
+//
+// 它必须存在：#576 把站点级 404 页接进静态兜底后，没有这条的 /v1 未注册路径会拿到
+// 一整页 HTML（之前是纯文本），而同一个 mux 上已注册端点的 404 全是 Status 信封。
+// 用 Status 而不是 http.Error，客户端才会走与其它错误同一套解析路径。
+func apiNotFound(w http.ResponseWriter, _ *http.Request) {
+	writeStatus(w, http.StatusNotFound, reasonNotFound, "not found", nil)
+}
+
 // writeAPIError 把任意 error 翻成 Status 响应：apiError（handler 显式语义）优先，其次 store
 // 的封闭 sentinel，最后 500——把「我们没预料到」报成 400 会掩盖产品 bug。
 func writeAPIError(w http.ResponseWriter, err error) {

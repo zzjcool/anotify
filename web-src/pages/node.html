@@ -39,22 +39,7 @@
   .nd-v.is-unknown { color: var(--muted); }
   /* 安装命令：长 URL/令牌不撑破卡片（可换行，保留等宽） */
   .nd-code { white-space: pre-wrap; overflow-wrap: anywhere; }
-  /* 统一空态（无参 / 404）：图标 + 标题 + 说明 + 两个动作 */
-  .nd-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 40px 20px; text-align: center; }
-  .nd-empty-ico {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 44px;
-    height: 44px;
-    border-radius: var(--r-full);
-    background: var(--surface-2);
-    border: 1px solid var(--line);
-    color: var(--faint);
-  }
-  .nd-empty-title { font-size: 15px; font-weight: 600; color: var(--text); }
-  .nd-empty-desc { max-width: 46ch; font-size: 13px; line-height: 1.6; color: var(--muted); }
-  .nd-empty-acts { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 4px; }
+  /* #576：无参 / 404 不再用本页私有空态，统一走共享的 .empty 组件（A.notFoundState）。 */
   /* 左栅比右栅矮时不要被拉高到等高 */
   .nd-grid-top { align-items: start; }
   /* ---------- #374：开发者信息折叠（内部协议字段不上首屏，一个都不删）---------- */
@@ -589,17 +574,25 @@
     devSlots = slotDev;
     renderDev();
   }
-  /* SRC-5 / CP-4：无参 / 404 都落到同一套空态（图标 + 标题 + 说明 + 返回列表/重试） */
-  const EMPTY_ICON = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/><path d="M9 10h6"/></svg>';
-  function emptyState(title, desc, onRetry) {
-    const box = make('div', 'nd-empty'), ico = make('div', 'nd-empty-ico');
-    ico.innerHTML = EMPTY_ICON;
-    const acts = make('div', 'nd-empty-acts'), back = make('a', 'btn', t('back'));
-    back.href = 'nodes.html';
-    acts.append(back);
-    if (onRetry) { const retry = make('button', 'btn btn-ghost', A.t('common.retry', '重试')); retry.type = 'button'; retry.onclick = () => onRetry(); acts.append(retry); }
-    box.append(ico, make('div', 'nd-empty-title', title), make('p', 'nd-empty-desc', desc), acts);
-    return box;
+  /* 节点不存在 / 链接不完整：走共享的「找不到」组件（#576）。
+     节点是 cluster 级资源，没有命名空间维度，所以传 namespace:'' 不显示 #ns 行。 */
+  function nodeNotFound() {
+    return A.notFoundState({
+      kind: A.t('common.notfound.kind.node', '节点'),
+      name,
+      namespace: '',
+      back: A.listHref(),
+      backLabel: t('back'),
+    });
+  }
+  function nodeIncomplete() {
+    return A.notFoundState({
+      incomplete: true,
+      kind: A.t('common.notfound.kind.node', '节点'),
+      namespace: '',
+      back: A.listHref(),
+      backLabel: t('back'),
+    });
   }
   async function loadFacts() {
     // 节点是 cluster 级资源：路径上没有 namespace，读的也不是「某 ns 的有效值」。
@@ -695,7 +688,7 @@
     if (document.visibilityState === 'visible' && n) refreshVars();
   });
   async function boot(force = false) {
-    if (!name) { $('node-load-state').replaceChildren(emptyState(x('no_param_title'), x('no_param'))); return; }
+    if (!name) { $('node-load-state').replaceChildren(nodeIncomplete()); return; }
     $('node-load-state').textContent = t('loading'); $('node-load-state').setAttribute('aria-busy', 'true');
     try {
       await A.ready();
@@ -705,14 +698,13 @@
       await loadConfig(); await loadYAML();
     } catch (e) {
       $('node-body').hidden = true;
-      /* 错误态只给中文标题 + 说明 + 「重试 / 返回列表」：原始 err.reason / err.message 是英文协议词，
-         拼在中文说明后面既读不懂，也解释不了下一步该做什么。 */
-      const notFound = e && e.status === 404;
-      $('node-load-state').replaceChildren(emptyState(
-        notFound ? A.t('common.err.title.not_found', '找不到这个内容') : A.t('common.request_failed'),
-        notFound ? t('not_found') : t('load_failed'),
-        () => boot(true),
-      ));
+      /* 404 就是「节点不在了」（#576）：统一「找不到」组件。其它错误仍是分级错误态 ——
+         原始 err.reason / err.message 是英文协议词，拼在中文说明后面既读不懂，也解释不了下一步。 */
+      $('node-load-state').replaceChildren(
+        e && e.status === 404
+          ? nodeNotFound()
+          : A.loadErrorNode(e, () => boot(true), { back: A.listHref(), backLabel: t('back') }),
+      );
     }
     finally { $('node-load-state').removeAttribute('aria-busy'); }
   }

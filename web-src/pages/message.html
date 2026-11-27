@@ -243,8 +243,6 @@
       "M12 9v4",
       "M12 17h.01",
     ];
-    const ICON_UNLINK = ["M9 17H7A5 5 0 0 1 7 7h2", "M15 7h2a5 5 0 0 1 0 10h-2", "M8 12h8"];
-    const ICON_SEARCH = ["M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z", "M21 21l-4.35-4.35"];
     function stateNode(opts) {
       const box = el("div", { class: "empty msg-state " + (opts.tone || "") + (opts.compact ? " is-compact" : ""), role: opts.tone === "is-error" ? "alert" : "status" });
       box.append(el("span", { class: "msg-state-mark", "aria-hidden": "true" }, icon(opts.icon || ICON_ALERT, "msg-state-icon")));
@@ -273,23 +271,25 @@
         back: { href: "events.html", text: t("message.back_events", "返回事件流") },
       });
     }
-    /* 三种「不是载入失败」的打开方式：缺参 / 404 / 其他，各自给正确的下一步。 */
+    /* 三种「不是载入失败」的打开方式：缺参 / 404 / 其他，各自给正确的下一步。
+       404 与缺参走共享的「找不到」组件（#576）：任务过期被清理是**高频正常场景**，
+       不能再画成「载入失败」+ 重试 + 复制详情。 */
     function openState(error) {
       if (error && error.status === 404) {
-        return stateNode({
-          icon: ICON_SEARCH,
-          title: t("uxaudit.doc.msg_notfound_title", "任务不存在"),
-          desc: t("message.v4.not_found", "任务不存在、已清理或不属于此命名空间。"),
-          back: { href: "events.html", text: t("message.back_events", "返回事件流") },
+        return A.notFoundState({
+          kind: t("common.notfound.kind.task", "任务"),
+          name,
+          retention: true,
+          back: A.listHref(),
+          backLabel: t("message.back_events", "返回事件流"),
         });
       }
       if (error && error.msgMissingId) {
-        return stateNode({
-          tone: "is-missing",
-          icon: ICON_UNLINK,
-          title: t("uxaudit.doc.msg_missing_title", "缺少任务 id"),
-          desc: t("message.missing_id_hint", "深链需要带上任务 id。"),
-          back: { href: "events.html", text: t("message.back_events", "返回事件流") },
+        return A.notFoundState({
+          incomplete: true,
+          kind: t("common.notfound.kind.task", "任务"),
+          back: A.listHref(),
+          backLabel: t("message.back_events", "返回事件流"),
         });
       }
       return failureState(error, load);

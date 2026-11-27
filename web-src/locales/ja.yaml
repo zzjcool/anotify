@@ -69,6 +69,29 @@ common:
   brand:
     name: Anotify
     tagline: エージェント完了通知
+  # #576：404 / クエリ欠落の共通「見つからない」コンポーネント
+  # （web/partials.js の notFoundState）。{kind} はリソース種別の現地語名詞
+  # （kind.* 参照）、{name} はリンク上の名前（ユーザーデータ、<code> で表示）。
+  notfound:
+    title: '{kind}「{name}」が見つかりません'
+    title_plain: '{kind}が見つかりません'
+    why: '削除されたか、リンクの名前が間違っている可能性があります。'
+    why_retention: '保存期間を過ぎて削除されたか、リンクの名前が間違っている可能性があります。'
+    why_incomplete: 'リンクにパラメータが足りないため、どの項目か特定できません。'
+    other_ns: '別のネームスペースを選ぶ'
+    ns_label: 'ネームスペース'
+    badge: '見つかりません'
+    incomplete: 'リンクが不完全です：{kind}名がありません'
+    kind_generic: '項目'
+    kind:
+      capability: 能力
+      source: ソース
+      playbook: プレイブック
+      release: リリース
+      node: ノード
+      task: タスク
+      trace: トレース
+      namespace: ネームスペース
   nav:
     overview: 概要
     events: イベントストリーム
@@ -2642,3 +2665,15 @@ release:
   restore_pinned_gone: スナップショット内のケイパビリティのバージョンが削除済みのため、復元できません。
   restore_pin_missing_source: スナップショット内のソースがこの名前空間に存在しません。先にソースを作成してから復元してください。
   restore_conflict: 同じ名前・バージョンのケイパビリティが別の内容で存在するため、復元できません。
+
+# #576：サイト全体の 404 ページ（web-src/pages/404.html）。存在しないパスに対して
+# internal/server/static.go が 404 ステータスで返します。静的ページはビルド時に
+# アクセス先を知り得ないため、path_label の後ろはページスクリプトが実行時に埋めます
+# （JS 無効時はこの行を表示しません）。
+site:
+  notfound:
+    title: このページは存在しません
+    body: アクセスしたアドレスはこのサイトにありません。
+    path_label: アクセスしたアドレス
+    home: 概要に戻る
+    docs: 連携ドキュメントを開く
