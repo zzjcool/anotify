@@ -899,6 +899,7 @@
       const RUN = { status: "idle", spec: null, err: null };
       const YAML = { status: "idle", open: false, text: null, err: null };
       let EDIT = null; // {res}：编辑中的完整文档（含 run.files）
+      let CAP_GUARD = null; // #641：编辑弹层的「未保存修改」守卫（Esc/✕/取消/遮罩都先问一句）
       let DEPLOY = null; // {res, versions, version, selected}
       let DEL = null; // {res, snapshot}
       let BUSY = false;
@@ -1989,12 +1990,24 @@
         $("cap-submit").textContent = t("caps.form.save", "保存");
         openModal($("cap-modal"));
         $("cap-display-name").focus();
+        /* 基线必须在这里取：上面几行刚写了默认值（version/maxAttempts/resultTtlSec…），
+           早一步取快照就会把「默认值写入」当成用户改动，一打开弹层就是脏的。 */
+        if (CAP_GUARD) CAP_GUARD.markClean();
       }
 
       function closeEditor() {
         closeModal($("cap-modal"));
         EDIT = null;
         hideBanner();
+        /* 走到这里只有两种来路：保存成功，或用户已确认丢弃 —— 两种都该让快照跟上当前值，
+           否则下一次打开会拿旧快照比新表单，一进来就是「脏」的。 */
+        if (CAP_GUARD) CAP_GUARD.markClean();
+      }
+
+      /* #641：Esc/✕/取消/遮罩统一走这道门 —— 有未保存修改先确认，没改过仍然直接关。 */
+      function requestCloseEditor() {
+        if (CAP_GUARD) CAP_GUARD.requestClose();
+        else closeEditor();
       }
 
       /* ---------- 表单 → spec 构造（校验失败给出可显示原因，不清空输入） ---------- */
@@ -2898,11 +2911,14 @@
           renderEnv();
         });
         $("cap-submit").addEventListener("click", submitEditor);
-        $("cap-cancel").addEventListener("click", closeEditor);
-        $("cap-modal-close").addEventListener("click", closeEditor);
+        $("cap-cancel").addEventListener("click", requestCloseEditor);
+        $("cap-modal-close").addEventListener("click", requestCloseEditor);
         $("cap-modal").addEventListener("click", (e) => {
-          if (e.target === e.currentTarget) closeEditor();
+          if (e.target === e.currentTarget) requestCloseEditor();
         });
+        /* #641：脏保护挂在弹层自身上（输入值序列化对比快照）。closeEditor 是函数声明，
+           已提升，可以做 onDiscard；通用 Esc 由 partials 的 modal:dismiss 统一转进来。 */
+        CAP_GUARD = A.guardDirty($("cap-modal"), { onDiscard: closeEditor });
 
         $("deploy-version").addEventListener("change", (e) => {
           if (DEPLOY) DEPLOY.version = Number(e.target.value);
@@ -2958,7 +2974,7 @@
           const capModal = $("cap-modal");
           if (capModal && !capModal.classList.contains("hidden")) {
             e.preventDefault();
-            closeEditor();
+            requestCloseEditor();
             return;
           }
           const depModal = $("deploy-modal");
