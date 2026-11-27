@@ -313,7 +313,8 @@ graph:
   silk_meta_run: '{n} tareas · reproducción {t}'
   silk_meta_ok: 'todo correcto'
   silk_meta_failed: '{n} fallidas'
-  silk_meta_done: '{n} tareas completadas'
+  silk_meta_pending: '{n} sin terminar'
+  silk_meta_done: 'reproducción terminada · {done}/{n} tareas finalizadas'
   silk_clock: 'reproducción {t}'
 
 message:
