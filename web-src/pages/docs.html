@@ -870,7 +870,7 @@
               >
               \ -H
               <span class="tk-str">"Content-Type: application/json"</span> \ -d
-              <span class="tk-str">'{"source":"on-push","type":"push","id":"delivery-1","payload":{"repo":"a/b"}}'</span>
+              <span class="tk-str">'{"source":"agent","type":"agent_done","id":"delivery-1","payload":{"repo":"a/b"}}'</span>
             </div>
           </div>
 
@@ -887,14 +887,16 @@
                   </button>
                 </div>
 <pre class="code-body doc-journey">
- Agent(pi)              Anotify              WebPush svc              Device(iOS/Mac)
-    │                        │                        │                        │
-    │ ① agent_settled        │                        │                        │
-    │ ② POST /v1/namespaces/{namespace}/events ────▶│ ③ verify Key → route by next / targets                    │
-    │                        │ ④ filter by tag/level   │                        │
-    │                        │──────── ⑤ encrypt ────▶│── ⑥ APNs/FCM ─────────▶│
-    │                        │                        │     ⑦ SW showNotification
-    │                        │                        │     ⑧ system banner       │</pre>
+ Agent(pi)                                   Anotify                          Node
+    │                                             │                             │
+    │ ① agent_settled                             │                             │
+    │ ② POST /v1/namespaces/{namespace}/events ──▶│                             │
+    │                                             │ ③ verify Key, find source   │
+    │                                             │ ④ plan targets, prune rest  │
+    │                                             │ ⑤ dispatch task ───────────▶│
+    │                                             │                             │ ⑥ run capability
+    │                                             │ ◀──── ⑦ emit / result ──────│
+    │                                             │ ⑧ event → task → trace      │</pre>
               </div>
             </div>
           </details>
@@ -1106,19 +1108,11 @@
                   </tr>
                   <tr>
                     <td>
-                      <span class="param-name">idemKey</span
+                      <span class="param-name">id</span
                       ><span class="opt">{{t "docs.events.optional"}}</span>
                       <div class="param-type mt-1">string</div>
                     </td>
                     <td class="param-desc">{{t "docs.events.params.idem"}}</td>
-                  </tr>
-                  <tr>
-                    <td>
-                      <span class="param-name">traceId</span
-                      ><span class="opt">{{t "docs.events.optional"}}</span>
-                      <div class="param-type mt-1">string</div>
-                    </td>
-                    <td class="param-desc">{{t "docs.events.params.trace"}}</td>
                   </tr>
                 </tbody>
               </table>
@@ -1148,7 +1142,7 @@
                   -d
                   <span class="tk-str"
                     >'{ "source": "github", "type": "pull_request.opened",
-                    "idemKey": "pr-1234-opened", "payload": { "pr": 1234, "repo":
+                    "id": "pr-1234-opened", "payload": { "pr": 1234, "repo":
                     "acme/api" } }'</span
                   >
                 </div>

@@ -218,7 +218,7 @@ go run ./cmd/devseed     # seed test user + keys + sessions
 curl -X POST https://your-domain/v1/namespaces/{namespace}/events \
   -H "Authorization: Bearer ant_live_..." \
   -H "Content-Type: application/json" \
-  -d '{"source":"github","type":"pull_request.opened","idemKey":"pr-1234-opened","payload":{"pr":1234,"repo":"acme/api"}}'
+  -d '{"source":"github","type":"pull_request.opened","id":"pr-1234-opened","payload":{"pr":1234,"repo":"acme/api"}}'
 ```
 
 > v3's `/v1/notify` (`title` / `agentState` / `deviceTags` payload) is **deleted**: calling it returns 404,

@@ -225,7 +225,7 @@ go run ./cmd/devseed     # 播种测试用户 + Key + 会话
 curl -X POST https://你的域名/v1/namespaces/{namespace}/events \
   -H "Authorization: Bearer ant_live_..." \
   -H "Content-Type: application/json" \
-  -d '{"source":"github","type":"pull_request.opened","idemKey":"pr-1234-opened","payload":{"pr":1234,"repo":"acme/api"}}'
+  -d '{"source":"github","type":"pull_request.opened","id":"pr-1234-opened","payload":{"pr":1234,"repo":"acme/api"}}'
 ```
 
 > v3 的 `/v1/notify`（`title` / `agentState` / `deviceTags` 载荷）**已删除**：打过去是 404，

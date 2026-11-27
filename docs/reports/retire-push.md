@@ -99,3 +99,27 @@ operation 冻结值 151→146），每一条都在测试文件里留了「为什
 必须**新开决策**，不能靠改开关：订阅存储、VAPID 装载、公钥端点、发送端、鉴权 scope、
 前端页面都要重新设计。审计 issue #577 里有两条可选路线（中枢内置投递 vs 节点侧投递）
 与各自的成本估算，可以当起点。
+
+## 补充清扫（issue #577 第二轮）
+
+本次退役把后端、契约与主路径页面都删了，但审计 issue #577 列出的承诺有几处没被带走，
+仍对用户可见。它们与上面的决定同源，处置方式也一致：删掉承诺，不保留开关。
+
+| 位置 | 原状态 | 处置 |
+| --- | --- | --- |
+| `web-src/pages/cli-auth.html` | CLI 授权确认页仍列出 `notify:receive` / `devices:read` 两个复选框，勾了也过不去（早已不在 scope 白名单） | 删掉这两块勾选项，对应词条从四份 locale 一并移除 |
+| `web-src/locales/*.yaml` 的 `docs.agent.*` | 「Agent 完成任务后，把通知自动送到你的所有设备」「一行 curl 让通知送到所有设备」 | 改为如实描述：完成事件进入事件流，沿源的下游表派发给能力 |
+| `web-src/pages/docs.html` 的旅程插图 | 图里是 WebPush 服务、APNs/FCM、Service Worker 弹窗 | 换成事件 → 计划 → 派发 → 节点执行 → emit → trace 的真实链路 |
+| `web-src/locales/*.yaml` 的 `index.quickstart.*` | 首页横幅推荐 `pi install npm:pi-anotify`，该插件打的是已删除的 `/v1/notify` | 换成事件入口的一行 curl；步骤说明改为建 Key、建源、上报事件 |
+| `web-src/locales/*.yaml` 的 `login.ios_tip` | 以「要接收推送通知」为由引导添加到主屏幕 | 保留添加到主屏幕的引导，去掉推送这个理由 |
+| `web-src/locales/*.yaml` 的 `keys.create.*` 与 `docs.auth.*` | 「上报与接收分开」「用于接收端长连接」「总览 / 设备 / Keys 管理」 | 改为只说 Key 的实际上限：只能上报事件；设备页已不存在 |
+| `web/manifest.webmanifest` | 描述是「Agent 完成即通知 · 多端推送」 | 改为事件进入中枢、能力链在节点上执行 |
+| `.env.dev.example` | 三个 `ANOTIFY_VAPID_*` 标成「必填」，服务端从不读取 | 整块删除 |
+
+同批修掉接入示例本身的两处失真：示例的 `source` 用的是 `on-push`，而源必须先存在，
+照抄会得到 `source not found`；参数表与示例里的 `idemKey` / `traceId` 在 v4 投递体里不存在
+（`idemKey` 会被静默忽略）。现在示例用 `agent` 这个源名，步骤里先建源、再建 Key、然后上报，
+字段改成 v4 真正的 `id`。`docs.events.params.source` 也改回「源名」这个正确含义。
+
+处置边界：**不恢复任何发送路径**。上面每一条都是「删承诺」，不是「做回来」。
+决策本身未变（仍是 V4-D7），因此契约文档不需要新增条目——落下的只是实现。
