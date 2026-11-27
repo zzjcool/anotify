@@ -201,6 +201,9 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion)
 		case !errors.Is(gerr, ErrNotFound):
 			return fmt.Errorf("lookup explicit capability version: %w", gerr)
 		}
+		if err := validateFallbackParamsOn(ctx, ex, c.NamespaceID, norm.Spec); err != nil {
+			return err
+		}
 		return insertCapabilityOn(ctx, ex, c, &norm)
 	}
 
@@ -229,7 +232,30 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion)
 	}
 	c.Version = next
 	norm.Metadata.Version = next
+	if err := validateFallbackParamsOn(ctx, ex, c.NamespaceID, norm.Spec); err != nil {
+		return err
+	}
 	return insertCapabilityOn(ctx, ex, c, &norm)
+}
+
+func validateFallbackParamsOn(ctx context.Context, ex queryExec, namespaceID string, spec artifact.Spec) error {
+	fb := spec.Lifecycle.OnFailure
+	if fb == nil || strings.TrimSpace(fb.To) == "" {
+		return nil
+	}
+	target, err := resolveRefOn(ctx, ex, namespaceID, fb.To)
+	if errors.Is(err, ErrNotFound) || errors.Is(err, ErrRefUnresolved) {
+		return nil // 目标还没建：留给运行期白名单，或由 playbook 计划检查。
+	}
+	if err != nil {
+		return fmt.Errorf("resolve onFailure target %q: %w", fb.To, err)
+	}
+	missing := artifact.MissingFallbackParams(spec.Params, target.Spec.Params, fb.Params)
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: lifecycle.onFailure 指向 %s，但 %v 既不在父能力 params 的必填/默认值里，也不在 onFailure.params 里（真失败时只会落一条 param_missing 剪枝）",
+		ErrCapabilityInvalid, target.Name, missing)
 }
 
 // insertCapabilityOn 落一行能力版本（调用方已确定版本号与归一正文）。

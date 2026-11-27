@@ -1092,6 +1092,11 @@ func cancelPhase(stopIntent, reason string) string {
 //
 // 返回 (重排条数, 直接终态条数)。
 func (d *DB) RecoverLostLeases(ctx context.Context, now int64) (int, int, error) {
+	requeued, abandoned, err := d.RecoverLostLeasesTracking(ctx, now)
+	return requeued, len(abandoned), err
+}
+
+func (d *DB) RecoverLostLeasesTracking(ctx context.Context, now int64) (int, []*Task, error) {
 	if now == 0 {
 		now = Now()
 	}
@@ -1104,24 +1109,25 @@ func (d *DB) RecoverLostLeases(ctx context.Context, now int64) (int, int, error)
 		            SELECT 1 FROM nodes n WHERE n.id = tasks.node_id AND n.status IN (?,?))))`,
 		TaskRunning, now, NodeStatusOnline, NodeStatusDraining)
 	if err != nil {
-		return 0, 0, fmt.Errorf("recover lost leases: %w", err)
+		return 0, nil, fmt.Errorf("recover lost leases: %w", err)
 	}
 	lost := []*Task{}
 	for rows.Next() {
 		t, serr := scanTask(rows)
 		if serr != nil {
 			rows.Close()
-			return 0, 0, serr
+			return 0, nil, serr
 		}
 		lost = append(lost, t)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return 0, 0, fmt.Errorf("recover lost leases: iterate: %w", err)
+		return 0, nil, fmt.Errorf("recover lost leases: iterate: %w", err)
 	}
 	rows.Close()
 
-	requeued, abandoned := 0, 0
+	requeued := 0
+	abandoned := []*Task{}
 	for _, t := range lost {
 		rq, err := d.recoverOne(ctx, t, now)
 		if err != nil {
@@ -1130,7 +1136,7 @@ func (d *DB) RecoverLostLeases(ctx context.Context, now int64) (int, int, error)
 		if rq {
 			requeued++
 		} else {
-			abandoned++
+			abandoned = append(abandoned, t)
 		}
 	}
 	return requeued, abandoned, nil

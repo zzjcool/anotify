@@ -1332,9 +1332,12 @@ caps:
     env: '环境变量（env）'
     files: '文件'
     idempotent: '可重复执行'
+    idle_timeout: '无进展上限（秒）'
+    idle_timeout_default: '跟随节点（缺省关闭）'
     installed_from: '安装来源'
     max_attempts: '最大尝试'
     next: '下游（next）'
+    on_failure: '失败兜底'
     params: '参数契约（JSON Schema）'
     result_ttl: '结果保留（秒）'
     timeout: '执行超时（秒）'
@@ -1677,6 +1680,8 @@ sources:
     display: "显示名（可选）"
     kind: '源种类'
     immutable: "资源名和 kind 创建后不可修改；请删除后重建。"
+    kept_config: '另有 {keys} 由 YAML 管理，保存时原样保留。'
+    kept_target: '这一行还有 {keys} 由 YAML 管理，保存时原样保留。'
     expr: "Cron 表达式（五段）"
     tz: "IANA 时区（默认 Local）"
     token: "新 token（写入，不回显）"

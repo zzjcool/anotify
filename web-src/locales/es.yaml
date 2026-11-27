@@ -1332,9 +1332,12 @@ caps:
     env: 'Variables de entorno (env)'
     files: 'Archivos'
     idempotent: 'Repetible'
+    idle_timeout: 'Límite sin progreso (segundos)'
+    idle_timeout_default: 'Configuración del nodo (desactivado por defecto)'
     installed_from: 'Origen de instalación'
     max_attempts: 'Intentos máximos'
     next: 'Destinos (next)'
+    on_failure: 'Respaldo en fallo'
     params: 'Contrato de parámetros (JSON Schema)'
     result_ttl: 'Retención del resultado (s)'
     timeout: 'Tiempo de ejecución (s)'
@@ -1675,6 +1678,8 @@ sources:
     display: "Nombre visible (opcional)"
     kind: 'Tipo de fuente'
     immutable: "El nombre y tipo no se pueden cambiar; elimina y vuelve a crear."
+    kept_config: 'También hay {keys}. Se gestionan en YAML y se conservan tal cual al guardar.'
+    kept_target: 'Esta fila también tiene {keys}. Se gestionan en YAML y se conservan tal cual al guardar.'
     expr: "Expresión cron (cinco campos)"
     tz: "Zona IANA (por defecto Local)"
     token: "Nuevo token (solo escritura)"

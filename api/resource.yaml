@@ -2629,6 +2629,50 @@ components:
           minimum: 0
           maximum: 86400
           description: "本地执行超时（秒，0 = 不设）"
+        idleTimeoutSec:
+          type: integer
+          minimum: 0
+          maximum: 86400
+          description: |
+            「无进展」上限（秒）：管道与 `$ANOTIFY_ARTIFACT_DIR` 连续这么久没有新字节 →
+            节点按 `no_progress` 提前终止，而不是干等到 `timeoutSec`。省略 = 节点配置的
+            `idleTimeoutSec`（节点 `anode.yaml` 的同名键，见 `docs/anode-install.md` §10；
+            节点缺省 0 = 关闭）；显式 0 = 关闭。默认关闭是因为参考 playbook
+            把 agent 输出重定向进文件、管道长期静默，默认开启会误杀正常执行。
+        onFailure:
+          $ref: '#/components/schemas/CapabilityFailureFallback'
+    CapabilityFailureFallback:
+      type: object
+      required: [to]
+      additionalProperties: false
+      description: |
+        终态失败的兜底动作（#700）：任务 failed 后由**中枢**按一次平台发起的 emit 派发 `to`。
+
+        为什么必须由中枢做：被 `timeoutSec` 杀掉的是整个进程组，脚本里那些
+        `anode emit` / `gh issue comment` 一行都执行不到 —— 回写不能依赖被杀的那一方。
+      properties:
+        to:
+          type: string
+          description: "必须是本能力 `spec.next` 里的下游引用（裸名或 `name@version`）；写入期就校验"
+        reasons:
+          type: array
+          items:
+            type: string
+          description: |
+            触发兜底的任务失败码（闭集见 `internal/protocol/enums.go`）：省略 = **任何**失败都触发。
+            示例 `[timeout, no_progress]` 防止 `script_failed` 等其它失败也套用「因超时终止」的文案。
+
+            省略时也包括**人主动结束的那几种**：`cancelled_by_user`（用户 cancel）、
+            `abandoned_by_user`（用户 abandon）、`node_lost`、`lease_expired` 都是合法失败码。
+            于是一次手工 remove/abandon 也会跑兜底；不需要这种联动就把作用域写窄
+            （参考 playbook 用的是 `[timeout, no_progress]`）。
+        params:
+          type: object
+          additionalProperties: true
+          description: |
+            **字面**参数（不接受 `$(…)` 模板）：与父任务 `params` 同名合并，这里优先。
+            于是 `repo` / `issue` 这类上下文由父任务带过来，声明里只补「这一步是兜底」。
+            写入期还会检查下游 `params.required` 是否能被「父能力 params + 这里的字面值」满足。
     CapabilityConcurrency:
       type: object
       properties:
@@ -2804,10 +2848,17 @@ components:
           type: string
           description: |
             观察原因码（`events.type`，闭集见 `internal/protocol/enums.go`）：剪枝码、
-            决策通道观察码与 `EventPruneFact.reason` 同一套，**另外还会**收到
-            `downstream_missing`（未解析派发失败：那条事件的 `payload.taskId` 就是
-            失败任务自己，所以按任务归属会落在它的 `observed.pruned[]` 里）。
-            被拒绝的 emit（`target_not_declared`）也在其中：它与剪枝共用观察行通道。
+            决策通道观察码（`no_decision` / `router_failed` / `task_failed` /
+            `outcome_dropped` / `outcome_not_declared`），以及被拒绝的 emit
+            （`target_not_declared`）。
+
+            这里比事件信封的 `EventPruneFact` **更宽**：失败事实行（`downstream_missing` /
+            `task_failed`）的 `payload.taskId` 就是那个失败任务，所以按任务归属会落在它的
+            `observed.pruned[]` 里——它们是「这一步为什么没往下走」的证据，但不是剪枝，
+            事件信封的 `pruned[]` / `status.pruned` 会把它们过滤掉。
+
+            `router_failed` 不在此列：它从 #522 起就按剪枝投影（仍在事件信封的 `pruned[]`
+            里），本端点照样把它收进来，两处口径一致（见 events.yaml · EventStatus）。
         detail:
           type: string
           description: "人话补充，可为空串；不参与任何判断"
@@ -3223,6 +3274,16 @@ components:
         一条字段级判据（#519）。`field` 是点号路径 + 数字下标（`issue.labels.0.name`），
         与 `config.envelope` 的指针、params 模板**同一套方言**（`$.a.b` 与 `a.b` 同义）。
 
+        `field` 也可以指向 `_derived` 命名空间里的派生值（#512「策略是数据」里的计数/算术那一半）：
+        值从**载荷**算出，不是载荷里真有的键。封闭两个——`_derived.isPullRequest`（这次事件的对象
+        是不是 PR：`issue.pull_request` 或顶层 `pull_request` 存在即真，PR 也走 issues 事件；
+        `issue_comment` 同理）与 `_derived.links`（正文里 http(s) 链接的条数：任意深度、键名为
+        `body` 的字符串值相加，`html_url` / `avatar_url` 这类不算），配合 `>` / `>=` 才是
+        「3 条链接以上」这类计数规则。派生值必须是载荷的纯函数——墙钟与随机数会让「事件是不可变
+        事实、派发可重放」失效，所以 `ageDays` 这种要时钟的留在能力里（router），不进 match。
+        两个派生值恒「取得到」（没有 body 时 `links` 是 0），所以 `exists` 恒真；写别的
+        `_derived.*` → 写入期 400（`details.causes[].field` 指到那一行）。
+
         `op` 与 #512 的 router 规则表同一套词表：`== != > >= < <= contains matches in exists`。
         `matches` 用 RE2（写入期编译）；`contains` 大小写敏感；`>`/`>=`/`<`/`<=` 只比数字
         （`value` 必须是数字）；`in` 要求 `value` 是数组；`exists` 不看 `value`。
@@ -3230,7 +3291,7 @@ components:
       properties:
         field:
           type: string
-          description: 载荷里的点号路径（数字段是数组下标），如 `issue.pull_request`
+          description: 载荷里的点号路径（数字段是数组下标），如 `issue.pull_request`；`_derived.` 前缀见上
         op:
           type: string
           enum: ["==", "!=", ">", ">=", "<", "<=", contains, matches, in, exists]

@@ -1332,9 +1332,12 @@ caps:
     env: 'Environment (env)'
     files: 'Files'
     idempotent: 'Repeatable'
+    idle_timeout: 'Idle timeout (seconds)'
+    idle_timeout_default: 'Node setting (off by default)'
     installed_from: 'Installed from'
     max_attempts: 'Max attempts'
     next: 'Downstream (next)'
+    on_failure: 'Fallback on failure'
     params: 'Params contract (JSON Schema)'
     result_ttl: 'Result retention (s)'
     timeout: 'Run timeout (s)'
@@ -1675,6 +1678,8 @@ sources:
     display: "Display name (optional)"
     kind: 'Source kind'
     immutable: "Name and kind are immutable after creation; delete and recreate to change them."
+    kept_config: 'Also set: {keys}. These are managed in YAML and kept as they are when you save.'
+    kept_target: 'This row also has {keys}. Managed in YAML, kept as they are when you save.'
     expr: "Cron expression (five fields)"
     tz: "IANA timezone (default Local)"
     token: "New token (write-only)"

@@ -59,6 +59,9 @@ func (h *Hub) handleAccept(ctx context.Context, sess *Session, f *protocol.TaskA
 		if errors.Is(err, store.ErrSlotUnavailable) {
 			h.noteSlotFull(ctx, sess.nodeID, f.TaskID, h.Now())
 		}
+		if errors.Is(err, store.ErrMaxAttemptsExceeded) {
+			h.dispatchTerminalOutcome(ctx, f.TaskID)
+		}
 		return nil
 	}
 	h.clearSlotFullSteer(ctx, sess.nodeID, f.TaskID)
@@ -194,7 +197,7 @@ func (h *Hub) handleResult(ctx context.Context, sess *Session, f *protocol.TaskR
 	}
 	// #522：结局只对 Recorded 执行（Duplicate 是幂等重放，再派一次会多出一组子任务）。放在 ack 之前：让「节点看到 accepted」蕴含「下游已建好」；失败只记日志，不拖垮 ack。
 	if disposition == store.TaskResultRecorded {
-		h.dispatchRouterOutcome(ctx, f.TaskID)
+		h.dispatchTerminalOutcome(ctx, f.TaskID)
 	}
 	return sess.Send(ctx, &protocol.ResultAckFrame{
 		Type:     protocol.FrameResultAck,
@@ -204,11 +207,17 @@ func (h *Hub) handleResult(ctx context.Context, sess *Session, f *protocol.TaskR
 	})
 }
 
-// dispatchRouterOutcome 在任务终态之后执行它的结局表（#522）；非 router 任务立刻返回。
-func (h *Hub) dispatchRouterOutcome(ctx context.Context, taskID string) {
+// dispatchTerminalOutcome：成功走结局表（#522），失败/放弃走兜底（#700）。
+func (h *Hub) dispatchTerminalOutcome(ctx context.Context, taskID string) {
 	task, err := h.db.GetTaskByID(ctx, taskID)
 	if err != nil {
-		h.log.Warn("router outcome: read task failed", "task_id", taskID, "err", err)
+		h.log.Warn("terminal outcome: read task failed", "task_id", taskID, "err", err)
+		return
+	}
+	if task.Phase == store.TaskFailed || task.Phase == store.TaskAbandoned {
+		if err := h.router.DispatchFailure(ctx, task); err != nil {
+			h.log.Warn("terminal outcome: failure backstop failed", "task_id", taskID, "err", err)
+		}
 		return
 	}
 	if len(task.Outcomes) == 0 {
@@ -243,6 +252,10 @@ func (h *Hub) handleCancelAck(ctx context.Context, sess *Session, f *protocol.Ca
 		// 错 lease/slot/缺失历史绑定：fail closed（不清新槽、不改新相位）。
 		h.log.Warn("cancel ack rejected", "node_id", sess.nodeID, "task_id", f.TaskID,
 			"attempt", f.Attempt, "reaped", f.ProcessGroupReaped, "err", err)
+		return nil
+	}
+	if task, err := h.db.GetTaskByID(ctx, f.TaskID); err == nil && task.Phase == store.TaskAbandoned {
+		h.dispatchTerminalOutcome(ctx, f.TaskID)
 	}
 	return nil
 }

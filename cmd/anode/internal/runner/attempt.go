@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,6 +56,7 @@ type Attempt struct {
 	cancelUpload context.CancelFunc
 
 	ackWake       chan struct{}
+	activity      chan struct{}
 	done          chan struct{}
 	procDone      chan struct{}
 	leaseDone     chan struct{}
@@ -110,6 +112,7 @@ func newAttempt(r *Runner, res *reservation, grant *protocol.LeaseGrantFrame) *A
 		emitOpen:    true,
 		deadline:    r.leaseDeadline(grant.ExpiresAt),
 		ackWake:     make(chan struct{}, 1),
+		activity:    make(chan struct{}, 1),
 		done:        make(chan struct{}),
 		procDone:    make(chan struct{}),
 		leaseDone:   make(chan struct{}),
@@ -464,6 +467,9 @@ func (a *Attempt) spawn() error {
 	if timeout := a.art.Spec.Lifecycle.EffectiveTimeoutSec(); timeout > 0 {
 		go a.timeoutLoop(time.Duration(timeout) * time.Second)
 	}
+	if idle := a.idleTimeout(); idle > 0 {
+		go a.idleLoop(idle)
+	}
 	return nil
 }
 
@@ -489,7 +495,7 @@ func (a *Attempt) copyLog(src *os.File, rec *resultstore.Attempt, name, stream s
 	if recorder != nil {
 		sink = io.MultiWriter(dst, recorder.Writer(stream))
 	}
-	if _, err := io.Copy(sink, src); err != nil {
+	if _, err := io.Copy(sink, &activityReader{r: src, a: a}); err != nil {
 		if a.pipesClosedIntentionally() && errors.Is(err, os.ErrClosed) {
 			// 回收路径为了结束残余子孙持有的管道而主动关掉了读端：这是有意
 			// 收尾（进程组已 SIGKILL），不是日志复制失败，不能污染 copyErr /
@@ -600,12 +606,81 @@ func (a *Attempt) timeoutLoop(d time.Duration) {
 	}
 }
 
-// stop ends the process/emit window. A local lifecycle timeout is not a
-// revocation of the hub grant: export/upload/failed-timeout result keep renewing
-// until a trusted result ACK. Actual cancel/expiry always revoke, even if a
-// previous timeout has already stopped the process.
+func (a *Attempt) idleTimeout() time.Duration {
+	sec := a.art.Spec.Lifecycle.EffectiveIdleTimeoutSec(int(a.r.opts.IdleTimeout / time.Second))
+	if sec <= 0 {
+		return 0
+	}
+	return time.Duration(sec) * time.Second
+}
+
+func (a *Attempt) idleLoop(d time.Duration) {
+	last := a.artifactActivity()
+	for {
+		timer := a.r.clk.NewTimer(d)
+		select {
+		case <-a.procDone:
+			timer.Stop()
+			return
+		case <-a.activity:
+			timer.Stop()
+		case <-timer.C():
+			if now := a.artifactActivity(); now != last { // 导出目录也算进展（agent.log）
+				last = now
+				continue
+			}
+			a.r.logf("runner: task=%s attempt=%d 无进展（日志与导出目录连续 %s 无新字节），TERM/KILL 进程组",
+				a.taskID, a.attempt, d)
+			a.stop(protocol.ReasonNoProgress, a.r.opts.TermGrace)
+			return
+		}
+	}
+}
+
+func (a *Attempt) artifactActivity() string { // 路径 + 大小 + mtime 指纹（不读内容）。
+	if a.exportDir == "" {
+		return ""
+	}
+	var b strings.Builder
+	_ = filepath.WalkDir(a.exportDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		fmt.Fprintf(&b, "%s:%d:%d;", path, info.Size(), info.ModTime().UnixNano())
+		return nil
+	})
+	return b.String()
+}
+
+type activityReader struct {
+	r *os.File
+	a *Attempt
+}
+
+func (ar *activityReader) Read(p []byte) (int, error) {
+	n, err := ar.r.Read(p)
+	if n > 0 {
+		ar.a.noteActivity()
+	}
+	return n, err
+}
+
+func (a *Attempt) noteActivity() {
+	select {
+	case a.activity <- struct{}{}:
+	default:
+	}
+}
+
+// stop ends the process/emit window. A local lifecycle stop (timeout / no_progress) is not a
+// revocation of the hub grant: export/upload/failed keep renewing until a trusted result ACK.
+// Actual cancel/expiry always revoke, even if a previous local stop already stopped the process.
 func (a *Attempt) stop(reason string, grace time.Duration) {
-	revoke := reason != protocol.ReasonTimeout
+	revoke := !isLocalLifecycleStop(reason)
 	a.mu.Lock()
 	alreadyStopping := a.terminating
 	a.terminating = true
@@ -933,6 +1008,10 @@ func isCancelReason(reason string) bool {
 		return true
 	}
 	return false
+}
+
+func isLocalLifecycleStop(reason string) bool {
+	return reason == protocol.ReasonTimeout || reason == protocol.ReasonNoProgress
 }
 
 // exitCodeOf 把 Wait 错误翻成退出码；被信号杀死返回 nil（wire 上省略）。
