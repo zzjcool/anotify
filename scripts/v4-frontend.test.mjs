@@ -4590,6 +4590,15 @@ test("R1 sources template copy: copyText(button, () => expr) 写进剪贴板的�
   assert.equal(clips.at(-1), undefined, '回调返回 undefined 也照实写入，不静默改成字符串 null');
 });
 
+test("#584 copyText(button, '文本') 只认文本本身，不再把文本当 CSS 选择器", async () => {
+  const { A, sandbox } = loadMock();
+  const clips = [];
+  sandbox.navigator.clipboard.writeText = async text => { clips.push(text); };
+  A.copyText(fakeNode('button'), 'pi install npm:pi-anotify');
+  await new Promise(setImmediate);
+  assert.deepEqual(clips, ['pi install npm:pi-anotify'], '字符串参数就是剪贴板内容（#584 之前走 querySelector 抛 SyntaxError，一个字节都没写）');
+});
+
 test("R1 A1 artifacts: valid logical path + malformed hash stays display-only (no link, no artifact request)", async () => {
   const bad = ['A'.repeat(64), 'a'.repeat(63), 'a'.repeat(65), 'a'.repeat(62) + '/x', 'g'.repeat(64), '../../etc/passwd'];
   for (const hash of bad) {
@@ -6079,11 +6088,11 @@ test('E1b immutable exactly-once attempt validator: UNIT fake records never brow
   for(const change of [{ok:false},{checks:0},{report:{errors:['501 network failure']}}])assert.throws(()=>e1bEpoch.validateAttempt(id,{...result,...change},exit,id));
   assert.throws(()=>e1bEpoch.validateAttempt(id,result,null,id));
 });
-test('E1b all 52 ACTUAL frontend registered IDs exactly once: UNIT records, not browser PASS', async () => {
+test('E1b all 53 ACTUAL frontend registered IDs exactly once: UNIT records, not browser PASS', async () => {
   const {CASES}=await import('./e2e/fixtures/f3/f3-cases.mjs');
-  // 条数 = f3-cases 的直呼项 + 四组循环展开；顺带钉「没有重复注册」（这个数漂过）。
-  assert.equal(CASES.length,52);
-  assert.equal(new Set(CASES.map(x=>x.id)).size,52,'注册 ID 不得重复');
+  // 条数 = f3-cases 的直呼项 + 四组循环展开；顺带钉「没有重复注册」（这个数漂过）。#584 加 index-quickstart-copy 后 52→53。
+  assert.equal(CASES.length,53);
+  assert.equal(new Set(CASES.map(x=>x.id)).size,53,'注册 ID 不得重复');
   const attempts=CASES.map(({id},i)=>({suite:'frontend',id,runId:'UNIT-all38',attemptId:'a'+i,cwd:ROOT,mode:'explicit-mock',authority:'explicit-mock',sourceHash:'unitSHA',sourceCodeSHA:'unitCode',fullSourceArtifactSHA:'unitSHA',artifactEpoch:'unitSHA'}));
   const exits=attempts.map(x=>({...x,exitCode:0,signal:null,timedOut:false}));
   const registered=CASES.map(x=>x.id),manifest={registered,attempts};
