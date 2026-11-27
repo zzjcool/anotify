@@ -968,8 +968,7 @@ func taskResultReasonCode(s string) bool {
 // `type`（Normal/Warning 严重度）与 `signature`（HMAC 验证结论）**刻意省略**：
 // events 表没有这两列事实，编一个默认值等于把「没验证」说成「已验证」。
 //
-// 失败事实行的 reason 也省略（见 eventIsFailureFact）：store 统一写成 'Pruned'，照抄会把
-// 「任务失败」报成「剪枝」，而 §7.7 的封闭值里没有对应项。
+// 失败事实行的 reason 省略（见 eventIsFailureFact）：store 统一写 'Pruned'，照抄会报成「剪枝」。
 type eventSpecDoc struct {
 	Reason         string         `json:"reason,omitempty"`
 	EventType      string         `json:"eventType"`

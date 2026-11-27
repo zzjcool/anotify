@@ -676,10 +676,9 @@ func (a *Attempt) noteActivity() {
 	}
 }
 
-// stop ends the process/emit window. A local lifecycle stop (timeout / no_progress)
-// is not a revocation of the hub grant: export/upload/failed result keep renewing
-// until a trusted result ACK. Actual cancel/expiry always revoke, even if a
-// previous local stop has already stopped the process.
+// stop ends the process/emit window. A local lifecycle stop (timeout / no_progress) is not a
+// revocation of the hub grant: export/upload/failed keep renewing until a trusted result ACK.
+// Actual cancel/expiry always revoke, even if a previous local stop already stopped the process.
 func (a *Attempt) stop(reason string, grace time.Duration) {
 	revoke := !isLocalLifecycleStop(reason)
 	a.mu.Lock()
