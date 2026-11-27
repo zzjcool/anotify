@@ -814,3 +814,16 @@ CREATE TABLE IF NOT EXISTS playbook_install_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_playbook_install_audit_release
     ON playbook_install_audit(namespace_id, playbook_slug, release, created_at DESC, id DESC);
+
+-- +migration 12 task_retention_index
+-- 保留期清理（DeleteExpiredTasks，跟租约巡检每 30s 跑一次）的候选集按「可信保留时钟」
+-- COALESCE(result_accepted_at, CASE WHEN reported=0 THEN finished_at END) 过滤并排序。
+-- 它是表达式，idx_tasks_retention（前导列 namespace_id、键是 finished_at）一条都用不上：
+-- 每轮都是全表扫 + 临时排序，而 DELETE 的写锁从语句开始就持有——稳态一行不删也要扫完
+-- 整张 tasks，代价随任务总数线性增长（100 万任务约 0.43s/轮，见 #630）。
+--
+-- 表达式索引让 WHERE 的 expr < ? 变成范围 seek、ORDER BY 也由索引序满足（LIMIT 落在 seek 上）。
+-- 表达式必须与 store.taskRetainFromSQL **逐字一致**（SQLite 表达式索引按语法树匹配），
+-- 所以这里只用字面量、不写表别名；漂移由 retention_index_test.go 的 EXPLAIN + DDL 门禁抓住。
+CREATE INDEX IF NOT EXISTS idx_tasks_retain_from
+    ON tasks(COALESCE(result_accepted_at, CASE WHEN reported=0 THEN finished_at END));

@@ -28,6 +28,18 @@ import (
 //     它的保留期是产品决策，不是「事件过期」的副作用。本函数一行回执都不删，
 //     只保留调用方显式给 cutoff 的 primitive（DeleteExpiredPlaybookInstalls）。
 
+// taskRetainFromSQL 是任务的**可信保留时钟**（收到 Node 结果用首 result_accepted_at；
+// 服务器裁定的未上报终态用 finished_at；Node 报告的进程 finish 不驱动保留期）。
+//
+// 它必须与 schema.sql 里 idx_tasks_retain_from 的表达式**逐字一致**：SQLite 的表达式索引
+// 按语法树匹配（大小写/空白无关，但参数顺序、CASE 条件差一点就不算同一个表达式），
+// 对不上就用不了索引，保留期清理会退回「全表扫 + 临时排序」（#630：稳态一行不删也
+// 每 30 秒在 DELETE 的写锁里扫一遍 100 万行）。所以 SQL 与 schema 共用这一份字面量，
+// 漂移由 retention_index_test.go 的 EXPLAIN + DDL 比对门禁抓住。
+//
+// 别名：**不要**加 `t.` 前缀——schema 的索引表达式里没有别名，共用同一份字面量才可能逐字一致。
+const taskRetainFromSQL = `COALESCE(result_accepted_at, CASE WHEN reported=0 THEN finished_at END)`
+
 // DefaultRetentionBatch 是单条 DELETE 的行数上限（先度量后删除）。
 const DefaultRetentionBatch = 1000
 
@@ -144,19 +156,10 @@ func (d *DB) DeleteExpiredTasks(ctx context.Context, cutoff int64, limit int) (i
 	if limit <= 0 {
 		return 0, nil
 	}
-	phaseIn, args := terminalPhaseIn()
+	_, args := terminalPhaseIn()
 	args = append(args, cutoff, limit)
 	res, err := d.ExecContext(ctx,
-		`DELETE FROM tasks WHERE id IN (
-		   SELECT t.id FROM tasks t
-		    WHERE COALESCE(t.result_accepted_at, CASE WHEN t.reported=0 THEN t.finished_at END) IS NOT NULL AND t.phase IN (`+phaseIn+`) AND COALESCE(t.result_accepted_at, CASE WHEN t.reported=0 THEN t.finished_at END) < ?
-		      AND NOT EXISTS (SELECT 1 FROM node_instances i WHERE i.busy_task=t.id)
-		      AND NOT EXISTS (SELECT 1 FROM task_artifact_uploads u WHERE u.task_id=t.id AND u.expires_at > unixepoch())
-		      AND NOT EXISTS (
-		            SELECT 1 FROM task_attempts a
-		             WHERE a.task_id = t.id AND a.reaped_at IS NULL)
-		    ORDER BY COALESCE(t.result_accepted_at, CASE WHEN t.reported=0 THEN t.finished_at END)
-		    LIMIT ?)`, args...)
+		`DELETE FROM tasks WHERE id IN (`+deleteExpiredTasksCandidateSQL()+`)`, args...)
 	if err != nil {
 		return 0, fmt.Errorf("delete expired tasks: %w", err)
 	}
@@ -165,6 +168,29 @@ func (d *DB) DeleteExpiredTasks(ctx context.Context, cutoff int64, limit int) (i
 		return 0, fmt.Errorf("delete expired tasks rows affected: %w", err)
 	}
 	return n, nil
+}
+
+// deleteExpiredTasksCandidateSQL 是 DeleteExpiredTasks 的候选集，也是**生产语句的唯一来源**。
+//
+// 单独抽出来的原因：EXPLAIN 门禁必须跑产品真的执行的那条候选查询
+// （retention_index_test.go），在测试里另抄一份等于「测一条没人跑的 SQL」。
+//
+// 过滤/排序键都用 taskRetainFromSQL，于是 schema 的表达式索引
+// idx_tasks_retain_from 能同时服务 WHERE 的范围 seek 与 ORDER BY（LIMIT 落在 seek 上，
+// 稳态没有过期行时只看索引的第一条就越界返回，不再扫表）。
+func deleteExpiredTasksCandidateSQL() string {
+	phaseIn, _ := terminalPhaseIn()
+	return `SELECT t.id FROM tasks t
+	    WHERE ` + taskRetainFromSQL + ` IS NOT NULL
+	      AND t.phase IN (` + phaseIn + `)
+	      AND ` + taskRetainFromSQL + ` < ?
+	      AND NOT EXISTS (SELECT 1 FROM node_instances i WHERE i.busy_task=t.id)
+	      AND NOT EXISTS (SELECT 1 FROM task_artifact_uploads u WHERE u.task_id=t.id AND u.expires_at > unixepoch())
+	      AND NOT EXISTS (
+	            SELECT 1 FROM task_attempts a
+	             WHERE a.task_id = t.id AND a.reaped_at IS NULL)
+	    ORDER BY ` + taskRetainFromSQL + `
+	    LIMIT ?`
 }
 
 // DeleteExpiredEvents 删除 created_at 早于 cutoff 的事件（含剪枝留痕），单次最多 limit 行。

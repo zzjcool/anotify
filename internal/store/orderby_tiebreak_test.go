@@ -1748,10 +1748,10 @@ var orderByExemptions = []orderByExemption{
 	},
 	{
 		File:   "retention.go",
-		Clause: "order by coalesce(t.result_accepted_at, case when t.reported=0 then t.finished_at end) limit ?",
+		Clause: "order by coalesce(result_accepted_at, case when reported=0 then finished_at end) limit ?",
 		Reason: "清理批量选取，不是分页：批次边界不来自「上一批的最后一行」，而是调用方传入的固定 cutoff，" +
 			"所以并列只影响「这一批先删哪几条」，到期条件与轮次无关（每轮重算，直到删空）；顺序无语义",
-		Evidence: "retention.go:150-166：WHERE 里只有 `COALESCE(...) < ?`（cutoff 参数）与 NOT EXISTS 保护，没有基于排序键的续传条件",
+		Evidence: "retention.go:181-194 deleteExpiredTasksCandidateSQL：WHERE 里只有 `COALESCE(...) < ?`（cutoff 参数）与 NOT EXISTS 保护，没有基于排序键的续传条件",
 	},
 	{
 		File:     "retention.go",
