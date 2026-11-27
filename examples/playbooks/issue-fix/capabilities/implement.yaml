@@ -52,7 +52,8 @@ spec:
         3. 改完只跑**相关包**的门禁（例如改动在 internal/store 就跑 go test ./internal/store/...），
            把真实输出写进提交说明或日志。**不要跑 make ci / go test ./... 全量**——那一步由 CI 做，
            在节点上跑全量会吃掉大半台机器的 CPU，把这一跳从 20 分钟拖到 45 分钟以上。
-        4. 提交并推送，开一个 PR（base $BASE_BRANCH），PR 正文写清：改了什么、为什么、怎么验证。
+        4. 提交并推送，开一个 PR（base $BASE_BRANCH），PR 正文写清：改了什么、为什么、怎么验证，
+           并在正文里写 `Fixes #$issue`——没有这个关键字 issue 不会自动关闭，triage 也认不出覆盖。
         5. 不许手工合并、不许 force push 到共享分支、不许改无关文件。
 
         如果这个 issue 上已经有前几轮的 review 意见，用 gh issue view $issue --comments 读到并逐条处理。
