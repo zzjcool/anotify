@@ -1087,6 +1087,8 @@ events:
     event_uid: 'イベント UID（重複排除キーとは別）'
     received: "受信時刻"
     dispatched: "送出されたタスク"
+    outcome_dispatched: '{n} 件を送信済み'
+    outcome_pruned: '枝刈り済み'
     details: "送出 / 枝刈り / ペイロード詳細"
     empty: "この名前空間と条件に一致するイベントはありません。"
     count: "{n} 件の一意なイベント"
@@ -1391,6 +1393,7 @@ caps:
     empty: '先に YAML ドキュメントを貼り付けてください'
 prune:
   no_edge: 候補が接続されていません
+  no_target: 'ソースにターゲットがない'
   no_capability: 対象の能力が存在しません
   param_schema: パラメータが対象の契約を満たしていません
   param_missing: 必須パラメータがありません

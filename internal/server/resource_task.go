@@ -499,10 +499,16 @@ func (a *taskAPI) events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := make([]apiEnvelope, 0, len(rows))
+	sums, err := a.d.DB.SummarizeTraces(r.Context(), ns, taskEventTraceIDs(rows))
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
 	for _, e := range rows {
 		// metadata.namespace 是**对象自身**的命名空间（§3.2）：逐条解析，不拿路径/查询的
 		// ns 去覆盖它（`*` 汇总时那是唯一能归属每条事件的信息）。
-		items = append(items, eventEnvelope(e, a.d.namespaceDisplay(r.Context(), e.NamespaceID)))
+		items = append(items, eventEnvelope(e, a.d.namespaceDisplay(r.Context(), e.NamespaceID),
+			sums[e.TraceID]))
 	}
 	writeList(w, http.StatusOK, "EventList", listMeta{}, items)
 }
@@ -554,8 +560,14 @@ func (a *taskAPI) trace(w http.ResponseWriter, r *http.Request) {
 		Tasks:  make([]apiEnvelope, 0, len(tasks)),
 		Pruned: make([]apiEnvelope, 0, len(rows)),
 	}
+	summary := store.TraceSummary{Tasks: len(tasks), Pruned: make([]*store.Event, 0, len(rows))}
 	for _, e := range rows {
-		env := eventEnvelope(e, a.d.namespaceDisplay(r.Context(), e.NamespaceID))
+		if e.Source == store.EventPruneSource {
+			summary.Pruned = append(summary.Pruned, e)
+		}
+	}
+	for _, e := range rows {
+		env := eventEnvelope(e, a.d.namespaceDisplay(r.Context(), e.NamespaceID), summary)
 		view.Events = append(view.Events, env)
 		// pruned[] 只收**纯剪枝**（事件收到了但没派发）。未解析派发失败
 		// （downstream_missing）是 failed Task + 观察事件，不是剪枝（capability.md §6.2）。
@@ -677,6 +689,17 @@ func (a *taskAPI) consoleEvents(w http.ResponseWriter, r *http.Request) {
 		meta.Continue = encodeCursor(binding, last.ID, last.CreatedAt)
 	}
 	nsDisplay := a.d.namespaceDisplay(r.Context(), ns)
+	sums := make(map[eventTraceKey]store.TraceSummary, len(merged))
+	for i, nsID := range nsIDs {
+		got, serr := a.d.DB.SummarizeTraces(r.Context(), nsID, taskEventTraceIDs(groups[i]))
+		if serr != nil {
+			writeAPIError(w, serr)
+			return
+		}
+		for traceID, sum := range got {
+			sums[eventTraceKey{namespaceID: nsID, traceID: traceID}] = sum
+		}
+	}
 	items := make([]apiEnvelope, 0, len(merged))
 	for _, e := range merged {
 		// 逐条回显事件**自己**的命名空间（§3.2）：`*` 汇总下如果每行都写 "*"，
@@ -686,9 +709,25 @@ func (a *taskAPI) consoleEvents(w http.ResponseWriter, r *http.Request) {
 		if ns == store.AllNamespaces {
 			display = a.d.namespaceDisplay(r.Context(), e.NamespaceID)
 		}
-		items = append(items, eventEnvelope(e, display))
+		items = append(items, eventEnvelope(e, display,
+			sums[eventTraceKey{namespaceID: e.NamespaceID, traceID: e.TraceID}]))
 	}
 	writeList(w, http.StatusOK, "EventList", meta, items)
+}
+
+type eventTraceKey struct {
+	namespaceID string
+	traceID     string
+}
+
+func taskEventTraceIDs(rows []*store.Event) []string {
+	ids := make([]string, 0, len(rows))
+	for _, e := range rows {
+		if e != nil {
+			ids = append(ids, e.TraceID)
+		}
+	}
+	return ids
 }
 
 // mergeTaskEvents 把多组事件按 store 的序（created_at desc, id desc）合并。
@@ -971,9 +1010,11 @@ type eventObjectRef struct {
 	Name string `json:"name"`
 }
 
-// eventStatusDoc 是 Event.status：剪枝观察（只有剪枝行有）。
+// eventStatusDoc 是 Event.status：行级剪枝事实 + trace 级派发结果（#638）。
 type eventStatusDoc struct {
-	Pruned *pruneFactDoc `json:"pruned"`
+	Dispatched  int           `json:"dispatched"`
+	Pruned      *pruneFactDoc `json:"pruned"`
+	PrunedCount int           `json:"prunedCount"`
 }
 
 // pruneFactDoc 是剪枝观察的形状（reason 来自封闭集合 + 人话 detail）。
@@ -982,8 +1023,8 @@ type pruneFactDoc struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// eventEnvelope 组装 Event 信封。
-func eventEnvelope(e *store.Event, nsDisplay string) apiEnvelope {
+// eventEnvelope 组装 Event 信封（sum = 该 trace 的派发聚合，零值 = 只看本行）。
+func eventEnvelope(e *store.Event, nsDisplay string, sum store.TraceSummary) apiEnvelope {
 	if e == nil {
 		return newEnvelope("Event", objectMeta{}, nil, nil)
 	}
@@ -1014,7 +1055,26 @@ func eventEnvelope(e *store.Event, nsDisplay string) apiEnvelope {
 		Origin:         eventOriginOf(e),
 		DeliveryID:     e.DeliveryID,
 		Payload:        payload,
-	}, eventStatusDoc{Pruned: eventPruneFactOf(e)})
+	}, eventStatusOf(e, sum))
+}
+
+func eventStatusOf(e *store.Event, sum store.TraceSummary) eventStatusDoc {
+	st := eventStatusDoc{Dispatched: sum.Tasks}
+	for _, row := range sum.Pruned {
+		if fact := eventPruneFactOf(row); fact != nil {
+			st.PrunedCount++
+			if st.Pruned == nil {
+				st.Pruned = fact
+			}
+		}
+	}
+	if e != nil && e.Source == store.EventPruneSource {
+		st.Pruned = eventPruneFactOf(e)
+		if st.Pruned != nil && st.PrunedCount == 0 {
+			st.PrunedCount = 1
+		}
+	}
+	return st
 }
 
 // eventOriginOf 取事件的来源类别（`source` 外部投递 / `test` 人工试跑）。

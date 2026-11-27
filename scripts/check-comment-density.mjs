@@ -27,10 +27,10 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 /* BASELINE-BEGIN（`--init` / `--update` 只改这一段） */
 export const BASELINE = {
 	"schemaVersion": 2,
-	"measuredAt": "2026-11-26",
-	"commentLines": 42889,
-	"codeLines": 290838,
-	"files": 757,
+	"measuredAt": "2026-11-27",
+	"commentLines": 42879,
+	"codeLines": 293019,
+	"files": 763,
 	"dirs": {
 		".": 86,
 		".github/workflows": 107,
@@ -90,7 +90,7 @@ export const BASELINE = {
 		"internal/version": 48,
 		"internal/ws": 668,
 		"internal/yamldoc": 262,
-		"scripts": 3565,
+		"scripts": 3560,
 		"scripts/demo": 16,
 		"scripts/e2e": 632,
 		"scripts/e2e/fixtures": 0,
@@ -106,11 +106,11 @@ export const BASELINE = {
 		"scripts/perf/c": 800,
 		"scripts/perf/loadgen": 31,
 		"scripts/testdata/fakebroker": 24,
-		"web": 4650,
+		"web": 4647,
 		"web-src": 3,
 		"web-src/layouts": 98,
 		"web-src/locales": 49,
-		"web-src/pages": 2284,
+		"web-src/pages": 2282,
 		"web/fonts": 31
 	},
 	"dense": {

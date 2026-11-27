@@ -2044,13 +2044,16 @@
 				payload: clone(ev.payload || {}),
 				signature: ev.signature ? clone(ev.signature) : null,
 			},
-			status: {
-				pruned: ev.prunedCount ? (() => {
-					const facts = state.prunes.filter(p => p.ns === ev.ns && p.event === ev.name);
-					return facts.length ? { reason: facts[0].reason, detail: facts[0].detail } : null;
-				})() : null,
-				deliveredAt: ev.deliveredAt || null,
-			},
+			status: (() => {
+				const tasks = state.tasks.filter((t) => t.traceUID === ev.traceUID && t.ns === ev.ns).length;
+				const facts = state.prunes.filter((p) => p.traceUID === ev.traceUID && p.ns === ev.ns);
+				return {
+					dispatched: tasks,
+					pruned: facts.length ? { reason: facts[0].reason, detail: facts[0].detail } : null,
+					prunedCount: facts.length,
+					deliveredAt: ev.deliveredAt || null,
+				};
+			})(),
 		};
 	}
 

@@ -1087,6 +1087,8 @@ events:
     event_uid: 'Event UID (not the dedup key)'
     received: "Received at"
     dispatched: "Dispatched tasks"
+    outcome_dispatched: 'Dispatched {n}'
+    outcome_pruned: 'Pruned'
     details: "Dispatch / pruning / payload details"
     empty: "No events in this namespace and filter."
     count: "Showing {n} unique events"
@@ -1391,6 +1393,7 @@ caps:
     empty: 'Paste a YAML document first'
 prune:
   no_edge: no candidate connected
+  no_target: 'The source has no targets'
   no_capability: target capability does not exist
   param_schema: params do not satisfy the target contract
   param_missing: missing required param
