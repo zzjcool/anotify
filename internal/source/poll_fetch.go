@@ -111,9 +111,7 @@ func (r *Poller) fetch(ctx context.Context, src *store.Source, cfg sourcespec.Co
 	for key, value := range cfg.Headers {
 		req.Header.Set(key, value)
 	}
-	if src.PollCursor != "" {
-		req.Header.Set("If-None-Match", src.PollCursor)
-	}
+	setConditional(req, src.PollCursor)
 	if cfg.SecretRef != nil {
 		secret, err := r.db.GetNamespaceSecret(ctx, src.NamespaceID, cfg.SecretRef.Name)
 		if err != nil {
@@ -147,6 +145,18 @@ func (r *Poller) fetch(ctx context.Context, src *store.Source, cfg sourcespec.Co
 		cursor = modified
 	}
 	return fetchResult{cursor: cursor, doc: doc}, nil
+}
+
+// setConditional：ETag 型游标发 If-None-Match，Last-Modified 型（HTTP-date）必须发 If-Modified-Since，否则永远打不中（RFC 9110 §13.1.2，#633）。
+func setConditional(req *http.Request, cursor string) {
+	if cursor == "" {
+		return
+	}
+	if _, err := http.ParseTime(cursor); err == nil {
+		req.Header.Set("If-Modified-Since", cursor)
+		return
+	}
+	req.Header.Set("If-None-Match", cursor)
 }
 
 func retryAfterOf(resp *http.Response) time.Duration {

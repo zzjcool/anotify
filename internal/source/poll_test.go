@@ -385,3 +385,111 @@ func waitFor(budget time.Duration, cond func() bool) bool {
 	}
 	return cond()
 }
+
+func TestPollBackoffIsMonotonicRegardlessOfPhase(t *testing.T) {
+	runs := NewPoller(nil, nil, nil)
+	src := &store.Source{
+		NamespaceID: "ns-633", Name: "feed",
+		Config: json.RawMessage(`{"url":"https://example.test/feed","schedule":{"expr":"* * * * *"}}`),
+	}
+	minute := time.Date(2026, 11, 22, 0, 13, 0, 0, time.UTC)
+	capGap := int64((30 * time.Minute).Seconds())
+	gaps := make(map[int][]int64, 2)
+	for _, second := range []int{2, 58} {
+		now := minute.Add(time.Duration(second) * time.Second)
+		for failures := 1; failures <= 6; failures++ {
+			gap := runs.failureNextFire(src, now, failures, 0) - now.Unix()
+			prev := gaps[second]
+			gaps[second] = append(prev, gap)
+			if failures == 1 && gap < 60 {
+				t.Fatalf("xx:xx:%02d 第 1 次失败只等 %ds，短于计划间隔 60s", second, gap)
+			}
+			if gap > capGap {
+				t.Fatalf("xx:xx:%02d 第 %d 次失败等了 %ds，超过 30 分钟封顶", second, failures, gap)
+			}
+			if failures > 1 {
+				last := prev[failures-2]
+				if gap < last {
+					t.Fatalf("xx:xx:%02d 的退避不单调：第 %d 次 %ds < 第 %d 次 %ds",
+						second, failures, gap, failures-1, last)
+				}
+				if last*2 <= capGap && (gap < last*2-4 || gap > last*2+4) {
+					t.Fatalf("xx:xx:%02d 第 %d 次失败 %ds，want 上次（%ds）的 2 倍（落库取整到秒，容忍 ±4s）",
+						second, failures, gap, last)
+				}
+			}
+		}
+	}
+	for i, gap := range gaps[2] {
+		if gaps[58][i] != gap {
+			t.Fatalf("退避不该取决于失败发生在哪一秒：第 %d 次 %ds（:02）vs %ds（:58）",
+				i+1, gap, gaps[58][i])
+		}
+	}
+}
+
+func TestPollLastModifiedCursorUsesIfModifiedSince(t *testing.T) {
+	const modified = "Wed, 25 Nov 2026 00:00:00 GMT"
+	var noneMatch, ifModifiedSince []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		noneMatch = append(noneMatch, r.Header.Get("If-None-Match"))
+		ifModifiedSince = append(ifModifiedSince, r.Header.Get("If-Modified-Since"))
+		if r.Header.Get("If-Modified-Since") == modified {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Last-Modified", modified)
+		_, _ = w.Write([]byte(pollBody("a")))
+	}))
+	defer server.Close()
+
+	f := newFixture(t, fmt.Sprintf(pollEnvelopeCfg, server.URL))
+	f.round(t)
+	if got := f.source(t).PollCursor; got != modified {
+		t.Fatalf("没有 ETag 时游标应记 Last-Modified，得到 %q", got)
+	}
+	f.now = f.now.Add(5 * time.Minute)
+	f.round(t)
+	if len(ifModifiedSince) != 2 || ifModifiedSince[1] != modified {
+		t.Fatalf("第二轮必须以 If-Modified-Since 发回游标，实际 %v", ifModifiedSince)
+	}
+	if noneMatch[1] != "" {
+		t.Fatalf("Last-Modified 型游标不能进 If-None-Match（永远打不中），实际 %q", noneMatch[1])
+	}
+	if events, tasks := f.counts(t); events != 1 || tasks != 1 {
+		t.Fatalf("304 = 成功的空轮，必须零入库：events/tasks = %d/%d", events, tasks)
+	}
+	src := f.source(t)
+	if src.ConsecutiveFailures != 0 || src.PollCursor != modified || src.LastError != "" {
+		t.Fatalf("304 必须算成功且游标不动: %+v", src)
+	}
+}
+
+func TestSetConditionalPicksHeaderByCursorShape(t *testing.T) {
+	cases := []struct{ cursor, wantHeader, wantValue string }{
+		{`"v1"`, "If-None-Match", `"v1"`},
+		{`W/"v1"`, "If-None-Match", `W/"v1"`},
+		{"Sun, 06 Nov 1994 08:49:37 GMT", "If-Modified-Since", "Sun, 06 Nov 1994 08:49:37 GMT"},
+		{"Sunday, 06-Nov-94 08:49:37 GMT", "If-Modified-Since", "Sunday, 06-Nov-94 08:49:37 GMT"},
+		{"not-a-validator", "If-None-Match", "not-a-validator"},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, "https://example.test/feed", nil)
+		setConditional(req, tc.cursor)
+		if got := req.Header.Get(tc.wantHeader); got != tc.wantValue {
+			t.Fatalf("游标 %q：%s = %q，want %q", tc.cursor, tc.wantHeader, got, tc.wantValue)
+		}
+		other := "If-None-Match"
+		if tc.wantHeader == "If-None-Match" {
+			other = "If-Modified-Since"
+		}
+		if got := req.Header.Get(other); got != "" {
+			t.Fatalf("游标 %q 不该同时发 %s = %q", tc.cursor, other, got)
+		}
+	}
+	empty := httptest.NewRequest(http.MethodGet, "https://example.test/feed", nil)
+	setConditional(empty, "")
+	if empty.Header.Get("If-None-Match") != "" || empty.Header.Get("If-Modified-Since") != "" {
+		t.Fatalf("空游标不该发条件请求头: %v", empty.Header)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net"
 	"net/http"
 	"sync"
@@ -23,10 +24,9 @@ const (
 )
 
 // Poller 是唯一的轮询执行器，靠进程内 in-flight 集合保证不重叠（单实例部署，无 leader 选举）。
-//
-// 三条不变量：① 游标只在整轮成功后前进（失败沿用旧游标，下一轮重抓同一批、靠 deliveryId
-// 幂等去重）；② 上一轮没结束的 tick 只记 skippedOverlaps，不排队不并发；③ 失败退避
-// min(base << (failures-1), 30min)，429 的 Retry-After 优先，成功清零。
+// 三条不变量：① 游标只在整轮成功后前进（失败沿用旧游标，下一轮重抓同一批、靠 deliveryId 幂等去重）；
+// ② 上一轮没结束的 tick 只记 skippedOverlaps，不排队不并发；③ 失败退避 min(计划间隔 << (failures-1), 30min)
+// 加按源 0~10% 抖动（基准是计划间隔而非「距下一格还剩多久」，#633），429 的 Retry-After 优先，成功清零。
 type Poller struct {
 	db       *store.DB
 	services *Service
@@ -214,24 +214,41 @@ func (r *Poller) successNextFire(src *store.Source, now time.Time) int64 {
 }
 
 func (r *Poller) failureNextFire(src *store.Source, now time.Time, failures int, retry time.Duration) int64 {
-	delay := retry
-	if delay <= 0 {
-		base := pollBackoffCap
-		if next, err := sourcespec.NextPollTime(src.Config, now); err == nil && next.After(now) {
-			base = next.Sub(now)
-		}
-		if base <= 0 || base > pollBackoffCap {
-			base = pollBackoffCap
-		}
-		delay = base
-		for i := 1; i < failures && delay < pollBackoffCap; i++ {
-			delay *= 2
-		}
+	if retry > 0 {
+		return now.Add(capDelay(retry)).Unix()
 	}
-	if delay > pollBackoffCap {
-		delay = pollBackoffCap
+	delay := pollInterval(src, now)
+	for i := 1; i < failures && delay < pollBackoffCap; i++ {
+		delay *= 2
 	}
-	return now.Add(delay).Unix()
+	delay = capDelay(delay)
+	delay += time.Duration(int64(delay) * pollJitterPermille(src) / 1000)
+	return now.Add(capDelay(delay)).Unix()
+}
+
+func capDelay(d time.Duration) time.Duration {
+	if d <= 0 || d > pollBackoffCap {
+		return pollBackoffCap
+	}
+	return d
+}
+
+func pollInterval(src *store.Source, now time.Time) time.Duration {
+	next, err := sourcespec.NextPollTime(src.Config, now)
+	if err != nil || !next.After(now) {
+		return pollBackoffCap
+	}
+	after, err := sourcespec.NextPollTime(src.Config, next)
+	if err != nil || !after.After(next) {
+		return pollBackoffCap
+	}
+	return capDelay(after.Sub(next))
+}
+
+func pollJitterPermille(src *store.Source) int64 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(src.NamespaceID + "\x00" + src.Name))
+	return int64(h.Sum32() % 101)
 }
 
 func (r *Poller) items(cfg sourcespec.Config, doc any) ([]any, error) {
