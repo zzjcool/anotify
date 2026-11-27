@@ -201,6 +201,8 @@
      跳过时只在表格上方留一行说明，下一次真的刷新成功就收掉。 */
   const varsDraft = () => varsDirty || !!varsEditing;
   const varsPaused = on => { $('node-vars-paused').hidden = !on; };
+  /* #641：有未保存的 vars 草稿时，刷新/关标签/后退交给浏览器原生确认。 */
+  A.guardUnload(varsDraft);
   function varsCell(cls, label, text) {
     const cell = make('td', cls, text); cell.dataset.label = label; return cell;
   }
