@@ -56,8 +56,12 @@ func (h *Hub) handleAccept(ctx context.Context, sess *Session, f *protocol.TaskA
 		}
 		h.log.Warn("grant rejected", "node_id", sess.nodeID, "task_id", f.TaskID,
 			"slot", slot, "err", err)
+		if errors.Is(err, store.ErrSlotUnavailable) {
+			h.noteSlotFull(ctx, sess.nodeID, f.TaskID, h.Now())
+		}
 		return nil
 	}
+	h.clearSlotFullSteer(ctx, sess.nodeID, f.TaskID)
 	// DecisionToken 只对声明了 outcomes 的 router 任务非空（#522）；空串时 wire 上不出现。
 	return sess.Send(ctx, &protocol.LeaseGrantFrame{
 		Type:          protocol.FrameLeaseGrant,
@@ -104,6 +108,10 @@ func (h *Hub) handleReject(ctx context.Context, sess *Session, f *protocol.TaskR
 		// 错/旧/撤销/过期：0 写、不伤新提案；没有 ack 帧可回。
 		h.log.Warn("reject assignment refused", "node_id", sess.nodeID, "task_id", f.TaskID,
 			"assignment", f.AssignmentID, "err", err)
+		return nil
+	}
+	if f.Reason == store.TaskRejectSlotUnavailable {
+		h.noteSlotFull(ctx, sess.nodeID, f.TaskID, h.Now())
 	}
 	return nil
 }

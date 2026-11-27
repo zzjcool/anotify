@@ -131,24 +131,23 @@ func maxPerNodeOn(ctx context.Context, ex queryExec, capabilityID string) (int, 
 	return spec.Concurrency.EffectiveMaxPerNode(), nil
 }
 
-// grantBudgetOn 在同一授权事务里执行三层独立的预算（G1-6C3 / D6）：**机器总量**（local > node
-// 合并后的 limits.total，跨 ns、跨能力）、**按能力名**（跨 ns 的同名能力，无单列则 "*"）、
-// **pinned maxPerNode**（同 ns + 同能力名、跨版本）。
-//
-// 占用口径（三条共用）：**未回收的真实执行**（task_attempts.reaped_at IS NULL 的每一行；不看
-// 任务相位，phase 变化/rehello/租约过期都不假释放）；**真实 busy reservation**（节点已接受且
-// 落进真实槽账本的候选，纯中枢侧 assignment 不是物理占用）；本次请求自己的 reservation 只算
-// 一次（node+task+assignment+proposed+同一个 slot 全相等才排除，别的 slot 仍算真实占用）。
-// 拒绝只返回 ErrSlotUnavailable（不耗 attempt、不绑槽、不改别人的 reservation），调用方负责
-// 放回 pending + waiting_for_slot；缩小预算只阻止新授权，存量 busy 账本原样保留。
-func grantBudgetOn(ctx context.Context, ex queryExec, nodeID, taskID, assignmentID string,
-	proposedAttempt, slot int, namespaceID, capability string,
-	maxPerNode int, limits protocol.Limits) error {
-	effectiveTotal := limits.Total
-	if effectiveTotal <= 0 {
-		effectiveTotal = protocol.DefaultLimitsTotal
-	}
+type budgetUsage struct {
+	total      int
+	capability int
+	pinned     int
+}
 
+type budgetExclusion struct {
+	slot            int
+	taskID          string
+	assignmentID    string
+	proposedAttempt int
+}
+
+// budgetBusyOn 是三层执行预算**唯一**的占用口径（授权与选点共用）：未回收的真实执行（已终态
+// 任务不算 #660）+ 节点已接住的真实 busy 预约。纯中枢侧 assignment 只进选点的软占用层。
+func budgetBusyOn(ctx context.Context, ex queryExec, nodeID, namespaceID, capability string,
+	excl *budgetExclusion) (budgetUsage, error) {
 	// 未回收执行：每行 attempt 都仍可能占着物理槽；**已终态的任务不算**（#660）。
 	termIn, termArgs := terminalPhaseIn()
 	countUnreaped := func(where string, args ...any) (int, error) {
@@ -162,18 +161,17 @@ func grantBudgetOn(ctx context.Context, ex queryExec, nodeID, taskID, assignment
 		return n, nil
 	}
 	// 真实 busy reservation：节点已接受（Busy=true）并落进**真实槽账本**的候选。
-	// 判别式是 busy_lease_id=''（执行都有 lease，reservation 不伪造 lease）。
-	// 纯中枢侧 assignment（节点还没接住）不在这里重复计：它不是物理占用事实。
-	// 本次 grant 自己那条同槽预约只排除一次：node+task+assignment+proposed+slot
-	// 全部精确相等才行；其它槽/其它 assignment 的 reservation 仍然计入。
 	countReserved := func(where string, args ...any) (int, error) {
 		var n int
 		q := `SELECT COUNT(*) FROM node_instances i JOIN tasks t ON t.id = i.busy_task
-		       WHERE i.node_id = ? AND i.busy_task IS NOT NULL AND i.busy_lease_id = ''
-		         AND NOT (i.slot = ? AND i.busy_task = ? AND i.busy_attempt = ?
-		                  AND i.busy_assignment_id = ?)` + where
-		base := []any{nodeID, slot, taskID, proposedAttempt, assignmentID}
-		if err := ex.queryRowContext(ctx, q, append(base, args...)...).Scan(&n); err != nil {
+		       WHERE i.node_id = ? AND i.busy_task IS NOT NULL AND i.busy_lease_id = ''`
+		base := []any{nodeID}
+		if excl != nil {
+			q += ` AND NOT (i.slot = ? AND i.busy_task = ? AND i.busy_attempt = ?
+		                AND i.busy_assignment_id = ?)`
+			base = append(base, excl.slot, excl.taskID, excl.proposedAttempt, excl.assignmentID)
+		}
+		if err := ex.queryRowContext(ctx, q+where, append(base, args...)...).Scan(&n); err != nil {
 			return 0, fmt.Errorf("授予租约: 统计 busy reservation: %w", err)
 		}
 		return n, nil
@@ -190,41 +188,193 @@ func grantBudgetOn(ctx context.Context, ex queryExec, nodeID, taskID, assignment
 		return unreaped + reserved, nil
 	}
 
-	totalBusy, err := busyOn("")
+	// countUnreaped/countReserved 都是「在固定参数后追加 where 参数」，
+	// 因此同一个 where 片段可以同时用于两张查询。
+	var out budgetUsage
+	var err error
+	if out.total, err = busyOn(""); err != nil {
+		return budgetUsage{}, err
+	}
+	if out.capability, err = busyOn(` AND t.capability = ?`, capability); err != nil {
+		return budgetUsage{}, err
+	}
+	if out.pinned, err = busyOn(` AND t.namespace_id = ? AND t.capability = ?`, namespaceID, capability); err != nil {
+		return budgetUsage{}, err
+	}
+	return out, nil
+}
+
+// pendingProposalsOn 数某节点上「已提议、节点还没报事实」的同能力候选（软占用，只给选点用；当前任务自己的排除在外）。
+func pendingProposalsOn(ctx context.Context, ex queryExec, nodeID, namespaceID, capability,
+	excludeTaskID string, now int64) (budgetUsage, error) {
+	count := func(where string, args ...any) (int, error) {
+		q := `SELECT COUNT(*) FROM tasks
+		       WHERE node_id = ? AND phase = ? AND cancel_requested_at IS NULL
+		         AND assignment_id <> '' AND assignment_expires_at > ? AND id <> ?` + where
+		base := []any{nodeID, TaskPending, now, excludeTaskID}
+		var n int
+		if err := ex.queryRowContext(ctx, q, append(base, args...)...).Scan(&n); err != nil {
+			return 0, fmt.Errorf("授予租约: 统计在飞候选: %w", err)
+		}
+		return n, nil
+	}
+	var out budgetUsage
+	var err error
+	if out.total, err = count(""); err != nil {
+		return budgetUsage{}, err
+	}
+	if out.capability, err = count(` AND capability = ?`, capability); err != nil {
+		return budgetUsage{}, err
+	}
+	if out.pinned, err = count(` AND namespace_id = ? AND capability = ?`, namespaceID, capability); err != nil {
+		return budgetUsage{}, err
+	}
+	return out, nil
+}
+
+// DispatchNodeBudget 是「还能不能再收一个该能力的任务」的事实：三层 Used 含在飞候选（选点保守、授权不）。
+type DispatchNodeBudget struct {
+	NodeID string
+
+	// 机器总量（limits.total，local ⊕ node，缺省 DefaultLimitsTotal）。
+	TotalUsed  int
+	TotalLimit int
+
+	// 按能力名（perCapability / "*"）；CapabilityLimited=false 表示这类预算没配。
+	CapabilityUsed    int
+	CapabilityLimit   int
+	CapabilityLimited bool
+
+	// pinned maxPerNode（同 ns + 同能力名）；PinnedLimit<=0 表示不限。
+	PinnedUsed  int
+	PinnedLimit int
+}
+
+// AdmitsOne 报告这台节点这一轮是否还有余量再收一个该能力的候选（三层都还有余量）。
+func (b DispatchNodeBudget) AdmitsOne() bool {
+	if b.TotalLimit > 0 && b.TotalUsed+1 > b.TotalLimit {
+		return false
+	}
+	if b.CapabilityLimited && b.CapabilityUsed+1 > b.CapabilityLimit {
+		return false
+	}
+	if b.PinnedLimit > 0 && b.PinnedUsed+1 > b.PinnedLimit {
+		return false
+	}
+	return true
+}
+
+// OverBy 是超出预算的量（三层之和；有余量 = 0）：全满时按它排先后，四单才不会全堆一台（#681）。
+func (b DispatchNodeBudget) OverBy() int {
+	over := 0
+	if b.TotalLimit > 0 && b.TotalUsed+1 > b.TotalLimit {
+		over += b.TotalUsed + 1 - b.TotalLimit
+	}
+	if b.CapabilityLimited && b.CapabilityUsed+1 > b.CapabilityLimit {
+		over += b.CapabilityUsed + 1 - b.CapabilityLimit
+	}
+	if b.PinnedLimit > 0 && b.PinnedUsed+1 > b.PinnedLimit {
+		over += b.PinnedUsed + 1 - b.PinnedLimit
+	}
+	return over
+}
+
+// DispatchBudgets 给派发路径逐节点的预算余量（#681）：grantBudgetOn 的同一份口径 + 在飞候选的软占用；读失败由调用方退让。
+func (d *DB) DispatchBudgets(ctx context.Context, t *Task, nodeIDs []string,
+	now int64) (map[string]DispatchNodeBudget, error) {
+	out := make(map[string]DispatchNodeBudget, len(nodeIDs))
+	if t == nil || len(nodeIDs) == 0 {
+		return out, nil
+	}
+	if now == 0 {
+		now = Now()
+	}
+	maxPerNode, err := maxPerNodeOn(ctx, d, t.CapabilityID)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch budgets: %w", err)
+	}
+	for _, nodeID := range nodeIDs {
+		if nodeID == "" {
+			continue
+		}
+		if _, seen := out[nodeID]; seen {
+			continue
+		}
+		snap, serr := loadMachineSnapshotOn(ctx, d, nodeID)
+		if serr != nil {
+			return nil, fmt.Errorf("dispatch budgets: %w", serr)
+		}
+		limits, lerr := TypedMachineLimits(snap.limits)
+		if lerr != nil {
+			return nil, fmt.Errorf("dispatch budgets: node %s: %w", nodeID, lerr)
+		}
+		total := limits.Total
+		if total <= 0 {
+			total = protocol.DefaultLimitsTotal
+		}
+		real, uerr := budgetBusyOn(ctx, d, nodeID, t.NamespaceID, t.Capability, nil)
+		if uerr != nil {
+			return nil, fmt.Errorf("dispatch budgets: %w", uerr)
+		}
+		inflight, perr := pendingProposalsOn(ctx, d, nodeID, t.NamespaceID, t.Capability, t.ID, now)
+		if perr != nil {
+			return nil, fmt.Errorf("dispatch budgets: %w", perr)
+		}
+		b := DispatchNodeBudget{
+			NodeID:         nodeID,
+			TotalUsed:      real.total + inflight.total,
+			TotalLimit:     total,
+			CapabilityUsed: real.capability + inflight.capability,
+			PinnedUsed:     real.pinned + inflight.pinned,
+			PinnedLimit:    maxPerNode,
+		}
+		capLimit, hasCap := limits.PerCapability[t.Capability]
+		if !hasCap {
+			capLimit, hasCap = limits.PerCapability[NamespaceWildcard]
+		}
+		if hasCap {
+			b.CapabilityLimited, b.CapabilityLimit = true, capLimit
+		}
+		out[nodeID] = b
+	}
+	return out, nil
+}
+
+// grantBudgetOn 在同一授权事务里执行三层独立的预算（G1-6C3 / D6）：机器总量（limits.total，跨 ns、
+// 跨能力）、按能力名（跨 ns 同名，无单列则 "*"）、pinned maxPerNode（同 ns + 同能力名）。
+// 占用口径见 budgetBusyOn（本次自己的同槽预约只排除一次：五项全等）；拒绝只返回 ErrSlotUnavailable，
+// 调用方放回 pending + waiting_for_slot。
+func grantBudgetOn(ctx context.Context, ex queryExec, nodeID, taskID, assignmentID string,
+	proposedAttempt, slot int, namespaceID, capability string,
+	maxPerNode int, limits protocol.Limits) error {
+	effectiveTotal := limits.Total
+	if effectiveTotal <= 0 {
+		effectiveTotal = protocol.DefaultLimitsTotal
+	}
+
+	used, err := budgetBusyOn(ctx, ex, nodeID, namespaceID, capability, &budgetExclusion{
+		slot: slot, taskID: taskID, assignmentID: assignmentID, proposedAttempt: proposedAttempt,
+	})
 	if err != nil {
 		return err
 	}
-	if totalBusy+1 > effectiveTotal {
+	if used.total+1 > effectiveTotal {
 		return fmt.Errorf("%w: node %s 机器总量预算已满（%d/%d）",
-			ErrSlotUnavailable, nodeID, totalBusy, effectiveTotal)
+			ErrSlotUnavailable, nodeID, used.total, effectiveTotal)
 	}
 
 	capLimit, hasCap := limits.PerCapability[capability]
 	if !hasCap {
 		capLimit, hasCap = limits.PerCapability[NamespaceWildcard]
 	}
-	if hasCap {
-		// countUnreaped/countReserved 都是「在固定参数后追加 where 参数」，
-		// 因此同一个 where 片段可以同时用于两张查询。
-		capBusy, cerr := busyOn(` AND t.capability = ?`, capability)
-		if cerr != nil {
-			return cerr
-		}
-		if capBusy+1 > capLimit {
-			return fmt.Errorf("%w: node %s 的能力预算 %q 已满（%d/%d）",
-				ErrSlotUnavailable, nodeID, capability, capBusy, capLimit)
-		}
+	if hasCap && used.capability+1 > capLimit {
+		return fmt.Errorf("%w: node %s 的能力预算 %q 已满（%d/%d）",
+			ErrSlotUnavailable, nodeID, capability, used.capability, capLimit)
 	}
 
-	if maxPerNode > 0 {
-		pinnedBusy, perr := busyOn(` AND t.namespace_id = ? AND t.capability = ?`, namespaceID, capability)
-		if perr != nil {
-			return perr
-		}
-		if pinnedBusy+1 > maxPerNode {
-			return fmt.Errorf("%w: node %s 的 pinned per-node 预算 %s/%s 已满（%d/%d）",
-				ErrSlotUnavailable, nodeID, namespaceID, capability, pinnedBusy, maxPerNode)
-		}
+	if maxPerNode > 0 && used.pinned+1 > maxPerNode {
+		return fmt.Errorf("%w: node %s 的 pinned per-node 预算 %s/%s 已满（%d/%d）",
+			ErrSlotUnavailable, nodeID, namespaceID, capability, used.pinned, maxPerNode)
 	}
 	return nil
 }
