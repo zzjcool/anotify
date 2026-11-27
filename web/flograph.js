@@ -1609,20 +1609,20 @@
 		);
 	}
 
-	/* #579：结论三态 —— 失败（红）> 未完成（黄）> 全部成功（绿）。只数失败会把
-	 * 「能力没部署、任务永远 pending」画成绿色「全部成功」。分档按节点 kind：
-	 * failed / end / pipe|running；trigger 与 pruned 不是「这次的任务」，两边都不计。
-	 * 预览没有执行事实，只落「预览完成」；一张任务卡都没有也不落结论。
+	/* #579：结论三态 —— 失败（红）> 未完成（黄）> 全部成功（绿）。只数失败会把「能力没部署、
+	 * 任务永远 pending」画成绿色「全部成功」。数的是**拍**（一张任务卡一拍），不是图节点：
+	 * 有底图时一个能力只有一个节点、状态取 worst()，同一能力的多张卡被折成 1 —— {done}/{n}
+	 * 于是会说「全结束」而屏上还有 pending 卡（实测 4/5 vs 4/7）；拍也是「回放 Xs」的尺子。
+	 * 预览没有执行事实，只落「预览完成」；一拍都没有时不落分母（见 silkDoneText）。
 	 */
-	function silkTally(nodes) {
+	function silkTally(beats) {
 		const t = { failed: 0, ended: 0, pending: 0 };
-		for (const n of nodes || []) {
-			const k = n && n.kind;
+		for (const b of beats || []) {
+			const k = b && b.kind;
 			if (k === "failed") t.failed += 1;
 			else if (k === "end") t.ended += 1;
 			else if (k === "pipe" || k === "running") t.pending += 1;
 		}
-		// closed/tasks 按任务卡计，条上前缀也用这把尺：重试/扇出是同一张卡，不是两拍。
 		t.closed = t.failed + t.ended;
 		t.tasks = t.closed + t.pending;
 		t.state = t.failed ? "failed" : t.pending ? "pending" : "ok";
@@ -1646,8 +1646,9 @@
 		return { text: t("graph.silk_meta_ok", "全部成功"), cls: "" };
 	}
 
-	/** HUD 底部：回放结束 ≠ 任务完成 —— 分子是终态任务卡，分母是任务卡总数。 */
+	/** HUD 底部：回放结束 ≠ 任务完成 —— 分子终态任务、分母任务总数；没拍就不写分母（「0/0」把「没有任务」读成「全结束」）。 */
 	function silkDoneText(tally, t) {
+		if (!tally.tasks) return t("graph.silk_meta_done_none", "回放结束");
 		const head = silkFill(t("graph.silk_meta_done", "回放结束 · {done}/{n} 个任务已结束"), {
 			done: tally.closed,
 			n: tally.tasks,
@@ -1957,7 +1958,7 @@
 		const beatCaps = new Set(Array.from(firstExec.keys()));
 		const execKey = (id) => (firstExec.has(id) ? firstExec.get(id) : 1e9);
 		const stepNoOf = (id) => (firstExec.has(id) ? firstExec.get(id) + 1 : 0);
-		const tally = silkTally(nodes);
+		const tally = silkTally(beats);
 		const totalSec = beats.length * 0.5;
 		const reduceNow = () =>
 			!!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);

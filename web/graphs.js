@@ -918,6 +918,7 @@
 					: "",
 				// v4 没有出口名：节拍不带 port（渲染层把空串当"不画"）
 				port: "",
+				kind: kindForStatus(tk.phase || "pending"), // 一拍 = 一张卡：条上/HUD 的「任务」数按拍数，不按 worst() 折过的节点数
 			}));
 
 		let nodes;

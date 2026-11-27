@@ -315,6 +315,7 @@ graph:
   silk_meta_failed: '{n} 个失败'
   silk_meta_pending: '{n} 个未完成'
   silk_meta_done: '回放结束 · {done}/{n} 个任务已结束'
+  silk_meta_done_none: 回放结束
   silk_clock: '回放 {t}'
 
 message:

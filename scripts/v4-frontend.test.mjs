@@ -5418,13 +5418,13 @@ test('G1 Silk pan defers capture for native clicks and retains horizontal/vertic
   const before = captured.length; ctx.down({ ...event(50), pointerType: 'touch' }); assert.equal(captured.length, before, 'native touch scrolling remains uncaptured');
 });
 
-test('#579 silk outcome keeps pending/running out of "all succeeded" and wires texts/lamps/done/replay', () => {
+function silkTextLayer() {
   const source = readFileSync(path.join(ROOT, 'web/flograph.js'), 'utf8');
   const start = source.indexOf('\tfunction silkFmtClock('), end = source.indexOf('\tfunction silkDurOf(', start);
   assert.ok(start > 0 && end > start, 'slice silkFmtClock → silkDurOf exists');
   const dict = {};
   for (const line of readFileSync(path.join(ROOT, 'web-src/locales/zh-CN.yaml'), 'utf8').split('\n')) {
-    const m = /^  (silk_meta_(?:run|ok|failed|pending|done)|silk_preview_done): '?([^']*)'?$/.exec(line);
+    const m = /^  (silk_meta_(?:run|ok|failed|pending|done_none|done)|silk_preview_done): '?([^']*)'?$/.exec(line);
     if (m) dict['graph.' + m[1]] = m[2];
   }
   const tt = (k, d) => dict[k] || d;
@@ -5434,9 +5434,96 @@ test('#579 silk outcome keeps pending/running out of "all succeeded" and wires t
       '\n globalThis.silkTally = silkTally; globalThis.silkRunMeta = silkRunMeta; globalThis.silkOutcome = silkOutcome;',
     ctx,
   );
-  const nodes = (...kinds) => kinds.map((kind, i) => ({ id: 'n' + i, kind }));
+  const text = (beats, totalSec) => {
+    const tally = ctx.silkTally(beats);
+    const meta = ctx.silkRunMeta(tally, tt, totalSec);
+    const out = ctx.silkOutcome(false, tally, tt, meta);
+    return { tally, meta: out.meta, done: out.done, cls: out.cls, reset: [...out.reset] };
+  };
+  return { source, ctx, tt, text };
+}
+
+const TERMINAL_PHASES = ['succeeded', 'failed', 'cancelled', 'abandoned'];
+function cardPhases(sandbox, tasks) {
+  return tasks.map((tk) => sandbox.Anotify.model.task(tk).phase);
+}
+
+test('#579 HUD 完成比与条前缀都按任务卡数、与回放拍同源（trace_mock_t1 = 4/7）', async () => {
+  const { req, sandbox } = loadMock({ graphs: true });
+  const G = sandbox.AnotifyGraphs;
+  const [srcRes, capRes, edgeRes, trace] = await Promise.all([
+    req('/v1/namespaces/default/sources'),
+    req('/v1/namespaces/default/capabilities'),
+    req('/v1/namespaces/default/edges'),
+    req('/v1/namespaces/default/traces/trace_mock_t1'),
+  ]);
+  const src = srcRes.body.items.find((s) => s.metadata.name === 'deploy-hook');
+  const topology = G.sourceTopology({ sources: [src], source: src, capabilities: capRes.body.items, edges: edgeRes.body.items });
+  const host = sandbox.document.createElement('div');
+  G.taskChain(host, { tasks: trace.body.tasks, baseGraph: topology, sourceLabel: 'deploy-hook', t: (k, d) => d || k, animate: false });
+  const spec = host._mountSpec;
+  assert.equal(spec.nodes.filter((n) => n.kind !== 'trigger' && n.kind !== 'pruned').length, 5,
+    '有底图时节点按能力折叠（run-tests 两张卡 → 一个节点）—— 这正是按节点数会少算的现场');
+  const cards = cardPhases(sandbox, trace.body.tasks);
+  assert.equal(cards.length, 7, 'fixture：7 张任务卡');
+  assert.equal(cards.filter((p) => !TERMINAL_PHASES.includes(p)).length, 3, 'fixture：tsk_mock_5/6/7 还没结束');
+  assert.equal(spec.beats.length, cards.length, '一拍一张卡');
+  assert.deepEqual(spec.beats.map((b) => b.kind).sort(), ['end', 'end', 'end', 'failed', 'pipe', 'pipe', 'running'],
+    '拍的 kind 走 kindForStatus，不是节点的 worst()');
+  const { tally, meta, done } = silkTextLayer().text(spec.beats, spec.beats.length * 0.5);
+  assert.deepEqual([tally.tasks, tally.closed, tally.failed, tally.pending], [7, 4, 1, 3]);
+  assert.equal(meta, '7 个任务 · 回放 3.5s · 1 个失败', '条前缀的任务数与「回放 3.5s」同源（7 拍 × 0.5s）');
+  assert.equal(done, '回放结束 · 4/7 个任务已结束 · 1 个失败', 'HUD 分母是任务卡数（7），不是图节点数（5）');
+});
+
+test('#579 同一能力两拍（一失败一未完成）不折叠：条与 HUD 都按 2 张卡说话', () => {
+  const { sandbox } = loadMock({ graphs: true });
+  const task = (name, phase) => ({
+    metadata: { name },
+    spec: { traceUID: 'trace_dup_cap', parentTaskId: null, capability: { name: 'r', version: 1 }, params: {} },
+    status: { phase, attempt: 1, maxAttempts: 1 },
+  });
+  const host = sandbox.document.createElement('div');
+  sandbox.AnotifyGraphs.taskChain(host, {
+    tasks: [task('tsk_dup_1', 'failed'), task('tsk_dup_2', 'pending')],
+    baseGraph: { nodes: [{ id: 'r', label: 'r', kind: 'pipe' }], edges: [] },
+    sourceLabel: 'hook',
+    t: (k, d) => d || k,
+    animate: false,
+  });
+  const spec = host._mountSpec;
+  assert.equal(spec.nodes.filter((n) => n.id === 'r').length, 1, '染色仍按节点：一个能力一个点');
+  assert.equal(spec.nodes.find((n) => n.id === 'r').kind, 'failed', '节点状态仍取 worst()');
+  const { tally, meta, done } = silkTextLayer().text(spec.beats, spec.beats.length * 0.5);
+  assert.deepEqual([tally.tasks, tally.closed, tally.pending], [2, 1, 1]);
+  assert.equal(meta, '2 个任务 · 回放 1.0s · 1 个失败');
+  assert.equal(done, '回放结束 · 1/2 个任务已结束 · 1 个失败', '分母 2、分子 1 —— 还有一张卡在 pending');
+});
+
+test('#579 六态分档走 kindForStatus：waiting_* 算未完成，取消/放弃算失败', () => {
+  const { sandbox } = loadMock({ graphs: true });
+  const phases = ['succeeded', 'failed', 'cancelled', 'abandoned', 'running', 'waiting_for_slot'];
+  const tasks = phases.map((phase, i) => ({
+    metadata: { name: 'tsk_phase_' + i },
+    spec: { traceUID: 'trace_phases', parentTaskId: null, capability: { name: 'cap' + i, version: 1 }, params: {} },
+    status: { phase, attempt: 1, maxAttempts: 1 },
+  }));
+  const host = sandbox.document.createElement('div');
+  sandbox.AnotifyGraphs.taskChain(host, { tasks, t: (k, d) => d || k, animate: false });
+  const spec = host._mountSpec;
+  assert.deepEqual(spec.beats.map((b) => b.kind), ['end', 'failed', 'failed', 'failed', 'running', 'pipe'],
+    '六态 → 三档视觉分组（succeeded=end；failed/cancelled/abandoned=failed；其余未结束）');
+  const { tally, meta, done } = silkTextLayer().text(spec.beats, spec.beats.length * 0.5);
+  assert.deepEqual([tally.tasks, tally.closed, tally.failed, tally.pending, tally.state], [6, 4, 3, 2, 'failed']);
+  assert.equal(meta, '6 个任务 · 回放 3.0s · 3 个失败');
+  assert.equal(done, '回放结束 · 4/6 个任务已结束 · 3 个失败');
+});
+
+test('#579 silk outcome keeps pending/running out of "all succeeded" and wires texts/lamps/done/replay', () => {
+  const { source, ctx, tt, text } = silkTextLayer();
+  const beats = (...kinds) => kinds.map((kind, i) => ({ cap: 'b' + i, from: '', port: '', kind }));
   const outcomeOf = (preview, prefix, ...kinds) => {
-    const o = ctx.silkOutcome(preview, ctx.silkTally(nodes(...kinds)), tt, prefix);
+    const o = ctx.silkOutcome(preview, ctx.silkTally(beats(...kinds)), tt, prefix);
     return { ...o, reset: [...o.reset] };
   };
   assert.deepEqual(outcomeOf(false, '回放 0.5s', 'trigger', 'pipe'), {
@@ -5457,11 +5544,14 @@ test('#579 silk outcome keeps pending/running out of "all succeeded" and wires t
   assert.deepEqual(outcomeOf(true, '预览', 'pipe', 'end'), {
     meta: '预览 · 预览完成', cls: '', done: '预览完成', reset: ['is-fail', 'is-warn'],
   });
-  const t = ctx.silkTally(nodes('trigger', 'end', 'pipe', 'failed', 'pruned'));
+  const none = text([], 0.5);
+  assert.deepEqual([none.meta, none.done, none.cls, none.reset], ['0 个任务 · 回放 0.5s', '回放结束', '', ['is-fail', 'is-warn']]);
+  assert.deepEqual([none.tally.tasks, none.tally.state], [0, 'ok']);
+  const t = ctx.silkTally(beats('trigger', 'end', 'pipe', 'failed', 'pruned'));
   assert.deepEqual([t.closed, t.tasks, t.pending, t.state], [2, 3, 1, 'failed']);
   assert.deepEqual(Object.keys({ ...t }).sort(), ['closed', 'ended', 'failed', 'pending', 'state', 'tasks']);
   const withPrefix = (...kinds) => {
-    const tally = ctx.silkTally(nodes(...kinds));
+    const tally = ctx.silkTally(beats(...kinds));
     const meta = ctx.silkRunMeta(tally, tt, 2);
     const o = ctx.silkOutcome(false, tally, tt, meta);
     return { meta: o.meta, done: o.done, cls: o.cls, reset: [...o.reset] };
@@ -5473,7 +5563,7 @@ test('#579 silk outcome keeps pending/running out of "all succeeded" and wires t
     meta: '2 个任务 · 回放 2.0s · 1 个未完成', cls: 'is-warn', done: '回放结束 · 1/2 个任务已结束', reset: ['is-fail', 'is-warn'],
   });
   assert.deepEqual(withPrefix('trigger', 'pruned'), {
-    meta: '0 个任务 · 回放 2.0s', cls: '', done: '回放结束 · 0/0 个任务已结束', reset: ['is-fail', 'is-warn'],
+    meta: '0 个任务 · 回放 2.0s', cls: '', done: '回放结束', reset: ['is-fail', 'is-warn'],
   });
 
   const settleStart = source.indexOf('\t\tconst barMetaFinal = outcome.meta;');
@@ -5483,7 +5573,7 @@ test('#579 silk outcome keeps pending/running out of "all succeeded" and wires t
     const added = [];
     const meta = { textContent: 'prefix' };
     const c = vm.createContext({
-      outcome: ctx.silkOutcome(false, ctx.silkTally(nodes(...kinds)), tt, 'prefix'),
+      outcome: ctx.silkOutcome(false, ctx.silkTally(beats(...kinds)), tt, 'prefix'),
       barMeta: meta,
       barDot: { classList: { add: (cls) => added.push(cls) } },
       barMetaPrefix: 'prefix',
@@ -5500,11 +5590,12 @@ test('#579 silk outcome keeps pending/running out of "all succeeded" and wires t
   const doneEnd = source.indexOf('\n\t\tsetProgress(0);', doneStart);
   assert.ok(doneStart > 0 && doneEnd > doneStart, 'doneLabel slice exists');
   const doneLabelOf = (preview, ...kinds) => {
-    const c = vm.createContext({ outcome: ctx.silkOutcome(preview, ctx.silkTally(nodes(...kinds)), tt, 'prefix') });
+    const c = vm.createContext({ outcome: ctx.silkOutcome(preview, ctx.silkTally(beats(...kinds)), tt, 'prefix') });
     vm.runInContext(source.slice(doneStart, doneEnd).trimEnd() + '\n globalThis.doneLabel = doneLabel;', c);
     return c.doneLabel();
   };
   assert.equal(doneLabelOf(false, 'trigger', 'pipe'), '回放结束 · 0/1 个任务已结束');
+  assert.equal(doneLabelOf(false, 'trigger', 'pruned'), '回放结束');
   assert.equal(doneLabelOf(true, 'pipe'), '预览完成');
 
   const replayStart = source.indexOf('\t\t\tif (barSettled) {');
@@ -5520,7 +5611,7 @@ test('#579 silk outcome keeps pending/running out of "all succeeded" and wires t
       barMeta: meta,
       barDot: { classList: { remove: (...cs) => cs.forEach((cls) => classes.delete(cls)) } },
       barMetaPrefix: 'running',
-      outcome: ctx.silkOutcome(false, ctx.silkTally(nodes('trigger', 'pipe')), tt, 'running'),
+      outcome: ctx.silkOutcome(false, ctx.silkTally(beats('trigger', 'pipe')), tt, 'running'),
     });
     vm.runInContext(replaySlice, c);
     return { text: meta.textContent, classes: [...classes] };

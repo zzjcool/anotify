@@ -216,7 +216,19 @@ export async function observability(d, mode) {
       assert.equal(await count('#trace-tasks [data-task]'), 7);
       assert.equal(await count('#trace-graph.flograph--silk'), 1);
       assert.ok(await count('#trace-graph svg'));
-      assert.equal(await count('#trace-graph .sl-node'), 7);
+      assert.equal(await count('#trace-graph .sl-node'), 6, '底图 = 触发器 + deploy-hook 拓扑里的 5 个能力（notify 不在拓扑里）；7 是任务卡数，不是节点数');
+      const cards = await page.$$eval('#trace-tasks [data-task] [data-phase]', (ns) => ns.map((n) => n.getAttribute('data-phase')));
+      const open = cards.filter((p) => !['succeeded', 'failed', 'cancelled', 'abandoned'].includes(p)).length;
+      assert.equal(open, 3, 'fixture：tsk_mock_5/7 pending + tsk_mock_6 running，实际 ' + JSON.stringify(cards));
+      const settledText = (sel) => page.waitForFunction((s2) => {
+        const text = (document.querySelector(s2)?.textContent || '').trim();
+        return text || false;
+      }, sel, { timeout: 15000 }).then((h) => h.jsonValue());
+      const barMeta = await settledText('#trace-graph .flograph-bar-meta');
+      assert.equal(barMeta, '7 tasks · replay 3.5s · 1 failed', '条前缀的任务数必须与回放时长同源（7 拍 × 0.5s）');
+      assert.equal(await settledText('#trace-graph .hud-active'),
+        'replay ended · ' + (cards.length - open) + '/' + cards.length + ' tasks finished · 1 failed',
+        'HUD 分母必须是任务卡数（7），不是图节点数（6）');
       assert.match(await page.locator('#trace-pruned').innerText(), /param_schema/);
       assert.match(await page.locator('#trace-events').innerText(), /capability.emit/);
       assert.equal((await calls()).filter(c => c.url.includes('/traces/')).length, 1);
