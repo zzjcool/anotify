@@ -2648,16 +2648,18 @@ components:
 
             写入期用**运行期同一个解析器**判断这份 schema 可不可用（#612）：
             `type` 必须接受 `object`、`properties` 必须是对象、`required` 必须是
-            字符串数组、属性 `pattern` 必须能编译。不可用 → 400 `param_schema`，
-            `details.causes[].field` 指到 `spec.params.<出错的键>`
+            字符串数组、`properties` 里每个值必须是对象（参数名与关键字同名也不例外）。
+            不可用 → 400 `param_schema`，`details.causes[].field` 指到
+            `spec.params.<出错的键>`
             （如 `spec.params.type` / `spec.params.properties.a`）。这条判据的意义：
             写入期接受的 schema 与派发/试跑期不剪枝的是**同一批**，不会「建得成、
             永不派发」。
 
-            写入期编译 `pattern`（RE2）：编不过 / 不是字符串 / 超过长度上限 → 400
-            `param_pattern_invalid`，`details.causes[].field` 指到
-            `spec.params.properties.<name>.pattern`。试跑与派发期执行 `pattern`：
-            只约束字符串值，整串匹配请自带 `^...$`（RE2 默认子串匹配）。
+            属性 `pattern` 走**另一条**更具体的错误码（#475）：写入期编译（RE2），
+            编不过 / 不是字符串 / 超过长度上限 → 400 `param_pattern_invalid`，
+            `details.causes[].field` 指到 `spec.params.properties.<name>.pattern`。
+            试跑与派发期执行 `pattern`：只约束字符串值，整串匹配请自带 `^...$`
+            （RE2 默认子串匹配）。
           additionalProperties: true
         next:
           type: array

@@ -2,6 +2,7 @@ package schema
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,26 @@ func TestParseParamsAvailability(t *testing.T) {
 		{name: "type 数组不含 object", raw: `{"type":["string","null"]}`, wantPaths: []string{"type"}},
 		{name: "type 是数字", raw: `{"type":7}`, wantPaths: []string{"type"}},
 		{name: "不是 JSON 对象", raw: `[]`, wantPaths: []string{""}},
+		{
+			name:      "参数名就叫 pattern（属性值不是对象）",
+			raw:       `{"type":"object","properties":{"pattern":3}}`,
+			wantPaths: []string{"properties.pattern"},
+		},
+		{
+			name:      "参数名以 .pattern 结尾",
+			raw:       `{"type":"object","properties":{"x.pattern":3}}`,
+			wantPaths: []string{"properties.x.pattern"},
+		},
+		{
+			name:      "参数名就叫 pattern（漏写一层对象）",
+			raw:       `{"type":"object","properties":{"pattern":"^x$"}}`,
+			wantPaths: []string{"properties.pattern"},
+		},
+		{
+			name:      "参数名就叫 pattern 且嵌套里有坏属性值",
+			raw:       `{"type":"object","properties":{"pattern":{"properties":{"pattern":3}}}}`,
+			wantPaths: []string{"properties.pattern.properties.pattern"},
+		},
 		{
 			name:      "坏 pattern（RE2 编不过）",
 			raw:       `{"type":"object","properties":{"repo":{"type":"string","pattern":"(["}}}`,
@@ -77,6 +98,59 @@ func TestParseParamsAvailability(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseParamsProblemsCarryKeyword(t *testing.T) {
+	cases := []struct {
+		raw     string
+		path    string
+		keyword string
+	}{
+		{`[]`, "", KeywordRoot},
+		{`{"type":"string"}`, "type", KeywordType},
+		{`{"properties":[1]}`, "properties", KeywordProperties},
+		{`{"properties":{"a":3}}`, "properties.a", KeywordProperty},
+		{`{"properties":{"a":{"pattern":"(["}}}`, "properties.a.pattern", KeywordPattern},
+		{`{"properties":{"a":{"pattern":7}}}`, "properties.a.pattern", KeywordPattern},
+		{`{"required":7}`, "required", KeywordRequired},
+	}
+	for _, tc := range cases {
+		_, problems := ParseParams(json.RawMessage(tc.raw))
+		if len(problems) == 0 {
+			t.Fatalf("%s 应被判为不可用", tc.raw)
+		}
+		if problems[0].Path != tc.path || problems[0].Keyword != tc.keyword {
+			t.Fatalf("%s 的首个问题 = {%q %q}，want {%q %q}（全部：%v）",
+				tc.raw, problems[0].Path, problems[0].Keyword, tc.path, tc.keyword, problems)
+		}
+	}
+}
+
+func TestParseParamsProblemOrderIsStable(t *testing.T) {
+	raw := json.RawMessage(`{"type":"object","properties":{
+		"z":{"type":"string","pattern":"(["},
+		"b":3,
+		"pattern":7,
+		"a":{"pattern":"("},
+		"m":{"type":"object","properties":{"pattern":3}}
+	}}`)
+	var first []Problem
+	for i := 0; i < 32; i++ {
+		_, problems := ParseParams(raw)
+		if len(problems) == 0 {
+			t.Fatal("坏 schema 必须报问题")
+		}
+		if i == 0 {
+			first = problems
+			continue
+		}
+		if !reflect.DeepEqual(problems, first) {
+			t.Fatalf("第 %d 次的问题序列不同：\n第一次 %v\n这一次 %v", i, first, problems)
+		}
+	}
+	if got := first[0].Path; got != "properties.a.pattern" {
+		t.Fatalf("problems[0].Path = %q，want properties.a.pattern（属性名排序后的第一个坏属性）", got)
 	}
 }
 

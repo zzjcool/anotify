@@ -41,6 +41,18 @@ func TestNormalizeConfigRejectsUnusablePayloadSchema(t *testing.T) {
 			says:  "pattern 必须是字符串",
 		},
 		{
+			name:  "参数名就叫 pattern，属性值不是对象",
+			raw:   `{"type":"object","properties":{"pattern":3}}`,
+			field: "config.payloadSchema.properties.pattern",
+			says:  "不是对象",
+		},
+		{
+			name:  "多个坏属性时 causes[0] 按属性名排序（不随 map 遍历变化）",
+			raw:   `{"type":"object","properties":{"zeta":3,"alpha":3}}`,
+			field: "config.payloadSchema.properties.alpha",
+			says:  "不是对象",
+		},
+		{
 			name:  "required 不是字符串数组",
 			raw:   `{"type":"object","required":7}`,
 			field: "config.payloadSchema.required",

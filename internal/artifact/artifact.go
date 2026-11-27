@@ -298,8 +298,7 @@ type Requires struct {
 
 // UnmarshalJSON 严格解析 requires：未知子键是 requires_invalid，而不是被静默忽略。
 //
-// 为什么不用 DisallowUnknownFields：spec 的反序列化会在解码整份文档时一次性报
-// "unknown field"，那个短码会盖掉「requires 里有个拼错的键」这个更准确的诊断。
+// 不用 DisallowUnknownFields：整份 spec 的 "unknown field" 会盖掉「requires 里拼错的键」。
 func (r *Requires) UnmarshalJSON(data []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -632,11 +631,14 @@ func Validate(a *Artifact) error {
 
 	params, paramProblems := validateParams(a.Spec.Params)
 	addProblems(paramProblems)
-	for _, located := range validateParamPatterns(a.Spec.Params) {
+	patternProblems := validateParamPatterns(a.Spec.Params)
+	patternFields := make(map[string]struct{}, len(patternProblems))
+	for _, located := range patternProblems {
 		p = append(p, located.problem)
 		fields = append(fields, located.field)
+		patternFields[located.field] = struct{}{}
 	}
-	for _, located := range validateParamSchemaUsable(a.Spec.Params) {
+	for _, located := range validateParamSchemaUsable(a.Spec.Params, patternFields) {
 		p = append(p, located.problem)
 		fields = append(fields, located.field)
 	}
@@ -651,8 +653,7 @@ func Validate(a *Artifact) error {
 
 // paramInfo 是校验期从 params schema 里读出来的那点信息。
 type paramInfo struct {
-	// properties 是声明的顶层参数名（workDir 的 $(params.X) 只能引用这里）。
-	properties map[string]struct{}
+	properties map[string]struct{} // 顶层参数名（workDir 的 $(params.X) 只能引用这里）
 }
 
 // validateParams 校验 params 是 JSON 对象，并检查 ANOTIFY_PARAM_* 归一撞名。
@@ -765,7 +766,9 @@ func validateParamPatterns(params json.RawMessage) []locatedProblem {
 	return out
 }
 
-func validateParamSchemaUsable(params json.RawMessage) []locatedProblem { // #612：与运行期同一个解析器
+// validateParamSchemaUsable 把运行期不可用的 schema 翻成写入期 400（#612）：分流按
+// Keyword 不按路径文本（参数名可以就叫 pattern）；pattern 已报的仍走 #475 的错误码。
+func validateParamSchemaUsable(params json.RawMessage, reported map[string]struct{}) []locatedProblem {
 	if len(bytes.TrimSpace(params)) == 0 {
 		return nil
 	}
@@ -775,12 +778,15 @@ func validateParamSchemaUsable(params json.RawMessage) []locatedProblem { // #61
 		if problem.Path == "" { // 根问题（不是对象）由 validateParams 报（同一件事不报两遍）
 			continue
 		}
-		if problem.Path == "pattern" || strings.HasSuffix(problem.Path, ".pattern") {
-			continue
+		field := "spec.params." + problem.Path
+		if problem.Keyword == schema.KeywordPattern {
+			if _, ok := reported[field]; ok {
+				continue
+			}
 		}
 		out = append(out, locatedProblem{
 			problem: CodeParamSchemaInvalid + ": " + problem.Msg,
-			field:   "spec.params." + problem.Path,
+			field:   field,
 		})
 	}
 	return out

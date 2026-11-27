@@ -41,8 +41,7 @@ import (
 
 // FromRaw 解析一份原始 schema。
 //
-// 三种结果：nil schema + nil error（没声明 = 不校验）、map + nil、nil + error（坏了）。
-// 坏 schema 必须由调用方明确处理——「拿坏契约放行」是最坏的降级方式。
+// 三种结果：nil + nil（没声明 = 不校验）、map + nil、nil + error（坏了，调用方必须处理）。
 func FromRaw(raw json.RawMessage) (map[string]any, error) {
 	if len(raw) == 0 {
 		return nil, nil

@@ -30,6 +30,16 @@ type Issue struct {
 	Detail string
 }
 
+const (
+	KeywordRoot       = "root"       // 整份 schema 不是 JSON 对象（Path 为空）
+	KeywordType       = "type"       // type 写坏 / 不接受 object
+	KeywordProperties = "properties" // properties 不是对象
+	KeywordProperty   = "property"   // properties.<name> 的值不是对象
+	KeywordPattern    = "pattern"    // pattern 不是字符串 / 编译不过
+	KeywordDefault    = "default"    // default 不是合法 JSON
+	KeywordRequired   = "required"   // required 不是字符串数组
+)
+
 // ParseParams 是 #612 的唯一判据：问题非空 ⇔ 运行期不可用（写入期 400 / 运行期剪枝）。
 func ParseParams(raw json.RawMessage) (*Params, []Problem) {
 	s := &Params{Properties: map[string]ParamProperty{}, Required: map[string]bool{}}
@@ -40,35 +50,41 @@ func ParseParams(raw json.RawMessage) (*Params, []Problem) {
 	}
 	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(trimmed, &doc); err != nil || doc == nil {
-		return nil, []Problem{{Msg: "参数 schema 不是 JSON 对象"}}
+		return nil, []Problem{{Keyword: KeywordRoot, Msg: "参数 schema 不是 JSON 对象"}}
 	}
 	var problems []Problem
 	if rawType, ok := doc["type"]; ok {
 		if !isObjectType(rawType) {
-			problems = append(problems, Problem{Path: "type", Msg: "参数 schema.type 必须是 object"})
+			problems = append(problems, Problem{Path: "type", Keyword: KeywordType, Msg: "参数 schema.type 必须是 object"})
 		}
 	}
 	if rawProps, ok := doc["properties"]; ok {
 		var props map[string]json.RawMessage
 		if err := json.Unmarshal(rawProps, &props); err != nil || props == nil {
-			problems = append(problems, Problem{Path: "properties", Msg: "参数 schema.properties 不是对象"})
+			problems = append(problems, Problem{Path: "properties", Keyword: KeywordProperties,
+				Msg: "参数 schema.properties 不是对象"})
 		} else {
-			for name, rawProp := range props {
-				prop, propProblems := parseProperty(name, rawProp)
+			names := make([]string, 0, len(props))
+			for name := range props {
+				names = append(names, name)
+			}
+			sort.Strings(names) // 遍历顺序固定：problems[0] / causes[0] / 剪枝 detail 不随进程变化
+			for _, name := range names {
+				prop, propProblems := parseProperty(name, props[name])
 				for _, problem := range propProblems {
 					problem.Path = joinPath("properties."+name, problem.Path)
 					problems = append(problems, problem)
 				}
 				s.Properties[name] = prop
-				s.Order = append(s.Order, name)
 			}
-			sort.Strings(s.Order)
+			s.Order = names
 		}
 	}
 	if rawRequired, ok := doc["required"]; ok {
 		var names []string
 		if err := json.Unmarshal(rawRequired, &names); err != nil {
-			problems = append(problems, Problem{Path: "required", Msg: "参数 schema.required 必须是字符串数组"})
+			problems = append(problems, Problem{Path: "required", Keyword: KeywordRequired,
+				Msg: "参数 schema.required 必须是字符串数组"})
 		}
 		for _, name := range names {
 			s.Required[name] = true
@@ -88,13 +104,13 @@ func parseProperty(name string, raw json.RawMessage) (ParamProperty, []Problem) 
 	}
 	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(trimmed, &doc); err != nil || doc == nil {
-		return prop, []Problem{{Msg: fmt.Sprintf("参数 %s 的 schema 不是对象", name)}}
+		return prop, []Problem{{Keyword: KeywordProperty, Msg: fmt.Sprintf("参数 %s 的 schema 不是对象", name)}}
 	}
 	var problems []Problem
 	if rawType, ok := doc["type"]; ok {
 		types, terr := paramTypes(rawType)
 		if terr != nil {
-			problems = append(problems, Problem{Path: "type",
+			problems = append(problems, Problem{Path: "type", Keyword: KeywordType,
 				Msg: fmt.Sprintf("参数 %s：%v", name, terr)})
 		}
 		prop.Types = types
@@ -102,10 +118,10 @@ func parseProperty(name string, raw json.RawMessage) (ParamProperty, []Problem) 
 	if rawPattern, ok := doc["pattern"]; ok {
 		var pattern string
 		if err := json.Unmarshal(rawPattern, &pattern); err != nil {
-			problems = append(problems, Problem{Path: "pattern",
+			problems = append(problems, Problem{Path: "pattern", Keyword: KeywordPattern,
 				Msg: fmt.Sprintf("参数 %s 的 pattern 必须是字符串", name)})
 		} else if re, perr := CompilePattern(pattern); perr != nil {
-			problems = append(problems, Problem{Path: "pattern",
+			problems = append(problems, Problem{Path: "pattern", Keyword: KeywordPattern,
 				Msg: fmt.Sprintf("参数 %s 的 pattern %q 不可用：%v", name, pattern, perr)})
 		} else {
 			prop.Pattern = re
@@ -117,7 +133,7 @@ func parseProperty(name string, raw json.RawMessage) (ParamProperty, []Problem) 
 		dec.UseNumber()
 		var v any
 		if err := dec.Decode(&v); err != nil {
-			problems = append(problems, Problem{Path: "default",
+			problems = append(problems, Problem{Path: "default", Keyword: KeywordDefault,
 				Msg: fmt.Sprintf("参数 %s 的 default 不是合法 JSON", name)})
 		} else {
 			prop.Default = v

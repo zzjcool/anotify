@@ -30,6 +30,26 @@ func TestValidateRejectsUnusableParamSchema(t *testing.T) {
 			field:  "spec.params.properties.a",
 		},
 		{
+			name:   "参数名就叫 pattern（属性值不是对象）",
+			params: `{"type":"object","properties":{"pattern":3}}`,
+			field:  "spec.params.properties.pattern",
+		},
+		{
+			name:   "参数名以 .pattern 结尾",
+			params: `{"type":"object","properties":{"x.pattern":3}}`,
+			field:  "spec.params.properties.x.pattern",
+		},
+		{
+			name:   "参数名就叫 pattern（漏写一层对象）",
+			params: `{"type":"object","properties":{"pattern":"^x$"}}`,
+			field:  "spec.params.properties.pattern",
+		},
+		{
+			name:   "参数名就叫 pattern 且嵌套坏属性值",
+			params: `{"type":"object","properties":{"pattern":{"properties":{"pattern":3}}}}`,
+			field:  "spec.params.properties.pattern.properties.pattern",
+		},
+		{
 			name:   "required 不是字符串数组",
 			params: `{"type":"object","required":"a"}`,
 			field:  "spec.params.required",
@@ -67,6 +87,12 @@ func TestValidateParamSchemaVerdictMatchesRuntime(t *testing.T) {
 		`{"type":"object","properties":{"a":3}}`,
 		`{"type":"object","properties":{"a":{"type":"string","pattern":"(["}}}`,
 		`{"type":"object","properties":{"a":{"type":"string","pattern":7}}}`,
+		`{"type":"object","properties":{"pattern":3}}`,
+		`{"type":"object","properties":{"x.pattern":3}}`,
+		`{"type":"object","properties":{"pattern":"^x$"}}`,
+		`{"type":"object","properties":{"pattern":{"properties":{"pattern":3}}}}`,
+		`{"type":"object","properties":{"pattern":{"type":"string","pattern":"(["}}}`,
+		`{"type":"object","properties":{"pattern":{"pattern":"^x$"}}}`,
 		`{"type":"object","required":7}`,
 		`{"type":"object","required":["a"]}`,
 	}

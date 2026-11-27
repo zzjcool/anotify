@@ -115,9 +115,8 @@ export async function ensureNamespace(server, session, name) {
   return { namespace: ns, created: created.status === 201 };
 }
 
-// ensureNamespaceVars 给命名空间写一层真实的 ns 级变量（`PUT …/config`，CAS 必须带
-// 当前 rv）。节点上下文用例要把「切到 prod 读到的有效值」验成真实数据，而不是只验
-// mock 种子里那句 'prod-visible'。
+// ensureNamespaceVars 给命名空间写一层真实的 ns 级变量（`PUT …/config`，CAS 必须带当前
+// rv）：节点上下文用例要把「切到 prod 读到的有效值」验成真实数据，而不是只验 mock 种子。
 async function ensureNamespaceVars(server, session, ns, vars) {
   const path = `/v1/namespaces/${ns}/config`;
   const current = await rawReq(server.base, path, { headers: sessionCookie(session) });
@@ -132,9 +131,8 @@ async function ensureNamespaceVars(server, session, ns, vars) {
   return saved.body;
 }
 
-// realBootstrap 是 real 模式唯一的前置：会话（admin + member）与 default/prod
-// 命名空间。返回给 driver 的 fixtures，后续造数（capability/source/event/task…）
-// 也走真实 API 叠在它上面。
+// realBootstrap 是 real 模式唯一的前置：会话（admin + member）与 default/prod 命名空间；
+// 后续造数（capability/source/event/task…）也走真实 API 叠在它上面。
 async function realBootstrap(server) {
   const member = ensureSession(server, 'f3');
   // 管理员会话：admin.html 的数据面是 /v1/admin/*（adminSession 中间件），
@@ -182,15 +180,42 @@ async function ensureCapability(server, session, ns, name, next = [], extra = {}
   return created.body;
 }
 
+function canonicalJSON(value) { // 与 artifact.canonicalizeJSON 同口径：对象 key 递归排序后再序列化
+  if (Array.isArray(value)) return value.map(canonicalJSON);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort().map((k) => [k, canonicalJSON(value[k])]));
+  }
+  return value;
+}
+
+// contentIdentity 复算 foldKey/digest（#612 review r1）：只改 spec 不改身份会造出
+// store 认为不可能的行。字节与 artifact 的 digestDocument/foldDocument 同序，params 按 key 排序。
+function contentIdentity(name, spec, version) {
+  const doc = {
+    name,
+    ...(version === undefined ? {} : { version }),
+    params: spec.params,
+    requires: spec.requires,
+    lifecycle: spec.lifecycle,
+    concurrency: spec.concurrency,
+    run: spec.run,
+  };
+  return 'sha256:' + createHash('sha256').update(JSON.stringify(doc)).digest('hex');
+}
+
 function seedLegacyParamSchema(server, ns, name, params) { // #612：写入期已拒坏 schema，这里造「升级前的存量坏行」
-  withDB(server.dbPath, (db) => {
-    const row = db.prepare(`SELECT cv.id AS id, cv.spec AS spec FROM capability_versions cv
+  return withDB(server.dbPath, (db) => {
+    const row = db.prepare(`SELECT cv.id AS id, cv.spec AS spec, cv.version AS version FROM capability_versions cv
       JOIN namespaces n ON n.id = cv.namespace_id
-      WHERE n.slug = ? AND cv.name = ? AND cv.deleted_at IS NULL`).get(ns, name);
+      WHERE n.slug = ? AND cv.name = ? AND cv.deleted_at IS NULL
+      ORDER BY cv.version DESC LIMIT 1`).get(ns, name);
     assert.ok(row, `seedLegacyParamSchema: ${ns}/${name} 不存在`);
     const spec = JSON.parse(row.spec);
-    spec.params = params;
-    db.prepare('UPDATE capability_versions SET spec = ? WHERE id = ?').run(JSON.stringify(spec), row.id);
+    spec.params = canonicalJSON(params);
+    const digest = contentIdentity(name, spec, row.version);
+    db.prepare('UPDATE capability_versions SET spec = ?, digest = ?, fold_key = ? WHERE id = ?')
+      .run(JSON.stringify(spec), digest, contentIdentity(name, spec), row.id);
+    return { version: row.version, digest };
   });
 }
 
@@ -407,7 +432,8 @@ async function chainScenario(server, fixtures) {
   const broken = await ensureCapability(server, s, DEFAULT_NS, 'chain-broken', [], {
     params: { type: 'object', properties: { hop: { type: 'string' } } },
   });
-  seedLegacyParamSchema(server, DEFAULT_NS, 'chain-broken', { type: 'array', items: { type: 'string' } });
+  const brokenSeed = seedLegacyParamSchema(server, DEFAULT_NS, 'chain-broken', { type: 'array', items: { type: 'string' } });
+  broken.status = { ...(broken.status || {}), digest: brokenSeed.digest }; // 行内身份被重写：部署 ref 必须跟着换
   const root = await ensureCapability(server, s, DEFAULT_NS, 'chain-root', ['chain-mid', 'chain-broken'], {
     env: { SOURCE_ROOT: envRef('SOURCE_ROOT'), GIT_TERMINAL_PROMPT: envRef('GIT_TERMINAL_PROMPT') },
     requires: { values: ['vars.SOURCE_ROOT', 'vars.GIT_TERMINAL_PROMPT'] },
@@ -492,7 +518,8 @@ async function messageScenario(server, fixtures) {
   const broken = await ensureCapability(server, s, DEFAULT_NS, 'msg-broken', [], {
     params: { type: 'object', properties: { n: { type: 'integer' } } },
   });
-  seedLegacyParamSchema(server, DEFAULT_NS, 'msg-broken', { type: 'array', items: { type: 'string' } });
+  const brokenSeed = seedLegacyParamSchema(server, DEFAULT_NS, 'msg-broken', { type: 'array', items: { type: 'string' } });
+  broken.status = { ...(broken.status || {}), digest: brokenSeed.digest }; // 行内身份被重写：部署 ref 必须跟着换
   const root = await ensureCapability(server, s, DEFAULT_NS, 'msg-root', ['msg-child', 'msg-broken'], {
     env: { SOURCE_ROOT: envRef('SOURCE_ROOT'), GIT_TERMINAL_PROMPT: envRef('GIT_TERMINAL_PROMPT') },
     requires: { values: ['vars.SOURCE_ROOT', 'vars.GIT_TERMINAL_PROMPT'] },

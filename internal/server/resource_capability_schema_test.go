@@ -35,6 +35,22 @@ func TestCapabilityWriteRejectsUnusableParamSchema(t *testing.T) {
 			says:  "不是对象",
 		},
 		{
+			name: "参数名就叫 pattern（属性值不是对象）",
+			params: map[string]any{
+				"type": "object", "properties": map[string]any{"pattern": 3},
+			},
+			field: "spec.params.properties.pattern",
+			says:  "不是对象",
+		},
+		{
+			name: "参数名以 .pattern 结尾",
+			params: map[string]any{
+				"type": "object", "properties": map[string]any{"x.pattern": 3},
+			},
+			field: "spec.params.properties.x.pattern",
+			says:  "不是对象",
+		},
+		{
 			name:   "required 不是字符串数组",
 			params: map[string]any{"type": "object", "required": "a"},
 			field:  "spec.params.required",

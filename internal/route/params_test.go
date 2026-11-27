@@ -301,6 +301,9 @@ var unusableSchemas = []struct {
 	{"坏 pattern（RE2 编不过）", `{"type":"object","properties":{"repo":{"type":"string","pattern":"(["}}}`},
 	{"pattern 不是字符串", `{"type":"object","properties":{"repo":{"type":"string","pattern":7}}}`},
 	{"required 不是字符串数组", `{"type":"object","required":7}`},
+	{"参数名就叫 pattern（属性值不是对象）", `{"type":"object","properties":{"pattern":3}}`},
+	{"参数名以 .pattern 结尾", `{"type":"object","properties":{"x.pattern":3}}`},
+	{"属性名就叫 pattern 漏写一层对象", `{"type":"object","properties":{"pattern":"^x$"}}`},
 }
 
 // TestRuntimeRejectsUnusableSchemas 是 #612 的运行期一半：这些 schema 写入期已经 400，
