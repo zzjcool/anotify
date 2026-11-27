@@ -860,15 +860,12 @@ func srcYAMLDocument(src *store.Source) ([]byte, error) {
 	if src.DisplayName != "" {
 		meta["displayName"] = src.DisplayName
 	}
-	targets := make([]any, 0, len(src.Targets))
-	for _, target := range src.Targets {
-		entry := map[string]any{"capability": target.Capability}
-		// params 为空时省掉（与读投影的 omitempty 同口径）：空对象不是「声明了空映射」。
-		if len(target.Params) > 0 {
-			entry["params"] = target.Params
-		}
-		targets = append(targets, entry)
-	}
+	// targets 直接交给 sourcespec.Target 自己的 JSON tag 编码（与读投影 srcSpecView.Targets
+	// 是**同一份**形状）：手工挑字段会在 Target 长出新字段时静默掉队 —— #583 的 match
+	// （#519 条件派）与 outcomes（#522 结局表）就是这样丢的，导出 -> 贴回 = 过滤消失。
+	// 拷一份再放进去：保持「空列表是 []、不是 null」这条信封纪律（同 srcEnvelopeOf）。
+	targets := make([]sourcespec.Target, 0, len(src.Targets))
+	targets = append(targets, src.Targets...)
 	doc := map[string]any{
 		"apiVersion": apiVersionV1,
 		"kind":       kindSourceDoc,
