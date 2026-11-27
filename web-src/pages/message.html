@@ -208,7 +208,7 @@
   (function () {
     "use strict";
     const A = window.Anotify;
-    const { el, api, ready, nsPath, readScope, saveScope, model, t, icon, copyText, loadErrorNode } = A;
+    const { el, api, ready, nsPath, readScope, saveScope, model, t, pruneReason, icon, copyText, loadErrorNode } = A;
     const query = new URLSearchParams(location.search);
     const name = query.get("id") || "";
     if (query.get("namespace")) saveScope({ namespace: query.get("namespace") });
@@ -626,15 +626,16 @@
         const list = node("emissions-list");
         list.replaceChildren();
         for (const fact of emissions.values()) {
+          const target = fact.version != null ? fact.to + "@" + fact.version : fact.to;
           const row = el("div", { class: "grid gap-2", "data-event-id": fact.eventId || fact.id || fact.taskId || "" },
-            el("code", { class: "mono b2-wrap", text: [fact.eventId, fact.to + "@" + fact.version].filter(Boolean).join(" · ") }));
+            el("code", { class: "mono b2-wrap", text: [fact.eventId, target].filter(Boolean).join(" · ") }));
           if (fact.id) row.append(el("p", { class: "card-sub b2-wrap", text: "id: " + fact.id }));
           if (fact.taskId) row.append(el("a", {
             class: "mono b2-wrap",
             href: "message.html?namespace=" + encodeURIComponent(task.namespace) + "&id=" + encodeURIComponent(fact.taskId),
             text: fact.taskId,
           }));
-          if (fact.pruned) row.append(el("p", { class: "card-sub b2-wrap", text: fact.pruned.reason + ": " },
+          if (fact.pruned) row.append(el("p", { class: "card-sub b2-wrap", text: pruneReason(fact.pruned.reason) + ": " },
             el("span", { "data-raw-content": "", text: fact.pruned.detail })));
           list.append(row);
         }

@@ -10,16 +10,13 @@ import (
 	"github.com/zzjcool/anotify/internal/protocol"
 )
 
-// ErrEmitIDConflict 表示同一逻辑任务里同一个 emit id 被用于**不同**的请求（to/data）。
-//
-// 它是 emit 网关的 409 `emit_id_conflict`：调用方必须换一个 id（或用新 id 重发）。
-// 静默按第一次的请求重放会让「我改了 data 怎么没生效」变成一个查不出来的问题。
+// ErrEmitIDConflict 表示同一逻辑任务里同一个 emit id 被用于**不同**的请求（to/data）：
+// emit 网关的 409 `emit_id_conflict`，调用方必须换一个 id。静默按第一次的请求重放
+// 会让「我改了 data 怎么没生效」变成一个查不出来的问题。
 var ErrEmitIDConflict = errors.New("emit_id_conflict")
 
-// ErrEmitNamespaceDenied 表示节点未获授权访问任务所属命名空间。
-//
-// 它是**授权**失败（不是身份失败）：节点身份是真的，但它没被授权碰这个 ns。
-// 单独一个哨兵是为了让上层能把「不该派给它」与「伪造身份」分开记日志。
+// ErrEmitNamespaceDenied 表示节点未获授权访问任务所属命名空间：**授权**失败（不是
+// 身份失败），单独一个哨兵是为了让上层把「不该派给它」与「伪造身份」分开记日志。
 var ErrEmitNamespaceDenied = errors.New("namespace_unauthorized")
 
 // ErrNodeIdentityMismatch 表示 emit 声明的节点身份与库里那条节点不一致。
@@ -30,19 +27,16 @@ var ErrNodeIdentityMismatch = errors.New("node_identity_mismatch")
 
 // EmitPruneFact 是本次 emit 计划里被剪枝的一条观察事实（非 wire，不参与幂等回放比对）。
 //
-// 为什么计划事实要进同一个写事务：剪枝是「事件/emit 收到了但没派发出去」的唯一证据，
-// runtime 提前另一事务写会出现「授权/幂等都过了，剪枝却没落」的半截事实；也挡不住
-// 一次已经失去执行权的执行往观察流里写东西。
+// 计划事实必须进同一个写事务：它是「已经失去执行权」也挡不住的半截事实的唯一防线
+// （提前另一事务写，会出现授权/幂等都过了、剪枝却没落）。
 type EmitPruneFact struct {
 	Capability string
 	Reason     string
 	Detail     string
 }
 
-// EmitFailureFact 是本次 emit 计划里未解析的下游目标（downstream_missing）。
-//
-// 它建的是**失败 Task**（phase=failed、attempt=0、NULL capability ref），不是剪枝：
-// capability.md §6.2 的下游缺失属于执行失败，必须能在任务/trace 里被看见。
+// EmitFailureFact 是本次 emit 计划里未解析的下游目标（downstream_missing）：建的是
+// **失败 Task**（phase=failed、attempt=0、NULL capability ref），不是剪枝（§6.2）。
 type EmitFailureFact struct {
 	Capability string
 	Version    int
@@ -51,6 +45,28 @@ type EmitFailureFact struct {
 	// TaskID 是调用方预分配、要在回执里先给出的任务 id（可选）。
 	// 省略 → store 现场 NewTaskID；给定 → 落库必须用同一个 id（否则回执就是假身份）。
 	TaskID string
+}
+
+// EmitRejectionFact 是「这次 emit 被中枢拒绝、什么都没派发」的观察事实（#636）：与计划事实
+// 同事务落地（没执行权就留不下），不建任务、不进幂等域。
+type EmitRejectionFact struct {
+	To         string // 真实请求的引用（`name` / `name@version`），不解析、不规范化
+	Capability string // 观察面用的目标名（basename）；空 → 落库时回退到 To
+	Reason     string // 取值见 emitRejectionReasons
+	Detail     string
+}
+
+// emitRejectionReasons 是「emit 被中枢拒绝」的观察码闭集（#636）：与剪枝共用观察行通道
+// （source='route'），但仍是 4xx 拒绝，所以不在 protocol.IsPruneReason 里。
+var emitRejectionReasons = []string{protocol.ReasonTargetNotDeclared}
+
+func isEmitRejectionReason(reason string) bool {
+	for _, allowed := range emitRejectionReasons {
+		if allowed == reason {
+			return true
+		}
+	}
+	return false
 }
 
 // EmitRecord 是一次 emit 的落库行（capability.md §4.1 / D-I9）。
@@ -73,16 +89,15 @@ type EmitRecord struct {
 	CreatedAt int64           `json:"createdAt"`
 	// PlannedPrunes / PlannedFailures 是**同事务计划事实**（没有 JSON 协议别名）：
 	// 一次 emit 的剪枝观察与下游缺失失败，与 emit 行/子任务同生共死。
-	PlannedPrunes   []EmitPruneFact   `json:"-"`
-	PlannedFailures []EmitFailureFact `json:"-"`
+	PlannedPrunes    []EmitPruneFact    `json:"-"`
+	PlannedFailures  []EmitFailureFact  `json:"-"`
+	PlannedRejection *EmitRejectionFact `json:"-"` // 「这次 emit 被拒」的观察事实（#636）
 }
 
 // EmitAuth 是一次 emit 的**授权事实**（store 内部形状，不镜像任何 wire DTO）。
 //
-// 为什么授权参数必须进同一个事务：`VerifyAttemptToken` + 另一个事务写派发，
-// 中间会有一个窗口——任务刚好被取消 / 租约刚好过期 / 被重派给新 attempt。
-// 那个窗口里写下去的下游任务属于一次**已经失去执行权**的执行，
-// 而它无法被回收（下游任务看起来完全合法）。所以判定与写入必须同生共死。
+// 授权参数必须进同一个事务：`VerifyAttemptToken` 与派发之间若有窗口（任务被取消 /
+// 租约过期 / 被重派），那个窗口里建出的下游任务看起来完全合法、无法回收。
 //
 // NodeTokenHash 是节点身份令牌的 sha256（明文永远不进 store）：
 // 中枢按它判「这还是不是那台机器」，而不是只看 task.node_id（那是一个可伪造的字符串）。
@@ -149,9 +164,8 @@ func lookupEmitOn(ctx context.Context, ex queryExec, taskID, emitID string) (*Em
 // 授权与 replay 之后、**任何写之前**——downstream_missing 是失败 Task 的观察码，
 // 不是剪枝，不能从这里混进 status.observed.pruned。
 //
-// 第 4 步为什么必须在授权之后：一条**已经失效**的执行（被取消 / 租约过期 / 被重派）
-// 如果能靠「我上次已经 emit 过」拿到回执，它就会认为自己仍然拥有执行权，
-// 于是继续跑完并写终态——幂等变成了绕过授权的后门。
+// 第 4 步为什么必须在授权之后：一条已经失效的执行若能靠「我上次 emit 过」拿到回执，
+// 就会认为自己仍有执行权、继续跑完写终态——幂等变成绕过授权的后门。
 func (d *DB) EmitAuthorized(ctx context.Context, auth EmitAuth, rec *EmitRecord, tasks []*Task) (json.RawMessage, bool, error) {
 	if rec == nil {
 		return nil, false, fmt.Errorf("emit: nil record")
@@ -204,6 +218,9 @@ func (d *DB) EmitAuthorized(ctx context.Context, auth EmitAuth, rec *EmitRecord,
 	// 计划事实的闭集校验先于**任何写**：非法剪枝码一旦落库，就是一条
 	// 「把失败伪装成剪枝」的假事实（事件 type 就是那个 reason）。
 	if err := validateEmitPlannedPrunes(rec); err != nil {
+		return nil, false, err
+	}
+	if err := validateEmitPlannedRejection(rec); err != nil {
 		return nil, false, err
 	}
 
@@ -261,10 +278,26 @@ func validateEmitPlannedPrunes(rec *EmitRecord) error {
 	return nil
 }
 
+// validateEmitPlannedRejection：reason ∈ emitRejectionReasons，且不得带 emit_id（假幂等）。
+func validateEmitPlannedRejection(rec *EmitRecord) error {
+	r := rec.PlannedRejection
+	if r == nil {
+		return nil
+	}
+	if !isEmitRejectionReason(r.Reason) {
+		return fmt.Errorf("emit %s: planned rejection reason %q 不是拒绝码（闭集：%v）",
+			rec.TaskID, r.Reason, emitRejectionReasons)
+	}
+	if rec.EmitID != nil && *rec.EmitID != "" {
+		return fmt.Errorf("emit %s: 被拒绝的 emit 不得带 emit_id（拒绝不进幂等域）", rec.TaskID)
+	}
+	return nil
+}
+
 // writeEmitPlannedFactsOn 在 emit 的**同一个事务**里写计划事实：
 //
 //   - 未解析失败 Task（downstream_missing）+ 它的错误观察事件；
-//   - 纯剪枝观察事件。
+//   - 纯剪枝观察事件；被拒绝的 emit（#636）的拒绝行。
 //
 // 授权与历史 replay 已在前面完成（命中 replay 直接返回，不执行本函数——回放不得
 // 附带任何新写）。任何一条写失败都返回错误，由调用方整事务回滚；不吞 prune 错误。
@@ -272,7 +305,7 @@ func validateEmitPlannedPrunes(rec *EmitRecord) error {
 // 返回值是**真实创建**的失败 Task id（按计划顺序）：调用方据此核对回执点名的
 // taskId 不是预先编好、实际没落库的假身份。
 func (d *DB) writeEmitPlannedFactsOn(ctx context.Context, ex queryExec, rec *EmitRecord, now int64) ([]string, error) {
-	if len(rec.PlannedFailures) == 0 && len(rec.PlannedPrunes) == 0 {
+	if len(rec.PlannedFailures) == 0 && len(rec.PlannedPrunes) == 0 && rec.PlannedRejection == nil {
 		return nil, nil
 	}
 	if now == 0 {
@@ -323,6 +356,27 @@ func (d *DB) writeEmitPlannedFactsOn(ctx context.Context, ex queryExec, rec *Emi
 			return nil, fmt.Errorf("emit %s: marshal prune: %w", rec.TaskID, merr)
 		}
 		ev := &Event{NamespaceID: namespaceID, TraceID: traceID, Type: p.Reason, Payload: payload, CreatedAt: now}
+		if err := insertPruneFactEventOn(ctx, ex, ev); err != nil {
+			return nil, err
+		}
+	}
+	if r := rec.PlannedRejection; r != nil {
+		capability := r.Capability
+		if capability == "" {
+			capability = r.To
+		}
+		payload, merr := json.Marshal(map[string]any{
+			"to":           r.To,
+			"capability":   capability,
+			"reason":       r.Reason,
+			"detail":       r.Detail,
+			"taskId":       rec.TaskID,
+			"parentTaskId": rec.TaskID,
+		})
+		if merr != nil {
+			return nil, fmt.Errorf("emit %s: marshal rejection: %w", rec.TaskID, merr)
+		}
+		ev := &Event{NamespaceID: namespaceID, TraceID: traceID, Type: r.Reason, Payload: payload, CreatedAt: now}
 		if err := insertPruneFactEventOn(ctx, ex, ev); err != nil {
 			return nil, err
 		}
@@ -446,6 +500,18 @@ func emitResult(rec *EmitRecord, tasks []*Task, failureTaskIDs []string) (json.R
 		}
 		return rec.Result, nil
 	}
+	if r := rec.PlannedRejection; r != nil {
+		// 兜底回执必须是拒绝形状（taskId:null + pruned），不能落到 `{"taskIds":[]}`。
+		b, err := json.Marshal(map[string]any{
+			"taskId": nil,
+			"to":     rec.ToRef,
+			"pruned": map[string]any{"reason": r.Reason, "detail": r.Detail},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("emit: marshal rejection result: %w", err)
+		}
+		return json.RawMessage(b), nil
+	}
 	ids := make([]string, 0, len(tasks))
 	for _, t := range tasks {
 		if t == nil || t.ID == "" {
@@ -460,10 +526,8 @@ func emitResult(rec *EmitRecord, tasks []*Task, failureTaskIDs []string) (json.R
 	return json.RawMessage(b), nil
 }
 
-// checkReceiptTaskID 核对回执里的 taskId（若有且非 null）是本次事务创建的任务。
-//
-// taskId:null（剪枝回执）与没有该字段的旧结果不做限制：它们不声称任何身份。
-// 这里只做**核对**，不重算回执字节——回放必须回原字节，身份必须对真实行。
+// checkReceiptTaskID 核对回执里的 taskId（若有且非 null）是本次事务创建的任务：
+// taskId:null（剪枝回执）与没有该字段的旧结果不做限制（它们不声称任何身份）。
 func checkReceiptTaskID(result json.RawMessage, tasks []*Task, failureTaskIDs []string) error {
 	var probe struct {
 		TaskID *string `json:"taskId"`

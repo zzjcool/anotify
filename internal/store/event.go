@@ -290,6 +290,8 @@ func (d *DB) InsertPruneEvent(ctx context.Context, e *Event) error {
 // 它跟 InsertPruneEvent 是同一份语义：**永远留痕**（不做投递幂等、不带 deliveryId），
 // source 固定为中枢观察来源 `route`，reason 固定 `Pruned`，type 是闭集剪枝码。
 // 失败 task 的 downstream_missing 观察也走这里（type=downstream_missing）。
+//
+// 被拒绝的 emit（#636）也走这里：不是剪枝、也不是任务失败，但必须留一条可查询的事实。
 func insertPruneFactEventOn(ctx context.Context, ex queryExec, e *Event) error {
 	if e == nil {
 		return fmt.Errorf("insert prune event: nil")
@@ -304,9 +306,9 @@ func insertPruneFactEventOn(ctx context.Context, ex queryExec, e *Event) error {
 		return fmt.Errorf("insert prune event: empty type (剪枝码)")
 	}
 	if !protocol.IsPruneReason(e.Type) && e.Type != protocol.ReasonDownstreamMissing &&
-		!protocol.IsRouteObservationReason(e.Type) {
-		return fmt.Errorf("insert prune event: %q 不是剪枝原因码（允许：%v / %v）",
-			e.Type, protocol.PruneReasons(), protocol.RouteObservationReasons())
+		!protocol.IsRouteObservationReason(e.Type) && !isEmitRejectionReason(e.Type) {
+		return fmt.Errorf("insert prune event: %q 不是剪枝/观察原因码（允许：%v / %v / %v）",
+			e.Type, protocol.PruneReasons(), protocol.RouteObservationReasons(), emitRejectionReasons)
 	}
 	payload := string(e.Payload)
 	if len(e.Payload) == 0 || !json.Valid(e.Payload) {

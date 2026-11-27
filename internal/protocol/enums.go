@@ -125,7 +125,7 @@ func ConditionReasons(conditionType string) []string {
 // 它们是任务结果与事件的 reason，也是节点侧可判别的失败分类。**不是** HTTP
 // Status 的 reason 词表（虽然字面复用）：响应形状与判定时机不同，不要混用。
 const (
-	// emit 被拒（本地网关 / 中枢权威检查）。
+	// emit 被拒：本地网关预检或中枢权威检查；中枢拒绝时留一条同码的观察行（#636）。
 	ReasonTargetNotDeclared = "target_not_declared"
 	ReasonMissingTarget     = "missing_target"
 	ReasonTokenInvalid      = "token_invalid"

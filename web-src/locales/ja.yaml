@@ -366,7 +366,7 @@ message:
     truncated: "切り詰め済み"
     complete: "切り詰めなし"
     logs_empty: "この試行のログがない、または前の試行がありません。"
-    emissions: "受理された emit 記録"
+    emissions: "emit 記録（拒否を含む）"
     missing: "URL にタスク id がありません。"
     not_found: "タスクがない、削除済み、または別の名前空間です。"
     artifact_download: "保管成果物をダウンロード"
@@ -1405,6 +1405,7 @@ prune:
   no_node: 対象の能力にオンラインノードがありません
   foreign_user: ネームスペース/ユーザーをまたいでいます
   event_schema: 'イベントのペイロードがソースの宣言した契約に適合していません'
+  target_not_declared: '対象がこの能力の next に宣言されていません'
   max_hops: hop 予算を超過（チェーンが深すぎます）
   budget: この trace のタスク数が予算を超過しました
   no_impl: 宛先はプレースホルダー（noop）です — ハブは実行しません

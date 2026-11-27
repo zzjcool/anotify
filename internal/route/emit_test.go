@@ -157,6 +157,132 @@ func TestEmitUndeclaredTargetRejected(t *testing.T) {
 	}
 }
 
+// TestEmitUndeclaredTargetLeavesRejectionFact 钉住 #636：`to` 不在 next 里时必须留下可查询的拒绝事实。
+func TestEmitUndeclaredTargetLeavesRejectionFact(t *testing.T) {
+	f := newEmitFixture(t)
+	_, err := f.router.Emit(testCtx(), EmitInput{
+		Auth: f.auth, To: "ghost@3", EmitID: "retry-after-fix", Data: json.RawMessage(`{"n":1}`),
+	})
+	var emitErr *EmitError
+	if !errors.As(err, &emitErr) || emitErr.Reason != protocol.ReasonTargetNotDeclared {
+		t.Fatalf("未声明目标必须 target_not_declared，得到 %v", err)
+	}
+	// wire 不变：仍是 400 / CLI 2，且不回执任何 taskId。
+	if emitErr.HTTPStatus() != 400 || emitErr.ExitCode() != protocol.EmitExitBadRequest {
+		t.Fatalf("状态码/退出码不对: %d/%d", emitErr.HTTPStatus(), emitErr.ExitCode())
+	}
+	if got := f.childCount(t); got != 0 {
+		t.Fatalf("未声明目标不得建任务，子任务数 = %d", got)
+	}
+
+	// emits 行：真实 to + 拒绝形状的 result，且没有 emit_id（拒绝不进幂等域）。
+	emits, lerr := f.db.ListEmits(testCtx(), f.parent.ID)
+	if lerr != nil {
+		t.Fatalf("列 emit 事实: %v", lerr)
+	}
+	if len(emits) != 1 {
+		t.Fatalf("拒绝应恰好留一行 emit 事实，得到 %d 行", len(emits))
+	}
+	if emits[0].ToRef != "ghost@3" || emits[0].EmitID != nil {
+		t.Fatalf("拒绝行必须保真实 to_ref 且不带 emit_id: %+v", emits[0])
+	}
+	var stored protocol.EmitResponse
+	if jerr := json.Unmarshal(emits[0].Result, &stored); jerr != nil {
+		t.Fatalf("拒绝行的 result 必须可直接投影（emissions 卡片）: %v (%s)", jerr, emits[0].Result)
+	}
+	if stored.TaskID != nil || stored.Pruned == nil ||
+		stored.Pruned.Reason != protocol.ReasonTargetNotDeclared || stored.Pruned.Detail == "" {
+		t.Fatalf("拒绝行 result 形状不对（taskId 必为 null + 原因/diag）: %+v", stored)
+	}
+
+	var rejected []*store.Event
+	events, eerr := f.db.ListEvents(testCtx(), f.namespace.ID, f.parent.TraceID, "", 50)
+	if eerr != nil {
+		t.Fatalf("列 trace 事件: %v", eerr)
+	}
+	for _, ev := range events {
+		if ev.Type == protocol.ReasonTargetNotDeclared {
+			rejected = append(rejected, ev)
+		}
+	}
+	if len(rejected) != 1 {
+		t.Fatalf("trace 里应恰好一条拒绝观察行，得到 %d", len(rejected))
+	}
+	var payload struct {
+		To     string `json:"to"`
+		Reason string `json:"reason"`
+		Detail string `json:"detail"`
+		TaskID string `json:"taskId"`
+	}
+	if jerr := json.Unmarshal(rejected[0].Payload, &payload); jerr != nil {
+		t.Fatalf("解析拒绝 payload: %v", jerr)
+	}
+	if payload.To != "ghost@3" || payload.Reason != protocol.ReasonTargetNotDeclared ||
+		payload.Detail == "" || payload.TaskID != f.parent.ID {
+		t.Fatalf("拒绝观察行必须点名 to/原因/发起任务: %+v", payload)
+	}
+
+	// 幂等域没被污染：同一个 --id 换个已声明目标必须真的派发（否则是 409）。
+	ok, err := f.router.Emit(testCtx(), EmitInput{
+		Auth: f.auth, To: "consumer", EmitID: "retry-after-fix", Data: json.RawMessage(`{"file":"a.go"}`),
+	})
+	if err != nil {
+		t.Fatalf("修好 next 后带同一个 --id 重发应真的派发: %v", err)
+	}
+	if ok.Response.TaskID == nil {
+		t.Fatalf("重发必须建出下游任务: %+v", ok.Response)
+	}
+}
+
+// TestEmitUndeclaredTargetWritesNoFactWithoutExecutionRights：失效凭证不能靠「反正会被拒」往观察流写。
+func TestEmitUndeclaredTargetWritesNoFactWithoutExecutionRights(t *testing.T) {
+	f := newEmitFixture(t)
+	beforeEvents := countTraceEvents(t, f.db, f.parent.TraceID)
+	if err := f.db.SetNodeTokenHash(testCtx(), f.node.ID, store.HashNodeToken("rotated-token")); err != nil {
+		t.Fatalf("轮换令牌: %v", err)
+	}
+	_, err := f.router.Emit(testCtx(), EmitInput{Auth: f.auth, To: "ghost", Data: json.RawMessage(`{}`)})
+	var emitErr *EmitError
+	if !errors.As(err, &emitErr) || emitErr.Reason != protocol.ReasonTokenInvalid {
+		t.Fatalf("失效凭证必须 token_invalid（不泄漏图形信息），得到 %v", err)
+	}
+	if got := countTraceEvents(t, f.db, f.parent.TraceID); got != beforeEvents {
+		t.Fatalf("失效授权不得写拒绝观察行：%d → %d", beforeEvents, got)
+	}
+	emits, lerr := f.db.ListEmits(testCtx(), f.parent.ID)
+	if lerr != nil {
+		t.Fatalf("列 emit 事实: %v", lerr)
+	}
+	if len(emits) != 0 {
+		t.Fatalf("失效授权不得写 emit 行，得到 %d", len(emits))
+	}
+}
+
+// TestEmitRejectionFactFailureIsNotSwallowed：事实写不进去就不能报成一次正常的拒绝。
+func TestEmitRejectionFactFailureIsNotSwallowed(t *testing.T) {
+	f := newEmitFixture(t)
+	if _, err := f.db.Exec(`CREATE TRIGGER r1_reject_fail BEFORE INSERT ON events
+		WHEN NEW.source = 'route' AND NEW.type = 'target_not_declared'
+		BEGIN SELECT RAISE(ABORT, 'injected rejection write failure'); END`); err != nil {
+		t.Fatalf("注入拒绝写失败: %v", err)
+	}
+	_, err := f.router.Emit(testCtx(), EmitInput{Auth: f.auth, To: "ghost", Data: json.RawMessage(`{}`)})
+	if err == nil {
+		t.Fatal("拒绝事实写失败被吞成了正常拒绝")
+	}
+	var emitErr *EmitError
+	if errors.As(err, &emitErr) && emitErr.Reason == protocol.ReasonTargetNotDeclared {
+		t.Fatalf("事实没落库却报了确定的 target_not_declared: %v", err)
+	}
+	emits, lerr := f.db.ListEmits(testCtx(), f.parent.ID)
+	if lerr != nil {
+		t.Fatalf("列 emit 事实: %v", lerr)
+	}
+	if len(emits) != 0 {
+		t.Fatalf("失败事务不得留下 emit 行，得到 %d", len(emits))
+	}
+}
+
 func TestEmitMissingTargetRejected(t *testing.T) {
 	f := newEmitFixture(t)
 	_, err := f.router.Emit(testCtx(), EmitInput{Auth: f.auth, To: "", Data: json.RawMessage(`{}`)})
@@ -496,8 +622,9 @@ func TestEmitStrictPinnedRefRejectsNonCanonicalVersion(t *testing.T) {
 	db, ns, parent, auth, router := missingEmitFixture(t, "trace-missing-ref", "ghost@2")
 	beforeTasks, _ := db.ListTasksByTrace(testCtx(), ns.ID, parent.TraceID)
 	beforeEvents, _ := db.ListEvents(testCtx(), ns.ID, parent.TraceID, "", 50)
+	badRefs := []string{"ghost@2junk", "ghost@+2", "ghost@ 2", "ghost@02", "ghost@", "ghost@0"}
 
-	for _, to := range []string{"ghost@2junk", "ghost@+2", "ghost@ 2", "ghost@02", "ghost@", "ghost@0"} {
+	for _, to := range badRefs {
 		_, err := router.Emit(testCtx(), EmitInput{Auth: auth, To: to, Data: json.RawMessage(`{}`)})
 		var emitErr *EmitError
 		if !errors.As(err, &emitErr) || emitErr.Reason != protocol.ReasonTargetNotDeclared {
@@ -507,12 +634,32 @@ func TestEmitStrictPinnedRefRejectsNonCanonicalVersion(t *testing.T) {
 			t.Fatalf("to=%q 的 HTTP 状态 = %d，want 400", to, emitErr.HTTPStatus())
 		}
 	}
-	// 坏引用是纯拒绝：不建任务、不写事件。
 	afterTasks, _ := db.ListTasksByTrace(testCtx(), ns.ID, parent.TraceID)
+	if len(afterTasks) != len(beforeTasks) {
+		t.Fatalf("坏引用建了任务: %d→%d", len(beforeTasks), len(afterTasks))
+	}
 	afterEvents, _ := db.ListEvents(testCtx(), ns.ID, parent.TraceID, "", 50)
-	if len(afterTasks) != len(beforeTasks) || len(afterEvents) != len(beforeEvents) {
-		t.Fatalf("坏引用产生了写: tasks %d→%d events %d→%d",
-			len(beforeTasks), len(afterTasks), len(beforeEvents), len(afterEvents))
+	rejected := 0
+	for _, ev := range afterEvents {
+		if ev.Type == protocol.ReasonTargetNotDeclared {
+			rejected++
+		}
+	}
+	if rejected != len(badRefs) {
+		t.Fatalf("坏引用的拒绝观察行 = %d，want %d", rejected, len(badRefs))
+	}
+	if len(afterEvents) != len(beforeEvents)+len(badRefs) {
+		t.Fatalf("坏引用只该多出拒绝观察行: events %d→%d（want +%d）",
+			len(beforeEvents), len(afterEvents), len(badRefs))
+	}
+	emits, _ := db.ListEmits(testCtx(), parent.ID)
+	if len(emits) != len(badRefs) {
+		t.Fatalf("坏引用的拒绝 emit 行 = %d，want %d", len(emits), len(badRefs))
+	}
+	for _, rec := range emits {
+		if rec.EmitID != nil {
+			t.Fatalf("拒绝行带了 emit_id（会污染幂等域）: %+v", rec)
+		}
 	}
 	// 精确写法仍放行（回到真实失败 Task 回执）。
 	ok, err := router.Emit(testCtx(), EmitInput{Auth: auth, To: "ghost@2", Data: json.RawMessage(`{}`)})

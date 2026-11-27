@@ -12,14 +12,9 @@ import (
 
 // 能力 emit（capability.md §4.1 / §8.5、V4-D4）。
 //
-// 一条不可协商的顺序：**先授权、后幂等回放**。`store.EmitAuthorized` 在同一个事务里
-// 依次做「当前节点凭证 / ns 授权 / 当前 attempt+lease+token 未过期且未取消」→
-// 「(taskId,id) 幂等/冲突」→「写 emit 记录 + 建子任务」。所以已经失效的执行**不能**
-// 靠「我上次 emit 过」拿到旧回执继续跑——幂等不是绕过授权的后门。
-//
-// requestId 只属于 RPC 关联（节点 ↔ 中枢的帧配对），**不是**业务去重键：业务幂等域
-// 是 (逻辑 task, 显式 id)。无 id 每次新派发；同 id 同请求回旧结果；同 id 不同请求 409。
-// 这个文件不发明第二份 wire DTO：回执/错误直接复用 protocol.EmitResponse / EmitError。
+// 授权/幂等的顺序与理由只有一份（store.EmitAuthorized 的事务步骤），这里不复述；
+// requestId 只属于 RPC 关联，业务幂等域是 (逻辑 task, 显式 id)。本文件不发明第二份
+// wire DTO：回执/错误直接复用 protocol.EmitResponse / EmitError。
 
 // EmitError 是 emit 通道的可判别拒绝（reason 取 capability.md §6.2 封闭词表）。
 //
@@ -86,8 +81,7 @@ func (r *Router) Emit(ctx context.Context, in EmitInput) (EmitResult, error) {
 	if in.To == "" {
 		return EmitResult{}, &EmitError{Reason: protocol.ReasonMissingTarget}
 	}
-	// 令牌 → 父任务（设计 §4.0：身份来自令牌，不来自通道）。这一步只用于读出
-	// 「父任务钉住了哪个能力版本」来做 next 校验；**授权判定仍在 EmitAuthorized 事务里**。
+	// 令牌 → 父任务（身份来自令牌，不来自通道）：只用于读出父能力版本来做 next 校验；授权判定仍在 EmitAuthorized 事务里。
 	parent, err := r.db.VerifyAttemptToken(ctx, in.Auth.TaskID, in.Auth.AttemptToken)
 	if err != nil {
 		return EmitResult{}, mapEmitStoreError(err)
@@ -95,7 +89,7 @@ func (r *Router) Emit(ctx context.Context, in EmitInput) (EmitResult, error) {
 	plan, err := r.PlanFromEmit(ctx, parent, in.To, in.Data)
 	if err != nil {
 		if errors.Is(err, ErrNotDeclared) {
-			return EmitResult{}, &EmitError{Reason: protocol.ReasonTargetNotDeclared, Err: err}
+			return EmitResult{}, r.rejectEmit(ctx, in, parent, err)
 		}
 		return EmitResult{}, err
 	}
@@ -106,9 +100,8 @@ func (r *Router) Emit(ctx context.Context, in EmitInput) (EmitResult, error) {
 		// 回执（那会给出一个与其余失败事实不对应的 taskId）：交给父裁决，不扩数组协议。
 		return EmitResult{}, fmt.Errorf("emit: 计划有 %d 条未解析失败目标，E1 只支持单目标回执（不挑第一条）", len(failures))
 	}
-	// 回执的 eventId 是本次 emit **接受事实**（emits 行）的稳定 id。store 没有公开
-	// 的 emt_ 生成器，但 rec.ID 是写入的权威 id：预生成它并同时用于回执与落库，
-	// 同 id 回放返回的也是同一份 body（不会重算）。
+	// 回执的 eventId 是本次 emit 接受事实（emits 行）的稳定 id：rec.ID 是写入的权威 id，
+	// 预生成它并同时用于回执与落库，同 id 回放返回的也是同一份 body（不会重算）。
 	record := &store.EmitRecord{
 		ID:        store.NewEventID(),
 		TaskID:    parent.ID,
@@ -139,11 +132,9 @@ func (r *Router) Emit(ctx context.Context, in EmitInput) (EmitResult, error) {
 			}
 		}
 	case len(failures) > 0:
-		// StateMissing：真实事实是 failed Task + 错误事件（与 emit 行同事务写入），
-		// 不是剪枝、也不伪装成剪枝回执。回执里的 taskId 就是**本次事务马上要建**的
-		// 失败 Task：同一 ID 先给回执、再交给 store 同事务落库（store 用它去建行，
-		// 不会另换一个）。anode CLI 的成功判据就是 taskId 非 null，因此这条真失败
-		// 不再被当成 result unknown；To 保真实请求 ref，Version 只保明确声明的正版本。
+		// StateMissing：真实事实是 failed Task + 错误事件（与 emit 行同事务写入），不是
+		// 剪枝回执。回执里的 taskId 就是本次事务马上要建的失败 Task（同一 ID 先给回执、
+		// 再由 store 落库），所以 anode CLI 不会把这条真失败当成 result unknown。
 		failureTaskID := store.NewTaskID()
 		failures[0].TaskID = failureTaskID
 		response.TaskID = &failureTaskID
@@ -177,6 +168,38 @@ func (r *Router) Emit(ctx context.Context, in EmitInput) (EmitResult, error) {
 		return EmitResult{}, fmt.Errorf("emit: 解码已存回执: %w", err)
 	}
 	return EmitResult{Response: out, Duplicate: !first}, nil
+}
+
+// rejectEmit 把「目标不在 next 里」的拒绝写成授权事务内的事实（#636）：emits 一行（emit_id 恒空，
+// 不进幂等域）+ source='route' 观察事件一行；result 与接受路径同形（taskId:null + pruned），任务详情的
+// emissions 卡片因此无需新字段就能显示「B 不在 next」；走 EmitAuthorized：事实只能由有执行权的调用方留下。
+func (r *Router) rejectEmit(ctx context.Context, in EmitInput, parent *store.Task, cause error) error {
+	rejection := &EmitError{Reason: protocol.ReasonTargetNotDeclared, Err: cause}
+	detail := cause.Error()
+	record := &store.EmitRecord{
+		ID:        store.NewEventID(),
+		TaskID:    parent.ID,
+		ToRef:     in.To,
+		Data:      emitData(in.Data),
+		CreatedAt: r.Now(),
+		PlannedRejection: &store.EmitRejectionFact{
+			To: in.To, Capability: refName(in.To),
+			Reason: protocol.ReasonTargetNotDeclared, Detail: detail,
+		},
+	}
+	body, err := json.Marshal(protocol.EmitResponse{
+		To: in.To, EventID: record.ID,
+		Pruned: &protocol.EmitPruned{Reason: protocol.ReasonTargetNotDeclared, Detail: detail},
+	})
+	if err != nil {
+		// 固定结构 + 字符串，编码不可能失败；真失败时宁可只回拒绝，也不编造字节。
+		return rejection
+	}
+	record.Result = body
+	if _, _, err := r.db.EmitAuthorized(ctx, in.Auth, record, nil); err != nil {
+		return mapEmitStoreError(err)
+	}
+	return rejection
 }
 
 // emitData 归一化落库的请求体字节：空 / 坏 JSON 一律存 `{}`（回执已经按剪枝处理）。

@@ -366,7 +366,7 @@ message:
     truncated: "Truncated"
     complete: "Not truncated"
     logs_empty: "No lines for this attempt (or no previous attempt)."
-    emissions: "Accepted emit facts"
+    emissions: "Emit facts (rejections included)"
     missing: "URL is missing task id."
     not_found: "Task not found, cleaned up, or outside this namespace."
     artifact_download: "Download managed artifact"
@@ -1405,6 +1405,7 @@ prune:
   no_node: target capability has no online node
   foreign_user: crosses namespace/user
   event_schema: 'The event payload does not match the payload contract the source declares'
+  target_not_declared: "The target is not declared in this capability's next"
   max_hops: hop budget exhausted (chain too deep)
   budget: this trace hit its task budget
   no_impl: the target is a placeholder (noop) — the hub will not run it
