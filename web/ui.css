@@ -4709,6 +4709,10 @@ html.theme-switching *::after {
 	background: var(--error);
 	box-shadow: 0 0 0 3px var(--error-soft);
 }
+.flograph--silk .flograph-bar-dot.is-warn {
+	background: var(--warn);
+	box-shadow: 0 0 0 3px var(--warn-soft);
+}
 .flograph--silk .flograph-bar-id {
 	flex: 0 1 auto;
 	min-width: 0;

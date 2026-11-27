@@ -313,7 +313,8 @@ graph:
   silk_meta_run: '{n} 个任务 · 回放 {t}'
   silk_meta_ok: '全部成功'
   silk_meta_failed: '{n} 个失败'
-  silk_meta_done: '{n} 个任务完成'
+  silk_meta_pending: '{n} 个未完成'
+  silk_meta_done: '回放结束 · {done}/{n} 个任务已结束'
   silk_clock: '回放 {t}'
 
 message:
