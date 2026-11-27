@@ -5418,57 +5418,99 @@ test('G1 Silk pan defers capture for native clicks and retains horizontal/vertic
   const before = captured.length; ctx.down({ ...event(50), pointerType: 'touch' }); assert.equal(captured.length, before, 'native touch scrolling remains uncaptured');
 });
 
-/* #579：链路图头的结论是**三态**，不是「有失败 / 没失败」。
- *
- * 复现（审计 lane=u2-automation）：新建能力但**不部署** → 试跑 → 任务永远
- * pending（能力没部署，永远不会执行）。这条链路头上写着「1 个任务 · 回放
- * 0.5s · 全部成功」，进度条底写「1 个任务完成」—— 排障的第一屏正好把「它根本
- * 没跑」画成了正常。
- *
- * 切片：web/flograph.js 里 silkFill → silkDurOf 之间是结论判定的全部实现
- * （silkTally / silkVerdict / silkDoneText 三个纯函数），所以这里真实调用它们，
- * 不是 grep 源码。去掉任何一个分支，下面这些断言就红。
- */
-test('#579 silk verdict keeps pending and running tasks out of "all succeeded"', () => {
+test('#579 silk outcome keeps pending/running out of "all succeeded" and wires texts/lamps/done/replay', () => {
   const source = readFileSync(path.join(ROOT, 'web/flograph.js'), 'utf8');
   const start = source.indexOf('\tfunction silkFill('), end = source.indexOf('\tfunction silkDurOf(', start);
-  assert.ok(start > 0 && end > start, '切片边界（silkFill → silkDurOf）必须还在');
-  // 用真 locale 的四条文案：断言的是四语言同步过的文本，不是源码里的默认值。
+  assert.ok(start > 0 && end > start, 'slice silkFill → silkDurOf exists');
   const dict = {};
   for (const line of readFileSync(path.join(ROOT, 'web-src/locales/zh-CN.yaml'), 'utf8').split('\n')) {
-    const m = /^  (silk_meta_(?:ok|failed|pending|done)): '(.*)'$/.exec(line);
+    const m = /^  (silk_meta_(?:ok|failed|pending|done)|silk_preview_done): '?([^']*)'?$/.exec(line);
     if (m) dict['graph.' + m[1]] = m[2];
   }
   const tt = (k, d) => dict[k] || d;
   const ctx = vm.createContext({});
   vm.runInContext(
-    source.slice(start, end) +
-      '\n globalThis.silkTally = silkTally; globalThis.silkVerdict = silkVerdict; globalThis.silkDoneText = silkDoneText;',
+    source.slice(start, end) + '\n globalThis.silkTally = silkTally; globalThis.silkOutcome = silkOutcome;',
     ctx,
   );
   const nodes = (...kinds) => kinds.map((kind, i) => ({ id: 'n' + i, kind }));
-  // vm 里的对象是另一个 realm 的：断言前摊平成本 realm 的普通对象/数组。
-  const verdictOf = (...kinds) => ({ ...ctx.silkVerdict(ctx.silkTally(nodes(...kinds)), tt) });
-  const doneOf = (...kinds) => ctx.silkDoneText(ctx.silkTally(nodes(...kinds)), tt);
-
-  // 复现用例 1：只有一个 pending 任务（能力未部署）—— 不得说「全部成功」
-  assert.deepEqual(verdictOf('trigger', 'pipe'), { text: '1 个未完成', cls: 'is-warn' });
-  assert.equal(doneOf('trigger', 'pipe'), '回放结束 · 0/1 个任务已结束');
-  // 复现用例 2：running + succeeded 也不算「全部成功」（还有没结束的）
-  assert.deepEqual(verdictOf('end', 'running'), { text: '1 个未完成', cls: 'is-warn' });
-  assert.equal(doneOf('end', 'running'), '回放结束 · 1/2 个任务已结束');
-  // 对照组 1：全部 succeeded 才是「全部成功」（灯不加类，绿点照旧）
-  assert.deepEqual(verdictOf('trigger', 'end', 'end'), { text: '全部成功', cls: '' });
-  assert.equal(doneOf('trigger', 'end', 'end'), '回放结束 · 2/2 个任务已结束');
-  // 对照组 2：含失败时既有显示不变（「N 个失败」+ 红灯）
-  assert.deepEqual(verdictOf('end', 'failed'), { text: '1 个失败', cls: 'is-fail' });
-  assert.equal(doneOf('end', 'failed'), '回放结束 · 2/2 个任务已结束 · 1 个失败');
-  // 剪枝（配置里有、这次没走）永远不动，不是「未完成」：它不得把结论染黄
-  assert.deepEqual(verdictOf('trigger', 'end', 'pruned', 'pruned'), { text: '全部成功', cls: '' });
-  // 计数口径：trigger 与 pruned 两边都不进（一张卡 = 一个能力这次的任务）
+  const outcomeOf = (preview, prefix, ...kinds) => {
+    const o = ctx.silkOutcome(preview, ctx.silkTally(nodes(...kinds)), tt, prefix);
+    return { ...o, reset: [...o.reset] };
+  };
+  assert.deepEqual(outcomeOf(false, '回放 0.5s', 'trigger', 'pipe'), {
+    meta: '回放 0.5s · 1 个未完成', cls: 'is-warn', done: '回放结束 · 0/1 个任务已结束', reset: ['is-fail', 'is-warn'],
+  });
+  assert.deepEqual(outcomeOf(false, '回放 0.5s', 'end', 'running'), {
+    meta: '回放 0.5s · 1 个未完成', cls: 'is-warn', done: '回放结束 · 1/2 个任务已结束', reset: ['is-fail', 'is-warn'],
+  });
+  assert.deepEqual(outcomeOf(false, '回放 0.5s', 'trigger', 'end', 'end'), {
+    meta: '回放 0.5s · 全部成功', cls: '', done: '回放结束 · 2/2 个任务已结束', reset: ['is-fail', 'is-warn'],
+  });
+  assert.deepEqual(outcomeOf(false, '回放 0.5s', 'end', 'failed'), {
+    meta: '回放 0.5s · 1 个失败', cls: 'is-fail', done: '回放结束 · 2/2 个任务已结束 · 1 个失败', reset: ['is-fail', 'is-warn'],
+  });
+  assert.deepEqual(outcomeOf(false, '回放 0.5s', 'trigger', 'end', 'pruned', 'pruned'), {
+    meta: '回放 0.5s · 全部成功', cls: '', done: '回放结束 · 1/1 个任务已结束', reset: ['is-fail', 'is-warn'],
+  });
+  assert.deepEqual(outcomeOf(true, '预览', 'pipe', 'end'), {
+    meta: '预览 · 预览完成', cls: '', done: '预览完成', reset: ['is-fail', 'is-warn'],
+  });
   const t = ctx.silkTally(nodes('trigger', 'end', 'pipe', 'failed', 'pruned'));
   assert.deepEqual([t.closed, t.tasks, t.pending, t.state], [2, 3, 1, 'failed']);
   assert.deepEqual(Object.keys({ ...t }).sort(), ['closed', 'ended', 'failed', 'pending', 'state', 'tasks']);
+
+  const settleStart = source.indexOf('\t\tconst barMetaFinal = outcome.meta;');
+  const settleEnd = source.indexOf('\t\tconst barSpacer =', settleStart);
+  assert.ok(settleStart > 0 && settleEnd > settleStart, 'settleBar slice exists');
+  const settleCase = (...kinds) => {
+    const added = [];
+    const meta = { textContent: 'prefix' };
+    const c = vm.createContext({
+      outcome: ctx.silkOutcome(false, ctx.silkTally(nodes(...kinds)), tt, 'prefix'),
+      barMeta: meta,
+      barDot: { classList: { add: (cls) => added.push(cls) } },
+      barMetaPrefix: 'prefix',
+    });
+    vm.runInContext(source.slice(settleStart, settleEnd) + '\n globalThis.settleBar = settleBar;', c);
+    c.settleBar(); c.settleBar();
+    return { text: meta.textContent, added };
+  };
+  assert.deepEqual(settleCase('trigger', 'pipe'), { text: 'prefix · 1 个未完成', added: ['is-warn'] });
+  assert.deepEqual(settleCase('trigger', 'end'), { text: 'prefix · 全部成功', added: [] });
+  assert.deepEqual(settleCase('end', 'failed'), { text: 'prefix · 1 个失败', added: ['is-fail'] });
+
+  const doneStart = source.indexOf('\t\tconst doneLabel = () =>');
+  const doneEnd = source.indexOf('\n\t\tsetProgress(0);', doneStart);
+  assert.ok(doneStart > 0 && doneEnd > doneStart, 'doneLabel slice exists');
+  const doneLabelOf = (preview, ...kinds) => {
+    const c = vm.createContext({ outcome: ctx.silkOutcome(preview, ctx.silkTally(nodes(...kinds)), tt, 'prefix') });
+    vm.runInContext(source.slice(doneStart, doneEnd).trimEnd() + '\n globalThis.doneLabel = doneLabel;', c);
+    return c.doneLabel();
+  };
+  assert.equal(doneLabelOf(false, 'trigger', 'pipe'), '回放结束 · 0/1 个任务已结束');
+  assert.equal(doneLabelOf(true, 'pipe'), '预览完成');
+
+  const replayStart = source.indexOf('\t\t\tif (barSettled) {');
+  const replayClose = source.indexOf('\n\t\t\t}', replayStart);
+  const replayEnd = replayClose + '\n\t\t\t}'.length;
+  assert.ok(replayStart > 0 && replayClose > replayStart, 'replay branch slice exists');
+  const replaySlice = source.slice(replayStart, replayEnd);
+  const replayCase = (settled) => {
+    const classes = new Set(['is-fail', 'is-warn']);
+    const meta = { textContent: 'old conclusion' };
+    const c = vm.createContext({
+      barSettled: settled,
+      barMeta: meta,
+      barDot: { classList: { remove: (...cs) => cs.forEach((cls) => classes.delete(cls)) } },
+      barMetaPrefix: 'running',
+      outcome: ctx.silkOutcome(false, ctx.silkTally(nodes('trigger', 'pipe')), tt, 'running'),
+    });
+    vm.runInContext(replaySlice, c);
+    return { text: meta.textContent, classes: [...classes] };
+  };
+  assert.deepEqual(replayCase(false), { text: 'old conclusion', classes: ['is-fail', 'is-warn'] });
+  assert.deepEqual(replayCase(true), { text: 'running', classes: [] });
 });
 
 test('G1 M3 condition provenance masks a private versioned-next derived name without masking equal public next or unrelated conditions', async () => {
