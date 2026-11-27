@@ -1,16 +1,7 @@
 package server
 
-// #583：源的 YAML 导出必须保留 `targets[].match`（#519 条件派）与 `targets[].outcomes`
-// （#522 router 结局表）。
-//
-// 契约（api/resource.yaml「保证这份文本可整份贴回 playbook 包」）要求 /yaml 是存储定义的
-// **重建**，不是手挑字段的子集：挑字段就会在 sourcespec.Target 长出新字段时静默掉队。
-// 后果不是报错，而是贴回一个「没有过滤条件」的源 —— 本该被 no_match 剪掉的事件全部派发，
-// 结局表消失。本文件同时钉两个出口：
-//
-//	① GET …/sources/{name}/yaml（单对象读面）
-//	② GET …/playbooks/{slug}/releases/{release}/yaml 的 as=current / as=installed
-//	   （复用同一份 srcYAMLDocument，契约要求与①逐字节相同）
+// #583：/yaml 是存储定义的重建（契约 api/resource.yaml：可整份贴回 playbook 包）—— 手工挑
+// 字段会让 sourcespec.Target 的新字段静默掉队（#519 的 match / #522 的 outcomes 就没进过导出）。
 
 import (
 	"bytes"
@@ -26,7 +17,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// srcYAMLTestCapability 建一个可解析的出口能力（outcomes 的动作必须 ∈ target 的 spec.next）。
 func srcYAMLTestCapability(t *testing.T, env *sourceResEnv, name string, next []string) {
 	t.Helper()
 	err := env.db.CreateCapability(context.Background(), &store.CapabilityVersion{
@@ -44,10 +34,6 @@ func srcYAMLTestCapability(t *testing.T, env *sourceResEnv, name string, next []
 	}
 }
 
-// srcYAMLWireTargets 把 sourcespec.Target 编成写请求体里的 targets 形状。
-//
-// 刻意**不**在测试里复述字段名：字面量掉队正是 #583 的根因，这里直接走 struct 的
-// json tag，测试与产品共用同一份形状定义（少一处会各自走样的手工同步）。
 func srcYAMLWireTargets(t *testing.T, targets []sourcespec.Target) []any {
 	t.Helper()
 	raw, err := json.Marshal(targets)
@@ -61,14 +47,10 @@ func srcYAMLWireTargets(t *testing.T, targets []sourcespec.Target) []any {
 	return out
 }
 
-// srcYAMLTargetsOfJSON 从 JSON 响应体里取 spec.targets 的**保型**正文。
-//
-// UseNumber 是断言的一半：数字按字面量比较，`200` 变成 `"200"`（yaml.v3 把 json.Number
-// 当字符串编）会在这里暴露，而不是等到贴回后落库字节不等。
 func srcYAMLTargetsOfJSON(t *testing.T, body []byte) string {
 	t.Helper()
 	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
+	dec.UseNumber() // 数字按字面量比：200 写成 "200" 要在这里就暴露
 	var doc map[string]any
 	if err := dec.Decode(&doc); err != nil {
 		t.Fatalf("响应不是 JSON 对象：%v（%s）", err, body)
@@ -76,7 +58,6 @@ func srcYAMLTargetsOfJSON(t *testing.T, body []byte) string {
 	return srcYAMLTargetsJSON(t, doc["spec"])
 }
 
-// srcYAMLTargetsJSON 把 spec 段里的 targets 编回 JSON 文本（键序由 encoding/json 固定）。
 func srcYAMLTargetsJSON(t *testing.T, spec any) string {
 	t.Helper()
 	raw, err := json.Marshal(sourceResObj(t, spec)["targets"])
@@ -86,7 +67,6 @@ func srcYAMLTargetsJSON(t *testing.T, spec any) string {
 	return string(raw)
 }
 
-// srcYAMLJSON 是断言里的比较用编码（回执里的数组逐字比）。
 func srcYAMLJSON(t *testing.T, v any) string {
 	t.Helper()
 	raw, err := json.Marshal(v)
@@ -96,19 +76,11 @@ func srcYAMLJSON(t *testing.T, v any) string {
 	return string(raw)
 }
 
-// TestSourceYAMLKeepsMatchAndOutcomes 是 #583 的单对象回归：
-//
-//	① GET /yaml 的 spec.targets 与 GET JSON 的 spec.targets **深度相等**（含 match/outcomes，
-//	   数字 200 仍是数字，空动作结局 drop: [] 仍是 []）；
-//	② 把 /yaml 整份贴回 POST …/sources/yaml（仅改名）后，targets 依旧相等；
-//	③ 贴回件的 fire 回执与原件相同（过滤还在 ⇒ 同一份载荷得到同一份 pruned）。
 func TestSourceYAMLKeepsMatchAndOutcomes(t *testing.T) {
 	env := newSourceResEnv(t)
 	srcYAMLTestCapability(t, env, "router", []string{"apply-fix"})
 	srcYAMLTestCapability(t, env, "apply-fix", nil)
 
-	// 四种 target 形状（source.md §4 + #519 + #522）：纯派 / types / all+any+negate（含数字）
-	// / router 的结局表（含空动作结局 —— `drop: []` 对应 outcome_dropped，不是「没写」）。
 	targets := []sourcespec.Target{
 		{Capability: "notify"},
 		{
@@ -128,7 +100,7 @@ func TestSourceYAMLKeepsMatchAndOutcomes(t *testing.T) {
 			Match:      &sourcespec.Match{All: []sourcespec.MatchLeaf{{Field: "n", Op: ">", Value: 200}}},
 			Outcomes: map[string][]sourcespec.OutcomeAction{
 				"fix":  {{Capability: "apply-fix", Params: map[string]any{"repo": "$(decision.repo)"}}},
-				"drop": {},
+				"drop": {}, // 空动作结局 = outcome_dropped，不是「没写」
 			},
 		},
 	}
@@ -137,7 +109,6 @@ func TestSourceYAMLKeepsMatchAndOutcomes(t *testing.T) {
 		map[string]any{"name": "yaml-full"},
 	)
 
-	// ① JSON 读投影是真源（srcEnvelopeOf 直接投 sourcespec.Target）。
 	got := env.request(http.MethodGet, env.sourcePath("yaml-full"), nil)
 	if got.Code != http.StatusOK {
 		t.Fatalf("GET 源期望 200，得到 %d：%s", got.Code, got.Body.String())
@@ -159,7 +130,6 @@ func TestSourceYAMLKeepsMatchAndOutcomes(t *testing.T) {
 			"--- JSON 读投影 ---\n%s\n--- /yaml 重建 ---\n%s\n--- 原文 ---\n%s",
 			wantTargets, yamlTargets, text)
 	}
-	// 两个最容易漂的写法单独钉一遍（深度相等已经覆盖，这里给出可读的失败原因）。
 	if !strings.Contains(yamlTargets, `"value":200`) {
 		t.Fatalf("match 叶子里的 200 变成了非数字（贴回去落库字节就变了）：%s", yamlTargets)
 	}
@@ -167,7 +137,6 @@ func TestSourceYAMLKeepsMatchAndOutcomes(t *testing.T) {
 		t.Fatalf("空动作结局 drop: [] 丢了（它对应 outcome_dropped，有语义）：%s", yamlTargets)
 	}
 
-	// ② 契约承诺「可整份贴回」：只改名字，其余原样贴回 POST …/sources/yaml。
 	rawDoc, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatalf("marshal /yaml 解析结果: %v", err)
@@ -193,7 +162,8 @@ func TestSourceYAMLKeepsMatchAndOutcomes(t *testing.T) {
 		t.Fatalf("贴回件的 targets 与原件不等：\n--- 原件 ---\n%s\n--- 贴回 ---\n%s", wantTargets, gotTargets)
 	}
 
-	// ③ 行为面：同一份载荷下，原件与贴回件的回执必须一致（match 丢了 tasks 会从 1 变 4）。
+	// 下面钉行为面：match 生效 ⇒ 1 条任务 + 3 条 no_match。outcomes 只钉结构面（深度相等 +
+	// drop: []），router 判决链由 route 包自己的测试付 —— 别把这理解成「行为面也钉到了」。
 	payload := map[string]any{"payload": map[string]any{"n": 1}}
 	origFire := env.request(http.MethodPost, env.sourcePath("yaml-full")+"/fire", payload)
 	if origFire.Code != http.StatusOK {
@@ -203,14 +173,12 @@ func TestSourceYAMLKeepsMatchAndOutcomes(t *testing.T) {
 	if copyFire.Code != http.StatusOK {
 		t.Fatalf("fire 贴回件期望 200，得到 %d：%s", copyFire.Code, copyFire.Body.String())
 	}
-	// detail 里带「事件 type」（缺省就是源名），两份源的它必然不同，比较前剔掉：
-	// 要钉的是「哪些 target 为什么被剪」，不是事件名。
 	pruneRows := func(receipt map[string]any) string {
 		rows := sourceResArr(t, receipt["pruned"])
 		out := make([]map[string]any, 0, len(rows))
 		for _, row := range rows {
 			obj := sourceResObj(t, row)
-			delete(obj, "detail")
+			delete(obj, "detail") // 里面带事件 type（缺省=源名），两份源必然不同
 			out = append(out, obj)
 		}
 		return srcYAMLJSON(t, out)
@@ -219,9 +187,12 @@ func TestSourceYAMLKeepsMatchAndOutcomes(t *testing.T) {
 		t.Fatalf("原件与贴回件的剪枝结果不同（过滤语义变了）：\n--- 原件 ---\n%s\n--- 贴回 ---\n%s",
 			origPruned, copyPruned)
 	}
-	// 只有「恒命中」的那条 target 派发；其余三条被 no_match 剪掉。
 	if tasks := sourceResAssertRawArray(t, origFire, "tasks"); len(tasks) != 1 {
 		t.Fatalf("n=1 只该派给恒命中的 target（1 条任务），得到 %d：%s", len(tasks), origFire.Body.String())
+	}
+	// 贴回件也直接断言：只靠 pruned 相等去推，「既不派发也不进 pruned」的 target 会被放行。
+	if tasks := sourceResAssertRawArray(t, copyFire, "tasks"); len(tasks) != 1 {
+		t.Fatalf("贴回件的 n=1 同样只该派 1 条任务，得到 %d：%s", len(tasks), copyFire.Body.String())
 	}
 	pruned := sourceResAssertRawArray(t, origFire, "pruned")
 	if len(pruned) != 3 {
@@ -234,7 +205,6 @@ func TestSourceYAMLKeepsMatchAndOutcomes(t *testing.T) {
 	}
 }
 
-// pbTestExportFilteredBundle 是「源的 targets 带 match + outcomes」的包（#583 的第二个出口）。
 func pbTestExportFilteredBundle(slug string) map[string]string {
 	return map[string]string{
 		"playbook.yaml": pbTestEntryDoc(slug, 1,
@@ -253,8 +223,6 @@ func pbTestExportFilteredBundle(slug string) map[string]string {
 	}
 }
 
-// TestPlaybookReleaseYAMLSourceKeepsMatchAndOutcomes 钉住 release 导出的两个视图：
-// 源文档里 match/outcomes 在，且与单对象 /yaml 逐字节相同（契约 api/resource.yaml:1376）。
 func TestPlaybookReleaseYAMLSourceKeepsMatchAndOutcomes(t *testing.T) {
 	env := newPlaybookTestEnv(t)
 	env.pbTestExportMux(t)
@@ -262,7 +230,6 @@ func TestPlaybookReleaseYAMLSourceKeepsMatchAndOutcomes(t *testing.T) {
 	env.create(t, slug, pbTestExportFilteredBundle(slug))
 	pbTestExportInstallOK(t, env, slug, "default")
 
-	// 单对象读面先自证带了过滤条件（否则下面比的是「两份都缺」这类无意义的相等）。
 	want := pbTestExportYAMLOf(t, env, "/v1/namespaces/"+env.nsID+"/sources/demo-filtered/yaml")
 	var wantDoc map[string]any
 	if err := yaml.Unmarshal([]byte(want), &wantDoc); err != nil {
@@ -281,9 +248,8 @@ func TestPlaybookReleaseYAMLSourceKeepsMatchAndOutcomes(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("导出 %q 应 200，得到 %d：%s", view, rec.Code, rec.Body.String())
 		}
-		// 两种视图的头注释不同（as=installed 多一行「源无版本」说明），各自用自己的切分器。
 		var docs []string
-		if view == "?as=installed" {
+		if view == "?as=installed" { // 该视图多一行「源无版本」头注释，切分器不同
 			_, docs = pbTestInstalledDocs(t, rec.Body.String(), 0)
 		} else {
 			_, docs = pbTestExportDocs(t, rec.Body.String())
