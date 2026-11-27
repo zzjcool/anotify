@@ -845,11 +845,10 @@ func srcReadConfig(kind string, raw json.RawMessage) (json.RawMessage, string) {
 // srcYAMLDocument 把一行源重建成 Source 文档文本（可整份贴回 playbook 包的 sources/*.yaml）。
 //
 // 四条边界（CONTRACT-capability-yaml §1.1）：
-//   - 输入只能是**读投影**：config 走 srcReadConfig（token/secret 已删，webhook 补
-//     hookUrl/secretSet），所以 YAML 的凭据面与 GET 响应一致 —— 不存在「/yaml 绕过脱敏」
-//     的第二条路径；
-//   - metadata 只写 name/displayName：namespace 属于部署事实，playbook 包内禁止出现；
-//   - spec 写 kind/enabled/config/targets，不写 status（status 是读时派生的，不是定义）；
+//   - 输入只能是**读投影**：config 走 srcReadConfig（token/secret 已删、webhook 补 hookUrl/
+//     secretSet），凭据面与 GET 一致 —— 没有第二条「/yaml 绕过脱敏」的路径；
+//   - metadata 只写 name/displayName（namespace 是部署事实，包里禁止出现）；
+//   - spec 写 kind/enabled/config/targets，不写 status（读时派生的，不是定义）；
 //   - 这是**存储定义的规范化重建**，不是用户当初贴的原始字节（默认值已补齐、键序固定）。
 func srcYAMLDocument(src *store.Source) ([]byte, error) {
 	if src == nil {
@@ -860,15 +859,10 @@ func srcYAMLDocument(src *store.Source) ([]byte, error) {
 	if src.DisplayName != "" {
 		meta["displayName"] = src.DisplayName
 	}
-	targets := make([]any, 0, len(src.Targets))
-	for _, target := range src.Targets {
-		entry := map[string]any{"capability": target.Capability}
-		// params 为空时省掉（与读投影的 omitempty 同口径）：空对象不是「声明了空映射」。
-		if len(target.Params) > 0 {
-			entry["params"] = target.Params
-		}
-		targets = append(targets, entry)
-	}
+	// targets 交给 sourcespec.Target 的 json tag 编（与读投影 srcSpecView.Targets 同一份形状）：
+	// 手工挑字段会让新字段静默掉队（#583 的 match / outcomes）；拷一份，空列表仍是 [] 不是 null。
+	targets := make([]sourcespec.Target, 0, len(src.Targets))
+	targets = append(targets, src.Targets...)
 	doc := map[string]any{
 		"apiVersion": apiVersionV1,
 		"kind":       kindSourceDoc,
@@ -880,9 +874,8 @@ func srcYAMLDocument(src *store.Source) ([]byte, error) {
 			"targets": targets,
 		},
 	}
-	// 先按 JSON 编一遍再解（UseNumber）：map[string]any 里的数字是 float64，直接
-	// yaml.Marshal 会把 1700000000 写成 1.7e+09。这份文本的用途是「贴回去重新 apply」，
-	// 数字写法漂移会让重新落库的 config 与当前值不等（与 artifact.MarshalYAML 同一手法）。
+	// 先按 JSON 编一遍再解（UseNumber）：map[string]any 里的数字是 float64，直接 yaml.Marshal
+	// 会把 1700000000 写成 1.7e+09，贴回落库的 config 就与当前值不等（同 artifact.MarshalYAML）。
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		return nil, err
@@ -896,10 +889,8 @@ func srcYAMLDocument(src *store.Source) ([]byte, error) {
 	return yaml.Marshal(srcYAMLNumbers(tree))
 }
 
-// srcYAMLNumbers 递归把 json.Number 还原成 int64 / float64。
-//
-// 为什么要这一步：yaml.v3 把 json.Number（底层是 string）当字符串编，于是 `5` 会变成
-// `"5"` —— 把数字改成字符串类型，贴回去就不再是同一份 config。
+// srcYAMLNumbers 递归把 json.Number 还原成 int64/float64：yaml.v3 把 json.Number（底层是 string）
+// 当字符串编，`5` 会变成 `"5"`，贴回去就不再是同一份 config。
 func srcYAMLNumbers(v any) any {
 	switch t := v.(type) {
 	case json.Number:
@@ -1162,10 +1153,8 @@ func srcDecodeJSON(raw []byte, dst any, strict bool) error {
 	return nil
 }
 
-// srcReadBody 读请求体并夹上限（超限 413，不把大 body 读进内存再犹豫）。
-//
-// 用 io.LimitReader 而不是 http.MaxBytesReader：这里要的是一个**确定的** 413，
-// 而不是让读错误在解码层变成一句不分尺寸的 400。
+// srcReadBody 读请求体并夹上限：用 io.LimitReader 而不是 http.MaxBytesReader —— 这里要的是
+// 一个**确定的** 413，而不是让读错误在解码层变成一句不分尺寸的 400。
 func srcReadBody(r *http.Request, limit int64) ([]byte, error) {
 	if r == nil || r.Body == nil {
 		return nil, nil
