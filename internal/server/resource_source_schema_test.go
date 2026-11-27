@@ -51,6 +51,16 @@ func TestSourceWriteRejectsUnusablePayloadSchema(t *testing.T) {
 			field: "spec.config.payloadSchema.properties.repo.oneOf",
 			says:  "不支持 schema 关键字",
 		},
+		{
+			name: "受控关键字形状非法（enum 是字符串）", // #580 返工点：入口闸同样要判关键字的形状
+			schema: map[string]any{
+				"type": "object", "properties": map[string]any{
+					"env": map[string]any{"type": "string", "enum": "dev"},
+				},
+			},
+			field: "spec.config.payloadSchema.properties.env.enum",
+			says:  "enum 必须是数组",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

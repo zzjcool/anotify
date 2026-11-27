@@ -398,20 +398,26 @@ func toFloat(v any) (float64, bool) {
 
 // enumContains 判定值是否在枚举列表里（深比较 JSON 语义）。
 func enumContains(list []any, want any) bool {
-	wantJSON, err := json.Marshal(want)
-	if err != nil {
-		return false
-	}
 	for _, e := range list {
-		gotJSON, err := json.Marshal(e)
-		if err != nil {
-			continue
-		}
-		if string(gotJSON) == string(wantJSON) {
+		if jsonValueEqual(e, want) {
 			return true
 		}
 	}
 	return false
+}
+
+func jsonValueEqual(a, b any) bool {
+	if IsNumber(a) && IsNumber(b) {
+		af, aok := toFloat(a)
+		bf, bok := toFloat(b)
+		return aok && bok && af == bf
+	}
+	aJSON, aerr := json.Marshal(a)
+	bJSON, berr := json.Marshal(b)
+	if aerr != nil || berr != nil {
+		return false
+	}
+	return string(aJSON) == string(bJSON)
 }
 
 // matchPattern 用 RE2 正则校验字符串。

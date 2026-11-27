@@ -173,3 +173,15 @@ func TestValueUnderstandsJSONNumbers(t *testing.T) {
 		t.Fatalf("enum 的数值比较应跨 float64/json.Number，得到 %q", msg)
 	}
 }
+
+func TestValueEnumComparesNumbersByValue(t *testing.T) {
+	sch := map[string]any{"enum": []any{float64(1), float64(2.5)}}
+	for _, v := range []any{json.Number("1"), json.Number("1.0"), json.Number("2.50"), float64(1)} {
+		if msg := Value(sch, v, "x"); msg != "" {
+			t.Fatalf("%#v 应命中 enum（数值比较），得到 %q", v, msg)
+		}
+	}
+	if msg := Value(sch, json.Number("1.0001"), "x"); msg == "" {
+		t.Fatal("不同数值不应命中 enum")
+	}
+}

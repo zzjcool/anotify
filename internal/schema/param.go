@@ -14,7 +14,8 @@ type Params struct {
 	Properties        map[string]ParamProperty
 	Required          map[string]bool
 	Order             []string
-	RejectsAdditional bool // 顶层 additionalProperties:false：未声明输入键不是「忽略」而是拒绝（#580）
+	RejectsAdditional bool           // 顶层 additionalProperties:false：未声明输入键不是「忽略」而是拒绝（#580）
+	Root              map[string]any // 整份 schema：根对象本身的 enum / min·maxProperties 由 schema.Value 执行（#580）
 }
 
 type ParamProperty struct {
@@ -41,6 +42,7 @@ const (
 	KeywordDefault     = "default"     // default 不是合法 JSON
 	KeywordRequired    = "required"    // required 不是字符串数组
 	KeywordUnsupported = "unsupported" // 不在受控子集里的关键字（#580）
+	KeywordShape       = "shape"       // 受控关键字的形状/取值非法（enum 不是数组、minLength 不是非负整数…#580）
 )
 
 // paramsSchemaKeywords 是受控子集白名单（#580）：表外写入期 400 / 运行期 param_schema；纯注解不求值。
@@ -73,10 +75,10 @@ func ParseParams(raw json.RawMessage) (*Params, []Problem) {
 	if err := json.Unmarshal(trimmed, &doc); err != nil || doc == nil {
 		return nil, []Problem{{Keyword: KeywordRoot, Msg: "参数 schema 不是 JSON 对象"}}
 	}
-	var problems []Problem // 白名单/未知类型名（#580）：写入期 400、运行期 param_schema 剪枝
+	var problems []Problem // 白名单/形状/参数专属语义（#580）：写入期 400、运行期 param_schema 剪枝
 	var generic map[string]any
 	if err := json.Unmarshal(trimmed, &generic); err == nil && generic != nil {
-		problems = append(problems, checkParamKeywords(generic, "", true)...)
+		problems = append(problems, checkParamKeywords(generic, "", paramSchemaRoot)...)
 		if raw, ok := generic["additionalProperties"]; ok {
 			if allow, isBool := raw.(bool); isBool && !allow {
 				s.RejectsAdditional = true
@@ -120,10 +122,28 @@ func ParseParams(raw json.RawMessage) (*Params, []Problem) {
 			s.Required[name] = true
 		}
 	}
+	if generic != nil {
+		problems = append(problems, ValidateSchema(generic)...)
+	}
+	problems = dedupeProblems(problems)
 	if len(problems) > 0 {
 		return nil, problems
 	}
+	s.Root = generic
 	return s, nil
+}
+
+func dedupeProblems(in []Problem) []Problem {
+	seen := make(map[string]struct{}, len(in))
+	out := in[:0]
+	for _, problem := range in {
+		if _, dup := seen[problem.Path]; dup {
+			continue
+		}
+		seen[problem.Path] = struct{}{}
+		out = append(out, problem)
+	}
+	return out
 }
 
 func parseProperty(name string, raw json.RawMessage) (ParamProperty, []Problem) {
@@ -263,8 +283,15 @@ func (p ParamProperty) CheckKeywords(path string, value any) *Issue {
 	return nil
 }
 
-// checkParamKeywords 判白名单与 type 名（#580）；根节点的 type 由 ParseParams 自己判，不重复报。
-func checkParamKeywords(doc map[string]any, at string, isRoot bool) []Problem {
+type paramSchemaPos int
+
+const (
+	paramSchemaRoot        paramSchemaPos = iota // spec.params / payloadSchema 根：default 不会被应用
+	paramSchemaTopProperty                       // spec.params.properties.<name>：唯一会应用 default 的位置
+	paramSchemaNested                            // items / prefixItems / additionalProperties / 更深层 properties
+)
+
+func checkParamKeywords(doc map[string]any, at string, pos paramSchemaPos) []Problem {
 	var out []Problem
 	keys := make([]string, 0, len(doc))
 	for key := range doc {
@@ -278,13 +305,34 @@ func checkParamKeywords(doc map[string]any, at string, isRoot bool) []Problem {
 		out = append(out, Problem{Path: joinPath(at, key), Keyword: KeywordUnsupported,
 			Msg: fmt.Sprintf("不支持 schema 关键字 %q（受支持：%s）", key, strings.Join(paramsSchemaKeywordList, " / "))})
 	}
-	if raw, ok := doc["type"]; ok && !isRoot {
-		if types, err := genericTypes(raw); err == nil {
-			for _, name := range types {
-				if !knownTypeName(name) {
-					out = append(out, Problem{Path: joinPath(at, "type"), Keyword: KeywordType,
-						Msg: fmt.Sprintf("未知类型 %q（可选 %s）", name, strings.Join(schemaTypeNames, "/"))})
-				}
+	// default 只有顶层参数会被 PrepareParams 补上；写在别处（根/items/嵌套 properties）收下也不生效。
+	if raw, ok := doc["default"]; ok {
+		switch pos {
+		case paramSchemaTopProperty:
+			if msg := Value(doc, raw, at); msg != "" {
+				out = append(out, Problem{Path: joinPath(at, "default"), Keyword: KeywordDefault,
+					Msg: "default 不满足参数 schema：" + msg})
+			}
+		default:
+			out = append(out, Problem{Path: joinPath(at, "default"), Keyword: KeywordDefault,
+				Msg: "default 只在 spec.params.properties.<name> 上生效（这里不会被应用）"})
+		}
+	}
+	if raw, ok := doc["items"]; ok {
+		switch raw.(type) {
+		case []any:
+			out = append(out, Problem{Path: joinPath(at, "items"), Keyword: KeywordShape,
+				Msg: "items 不支持元组写法（数组）：按位置的 schema 请用 prefixItems"})
+		case nil:
+			out = append(out, Problem{Path: joinPath(at, "items"), Keyword: KeywordShape,
+				Msg: "items 必须是 schema 或布尔（null 不会被求值）"})
+		}
+	}
+	if pos == paramSchemaRoot {
+		if raw, ok := doc["additionalProperties"]; ok {
+			if _, isBool := raw.(bool); !isBool {
+				out = append(out, Problem{Path: joinPath(at, "additionalProperties"), Keyword: KeywordShape,
+					Msg: "spec.params 根级 additionalProperties 只支持布尔（省略/true = 忽略多余，false = 拒绝）"})
 			}
 		}
 	}
@@ -295,45 +343,30 @@ func checkParamKeywords(doc map[string]any, at string, isRoot bool) []Problem {
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			if child, ok := props[name].(map[string]any); ok {
-				out = append(out, checkParamKeywords(child, joinPath(at, "properties."+name), false)...)
+			child, ok := props[name].(map[string]any)
+			if !ok {
+				continue
 			}
+			childPos := paramSchemaNested
+			if pos == paramSchemaRoot {
+				childPos = paramSchemaTopProperty // 顶层参数：default 在这里合法
+			}
+			out = append(out, checkParamKeywords(child, joinPath(at, "properties."+name), childPos)...)
 		}
 	}
 	for _, key := range []string{"items", "additionalProperties"} {
 		if child, ok := doc[key].(map[string]any); ok {
-			out = append(out, checkParamKeywords(child, joinPath(at, key), false)...)
+			out = append(out, checkParamKeywords(child, joinPath(at, key), paramSchemaNested)...)
 		}
 	}
 	if prefix, ok := doc["prefixItems"].([]any); ok {
 		for i, item := range prefix {
 			if child, ok := item.(map[string]any); ok {
-				out = append(out, checkParamKeywords(child, fmt.Sprintf("%s[%d]", joinPath(at, "prefixItems"), i), false)...)
+				out = append(out, checkParamKeywords(child, fmt.Sprintf("%s[%d]", joinPath(at, "prefixItems"), i), paramSchemaNested)...)
 			}
 		}
 	}
 	return out
-}
-
-func genericTypes(raw any) ([]string, error) { // 泛型解码的 type 值 → 类型名
-	switch t := raw.(type) {
-	case string:
-		if t == "" {
-			return nil, fmt.Errorf("type 为空")
-		}
-		return []string{t}, nil
-	case []any:
-		out := make([]string, 0, len(t))
-		for _, e := range t {
-			s, ok := e.(string)
-			if !ok || s == "" {
-				return nil, fmt.Errorf("type 必须是字符串或字符串数组")
-			}
-			out = append(out, s)
-		}
-		return out, nil
-	}
-	return nil, fmt.Errorf("type 必须是字符串或字符串数组")
 }
 
 func isObjectType(raw json.RawMessage) bool {

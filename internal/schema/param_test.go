@@ -221,7 +221,7 @@ func TestParseParamsRejectsUnsupportedKeywordsAnywhere(t *testing.T) {
 		{"嵌套属性", `{"type":"object","properties":{"a":{"type":"object","properties":{"b":{"type":"number","multipleOf":2}}}}}`, "properties.a.properties.b.multipleOf"},
 		{"items", `{"type":"object","properties":{"a":{"type":"array","items":{"type":"string","const":"x"}}}}`, "properties.a.items.const"},
 		{"prefixItems", `{"type":"object","properties":{"a":{"type":"array","prefixItems":[{"type":"string","uniqueItems":true}]}}}`, "properties.a.prefixItems[0].uniqueItems"},
-		{"additionalProperties 子 schema", `{"type":"object","additionalProperties":{"type":"string","then":{"type":"string"}}}`, "additionalProperties.then"},
+		{"additionalProperties 子 schema", `{"type":"object","properties":{"a":{"type":"object","additionalProperties":{"type":"string","then":{"type":"string"}}}}}`, "properties.a.additionalProperties.then"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -305,5 +305,80 @@ func TestParamPropertyCheckKeywords(t *testing.T) {
 		if issue := params.Properties[tc.param].CheckKeywords(tc.param, tc.value); issue != nil {
 			t.Fatalf("参数 %s = %#v 不该被拒：%+v", tc.param, tc.value, issue)
 		}
+	}
+}
+
+func TestParseParamsRejectsKeywordShapeMismatches(t *testing.T) {
+	cases := []struct{ name, raw, path, keyword, says string }{
+		{"enum 是字符串", `{"type":"object","properties":{"env":{"type":"string","enum":"dev"}}}`,
+			"properties.env.enum", KeywordShape, "enum 必须是数组"},
+		{"enum 是空数组", `{"type":"object","properties":{"env":{"enum":[]}}}`,
+			"properties.env.enum", KeywordShape, "空数组"},
+		{"minimum 是字符串", `{"type":"object","properties":{"n":{"type":"integer","minimum":"1"}}}`,
+			"properties.n.minimum", KeywordShape, "必须是数字"},
+		{"maxItems 是布尔", `{"type":"object","properties":{"tags":{"type":"array","maxItems":true}}}`,
+			"properties.tags.maxItems", KeywordShape, "必须是数字"},
+		{"minLength 是负数", `{"type":"object","properties":{"s":{"type":"string","minLength":-1}}}`,
+			"properties.s.minLength", KeywordShape, "非负整数"},
+		{"maxProperties 是小数", `{"type":"object","properties":{"m":{"type":"object","maxProperties":1.5}}}`,
+			"properties.m.maxProperties", KeywordShape, "非负整数"},
+		{"items 是字符串（漏写对象）", `{"type":"object","properties":{"tags":{"type":"array","items":"string"}}}`,
+			"properties.tags.items", KeywordShape, "对象或布尔"},
+		{"items 是元组数组", `{"type":"object","properties":{"tags":{"type":"array","items":["string"]}}}`,
+			"properties.tags.items", KeywordShape, "元组"},
+		{"items 是 null", `{"type":"object","properties":{"tags":{"type":"array","items":null}}}`,
+			"properties.tags.items", KeywordShape, "null"},
+		{"prefixItems 不是数组", `{"type":"object","properties":{"a":{"type":"array","prefixItems":{"type":"string"}}}}`,
+			"properties.a.prefixItems", KeywordShape, "必须是数组"},
+		{"prefixItems 元素不是 schema", `{"type":"object","properties":{"a":{"type":"array","prefixItems":["string"]}}}`,
+			"properties.a.prefixItems[0]", KeywordShape, "对象或布尔"},
+		{"根 additionalProperties 是对象", `{"type":"object","additionalProperties":{"type":"string"}}`,
+			"additionalProperties", KeywordShape, "只支持布尔"},
+		{"items 里的未知 type", `{"type":"object","properties":{"tags":{"type":"array","items":{"type":"strin"}}}}`,
+			"properties.tags.items.type", KeywordType, "未知类型"},
+		{"items 里 properties 不是对象", `{"type":"object","properties":{"tags":{"type":"array","items":{"type":"object","properties":5}}}}`,
+			"properties.tags.items.properties", KeywordProperties, "必须是对象"},
+		{"items 里 pattern 编不过", `{"type":"object","properties":{"tags":{"type":"array","items":{"type":"string","pattern":"(["}}}}`,
+			"properties.tags.items.pattern", KeywordPattern, "不可用"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, problems := ParseParams(json.RawMessage(tc.raw))
+			if len(problems) != 1 {
+				t.Fatalf("%s 应恰好报一条问题，得到 %v", tc.name, problems)
+			}
+			if problems[0].Path != tc.path || problems[0].Keyword != tc.keyword {
+				t.Fatalf("问题 = {%q %q}，want {%q %q}（%s）",
+					problems[0].Path, problems[0].Keyword, tc.path, tc.keyword, problems[0].Msg)
+			}
+			if !strings.Contains(problems[0].Msg, tc.says) {
+				t.Fatalf("Msg = %q，应含 %q", problems[0].Msg, tc.says)
+			}
+		})
+	}
+}
+
+func TestParseParamsDefaultRules(t *testing.T) {
+	bad := []struct{ name, raw, path string }{
+		{"default 违反自身 schema", `{"type":"object","properties":{"n":{"type":"integer","default":"abc"}}}`, "properties.n.default"},
+		{"default 不在 enum 里", `{"type":"object","properties":{"env":{"type":"string","enum":["dev"],"default":"prod"}}}`, "properties.env.default"},
+		{"根 default 不会被应用", `{"type":"object","default":{}}`, "default"},
+		{"items 里的 default 不会被应用", `{"type":"object","properties":{"a":{"type":"array","items":{"type":"string","default":"x"}}}}`, "properties.a.items.default"},
+		{"嵌套 default 不会被应用", `{"type":"object","properties":{"m":{"type":"object","properties":{"x":{"type":"string","default":"z"}}}}}`, "properties.m.properties.x.default"},
+	}
+	for _, tc := range bad {
+		t.Run(tc.name, func(t *testing.T) {
+			_, problems := ParseParams(json.RawMessage(tc.raw))
+			if len(problems) != 1 || problems[0].Path != tc.path || problems[0].Keyword != KeywordDefault {
+				t.Fatalf("应报 {%q default}，得到 %v", tc.path, problems)
+			}
+		})
+	}
+	good := json.RawMessage(`{"type":"object","properties":{
+		"n":{"type":"integer","minimum":1,"default":1},
+		"m":{"type":"object","properties":{"x":{"type":"string"}}}
+	}}`)
+	if _, problems := ParseParams(good); len(problems) > 0 {
+		t.Fatalf("顶层参数的合法 default 不该被拒：%v", problems)
 	}
 }

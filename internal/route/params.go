@@ -23,7 +23,7 @@ import (
 //
 // JSON Schema 子集是**显式**的（白名单见 schema.ParseParams）：type / properties / required /
 // additionalProperties / items / prefixItems / enum / min·max / 长度 / 数量 / pattern / default；
-// 表外关键字与未知 type 名写入期就 400（param_schema，#580），求值只有 schema.Value 一份实现。
+// 表外关键字、未知 type 名与形状非法的关键字值写入期就 400；根级 enum/min·maxProperties 也判。
 
 // Prune 是一次「事件/emit 已接收、下游没有建 task」的观察原因（§8.3）：落库成
 // `source='route'` 的剪枝事件行 + 回执 `pruned[]`；reason 取封闭词表，不新造词。
@@ -90,6 +90,14 @@ func PrepareParams(raw json.RawMessage, input map[string]any) (json.RawMessage, 
 			missing = append(missing, name)
 		}
 	}
+	undeclared := make([]string, 0)
+	for name := range s.Required {
+		if _, declared := s.Properties[name]; !declared {
+			undeclared = append(undeclared, name)
+		}
+	}
+	sort.Strings(undeclared)
+	missing = append(missing, undeclared...)
 	if len(missing) > 0 {
 		return nil, &Prune{Reason: protocol.ReasonParamMissing,
 			Detail: "需要 " + strings.Join(missing, ", "), Field: "params." + missing[0]}
@@ -99,7 +107,17 @@ func PrepareParams(raw json.RawMessage, input map[string]any) (json.RawMessage, 
 			Detail: "参数 " + name + " 不在 schema.properties 里（additionalProperties=false）",
 			Field:  "params." + name}
 	}
+	if msg := rootKeywords(s, out, "params"); msg != "" { // 根对象本身：enum / min·maxProperties / type
+		return nil, &Prune{Reason: protocol.ReasonParamType, Detail: msg, Field: "params"}
+	}
 	return marshalObject(out), nil
+}
+
+func rootKeywords(s *paramSchema, obj map[string]any, prefix string) string {
+	if s.Root == nil {
+		return ""
+	}
+	return schema.Value(s.Root, obj, prefix)
 }
 
 func undeclaredKey(s *paramSchema, input map[string]any) string { // 排序后的第一个未声明输入键
@@ -170,6 +188,9 @@ func ValidatePayload(raw json.RawMessage, payload map[string]any) *Prune {
 		return &Prune{Reason: protocol.ReasonEventSchema,
 			Detail: "载荷字段 " + name + " 不在 payloadSchema.properties 里（additionalProperties=false）",
 			Field:  "payload." + name}
+	}
+	if msg := rootKeywords(s, payload, "payload"); msg != "" { // 根级 enum / min·maxProperties / type
+		return &Prune{Reason: protocol.ReasonEventSchema, Detail: msg, Field: "payload"}
 	}
 	return nil
 }

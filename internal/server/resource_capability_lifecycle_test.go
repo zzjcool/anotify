@@ -469,6 +469,54 @@ func TestCapabilityTestEnforcesParamSchemaKeywords(t *testing.T) {
 	}
 }
 
+func TestCapabilityTestEnforcesRootParamKeywords(t *testing.T) {
+	env := newCapTestEnv(t)
+	body := capabilityBodyWithParams(t, "root-keywords", "#!/bin/sh\necho root\n", map[string]any{
+		"type":                 "object",
+		"minProperties":        2,
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"env": map[string]any{"type": "string", "enum": []any{"dev", "prod"}},
+			"n":   map[string]any{"type": "integer", "minimum": 1},
+		},
+	})
+	if rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "", ""), body); rec.Code != http.StatusCreated {
+		t.Fatalf("create: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	cases := []struct {
+		name   string
+		params map[string]any
+		field  string
+	}{
+		{"minProperties（空参数）", map[string]any{}, "params"},
+		{"minProperties（差一个）", map[string]any{"env": "dev"}, "params"},
+		{"属性 enum", map[string]any{"env": "staging", "n": 1}, "params.env"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "root-keywords", "test"),
+				map[string]any{"params": tc.params})
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("根级关键字未满足应 400，实际 %d body=%s", rec.Code, rec.Body.String())
+			}
+			doc := decodeCapJSON(t, rec)
+			if got := capString(t, doc, "reason"); got != "param_type" {
+				t.Fatalf("reason = %q，want param_type", got)
+			}
+			causes := capArray(t, capObject(t, doc["details"], "details")["causes"], "details.causes")
+			first := capObject(t, causes[0], "causes[0]")
+			if field := capString(t, first, "field"); field != tc.field {
+				t.Fatalf("causes[0].field = %q，want %q（body=%s）", field, tc.field, rec.Body.String())
+			}
+		})
+	}
+	rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "root-keywords", "test"),
+		map[string]any{"params": map[string]any{"env": "prod", "n": 2}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("合法参数应 200，实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 // ---------- 6) 不存在的版本 / 能力 → 404 ----------
 
 // TestCapabilityTestUnknownVersionIs404 钉住「显式版本不存在」是 404，不是 400 也不是 500。

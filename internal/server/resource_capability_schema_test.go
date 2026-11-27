@@ -73,6 +73,20 @@ func TestCapabilityWriteRejectsUnusableParamSchema(t *testing.T) {
 			field: "spec.params.properties.x.oneOf",
 			says:  "不支持 schema 关键字",
 		},
+		{
+			name: "受控关键字形状非法（enum 是字符串）", // #580 返工点：形状非法同样不能「收下但静默不生效」
+			params: map[string]any{"type": "object", "properties": map[string]any{
+				"env": map[string]any{"type": "string", "enum": "dev"},
+			}},
+			field: "spec.params.properties.env.enum",
+			says:  "enum 必须是数组",
+		},
+		{
+			name:   "根级 additionalProperties 子 schema 不会被应用",
+			params: map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+			field:  "spec.params.additionalProperties",
+			says:   "只支持布尔",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

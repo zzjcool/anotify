@@ -134,4 +134,4 @@ Go：`capabilityStatus.Enabled bool \`json:"enabled"\``，由 `statusFor` 从
 
 试跑参数表单：优先按 `spec.params` 的 JSON Schema 渲染（对象/原始类型/`enum`），
 `oneOf`/深层 `$ref` 等抽不出来的 schema 降级为一个 JSON textarea（`#test-params-json`）——这类关键字自 #580 起写入期就 400 `param_schema`，只剩升级前的存量行，
-服务端仍是最终判据（enum/最小最大/长度/items/additionalProperties 都真的执行，`details.causes[].field` 直接标到字段旁）。
+服务端仍是最终判据（enum/最小最大/长度/items/additionalProperties 都真的执行且关键字值形状非法写入期就 400、根对象本身的 min·maxProperties 也判，`details.causes[].field` 直接标到字段旁）。
