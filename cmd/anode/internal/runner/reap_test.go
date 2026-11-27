@@ -2,18 +2,20 @@ package runner
 
 import (
 	"errors"
+	"os"
 	"os/exec"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/zzjcool/anotify/cmd/anode/internal/resultstore"
 	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/protocol"
 )
 
-// V4-10：进程组消失是内核事实，SIGKILL 只保证死亡。僵尸仍挂在组里时
-// kill(2) 依旧返回成功，确认必须用**真实时间**有界轮询，不能被注入时钟
-// 推进「骗过」（V4-10 的 RED 就是 waitGone 的截止时间吃假时钟）。
+// V4-10：进程组消失是内核事实，SIGKILL 只保证死亡。僵尸仍挂在组里时 kill(2)
+// 依旧返回成功，确认必须用**真实时间**有界轮询，不能被注入时钟推进「骗过」。
 func TestWaitGroupGoneConfirmsRealKernelReap(t *testing.T) {
 	cmd := exec.Command("sleep", "30")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -56,8 +58,7 @@ func TestWaitGroupGoneConfirmsRealKernelReap(t *testing.T) {
 func TestIntentionalPipeCloseIsNotCopyFailure(t *testing.T) {
 	h := newHarness(t)
 	a, digest := h.artifact(func(a *artifact.Artifact) {
-		// leader 立刻成功退出，孙进程继续持有 stdout/stderr 管道：只有回收路径
-		// 主动关读端才能让 io.Copy 结束（有意关闭，不是复制错误）。
+		// leader 立刻成功退出，孙进程继续持有管道：只有回收路径主动关读端才能结束 io.Copy。
 		a.Spec.Run.Files["run.sh"] = "#!/bin/sh\nsleep 30 &\necho hi\n"
 	})
 	h.dispatch("t1", 1, a, digest)
@@ -67,10 +68,18 @@ func TestIntentionalPipeCloseIsNotCopyFailure(t *testing.T) {
 	att := h.r.running["t1"]
 	h.r.mu.Unlock()
 
-	res := h.waitFrameAdvancing(t, func(f any) bool {
+	// 事件阶梯：① leader 的 "hi\n" 已被 io.Copy 消费（主动关读端会丢未读的管道缓冲）；② copy 宽限定时器按剩余时间武装好；③ 推到宽限到点。
+	h.waitUntil(t, "leader 的 stdout 已被 copy 消费", func() bool {
+		_, stdout, _, found, err := h.results.Logs("t1", 1)
+		return err == nil && found && string(stdout) == "hi\n"
+	}, testWaitLimit)
+	h.waitTimerArmed(t, "leader 退出后的 copy 宽限", protocol.LeaseTermGrace, testWaitLimit)
+	h.clk.Advance(protocol.LeaseTermGrace)
+
+	res := h.waitFrame(t, func(f any) bool {
 		r, ok := f.(*protocol.TaskResultFrame)
 		return ok && r.TaskID == "t1" && r.Attempt == 1
-	}, time.Second, 10*time.Second).(*protocol.TaskResultFrame)
+	}, 10*time.Second).(*protocol.TaskResultFrame)
 	if res.Phase != protocol.TaskPhaseSucceeded {
 		t.Fatalf("主动关闭读端不能把成功任务翻成 failed：%+v", res)
 	}
@@ -85,6 +94,62 @@ func TestIntentionalPipeCloseIsNotCopyFailure(t *testing.T) {
 	}
 	if _, stdout, _, found, err := h.results.Logs("t1", 1); err != nil || !found || string(stdout) != "hi\n" {
 		t.Fatalf("日志内容不完整：found=%v stdout=%q err=%v", found, stdout, err)
+	}
+}
+
+// V4-10 要求 3 的确定性判据：os.ErrClosed 只在「读端是回收路径关的」前提下不算复制失败，
+// 没这个前提时必须照记（否则那段判断等于把 ErrClosed 一律吞掉）。
+func TestCopyLogSeparatesIntentionalCloseFromRealCopyFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		intentional bool
+		wantErr     bool
+	}{
+		{"回收路径主动关读端", true, false},
+		{"非回收路径关读端", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			rec, err := h.results.Begin(resultstore.Record{TaskID: "copy", Attempt: 1})
+			if err != nil {
+				t.Fatalf("results.Begin: %v", err)
+			}
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("os.Pipe: %v", err)
+			}
+			t.Cleanup(func() { _ = w.Close() })
+			if _, err := w.Write([]byte("hi\n")); err != nil {
+				t.Fatalf("写管道: %v", err)
+			}
+			att := &Attempt{r: h.r, taskID: "copy", attempt: 1, stdoutR: r}
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go att.copyLog(r, rec, resultstore.StdoutFileName, protocol.LogStreamStdout, nil, &wg)
+
+			// 先等 copy 把字节消费完：关读端时它只剩「阻塞在 read」一种结局，与调度无关。
+			h.waitUntil(t, "copy 已消费管道里的字节", func() bool {
+				_, stdout, _, found, err := h.results.Logs("copy", 1)
+				return err == nil && found && string(stdout) == "hi\n"
+			}, testWaitLimit)
+
+			if tc.intentional {
+				att.closePipes()
+			} else if err := r.Close(); err != nil {
+				t.Fatalf("关读端: %v", err)
+			}
+			wg.Wait()
+
+			att.mu.Lock()
+			copyErr := att.copyErr
+			att.mu.Unlock()
+			if tc.wantErr != (copyErr != nil) {
+				t.Fatalf("copyErr=%v（wantErr=%v）：主动关读端与真实复制错误必须分得开", copyErr, tc.wantErr)
+			}
+			if _, stdout, _, _, err := h.results.Logs("copy", 1); err != nil || string(stdout) != "hi\n" {
+				t.Fatalf("已消费的日志不能因收尾而丢：stdout=%q err=%v", stdout, err)
+			}
+		})
 	}
 }
 

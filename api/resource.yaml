@@ -3274,6 +3274,16 @@ components:
         一条字段级判据（#519）。`field` 是点号路径 + 数字下标（`issue.labels.0.name`），
         与 `config.envelope` 的指针、params 模板**同一套方言**（`$.a.b` 与 `a.b` 同义）。
 
+        `field` 也可以指向 `_derived` 命名空间里的派生值（#512「策略是数据」里的计数/算术那一半）：
+        值从**载荷**算出，不是载荷里真有的键。封闭两个——`_derived.isPullRequest`（这次事件的对象
+        是不是 PR：`issue.pull_request` 或顶层 `pull_request` 存在即真，PR 也走 issues 事件；
+        `issue_comment` 同理）与 `_derived.links`（正文里 http(s) 链接的条数：任意深度、键名为
+        `body` 的字符串值相加，`html_url` / `avatar_url` 这类不算），配合 `>` / `>=` 才是
+        「3 条链接以上」这类计数规则。派生值必须是载荷的纯函数——墙钟与随机数会让「事件是不可变
+        事实、派发可重放」失效，所以 `ageDays` 这种要时钟的留在能力里（router），不进 match。
+        两个派生值恒「取得到」（没有 body 时 `links` 是 0），所以 `exists` 恒真；写别的
+        `_derived.*` → 写入期 400（`details.causes[].field` 指到那一行）。
+
         `op` 与 #512 的 router 规则表同一套词表：`== != > >= < <= contains matches in exists`。
         `matches` 用 RE2（写入期编译）；`contains` 大小写敏感；`>`/`>=`/`<`/`<=` 只比数字
         （`value` 必须是数字）；`in` 要求 `value` 是数组；`exists` 不看 `value`。
@@ -3281,7 +3291,7 @@ components:
       properties:
         field:
           type: string
-          description: 载荷里的点号路径（数字段是数组下标），如 `issue.pull_request`
+          description: 载荷里的点号路径（数字段是数组下标），如 `issue.pull_request`；`_derived.` 前缀见上
         op:
           type: string
           enum: ["==", "!=", ">", ">=", "<", "<=", contains, matches, in, exists]

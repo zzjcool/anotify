@@ -1201,15 +1201,20 @@ func TestRework2HubGuardRunsUnderWriteMuAndRejectsOldConnection(t *testing.T) {
 	}
 }
 
-// Hold the real transport return while coder's write timeout is installed.
-// Actual connection Close releases the gate, so deadline/Close tests exercise
-// the library's cancellation path rather than a fake sender returning errors.
+// Hold the real transport return while coder's write timeout is installed: only a
+// real Close releases the gate, so deadline/Close paths (not fake sender errors) are tested.
 type lifecycleWriteConn struct {
 	net.Conn
 	entered, closed      chan struct{}
 	armed                atomic.Bool
 	enterOnce, closeOnce sync.Once
+	closedAt             atomic.Int64 // Close 的真实时刻（UnixNano）：断言「不早于 bound」用它
 }
+
+const (
+	lifecycleGateNet = 60 * time.Second
+	boundMargin      = 5 * time.Second
+)
 
 func (c *lifecycleWriteConn) Write(p []byte) (int, error) {
 	n, err := c.Conn.Write(p)
@@ -1218,7 +1223,7 @@ func (c *lifecycleWriteConn) Write(p []byte) (int, error) {
 		select {
 		case <-c.closed:
 			return n, net.ErrClosed
-		case <-time.After(15 * time.Second):
+		case <-time.After(lifecycleGateNet):
 			return n, errors.New("bounded transport gate timed out")
 		}
 	}
@@ -1226,7 +1231,10 @@ func (c *lifecycleWriteConn) Write(p []byte) (int, error) {
 }
 
 func (c *lifecycleWriteConn) Close() error {
-	c.closeOnce.Do(func() { close(c.closed) })
+	c.closeOnce.Do(func() {
+		c.closedAt.Store(time.Now().UnixNano())
+		close(c.closed)
+	})
 	return c.Conn.Close()
 }
 
@@ -1295,15 +1303,21 @@ func TestGuardedAdmittedWriteRetainsDeadlineCapAndConnectionClose(t *testing.T) 
 			if mode == "connectionClose" {
 				go conn.CloseNow()
 			}
+			// 上限从写入自己的 bound 推导：旧写法拿 wire.closed 对赌外层固定 15s ctx（#696）。
+			budget := time.Until(deadline) + boundMargin
+			var got outcome
 			select {
-			case <-wire.closed:
-				if mode != "connectionClose" && time.Now().Before(deadline) {
-					t.Errorf("caller cancel closed admitted write before original deadline (%s)", mode)
-				}
-			case <-ctx.Done():
-				t.Fatal("admitted write lost its original deadline/connection Close bound")
+			case got = <-done:
+			case <-time.After(budget):
+				t.Fatalf("admitted write did not end within its own deadline bound + margin (budget %s, %s); conn closed=%v",
+					budget.Round(time.Millisecond), mode, wire.closedAt.Load() != 0)
 			}
-			if got := rework2Await(t, done, "bounded write exit"); got.sent || got.err == nil {
+			if closedAt := wire.closedAt.Load(); closedAt == 0 {
+				t.Error("admitted write ended without closing the shared connection")
+			} else if mode != "connectionClose" && time.Unix(0, closedAt).Before(deadline) {
+				t.Errorf("caller cancel closed admitted write before original deadline (%s)", mode)
+			}
+			if got.sent || got.err == nil {
 				t.Fatalf("deadline/closed transport did not fail the write: %+v", got)
 			}
 		})

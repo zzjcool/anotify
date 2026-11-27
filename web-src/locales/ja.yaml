@@ -1678,6 +1678,8 @@ sources:
     display: "表示名（任意）"
     kind: 'ソース種別'
     immutable: "作成後は名前と種別を変更できません。削除して再作成してください。"
+    kept_config: 'また {keys} も設定されています。YAML で管理し、保存時はそのまま保持します。'
+    kept_target: 'この行には {keys} もあります。YAML で管理し、保存時はそのまま保持します。'
     expr: "Cron 式（5項目）"
     tz: "IANA タイムゾーン（既定 Local）"
     token: "新しい token（書き込み専用）"

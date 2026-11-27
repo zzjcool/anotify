@@ -25,10 +25,8 @@ func marshalCanonical(v any) ([]byte, error) {
 	return b, nil
 }
 
-// canonicalEqual 比较两段 JSON 是否语义相同（键序、空白、数字写法都不影响）。
-//
-// 用 UseNumber 解码：否则 1 与 1.0 都会变成 float64 而被判相等——那会把
-// 「用户把参数从整数改成了浮点」这种真实改动漏过去。
+// canonicalEqual 比较两段 JSON 是否语义相同（键序、空白、数字写法都不影响）。用 UseNumber 解码：否则
+// 1 与 1.0 都会变成 float64 而被判相等——那会把「用户把参数从整数改成了浮点」这种真实改动漏过去。
 func canonicalEqual(a, b []byte) bool {
 	va, err := decodeAny(a)
 	if err != nil {
