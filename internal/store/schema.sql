@@ -814,3 +814,7 @@ CREATE TABLE IF NOT EXISTS playbook_install_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_playbook_install_audit_release
     ON playbook_install_audit(namespace_id, playbook_slug, release, created_at DESC, id DESC);
+
+-- +migration 12 task_retention_index
+CREATE INDEX IF NOT EXISTS idx_tasks_retain_from
+    ON tasks(COALESCE(result_accepted_at, CASE WHEN reported=0 THEN finished_at END));

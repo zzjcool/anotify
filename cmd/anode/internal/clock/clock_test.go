@@ -1,10 +1,38 @@
 package clock
 
 import (
+	"slices"
 	"sync"
 	"testing"
 	"time"
 )
+
+// 认「哪一条」必须看剩余时间：数量可以被别的定时器凑出来，那就是 #696 的随机红。
+func TestFakePendingDueNamesTheArmedTimers(t *testing.T) {
+	f := NewFake(time.Unix(100, 0))
+	grace := f.NewTimer(5 * time.Second)
+	_ = f.NewTimer(20 * time.Second)
+	stopped := f.NewTimer(3 * time.Second)
+	if !stopped.Stop() {
+		t.Fatal("future timer could not be stopped")
+	}
+	if got := f.PendingDue(); !slices.Equal(got, []time.Duration{5 * time.Second, 20 * time.Second}) {
+		t.Fatalf("PendingDue = %v，已停止的定时器不能算在内", got)
+	}
+	f.Advance(5 * time.Second)
+	if got := f.PendingDue(); !slices.Equal(got, []time.Duration{15 * time.Second}) {
+		t.Fatalf("推进 5s 后 PendingDue = %v，要的是剩下那条的剩余 15s", got)
+	}
+	select {
+	case <-grace.C():
+	default:
+		t.Fatal("到点的定时器没有发信号")
+	}
+	f.Advance(15 * time.Second)
+	if got := f.PendingDue(); len(got) != 0 {
+		t.Fatalf("全部到点后 PendingDue = %v，应为空", got)
+	}
+}
 
 func TestFakeNewTimerNonPositiveFiresWithoutAdvance(t *testing.T) {
 	for _, tc := range []struct {
