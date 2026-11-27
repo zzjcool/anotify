@@ -1,7 +1,7 @@
 // Package lease 是 v4 的巡检层：租约过期回收、保留期清理、统计与槽位占用投影。它只消费
 // **store 的真实入口**（RecoverLostLeases / RunRetention / MaintainStats / FreeSlotsByNode），
 // 没有旧 v3 的别名层：租约过期只吊销授权、**不释放物理槽**（reaped 由 cancel.ack 或实例观测
-// 给出），例外是 abandoned 终局——它同事务收敛两本账（#660），绝不自动重跑非幂等能力。
+// 给出），例外是终态任务（abandoned/succeeded/failed/cancelled）收敛两本账（#660/#682），绝不自动重跑非幂等能力。
 package lease
 
 import (
@@ -65,13 +65,13 @@ func (s *Sweeper) RunOnce(ctx context.Context, now int64) (Report, error) {
 		s.log.Info("lease sweep recovered lost leases",
 			"requeued", requeued, "abandoned", abandoned)
 	}
-	converged, cerr := s.db.ConvergeAbandonedLedgers(ctx, now)
+	converged, cerr := s.db.ConvergeTerminalLedgers(ctx, now)
 	report.LedgersConverged = converged
 	if cerr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("lease: 存量账本收敛: %w", cerr))
 	}
 	if converged.AttemptsReaped > 0 || converged.SlotsReleased > 0 {
-		s.log.Info("lease sweep converged abandoned ledgers",
+		s.log.Info("lease sweep converged terminal ledgers",
 			"attemptsReaped", converged.AttemptsReaped, "slotsReleased", converged.SlotsReleased)
 	}
 
