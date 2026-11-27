@@ -49,7 +49,9 @@ spec:
         2. 基线必须干净：先 git fetch origin，再 git checkout $BASE_BRANCH 并 git reset --hard origin/$BASE_BRANCH
            （工作区里可能是上一次任务留下的分支，不许在它上面接着长）。
            然后建新分支 pi-subagent/issue-$issue-r$round。
-        3. 改完必须自己跑门禁（至少构建/单测/相关测试），把真实输出留在提交说明或日志里。
+        3. 改完只跑**相关包**的门禁（例如改动在 internal/store 就跑 go test ./internal/store/...），
+           把真实输出写进提交说明或日志。**不要跑 make ci / go test ./... 全量**——那一步由 CI 做，
+           在节点上跑全量会吃掉大半台机器的 CPU，把这一跳从 20 分钟拖到 45 分钟以上。
         4. 提交并推送，开一个 PR（base $BASE_BRANCH），PR 正文写清：改了什么、为什么、怎么验证。
         5. 不许手工合并、不许 force push 到共享分支、不许改无关文件。
 
