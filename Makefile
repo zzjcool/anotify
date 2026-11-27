@@ -428,8 +428,9 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 # 安静地腐烂（#315 ③）。issue #338 里它就是这么烂掉的：v3 形状 + `dispatchbench` build tag，
 # 全仓唯一跑它的地方是这里，而 `go test ./...` 看不见它。现在**没有 build tag** 了——
 # 这个基准与它的护栏用例都在 `go test ./internal/store` 里正常编译/运行。
+# 选点预算（#681）也在这里：它按任务 × 候选决定 1Hz sweep 的库访问量，跑空/跑贵都要有数字。
 bench-dispatch: ## 跑 dispatch 全链基准（1x：只保证编译+能跑出数字；要数字自己加大 -benchtime）
-	go test ./internal/store -run '^$$' -bench BenchmarkDispatchChain -benchtime 1x -benchmem
+	go test ./internal/store -run '^$$' -bench 'BenchmarkDispatchChain|BenchmarkDispatchBudgetSweep' -benchtime 1x -benchmem
 
 bench: ## 运行全部基准测试（吞吐/分配热点；仅基准不跑单测）
 	go test ./... -run=NONE -bench=. -benchmem -benchtime=1s

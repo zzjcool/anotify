@@ -14,22 +14,16 @@ import (
 
 // 本文件是**认证执行入口**的唯一归属（G1-6C3 / C3a）。
 //
-// 为什么必须把认证放进写事务：旧的公开 GrantLease / RenewLease / CompleteTask 只带
-// caller 自报的 nodeID，没有任何节点凭证。上层「先校验 session 再调 store」会出现
-// TOCTOU——校验与写入之间节点令牌被轮换、namespace 被撤销、任务被取消/重派，
-// 旧 session 仍然能把授权写进去。现在每个入口都要求 NodeAuthorization
-// （来自当前 NodeSession：nodeId + token sha256），并在**同一个 BEGIN IMMEDIATE
-// 事务**里重读 nodes.token_hash、node 归属、namespace 交集与任务当前执行事实。
-//
-// 公开的无认证执行入口已全部退休（不是保留为兼容层）：GrantLease / RenewLease /
-// CompleteTask(At) / AckCancel 不再导出，任何 WS/HTTP 调用方都必须走这里的
-// *Authorized 入口。旧签名没有兼容 bypass。
+// 为什么认证必须在写事务里：旧的公开 GrantLease / RenewLease / CompleteTask 只带 caller 自报的
+// nodeID、没有节点凭证，「上层先校验 session 再调 store」的 TOCTOU 里令牌轮换/ns 撤销/任务重派
+// 都会让旧 session 把授权写进去。现在每个入口都要 NodeAuthorization（当前 NodeSession 的
+// nodeId + token sha256），并在**同一个 BEGIN IMMEDIATE 事务**里重读 token_hash、归属、ns 交集
+// 与任务当前执行事实；公开的无认证入口全部退休（不是兼容层），旧签名没有 bypass。
 
 // NodeAuthorization 是一次执行授权请求的**认证身份**。
 //
-// 它必须由认证层从当前 NodeSession 构造：NodeID 是会话绑定的 nodes.id，
-// NodeTokenHash 是该节点令牌的 sha256（明文只在发放时存在一次，永不进 store）。
-// 禁止从请求体里取 caller 自报的 nodeId 拼一个 NodeAuthorization。
+// 它必须由认证层从当前 NodeSession 构造：NodeID 是会话绑定的 nodes.id，NodeTokenHash 是该节点令牌的
+// sha256（明文只在发放时存在一次，永不进 store）；禁止从请求体里取 caller 自报的 nodeId 拼一个。
 type NodeAuthorization struct {
 	NodeID        string
 	NodeTokenHash string
@@ -120,35 +114,64 @@ func maxPerNodeOn(ctx context.Context, ex queryExec, capabilityID string) (int, 
 		return artifact.DefaultMaxPerNode, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("授予租约: 读能力并发预算: %w", err)
+		return 0, fmt.Errorf("执行预算: 读能力并发预算: %w", err)
 	}
 	var spec artifact.Spec
 	if trimmed := strings.TrimSpace(specJSON); trimmed != "" {
 		if err := json.Unmarshal([]byte(trimmed), &spec); err != nil {
-			return 0, fmt.Errorf("授予租约: 解码能力 spec: %w", err)
+			return 0, fmt.Errorf("执行预算: 解码能力 spec: %w", err)
 		}
 	}
 	return spec.Concurrency.EffectiveMaxPerNode(), nil
 }
 
-// grantBudgetOn 在同一授权事务里执行三层独立的预算（G1-6C3 / D6）：**机器总量**（local > node
-// 合并后的 limits.total，跨 ns、跨能力）、**按能力名**（跨 ns 的同名能力，无单列则 "*"）、
-// **pinned maxPerNode**（同 ns + 同能力名、跨版本）。
-//
-// 占用口径（三条共用）：**未回收的真实执行**（task_attempts.reaped_at IS NULL 的每一行；不看
-// 任务相位，phase 变化/rehello/租约过期都不假释放）；**真实 busy reservation**（节点已接受且
-// 落进真实槽账本的候选，纯中枢侧 assignment 不是物理占用）；本次请求自己的 reservation 只算
-// 一次（node+task+assignment+proposed+同一个 slot 全相等才排除，别的 slot 仍算真实占用）。
-// 拒绝只返回 ErrSlotUnavailable（不耗 attempt、不绑槽、不改别人的 reservation），调用方负责
-// 放回 pending + waiting_for_slot；缩小预算只阻止新授权，存量 busy 账本原样保留。
-func grantBudgetOn(ctx context.Context, ex queryExec, nodeID, taskID, assignmentID string,
-	proposedAttempt, slot int, namespaceID, capability string,
-	maxPerNode int, limits protocol.Limits) error {
-	effectiveTotal := limits.Total
-	if effectiveTotal <= 0 {
-		effectiveTotal = protocol.DefaultLimitsTotal
-	}
+type budgetUsage struct {
+	total      int
+	capability int
+	pinned     int
+}
 
+// budgetLayers 是本次要统计的层：没配的层既不查也不判（授权在 BEGIN IMMEDIATE 里，少 2~4 条 SQL）。
+type budgetLayers struct {
+	total      bool
+	capability bool
+	pinned     bool
+}
+
+// budgetShape 是这台机器对这个能力的预算形状：grant 与 DispatchBudgets 都从这一份派生「哪几层要统计、每层上限多少」。
+type budgetShape struct {
+	totalLimit  int
+	capLimit    int
+	capLimited  bool
+	pinnedLimit int
+}
+
+func budgetShapeFor(limits protocol.Limits, capability string, maxPerNode int) budgetShape {
+	total := limits.Total
+	if total <= 0 {
+		total = protocol.DefaultLimitsTotal
+	}
+	capLimit, capLimited := limits.PerCapability[capability]
+	if !capLimited {
+		capLimit, capLimited = limits.PerCapability[NamespaceWildcard]
+	}
+	return budgetShape{totalLimit: total, capLimit: capLimit, capLimited: capLimited, pinnedLimit: maxPerNode}
+}
+
+func (s budgetShape) layers() budgetLayers {
+	return budgetLayers{total: s.totalLimit > 0, capability: s.capLimited, pinned: s.pinnedLimit > 0}
+}
+
+type budgetExclusion struct {
+	slot            int
+	taskID          string
+	assignmentID    string
+	proposedAttempt int
+}
+
+// budgetBusyOn 是三层执行预算**唯一**的占用口径（授权与选点共用）：未回收的真实执行（已终态任务不算 #660）+ 节点已接住的真实 busy 预约；纯中枢侧 assignment 只进选点的软占用层。
+func budgetBusyOn(ctx context.Context, ex queryExec, nodeID, namespaceID, capability string,
+	excl *budgetExclusion, want budgetLayers) (budgetUsage, error) {
 	// 未回收执行：每行 attempt 都仍可能占着物理槽；**已终态的任务不算**（#660）。
 	termIn, termArgs := terminalPhaseIn()
 	countUnreaped := func(where string, args ...any) (int, error) {
@@ -157,24 +180,23 @@ func grantBudgetOn(ctx context.Context, ex queryExec, nodeID, taskID, assignment
 		       WHERE a.node_id = ? AND a.reaped_at IS NULL AND t.phase NOT IN (` + termIn + `)` + where
 		base := append([]any{nodeID}, termArgs...)
 		if err := ex.queryRowContext(ctx, q, append(base, args...)...).Scan(&n); err != nil {
-			return 0, fmt.Errorf("授予租约: 统计未回收执行: %w", err)
+			return 0, fmt.Errorf("执行预算: 统计未回收执行: %w", err)
 		}
 		return n, nil
 	}
 	// 真实 busy reservation：节点已接受（Busy=true）并落进**真实槽账本**的候选。
-	// 判别式是 busy_lease_id=''（执行都有 lease，reservation 不伪造 lease）。
-	// 纯中枢侧 assignment（节点还没接住）不在这里重复计：它不是物理占用事实。
-	// 本次 grant 自己那条同槽预约只排除一次：node+task+assignment+proposed+slot
-	// 全部精确相等才行；其它槽/其它 assignment 的 reservation 仍然计入。
 	countReserved := func(where string, args ...any) (int, error) {
 		var n int
 		q := `SELECT COUNT(*) FROM node_instances i JOIN tasks t ON t.id = i.busy_task
-		       WHERE i.node_id = ? AND i.busy_task IS NOT NULL AND i.busy_lease_id = ''
-		         AND NOT (i.slot = ? AND i.busy_task = ? AND i.busy_attempt = ?
-		                  AND i.busy_assignment_id = ?)` + where
-		base := []any{nodeID, slot, taskID, proposedAttempt, assignmentID}
-		if err := ex.queryRowContext(ctx, q, append(base, args...)...).Scan(&n); err != nil {
-			return 0, fmt.Errorf("授予租约: 统计 busy reservation: %w", err)
+		       WHERE i.node_id = ? AND i.busy_task IS NOT NULL AND i.busy_lease_id = ''`
+		base := []any{nodeID}
+		if excl != nil {
+			q += ` AND NOT (i.slot = ? AND i.busy_task = ? AND i.busy_attempt = ?
+		                AND i.busy_assignment_id = ?)`
+			base = append(base, excl.slot, excl.taskID, excl.proposedAttempt, excl.assignmentID)
+		}
+		if err := ex.queryRowContext(ctx, q+where, append(base, args...)...).Scan(&n); err != nil {
+			return 0, fmt.Errorf("执行预算: 统计 busy reservation: %w", err)
 		}
 		return n, nil
 	}
@@ -190,52 +212,268 @@ func grantBudgetOn(ctx context.Context, ex queryExec, nodeID, taskID, assignment
 		return unreaped + reserved, nil
 	}
 
-	totalBusy, err := busyOn("")
+	// countUnreaped/countReserved 都是「在固定参数后追加 where 参数」，
+	// 因此同一个 where 片段可以同时用于两张查询。
+	var out budgetUsage
+	var err error
+	if want.total {
+		if out.total, err = busyOn(""); err != nil {
+			return budgetUsage{}, err
+		}
+	}
+	if want.capability {
+		if out.capability, err = busyOn(` AND t.capability = ?`, capability); err != nil {
+			return budgetUsage{}, err
+		}
+	}
+	if want.pinned {
+		if out.pinned, err = busyOn(` AND t.namespace_id = ? AND t.capability = ?`, namespaceID, capability); err != nil {
+			return budgetUsage{}, err
+		}
+	}
+	return out, nil
+}
+
+// pendingProposalsOn 数某节点上「已提议、节点还没报事实」的同能力候选（软占用，只给选点用；当前任务自己的排除在外）。
+func pendingProposalsOn(ctx context.Context, ex queryExec, nodeID, namespaceID, capability string,
+	excludeTaskID string, now int64, want budgetLayers) (budgetUsage, error) {
+	count := func(where string, args ...any) (int, error) {
+		q := `SELECT COUNT(*) FROM tasks
+		       WHERE node_id = ? AND phase = ? AND cancel_requested_at IS NULL
+		         AND assignment_id <> '' AND assignment_expires_at > ? AND id <> ?` + where
+		base := []any{nodeID, TaskPending, now, excludeTaskID}
+		var n int
+		if err := ex.queryRowContext(ctx, q, append(base, args...)...).Scan(&n); err != nil {
+			return 0, fmt.Errorf("执行预算: 统计在飞候选: %w", err)
+		}
+		return n, nil
+	}
+	var out budgetUsage
+	var err error
+	if want.total {
+		if out.total, err = count(""); err != nil {
+			return budgetUsage{}, err
+		}
+	}
+	if want.capability {
+		if out.capability, err = count(` AND capability = ?`, capability); err != nil {
+			return budgetUsage{}, err
+		}
+	}
+	if want.pinned {
+		if out.pinned, err = count(` AND namespace_id = ? AND capability = ?`, namespaceID, capability); err != nil {
+			return budgetUsage{}, err
+		}
+	}
+	return out, nil
+}
+
+// DispatchNodeBudget 是「还能不能再收一个该能力的任务」的事实：三层 Used 含在飞候选（选点保守、授权不）。
+type DispatchNodeBudget struct {
+	NodeID string
+
+	// 机器总量（limits.total，local ⊕ node，缺省 DefaultLimitsTotal）。
+	TotalUsed  int
+	TotalLimit int
+
+	// 按能力名（perCapability / "*"）；CapabilityLimited=false 表示这类预算没配。
+	CapabilityUsed    int
+	CapabilityLimit   int
+	CapabilityLimited bool
+
+	// pinned maxPerNode（同 ns + 同能力名）；PinnedLimit<=0 表示不限。
+	PinnedUsed  int
+	PinnedLimit int
+}
+
+// AdmitsOne 报告这台节点这一轮是否还有余量再收一个该能力的候选（三层都还有余量）。
+func (b DispatchNodeBudget) AdmitsOne() bool {
+	if b.TotalLimit > 0 && b.TotalUsed+1 > b.TotalLimit {
+		return false
+	}
+	if b.CapabilityLimited && b.CapabilityUsed+1 > b.CapabilityLimit {
+		return false
+	}
+	if b.PinnedLimit > 0 && b.PinnedUsed+1 > b.PinnedLimit {
+		return false
+	}
+	return true
+}
+
+// OverBy 是超出预算的量（三层之和；有余量 = 0）：全满时按它排先后，四单才不会全堆一台（#681）。
+func (b DispatchNodeBudget) OverBy() int {
+	over := 0
+	if b.TotalLimit > 0 && b.TotalUsed+1 > b.TotalLimit {
+		over += b.TotalUsed + 1 - b.TotalLimit
+	}
+	if b.CapabilityLimited && b.CapabilityUsed+1 > b.CapabilityLimit {
+		over += b.CapabilityUsed + 1 - b.CapabilityLimit
+	}
+	if b.PinnedLimit > 0 && b.PinnedUsed+1 > b.PinnedLimit {
+		over += b.PinnedUsed + 1 - b.PinnedLimit
+	}
+	return over
+}
+
+// DispatchBudgets 给派发路径逐节点的预算余量（#681）：grantBudgetOn 的同一份口径 + 在飞候选的软占用；读失败由调用方退让。
+func (d *DB) DispatchBudgets(ctx context.Context, t *Task, nodeIDs []string,
+	now int64) (map[string]DispatchNodeBudget, error) {
+	return d.DispatchBudgetsMemoized(ctx, t, nodeIDs, now, nil)
+}
+
+// DispatchBudgetMemo 复用一次 sweep 内**不变**的读：能力 maxPerNode（按 capabilityID）、机器快照与 real
+// 占用层（按 node + ns + 能力 + 层集）；在飞候选随本轮派发变化，每次都重算。零值可用；**不得跨 sweep
+// 复用**（快照与 real 占用都已变），调用方每轮新建一个。
+type DispatchBudgetMemo struct {
+	maxPerNode map[string]int
+	snapshots  map[string]*machineConfigSnapshot
+	real       map[dispatchRealKey]budgetUsage
+}
+
+type dispatchRealKey struct {
+	nodeID      string
+	namespaceID string
+	capability  string
+	layers      budgetLayers
+}
+
+func (m *DispatchBudgetMemo) pinnedLimitOn(ctx context.Context, ex queryExec, capabilityID string) (int, error) {
+	if m.maxPerNode == nil {
+		m.maxPerNode = map[string]int{}
+	}
+	if limit, ok := m.maxPerNode[capabilityID]; ok {
+		return limit, nil
+	}
+	limit, err := maxPerNodeOn(ctx, ex, capabilityID)
+	if err != nil {
+		return 0, err
+	}
+	m.maxPerNode[capabilityID] = limit
+	return limit, nil
+}
+
+func (m *DispatchBudgetMemo) snapshotOn(ctx context.Context, ex queryExec, nodeID string) (*machineConfigSnapshot, error) {
+	if m.snapshots == nil {
+		m.snapshots = map[string]*machineConfigSnapshot{}
+	}
+	if snap, ok := m.snapshots[nodeID]; ok {
+		return snap, nil
+	}
+	snap, err := loadMachineSnapshotOn(ctx, ex, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	m.snapshots[nodeID] = snap
+	return snap, nil
+}
+
+func (m *DispatchBudgetMemo) realOn(ctx context.Context, ex queryExec, nodeID, namespaceID, capability string,
+	want budgetLayers) (budgetUsage, error) {
+	key := dispatchRealKey{nodeID: nodeID, namespaceID: namespaceID, capability: capability, layers: want}
+	if m.real == nil {
+		m.real = map[dispatchRealKey]budgetUsage{}
+	}
+	if used, ok := m.real[key]; ok {
+		return used, nil
+	}
+	used, err := budgetBusyOn(ctx, ex, nodeID, namespaceID, capability, nil, want)
+	if err != nil {
+		return budgetUsage{}, err
+	}
+	m.real[key] = used
+	return used, nil
+}
+
+// DispatchBudgetsMemoized 同 DispatchBudgets，但共享 memo（nil = 不共享）。
+func (d *DB) DispatchBudgetsMemoized(ctx context.Context, t *Task, nodeIDs []string, now int64,
+	memo *DispatchBudgetMemo) (map[string]DispatchNodeBudget, error) {
+	out := make(map[string]DispatchNodeBudget, len(nodeIDs))
+	if t == nil || len(nodeIDs) == 0 {
+		return out, nil
+	}
+	if now == 0 {
+		now = Now()
+	}
+	if memo == nil {
+		memo = &DispatchBudgetMemo{}
+	}
+	maxPerNode, err := memo.pinnedLimitOn(ctx, d, t.CapabilityID)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch budgets: %w", err)
+	}
+	for _, nodeID := range nodeIDs {
+		if nodeID == "" {
+			continue
+		}
+		if _, seen := out[nodeID]; seen {
+			continue
+		}
+		snap, serr := memo.snapshotOn(ctx, d, nodeID)
+		if serr != nil {
+			return nil, fmt.Errorf("dispatch budgets: %w", serr)
+		}
+		limits, lerr := TypedMachineLimits(snap.limits)
+		if lerr != nil {
+			return nil, fmt.Errorf("dispatch budgets: node %s: %w", nodeID, lerr)
+		}
+		shape := budgetShapeFor(limits, t.Capability, maxPerNode)
+		real, uerr := memo.realOn(ctx, d, nodeID, t.NamespaceID, t.Capability, shape.layers())
+		if uerr != nil {
+			return nil, fmt.Errorf("dispatch budgets: %w", uerr)
+		}
+		inflight, perr := pendingProposalsOn(ctx, d, nodeID, t.NamespaceID, t.Capability, t.ID, now, shape.layers())
+		if perr != nil {
+			return nil, fmt.Errorf("dispatch budgets: %w", perr)
+		}
+		out[nodeID] = DispatchNodeBudget{
+			NodeID:            nodeID,
+			TotalUsed:         real.total + inflight.total,
+			TotalLimit:        shape.totalLimit,
+			CapabilityUsed:    real.capability + inflight.capability,
+			CapabilityLimit:   shape.capLimit,
+			CapabilityLimited: shape.capLimited,
+			PinnedUsed:        real.pinned + inflight.pinned,
+			PinnedLimit:       shape.pinnedLimit,
+		}
+	}
+	return out, nil
+}
+
+// grantBudgetOn 在同一授权事务里执行三层独立的预算（G1-6C3 / D6）：机器总量（limits.total，跨 ns、
+// 跨能力）、按能力名（跨 ns 同名，无单列则 "*"）、pinned maxPerNode（同 ns + 同能力名）。
+// 占用口径见 budgetBusyOn（本次自己的同槽预约只排除一次：五项全等）；拒绝只返回 ErrSlotUnavailable，
+// 调用方放回 pending + waiting_for_slot。
+func grantBudgetOn(ctx context.Context, ex queryExec, nodeID, taskID, assignmentID string,
+	proposedAttempt, slot int, namespaceID, capability string,
+	maxPerNode int, limits protocol.Limits) error {
+	shape := budgetShapeFor(limits, capability, maxPerNode)
+	used, err := budgetBusyOn(ctx, ex, nodeID, namespaceID, capability, &budgetExclusion{
+		slot: slot, taskID: taskID, assignmentID: assignmentID, proposedAttempt: proposedAttempt,
+	}, shape.layers())
 	if err != nil {
 		return err
 	}
-	if totalBusy+1 > effectiveTotal {
+	if used.total+1 > shape.totalLimit {
 		return fmt.Errorf("%w: node %s 机器总量预算已满（%d/%d）",
-			ErrSlotUnavailable, nodeID, totalBusy, effectiveTotal)
+			ErrSlotUnavailable, nodeID, used.total, shape.totalLimit)
 	}
-
-	capLimit, hasCap := limits.PerCapability[capability]
-	if !hasCap {
-		capLimit, hasCap = limits.PerCapability[NamespaceWildcard]
+	if shape.capLimited && used.capability+1 > shape.capLimit {
+		return fmt.Errorf("%w: node %s 的能力预算 %q 已满（%d/%d）",
+			ErrSlotUnavailable, nodeID, capability, used.capability, shape.capLimit)
 	}
-	if hasCap {
-		// countUnreaped/countReserved 都是「在固定参数后追加 where 参数」，
-		// 因此同一个 where 片段可以同时用于两张查询。
-		capBusy, cerr := busyOn(` AND t.capability = ?`, capability)
-		if cerr != nil {
-			return cerr
-		}
-		if capBusy+1 > capLimit {
-			return fmt.Errorf("%w: node %s 的能力预算 %q 已满（%d/%d）",
-				ErrSlotUnavailable, nodeID, capability, capBusy, capLimit)
-		}
-	}
-
-	if maxPerNode > 0 {
-		pinnedBusy, perr := busyOn(` AND t.namespace_id = ? AND t.capability = ?`, namespaceID, capability)
-		if perr != nil {
-			return perr
-		}
-		if pinnedBusy+1 > maxPerNode {
-			return fmt.Errorf("%w: node %s 的 pinned per-node 预算 %s/%s 已满（%d/%d）",
-				ErrSlotUnavailable, nodeID, namespaceID, capability, pinnedBusy, maxPerNode)
-		}
+	if shape.pinnedLimit > 0 && used.pinned+1 > shape.pinnedLimit {
+		return fmt.Errorf("%w: node %s 的 pinned per-node 预算 %s/%s 已满（%d/%d）",
+			ErrSlotUnavailable, nodeID, namespaceID, capability, used.pinned, shape.pinnedLimit)
 	}
 	return nil
 }
 
-// GrantLeaseAuthorized 授予一次执行租约（**每次执行唯一授权入口**）。认证/授权/预算/绑定/
-// 快照都在**同一个 BEGIN IMMEDIATE 事务**里完成，没有「先校验再无条件写」的窗口。顺序：
-// 节点身份 → 候选三项精确匹配（assignmentId + node + proposedAttempt，stale 只被拒）→
-// ns 交集 → attempt 预算（超了直接终态）→ 机器配置 applied 事实 → 三层执行预算
-// （grantBudgetOn）→ 绑定节点回报的真实 slot → 落 attempt 机器快照 + 写授权事实。
-// 任何失败都不消耗 attempt、不占槽、不伪造 lease；容量拒绝回 pending + waiting_for_slot。
-// decisionToken 只对声明了 outcomes 的 router 任务非空（#522）。
+// GrantLeaseAuthorized 授予一次执行租约（**每次执行唯一授权入口**）：认证/授权/预算/绑定/快照都在
+// **同一个 BEGIN IMMEDIATE 事务**里完成，没有「先校验再无条件写」的窗口。顺序：节点身份 → 候选三项
+// 精确匹配（assignmentId + node + proposedAttempt，stale 只被拒）→ ns 交集 → attempt 预算（超了直接
+// 终态）→ 机器配置 applied 事实 → 三层执行预算（grantBudgetOn）→ 绑定节点回报的真实 slot → 落 attempt
+// 机器快照 + 写授权事实。任何失败都不消耗 attempt、不占槽、不伪造 lease；容量拒绝回 pending +
+// waiting_for_slot；decisionToken 只对声明了 outcomes 的 router 任务非空（#522）。
 func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 	taskID, assignmentID string, proposedAttempt, slot int, now int64) (
 	leaseID, attemptToken, decisionToken string, attempt int, expiresAt int64, err error) {
@@ -541,14 +779,11 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 
 // RenewLeaseAuthorized 续租（**当前认证身份** + 当前执行事实）。
 //
-// 同事务判据：nodes.token_hash == auth.NodeTokenHash、任务归 auth.NodeID、
-// ns 交集仍成立、phase=running、attempt/lease 相等、**没有取消在飞**、
-// 租约未过期（now >= lease_until 一律拒绝——`expiry==now` 不得复活授权）。
-// 全部通过才把租约推到 now+生效 TTL（DB.LeaseTTL，默认 180s）；任何一项对不上
-// 都是 ErrLeaseMismatch，写入零行。
-//
-// wire 的 lease.renew 没有 attemptToken 字段：当前认证节点 + attempt + lease 就是
-// 它的授权凭据（不发明新字段）。
+// 同事务判据：nodes.token_hash == auth.NodeTokenHash、任务归 auth.NodeID、ns 交集仍成立、
+// phase=running、attempt/lease 相等、**没有取消在飞**、租约未过期（now >= lease_until 一律
+// 拒绝——`expiry==now` 不得复活授权）。全部通过才把租约推到 now+生效 TTL（DB.LeaseTTL，默认
+// 180s）；任何一项对不上都是 ErrLeaseMismatch，写入零行。wire 的 lease.renew 没有 attemptToken
+// 字段：当前认证节点 + attempt + lease 就是它的授权凭据（不发明新字段）。
 func (d *DB) RenewLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 	taskID string, attempt int, leaseID string, now int64) (int64, error) {
 	if taskID == "" || leaseID == "" {
@@ -651,11 +886,10 @@ const (
 
 // CompleteTaskAuthorized 写入一次执行结果（**当前认证身份** + 当前执行事实）。
 //
-// 五条授权事实全部在同**一**个事务里校验：当前节点凭证、任务归该节点、ns 交集、
-// 当前 attempt/lease、phase=running、未取消、**租约未过期**。
-// 取消在飞时一律拒（ErrTaskNotRunning）：结局由 cancel.ack 裁定。
-// 过期租约的 result 必须拒：那一代执行已经失去授权（巡检随时会重派），
-// 接受它会与下一次尝试争着写同一行终态，旧执行不得复活。
+// 五条授权事实全部在同**一**个事务里校验：当前节点凭证、任务归该节点、ns 交集、当前 attempt/lease、
+// phase=running、未取消、**租约未过期**。取消在飞时一律拒（ErrTaskNotRunning）：结局由 cancel.ack 裁定。
+// 过期租约的 result 必须拒：那一代执行已经失去授权（巡检随时会重派），接受它会与下一次尝试争着写
+// 同一行终态，旧执行不得复活。
 //
 // task.result 没有明文 attemptToken：认证 NodeSession 的实际凭证 + 当前 lease
 // 绑定就是该通道的授权依据，不从库里的 token hash 制造 caller 凭证。
