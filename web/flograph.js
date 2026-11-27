@@ -1612,7 +1612,7 @@
 	/* #579：结论三态 —— 失败（红）> 未完成（黄）> 全部成功（绿）。只数失败会把
 	 * 「能力没部署、任务永远 pending」画成绿色「全部成功」。分档按节点 kind：
 	 * failed / end / pipe|running；trigger 与 pruned 不是「这次的任务」，两边都不计。
-	 * 预览没有执行事实，只落「预览完成」，灯保持中性。
+	 * 预览没有执行事实，只落「预览完成」；一张任务卡都没有也不落结论。
 	 */
 	function silkTally(nodes) {
 		const t = { failed: 0, ended: 0, pending: 0 };
@@ -1622,7 +1622,7 @@
 			else if (k === "end") t.ended += 1;
 			else if (k === "pipe" || k === "running") t.pending += 1;
 		}
-		// closed/tasks 按任务卡计，不按回放节拍：重试/扇出是同一张卡。
+		// closed/tasks 按任务卡计，条上前缀也用这把尺：重试/扇出是同一张卡，不是两拍。
 		t.closed = t.failed + t.ended;
 		t.tasks = t.closed + t.pending;
 		t.state = t.failed ? "failed" : t.pending ? "pending" : "ok";
@@ -1630,6 +1630,7 @@
 	}
 
 	function silkVerdict(tally, t) {
+		if (!tally.tasks) return { text: "", cls: "" };
 		if (tally.state === "failed") {
 			return {
 				text: silkFill(t("graph.silk_meta_failed", "{n} 个失败"), { n: tally.failed }),
@@ -1656,6 +1657,13 @@
 			: head;
 	}
 
+	function silkRunMeta(tally, t, totalSec) {
+		return silkFill(t("graph.silk_meta_run", "{n} 个任务 · 回放 {t}"), {
+			n: tally.tasks,
+			t: silkFmtClock(totalSec),
+		});
+	}
+
 	/** 落定结论的全部接线值：条上文案、灯类、HUD 底部、重播要清的类。 */
 	function silkOutcome(preview, tally, t, barMetaPrefix) {
 		const reset = ["is-fail", "is-warn"];
@@ -1665,7 +1673,7 @@
 		}
 		const verdict = silkVerdict(tally, t);
 		return {
-			meta: barMetaPrefix + " · " + verdict.text,
+			meta: verdict.text ? barMetaPrefix + " · " + verdict.text : barMetaPrefix,
 			cls: verdict.cls,
 			done: silkDoneText(tally, t),
 			reset: reset,
@@ -2016,10 +2024,7 @@
 					n: nodes.length,
 					m: edgeItems.length,
 				})
-			: silkFill(tt("graph.silk_meta_run", "{n} 个任务 · 回放 {t}"), {
-					n: beats.length,
-					t: silkFmtClock(totalSec),
-				});
+			: silkRunMeta(tally, tt, totalSec);
 		const outcome = silkOutcome(preview, tally, tt, barMetaPrefix);
 		const barMetaFinal = outcome.meta;
 		barMeta.textContent = barMetaPrefix;

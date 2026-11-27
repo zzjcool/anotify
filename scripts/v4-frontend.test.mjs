@@ -5420,17 +5420,18 @@ test('G1 Silk pan defers capture for native clicks and retains horizontal/vertic
 
 test('#579 silk outcome keeps pending/running out of "all succeeded" and wires texts/lamps/done/replay', () => {
   const source = readFileSync(path.join(ROOT, 'web/flograph.js'), 'utf8');
-  const start = source.indexOf('\tfunction silkFill('), end = source.indexOf('\tfunction silkDurOf(', start);
-  assert.ok(start > 0 && end > start, 'slice silkFill → silkDurOf exists');
+  const start = source.indexOf('\tfunction silkFmtClock('), end = source.indexOf('\tfunction silkDurOf(', start);
+  assert.ok(start > 0 && end > start, 'slice silkFmtClock → silkDurOf exists');
   const dict = {};
   for (const line of readFileSync(path.join(ROOT, 'web-src/locales/zh-CN.yaml'), 'utf8').split('\n')) {
-    const m = /^  (silk_meta_(?:ok|failed|pending|done)|silk_preview_done): '?([^']*)'?$/.exec(line);
+    const m = /^  (silk_meta_(?:run|ok|failed|pending|done)|silk_preview_done): '?([^']*)'?$/.exec(line);
     if (m) dict['graph.' + m[1]] = m[2];
   }
   const tt = (k, d) => dict[k] || d;
   const ctx = vm.createContext({});
   vm.runInContext(
-    source.slice(start, end) + '\n globalThis.silkTally = silkTally; globalThis.silkOutcome = silkOutcome;',
+    source.slice(start, end) +
+      '\n globalThis.silkTally = silkTally; globalThis.silkRunMeta = silkRunMeta; globalThis.silkOutcome = silkOutcome;',
     ctx,
   );
   const nodes = (...kinds) => kinds.map((kind, i) => ({ id: 'n' + i, kind }));
@@ -5459,6 +5460,21 @@ test('#579 silk outcome keeps pending/running out of "all succeeded" and wires t
   const t = ctx.silkTally(nodes('trigger', 'end', 'pipe', 'failed', 'pruned'));
   assert.deepEqual([t.closed, t.tasks, t.pending, t.state], [2, 3, 1, 'failed']);
   assert.deepEqual(Object.keys({ ...t }).sort(), ['closed', 'ended', 'failed', 'pending', 'state', 'tasks']);
+  const withPrefix = (...kinds) => {
+    const tally = ctx.silkTally(nodes(...kinds));
+    const meta = ctx.silkRunMeta(tally, tt, 2);
+    const o = ctx.silkOutcome(false, tally, tt, meta);
+    return { meta: o.meta, done: o.done, cls: o.cls, reset: [...o.reset] };
+  };
+  assert.deepEqual(withPrefix('trigger', 'end', 'end', 'end'), {
+    meta: '3 个任务 · 回放 2.0s · 全部成功', cls: '', done: '回放结束 · 3/3 个任务已结束', reset: ['is-fail', 'is-warn'],
+  });
+  assert.deepEqual(withPrefix('trigger', 'end', 'pipe', 'pruned'), {
+    meta: '2 个任务 · 回放 2.0s · 1 个未完成', cls: 'is-warn', done: '回放结束 · 1/2 个任务已结束', reset: ['is-fail', 'is-warn'],
+  });
+  assert.deepEqual(withPrefix('trigger', 'pruned'), {
+    meta: '0 个任务 · 回放 2.0s', cls: '', done: '回放结束 · 0/0 个任务已结束', reset: ['is-fail', 'is-warn'],
+  });
 
   const settleStart = source.indexOf('\t\tconst barMetaFinal = outcome.meta;');
   const settleEnd = source.indexOf('\t\tconst barSpacer =', settleStart);
