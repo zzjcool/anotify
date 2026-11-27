@@ -115,9 +115,8 @@ func parseCronField(field string, min, max int, name string) (map[int]bool, bool
 	return out, isStar, nil
 }
 
-// Next 返回 after 之后的第一个触发时刻（严格大于 after，秒/纳秒归零）。
-//
-// 找不到（例如表达式永不成立，如 2 月 30 日）时返回零值 time.Time。
+// Next 返回 after 之后的第一个触发时刻（严格大于 after，秒/纳秒归零）；找不到（例如表达式永不成立，
+// 如 2 月 30 日）时返回零值 time.Time。
 func (s *CronSchedule) Next(after time.Time) time.Time {
 	// 从下一分钟开始：cron 的语义是"到点触发"，同一分钟内不重复
 	t := after.Truncate(time.Minute).Add(time.Minute)
@@ -156,10 +155,8 @@ func (s *CronSchedule) matchDay(t time.Time) bool {
 	return domOK || dowOK
 }
 
-// NextCronTime 按源的 config 算下次触发时刻（供 store 与调度器共用）。
-//
-// tz 为空或 "Local" 时用本地时区。返回零值时调用方应当放弃调度并记日志
-// （表达式永不成立），而不是把它当成「0 秒」。
+// NextCronTime 按源的 config 算下次触发时刻（供 store 与调度器共用）。tz 为空或 "Local" 时用本地时区。
+// 返回零值时调用方应当放弃调度并记日志（表达式永不成立），而不是把它当成「0 秒」。
 func NextCronTime(config json.RawMessage, after time.Time) (time.Time, error) {
 	c := ParseConfig(KindCron, config)
 	expr := strings.TrimSpace(c.Expr)
