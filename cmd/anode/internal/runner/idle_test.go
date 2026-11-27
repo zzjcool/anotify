@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -32,6 +34,22 @@ func keepLeaseAlive(h *harness, taskID, leaseID string) func() {
 	}
 }
 
+// waitExportFile 等导出目录里真的出现 rel —— 假时钟不能抢在进程写文件之前推过 idle 周期，
+// 否则「停止后仍要导出」测的是竞态而不是行为。
+func (h *harness) waitExportFile(t *testing.T, taskID, rel string) {
+	t.Helper()
+	h.waitUntil(t, "导出目录出现 "+rel, func() bool {
+		h.r.mu.Lock()
+		att := h.r.running[taskID]
+		h.r.mu.Unlock()
+		if att == nil || att.exportDir == "" {
+			return false
+		}
+		_, err := os.Stat(filepath.Join(att.exportDir, rel))
+		return err == nil
+	}, 5*time.Second)
+}
+
 func TestIdleTimeoutEndsSilentTaskEarly(t *testing.T) {
 	h := newHarness(t)
 	a, digest := h.artifact(func(a *artifact.Artifact) {
@@ -43,10 +61,12 @@ func TestIdleTimeoutEndsSilentTaskEarly(t *testing.T) {
 	h.waitFrame(t, func(any) bool { return hasAccept(h.sender.snapshot(), "t1") }, 2*time.Second)
 	h.grant("t1", 1, "lease-1", "token-1")
 
+	// 先等 idle 定时器真的武装好（2s），再推进 —— 直接推进会在「armed 之前推完额度」的竞态里空转。
+	h.waitTimerArmed(t, "无进展", 2*time.Second, 3*time.Second)
 	res := h.waitFrameAdvancing(t, func(f any) bool {
 		r, ok := f.(*protocol.TaskResultFrame)
 		return ok && r.TaskID == "t1"
-	}, time.Second, 8*time.Second).(*protocol.TaskResultFrame)
+	}, 3*time.Second, 8*time.Second).(*protocol.TaskResultFrame)
 	if res.Phase != protocol.TaskPhaseFailed || res.Result.Error == nil ||
 		res.Result.Error.Reason != protocol.ReasonNoProgress {
 		t.Fatalf("无进展必须是 failed/no_progress：%+v", res)
@@ -158,10 +178,13 @@ func TestNoProgressKeepsGrantAndExportsArtifacts(t *testing.T) {
 	h.waitFrame(t, func(any) bool { return hasAccept(h.sender.snapshot(), "t1") }, 2*time.Second)
 	h.grant("t1", 1, "lease-1", "token-1")
 
+	h.waitExportFile(t, "t1", "out.txt")
+	h.waitTimerArmed(t, "无进展", 2*time.Second, 3*time.Second)
+	// 额度 5s：产物落地会让第一轮 idle 判成「有进展」并重新武装，真正的停止在第二轮（≈4s）。
 	res := h.waitFrameAdvancing(t, func(f any) bool {
 		r, ok := f.(*protocol.TaskResultFrame)
 		return ok && r.TaskID == "t1"
-	}, time.Second, 10*time.Second).(*protocol.TaskResultFrame)
+	}, 5*time.Second, 10*time.Second).(*protocol.TaskResultFrame)
 	if res.Result.Error == nil || res.Result.Error.Reason != protocol.ReasonNoProgress {
 		t.Fatalf("期望 no_progress，得到 %+v", res.Result.Error)
 	}
