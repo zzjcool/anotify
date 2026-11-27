@@ -1307,10 +1307,9 @@
 		}
 
 		/* 折叠态的可访问性兜底：CSS 把文字收起来了（display:none / font-size:0），
-		 * 但鼠标悬停与屏幕阅读器仍需拿到名字——折叠时补 title，展开时移除
-		 * （展开态已有可见文字，再挂 title 只会多一层系统 tooltip 噪音）。
-		 * 这里的 title 是 .side-link[data-tip]::after 自定义 tooltip 的后备：
-		 * 后者在导航内部滚动或极窄屏下会被裁切，title 永远能出。 */
+		 * 但鼠标悬停与屏幕阅读器仍需拿到名字——折叠时补 title，展开时移除（展开态
+		 * 已有可见文字，多挂 title 只是噪音）。title 也是唯一手段：滚动容器会裁掉
+		 * ::after tooltip，且 admin 链接在 loadMe 之后注入，注入路径要再调一次。 */
 		function paintCollapsedHints() {
 			const links = root.querySelectorAll("a.side-link");
 			for (const a of links) {
@@ -1339,10 +1338,11 @@
 			id: "admin-nav-section",
 			/* 初始 hidden（member 用户保持隐藏，e2e 断言 classList 含 hidden）；
 			   超管由 loadMe 去 hidden 并注入 .side-label + a.side-link[admin.html]。
-			   它在 <nav> 之外：e2e 的 `#sidebar nav .side-label` 只该看到两个分组标签。
+			   它在 <nav> 之外：e2e 的 `#sidebar nav .side-label` 只该看到两个分组标签，
+			   但它和 nav 同属 .app-nav-scroll（#578）：分开放时只有 nav 能收缩/滚动。
 			   **不加 px-\***：这一组和 nav 里的 .side-group 必须同基线，多一层 12px
 			   内边距会让「管理」标题和「管理后台」文字整体右移（用户反馈的对齐问题）。 */
-			class: "hidden side-group pt-4",
+			class: "hidden side-group",
 		});
 		const nav = el("nav", { class: "app-nav" });
 		for (const group of NAV) {
@@ -1360,9 +1360,9 @@
 				const a = el("a", {
 					href: item.href,
 					class: `side-link ${isActive ? "active" : ""}`,
-					/* data-tip：折叠态的自定义 tooltip（ui.css 里
-a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层。
-					   data-label 保留为历史名字（wave 1 的 CSS 与外部脚本可能引用）。 */
+					/* data-tip：折叠态 title 兜底的取名来源（折叠提示只走 title —— 导航
+					   滚动容器会裁掉绝对定位的 tooltip）。data-label 保留为历史名字
+					   （wave 1 的 CSS 与外部脚本可能引用）。 */
 					"data-tip": label,
 					"data-label": label,
 				});
@@ -1495,8 +1495,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 				{ class: "flex h-full flex-col" },
 				brandRow,
 				scopeSlot,
-				nav,
-				adminNav,
+				el("div", { class: "app-nav-scroll" }, nav, adminNav),
 				el(
 					"div",
 					{ class: "app-sidebar-foot" },
@@ -1877,6 +1876,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 					label,
 				);
 				section.append(a);
+				paintCollapsedHints();
 			}
 
 			/* 超管：顶栏头像菜单里补一条「管理后台」（插在退出登录之前） */

@@ -6205,7 +6205,7 @@ test('E1b all 52 ACTUAL frontend registered IDs exactly once: UNIT records, not 
 });
 
 // S1: execute the actual mount, including delayed auth/me, not a source-order regex.
-test('S1 sidebar DOM mount keeps primary nav before the same role-gated admin section', async () => {
+test('S1 sidebar DOM mount keeps primary nav before the same role-gated admin section in one scroll container', async () => {
   for (const role of ['admin', 'member', 'guest']) {
     let resolveMe;
     const me = new Promise(resolve => { resolveMe = resolve; });
@@ -6245,18 +6245,22 @@ test('S1 sidebar DOM mount keeps primary nav before the same role-gated admin se
       const section = ids.get('admin-nav-section'), sidebar = ids.get('sidebar');
       assert.ok(sidebar && section, 'actual mount must create both nodes');
       const column = sidebar.children[0];
-      const nav = column.children.find(n => n.tagName === 'NAV');
+      const scroll = column.children[2];
+      assert.ok(scroll && String(scroll.className).includes('app-nav-scroll'), 'existing sidebar has one nav scroll container');
+      const nav = scroll.children.find(n => n.tagName === 'NAV');
       assert.ok(nav, 'actual primary nav exists');
       assert.equal(column.children[1], ids.get('scope-slot'));
-      assert.ok(column.children[2] === nav, 'primary nav precedes late privileged section');
-      assert.equal(column.children[3], section, 'existing admin section stays before footer');
-      assert.ok(column.children[4].className.includes('app-sidebar-foot'));
+      assert.equal(scroll.children[0], nav, 'primary nav precedes late privileged section');
+      assert.equal(scroll.children[1], section, 'existing admin section stays in the same scroll container');
+      assert.ok(column.children[3].className.includes('app-sidebar-foot'), 'footer stays outside the scroll container');
+      assert.equal(column.children.length, 4, 'brand + scope + scroll container + footer, nothing else');
       assert.equal(section.classList.contains('hidden'), true, 'no privileged entry before identity');
       resolveMe(role === 'guest' ? jsonResponse({ error: 'unauthorized' }, 401)
         : jsonResponse({ id: role, username: role, role }));
       for (let i = 0; i < 8; i++) await new Promise(setImmediate);
       assert.equal(ids.get('admin-nav-section'), section, 'auth retains the same section');
-      assert.equal(column.children[2], nav, 'auth retains the same primary nav');
+      assert.equal(scroll.children[0], nav, 'auth retains the same primary nav');
+      assert.equal(scroll.children[1], section, 'auth keeps the admin section in that same scroll container');
       const links = section.children.filter(n => n.tagName === 'A');
       assert.equal(section.classList.contains('hidden'), role !== 'admin');
       assert.equal(links.length, role === 'admin' ? 1 : 0);

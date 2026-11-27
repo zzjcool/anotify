@@ -18,6 +18,7 @@ const SUITES = Object.freeze({
     { id: "shift-collapsed", kind: "shift", lang: "zh-CN", views: 1 },
     { id: "shift-prelayout-expanded", kind: "shift", lang: "zh-CN", views: 1 },
     { id: "shift-prelayout-collapsed", kind: "shift", lang: "zh-CN", views: 1 },
+    { id: "sidebar-nav-fit", kind: "sidebar", lang: "zh-CN", views: 4 },
     { id: "interact-namespace-switch", kind: "interact", lang: "zh-CN", views: 1 },
     { id: "interact-dialogs", kind: "interact", lang: "zh-CN", views: 1 },
     { id: "interact-error-states", kind: "interact", lang: "zh-CN", views: 2 },
@@ -534,6 +535,163 @@ async function shiftPrelayout(c, collapsed) {
 }
 
 // ---------- real in-page interactions ----------
+const SIDEBAR_HEIGHTS = [700, 720, 760, 780, 800, 860, 900];
+const SIDEBAR_COLLAPSED = [{ width: 1440, height: 900 }, { width: 1280, height: 700 }];
+async function sidebarNavFit(c) {
+  return withDriver(c.id, { lang: "zh-CN", theme: "light" }, async (d, count) => {
+    const audit = () => d.page.evaluate(() => {
+      const round = n => Math.round(n * 100) / 100;
+      const rect = el => { const r = el.getBoundingClientRect(); return { left: round(r.left), top: round(r.top), right: round(r.right), bottom: round(r.bottom), w: round(r.width), h: round(r.height) }; };
+      const scroller = document.querySelector(".app-nav-scroll");
+      const foot = document.querySelector(".app-sidebar-foot");
+      const admin = document.getElementById("admin-nav-section");
+      if (!scroller || !foot || !admin) return { error: "sidebar structure missing " + JSON.stringify({ scroller: !!scroller, foot: !!foot, admin: !!admin }) };
+      const nav = scroller.querySelector("nav.app-nav");
+      const links = [...document.querySelectorAll("#sidebar a.side-link")].filter(a => a.getBoundingClientRect().height > 0);
+      const overlap = [];
+      for (let i = 0; i < links.length; i++) for (let j = i + 1; j < links.length; j++) {
+        const a = rect(links[i]), b = rect(links[j]);
+        const dx = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+        const dy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+        if (dx > 1 && dy > 1) overlap.push((links[i].dataset.label || "?") + " × " + (links[j].dataset.label || "?"));
+      }
+      const box = rect(scroller);
+      const links_ = links.map(a => {
+        a.scrollIntoView({ block: "nearest", inline: "nearest" });
+        const r = a.getBoundingClientRect();
+        const hit = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
+        return {
+          label: a.dataset.label || "",
+          box: rect(a),
+          inside: r.top >= box.top - 1 && r.bottom <= box.bottom + 1 && r.left >= box.left - 1 && r.right <= box.right + 1,
+          hitSelf: !!hit && (hit === a || a.contains(hit)),
+          hit: hit ? (hit.id ? "#" + hit.id : String(hit.className || hit.tagName).slice(0, 60)) : "null",
+        };
+      });
+      scroller.scrollTop = 0;
+      return {
+        viewport: { w: innerWidth, h: innerHeight },
+        scroll: { clientHeight: scroller.clientHeight, scrollHeight: scroller.scrollHeight, overflowY: getComputedStyle(scroller).overflowY },
+        adminHidden: admin.classList.contains("hidden"),
+        adminInScroller: admin.parentElement === scroller,
+        navInScroller: !!nav && nav.parentElement === scroller,
+        footOutsideScroller: !scroller.contains(foot),
+        footBelowScroller: rect(foot).top >= box.bottom - 0.5,
+        footTop: rect(foot).top,
+        boxBottom: box.bottom,
+        links: links_,
+        overlap,
+      };
+    });
+    const assertFit = (state, label, opts) => {
+      assert.ok(!state.error, label + ": " + state.error);
+      assert.equal(state.scroll.overflowY, "auto", label + ": .app-nav-scroll owns vertical scrolling");
+      assert.equal(state.navInScroller, true, label + ": nav lives inside .app-nav-scroll");
+      assert.equal(state.adminInScroller, true, label + ": the admin group shares the nav scroll container");
+      assert.equal(state.footOutsideScroller, true, label + ": the footer never joins the scrolling area");
+      assert.ok(state.footBelowScroller, label + ": footer stays below the scroll container (" + state.footTop + " vs " + state.boxBottom + ")");
+      assert.ok(state.links.length >= opts.minLinks, label + ": every nav link rendered (" + state.links.length + " < " + opts.minLinks + ")");
+      assert.deepEqual(state.overlap, [], label + ": no two sidebar links overlap");
+      assert.deepEqual(state.links.filter(l => !l.inside || !l.hitSelf), [], label + ": every link is fully visible after scrolling it in and its centre hits itself");
+      if (opts.scrolls) assert.ok(state.scroll.scrollHeight > state.scroll.clientHeight + 1, label + ": tall content really needs the scroller " + JSON.stringify(state.scroll));
+      if (opts.fits) assert.ok(state.scroll.scrollHeight <= state.scroll.clientHeight + 1, label + ": content fits without scrolling " + JSON.stringify(state.scroll));
+    };
+    const settle = (width, height) =>
+      d.page.waitForFunction(expect => window.innerWidth === expect.w && window.innerHeight === expect.h, { w: width, h: height }, { timeout: 5000 });
+    const views = [];
+    await d.goto("index");
+    await d.page.waitForFunction(() => !!document.querySelector("#admin-nav-section a.side-link") && !document.getElementById("admin-nav-section").classList.contains("hidden"), null, { timeout: 9000 });
+    const heights = [];
+    for (const height of SIDEBAR_HEIGHTS) {
+      await d.page.setViewportSize({ width: 1280, height });
+      await settle(1280, height);
+      const state = await audit();
+      assertFit(state, "admin 1280×" + height, { minLinks: 11, scrolls: height <= 780, fits: height === 900 });
+      heights.push({ height, links: state.links.length, clientHeight: state.scroll.clientHeight, scrollHeight: state.scroll.scrollHeight });
+    }
+    d.check("admin sidebar 1280×{700..900}: 11 links (incl. 管理后台) pairwise disjoint and each centre point hits itself");
+    views.push({ page: "index", lang: c.lang, theme: "light", viewport: "desktop-1280-heights", attempted: true, ok: true, heights });
+    await d.page.evaluate(() => sessionStorage.removeItem("f3-member"));
+    await d.page.reload({ waitUntil: "domcontentloaded" });
+    await d.page.waitForFunction(() => !!document.querySelector("#admin-nav-section a.side-link"), null, { timeout: 9000 });
+    const drawers = [];
+    for (const vp of [{ width: 390, height: 844 }, { width: 360, height: 640 }]) {
+      await d.page.setViewportSize(vp);
+      await settle(vp.width, vp.height);
+      const opened = await d.page.evaluate(() => !document.getElementById("sidebar").classList.contains("-translate-x-full"));
+      if (!opened) {
+        await d.page.click("#menu-btn");
+        await d.page.waitForFunction(() => !document.getElementById("sidebar").classList.contains("-translate-x-full"), null, { timeout: 5000 });
+      }
+      await d.page.waitForFunction(() => {
+        const m = getComputedStyle(document.getElementById("sidebar")).transform;
+        return m === "none" || m === "matrix(1, 0, 0, 1, 0, 0)";
+      }, null, { timeout: 5000 });
+      const state = await audit();
+      assertFit(state, "drawer " + vp.width + "×" + vp.height, { minLinks: 11, scrolls: vp.height === 640 });
+      drawers.push({ width: vp.width, height: vp.height, links: state.links.length });
+    }
+    d.check("mobile drawer 390×844 / 360×640: all 11 links scroll into view and receive their own centre point");
+    views.push({ page: "index", lang: c.lang, theme: "light", viewport: "mobile-drawer", attempted: true, ok: true, drawers });
+    if (d.mock) await d.page.evaluate(() => sessionStorage.setItem("f3-member", "1"));
+    else {
+      assert.ok(process.env.E2E_V4_MEMBER_SESSION, "member view requires a real member session under real authority");
+      await d.context.addCookies([{ name: "anotify_session", value: process.env.E2E_V4_MEMBER_SESSION, url: d.base }]);
+    }
+    await d.page.reload({ waitUntil: "domcontentloaded" });
+    await d.page.waitForFunction(() => {
+      const admin = document.getElementById("admin-nav-section");
+      const user = (document.getElementById("sidebar-username")?.textContent || "").trim();
+      return !!admin && admin.classList.contains("hidden") && !admin.querySelector("a.side-link") && user.length > 0 && user !== "…";
+    }, null, { timeout: 9000 });
+    const memberHeights = [];
+    for (const height of [700, 780]) {
+      await d.page.setViewportSize({ width: 1280, height });
+      await settle(1280, height);
+      const state = await audit();
+      assert.equal(state.adminHidden, true, "member 1280×" + height + ": the admin group stays hidden");
+      assert.equal(state.links.length, 10, "member 1280×" + height + ": exactly the 10 primary links, no admin entry");
+      assertFit(state, "member 1280×" + height, { minLinks: 10, scrolls: height === 700 });
+      memberHeights.push({ height, links: state.links.length });
+    }
+    d.check("member sidebar 1280×{700,780}: no admin group, no overlap, every link clickable");
+    views.push({ page: "index", lang: c.lang, theme: "light", viewport: "desktop-1280-heights-member", attempted: true, ok: true, heights: memberHeights });
+    if (d.mock) await d.page.evaluate(() => sessionStorage.removeItem("f3-member"));
+    else await d.context.addCookies([{ name: "anotify_session", value: d.fixtures.adminSession, url: d.base }]);
+    await d.context.addInitScript(() => { try { localStorage.setItem("anotify-sidebar", "collapsed"); } catch { /* storage off */ } });
+    await d.page.setViewportSize({ width: 1440, height: 900 });
+    await d.page.reload({ waitUntil: "domcontentloaded" });
+    await d.page.waitForFunction(() => document.getElementById("app-shell").dataset.collapsed === "true" && Math.round(document.getElementById("sidebar").getBoundingClientRect().width) === 76 && !!document.querySelector("#admin-nav-section a.side-link"), null, { timeout: 9000 });
+    const collapsed = [];
+    for (const vp of SIDEBAR_COLLAPSED) {
+      await d.page.setViewportSize(vp);
+      await settle(vp.width, vp.height);
+      const probe = await d.page.evaluate(() => {
+        const links = [...document.querySelectorAll("#sidebar a.side-link")];
+        const admin = document.querySelector("#admin-nav-section a.side-link");
+        return {
+          collapsed: document.getElementById("app-shell").dataset.collapsed,
+          width: Math.round(document.getElementById("sidebar").getBoundingClientRect().width * 100) / 100,
+          count: links.length,
+          missing: links.filter(a => !(a.getAttribute("title") || "").trim()).map(a => a.dataset.label || a.getAttribute("href") || "?"),
+          adminTitle: admin ? admin.getAttribute("title") || "" : null,
+        };
+      });
+      const label = "collapsed " + vp.width + "×" + vp.height;
+      assert.equal(probe.collapsed, "true", label + ": the shell reports a collapsed sidebar");
+      assert.equal(probe.width, 76, label + ": collapsed sidebar is 76px wide");
+      assert.ok(probe.count >= 11, label + ": every nav link still rendered (" + probe.count + " < 11)");
+      assert.deepEqual(probe.missing, [], label + ": every collapsed link falls back to its title");
+      assert.equal(probe.adminTitle, "管理后台", label + ": the late-injected admin link gets a title too");
+      collapsed.push({ width: vp.width, height: vp.height, links: probe.count, adminTitle: probe.adminTitle });
+    }
+    d.check("collapsed 76px 1440×900 / 1280×700: all 11 links (incl. the late-injected admin link) keep a title fallback");
+    views.push({ page: "index", lang: c.lang, theme: "light", viewport: "desktop-collapsed-titles", attempted: true, ok: true, collapsed });
+    await d.finish(); count.inc();
+    return ok(count.n, views);
+  });
+}
+
 async function interactNamespaceSwitch(c) {
   return withDriver(c.id, { lang: "zh-CN", theme: "light" }, async (d, count) => {
     const { attachGeometry, geometrySnapshot, recordGeometry, assertNamespaceGeometry } = await import("./parent-geometry-probe.mjs");
@@ -1105,6 +1263,7 @@ export async function runUiCase(suite, id) {
   if (c.kind === "desktop") return desktopGraphCleanCase(c);
   if (c.kind === "shots") return shotsCase(c);
   if (c.kind === "guard") return id === "retained-login-form" ? retainedLoginForm(c) : guardsGuest(c);
+  if (c.kind === "sidebar") return sidebarNavFit(c);
   const single = {
     "shift-lang-hint": () => shiftLangHint(c), "shift-scope-slot": () => shiftScopeSlot(c), "shift-collapsed": () => shiftCollapsed(c),
     "shift-prelayout-expanded": () => shiftPrelayout(c, false), "shift-prelayout-collapsed": () => shiftPrelayout(c, true),
