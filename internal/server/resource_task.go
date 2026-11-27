@@ -956,7 +956,7 @@ func taskResultReasonMessage(t *store.Task) (string, string) {
 	return "", ""
 }
 
-// taskResultReasonCode 判断 error 列里的字面是不是机器码（闭集只有一份：protocol.IsTaskFailureReason）。
+// taskResultReasonCode 判断 error 列里的字面是不是机器码（闭集见 protocol.IsTaskFailureReason）。
 func taskResultReasonCode(s string) bool {
 	return protocol.IsTaskFailureReason(s)
 }
@@ -968,9 +968,8 @@ func taskResultReasonCode(s string) bool {
 // `type`（Normal/Warning 严重度）与 `signature`（HMAC 验证结论）**刻意省略**：
 // events 表没有这两列事实，编一个默认值等于把「没验证」说成「已验证」。
 //
-// reason 对**失败事实行**也省略（见 eventIsFailureFact）：store 把观察行统一写成
-// reason='Pruned'，照抄会把「任务失败」报告成「剪枝」。events 表没有独立的失败观察
-// reason 事实，所以宁可不给（§7.7 的封闭值里没有对应项）。
+// 失败事实行的 reason 也省略（见 eventIsFailureFact）：store 统一写成 'Pruned'，照抄会把
+// 「任务失败」报成「剪枝」，而 §7.7 的封闭值里没有对应项。
 type eventSpecDoc struct {
 	Reason         string         `json:"reason,omitempty"`
 	EventType      string         `json:"eventType"`
@@ -1068,11 +1067,8 @@ func eventOriginOf(e *store.Event) string {
 	return store.EventOriginSource
 }
 
-// eventIsFailureFact 报告这条观察行是不是**任务失败事实**（downstream_missing / task_failed）：
-// 它们与剪枝共用 source/reason，只有 type 能区分，混进 Pruned 会让 status 自相矛盾。
 //
-// router_failed 不在其中：它是 #522 起就在 pruned[] 里的既有行为，本 PR 不改这条
-// 对外语义（api/events.yaml 仍按剪枝投影）。
+// router_failed 不在其中：#522 起它就在 pruned[] 里，本 PR 不改这条对外语义。
 func eventIsFailureFact(e *store.Event) bool {
 	if e == nil || e.Source != store.EventPruneSource {
 		return false
@@ -1088,7 +1084,7 @@ func eventIsFailureFact(e *store.Event) bool {
 //
 // 剪枝行的 type 就是原因码（store 保证是封闭集合），payload 里另有一份 reason + detail
 // （+ capability/taskId 等诊断），这里只用 reason/detail：其它字段属于内部链路身份。
-// 失败事实行（eventIsFailureFact）不是剪枝 → status.pruned 必须是 null。
+// 失败事实行不是剪枝 → status.pruned 必须是 null。
 func eventPruneFactOf(e *store.Event) *pruneFactDoc {
 	if e == nil || e.Source != store.EventPruneSource || eventIsFailureFact(e) {
 		return nil

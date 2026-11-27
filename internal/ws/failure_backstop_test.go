@@ -151,8 +151,7 @@ func TestDuplicateFailedResultDoesNotDispatchTwice(t *testing.T) {
 	}
 }
 
-// TestDuplicateCancelAckDoesNotDispatchTwice：cancel.ack 没有回执，节点离线时把帧存进
-// pendingCxl、重连即重放；重复帧在 store 里返回 nil，不能因此再落一条事实、再派一次兜底。
+// TestDuplicateCancelAckDoesNotDispatchTwice：重放的重复帧返回 nil，不能再落事实/再派兜底。
 func TestDuplicateCancelAckDoesNotDispatchTwice(t *testing.T) {
 	e := newEnv(t)
 	e.capability(t, "issue-record", `{"type":"object","required":["repo"],

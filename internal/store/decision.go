@@ -266,16 +266,14 @@ func (d *DB) createOutcomeDispatchTx(ctx context.Context, tx *sql.Tx, in Outcome
 	return nil
 }
 
-// FailureFact 是一次「终态失败事实 + 兜底」的落账；TaskID 是幂等键（一个任务一条事实）。
 type FailureFact struct {
 	TaskID      string
 	Observation Event
 	Dispatch    OutcomeDispatchInputs
 }
 
-// RecordFailureFact 在**同一个事务**里先证「本任务还没有失败事实」，没有才写事实行与兜底
-// 派发（返回 true），已有则一行不写（false）。判据不能留给调用点：cancel.ack 没有回执，
-// 节点离线时把帧存进 pendingCxl、重连即重放，而 events 上没有唯一键（#700）。
+// RecordFailureFact 在同一事务里先证「本任务还没有失败事实」——判据不能留给调用点：
+// cancel.ack 没有回执，节点离线时把帧存进 pendingCxl、重连即重放（#700）。
 func (d *DB) RecordFailureFact(ctx context.Context, in FailureFact) (bool, error) {
 	if in.TaskID == "" {
 		return false, fmt.Errorf("failure fact: empty task id")

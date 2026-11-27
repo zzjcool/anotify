@@ -27,8 +27,8 @@ func TaskFailureReason(task *store.Task) string {
 	return ""
 }
 
-// DispatchFailure 落一条终态失败事实并（声明允许时）派发兜底；重复调用幂等（一行不写）——
-// 判据在 store 的同一个事务里，因为四个调用点都会因帧重放重复进来。
+// DispatchFailure 落一条终态失败事实并（声明允许时）派发兜底；幂等判据在 store 的同一事务里
+//（四个调用点都会因帧重放重复进来）。
 func (r *Router) DispatchFailure(ctx context.Context, task *store.Task) error {
 	if task == nil || (task.Phase != store.TaskFailed && task.Phase != store.TaskAbandoned) {
 		return nil

@@ -207,7 +207,7 @@ func (h *Hub) handleResult(ctx context.Context, sess *Session, f *protocol.TaskR
 	})
 }
 
-// dispatchTerminalOutcome 执行终态后置动作：成功走结局表（#522），失败/放弃走兜底（#700）。
+// dispatchTerminalOutcome：成功走结局表（#522），失败/放弃走兜底（#700）。
 func (h *Hub) dispatchTerminalOutcome(ctx context.Context, taskID string) {
 	task, err := h.db.GetTaskByID(ctx, taskID)
 	if err != nil {
