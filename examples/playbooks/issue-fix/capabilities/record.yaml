@@ -50,8 +50,6 @@ spec:
 
         gh issue comment "$issue" --repo "$repo" --body "$line" || echo "写回 issue 失败（不改变结论）" >&2
 
-        # review 不走 GitHub review，所以 CI 全绿不等于 review 通过。把结论钉在 PR 上，
-        # 合并闸只读这个 marker：判过未通过就停（2026-11-27 有一次 CI 绿+review 判阻塞被自动合入）。
         if [ -n "$pr" ]; then
           num=${pr##*/}
           case "$outcome" in

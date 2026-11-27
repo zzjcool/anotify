@@ -127,9 +127,6 @@ func TestExamplePackagesRender(t *testing.T) {
 	}
 }
 
-// TestRecordPinsReviewMarkerOnPullRequest：review 不走 GitHub review，合并闸只能读 PR 上的
-// marker 判断「链上 review 判过未通过」。record 一旦不再钉它，闸就又变成只看 CI
-// （2026-11-27：PR #712 CI 双绿 + review 判阻塞，被自动合入）。
 func TestRecordPinsReviewMarkerOnPullRequest(t *testing.T) {
 	dir := "../../examples/playbooks/issue-fix"
 	raw, err := os.ReadFile(filepath.Join(dir, "values.demo.json"))
