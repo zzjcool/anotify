@@ -1,5 +1,4 @@
-// Package app 把 N2A 的配置/缓存闭包、N2B 的运行器、emit 网关、运维帧与 hub 客户端
-// 装配成一个可运行的节点进程（N3 的 main 只调用这里的 Serve）。
+// Package app 把配置/缓存闭包、运行器、emit 网关、运维帧与 hub 客户端装配成可运行的节点进程（N3 的 main 只调 Serve）。
 //
 // 目录布局（全部在 dataDir 下，均由节点创建并记录，GC 只碰自己创建的东西）：
 //
@@ -217,6 +216,10 @@ func (a *App) EmitEndpoint() string        { return a.listener.Endpoint() }
 func (a *App) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// WS 客户端不跟 runCtx 一起死：SIGTERM 后收尾的 Drain 还要用它发「进程组已回收」
+	// 回执（#567），drain 结束才 stopClient。
+	clientCtx, stopClient := context.WithCancel(context.WithoutCancel(runCtx))
+	defer stopClient()
 
 	// A3：先从持久 attempt 记录恢复物理槽位（未确认 reaped 的旧进程组保持 busy）。
 	if err := a.runner.Recover(); err != nil {
@@ -230,7 +233,7 @@ func (a *App) Run(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		errCh <- a.client.Run(runCtx)
+		errCh <- a.client.Run(clientCtx)
 	}()
 	wg.Add(1)
 	go func() {
@@ -251,7 +254,7 @@ func (a *App) Run(ctx context.Context) error {
 	case runErr = <-errCh:
 	}
 
-	// 收尾：drain（停止授权 + 等进程组回收）→ 关网关/监听 → 等 attempt 收尾。
+	// 收尾：drain（停止授权 + 等进程组回收 + 报回执）→ 关网关/监听 → 等 attempt 收尾 → 断流。
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	a.runner.Drain(drainCtx)
 	drainCancel()
@@ -263,6 +266,7 @@ func (a *App) Run(ctx context.Context) error {
 	closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	a.runner.Close(closeCtx)
 	closeCancel()
+	stopClient()
 	cancel()
 	wg.Wait()
 	if runErr != nil && !errors.Is(runErr, context.Canceled) {

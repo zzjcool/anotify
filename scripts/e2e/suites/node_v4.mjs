@@ -30,11 +30,11 @@
  *   8. 取消：运行中取消（cancel 帧 → cancel.ack processGroupReaped → 槽位真的放回）
  *      与 pending 取消（直接终态，不需要帧）
  *   9. 节点进程退出后中枢不再认为它在线（deploy 的 sent=false，不伪造发送）
+ *  10. 运行中被 SIGTERM：Drain 的 reaped 回执先到 → 槽位回收（相位不变）→ 重启后新任务 60s 内拿到 grant（#567）
  *
  * 纪律：
  *   - **不用 sleep 猜状态**：一律「轮询 + 上限」，超时把最后一帧/最后一份响应原样带出来。
- *   - 整条套件有界：每步都有独立上限，末尾断言总时长 < 5 分钟。
- *   - 失败时打印 anode 的 stdout/stderr 尾部（真二进制的问题只在那里面）。
+ *   - 整条套件有界：每步都有独立上限，末尾断言总时长 < 5 分钟；失败打印 anode 输出尾部。
  */
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -61,9 +61,7 @@ const T = {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // poll 轮询到 fn 返回真值；到点抛错（带 what + 最后一次观察结果）。
-//
-// 为什么不返回 null 让调用方自己断言：套件里有十几处等待，漏一处 `if (!v) throw`
-// 就会变成「断言静默跳过」。这里把「等不到」直接变成一条带上下文的失败。
+// 不返回 null 让调用方自己断言：套件里有十几处等待，漏一处就变成「断言静默跳过」。
 async function poll(what, fn, { timeoutMs, intervalMs = 100 } = {}) {
 	const limit = timeoutMs || T.run;
 	const deadline = Date.now() + limit;
@@ -139,11 +137,8 @@ function requireAnodeBin() {
 	return bin;
 }
 
-// startAnode 写 anode.yaml 并起真 serve 进程。
-//
-// listen 用 unix socket：套件不需要额外 TCP 端口段，也不会与并行套件抢端口。
-// PATH/HOME 必须由我们自己给：anode 的任务环境是**启动基线快照**（execenv 的白名单），
-// 没 PATH 时 runner 会直接判 workdir/env 不可用 —— 那是真实约束，不是测试噪声。
+// startAnode 写 anode.yaml 并起真 serve 进程。listen 用 unix socket（不与并行套件抢端口）；
+// PATH/HOME 必须由我们自己给：anode 的任务环境是启动基线快照，缺了会被判 env 不可用。
 async function startAnode({ bin, token, dataDir, name }) {
 	const configPath = path.join(dataDir, "anode.yaml");
 	const yaml = [
@@ -417,32 +412,7 @@ async function partAnodeOnline(bin, token) {
 	console.log("--- 4. 起真 anode，等 GET /v1/nodes 出现真实上报 ---");
 	const dataDir = H.mkdtempTmp("anotify-node-v4-");
 	anode = await startAnode({ bin, token, dataDir, name: nodeName });
-
-	const read = async () => {
-		const r = await H.req(server.base, `/v1/nodes/${encodeURIComponent(nodeName)}`, { session });
-		if (r.status !== 200) return null;
-		return r.json || {};
-	};
-
-	// 在线 = 中枢收到了这台机器的 hello。三个字段只有真 hello 才写得进去：
-	//   agentVersion（D-I13 自报版本）、appliedRevision（config.applied 回路）、instances（物理槽）。
-	const doc = await poll(
-		"anode 上线并完成配置对齐（agentVersion + appliedRevision + 槽位）",
-		async () => {
-			const d = await read();
-			const st = d?.status || {};
-			const ok =
-				!!st.agentVersion &&
-				!!st.appliedRevision &&
-				st.appliedRevision === st.configRevision &&
-				Array.isArray(st.instances) &&
-				st.instances.length >= 1;
-			return ok ? d : null;
-		},
-		{ timeoutMs: T.handshake },
-	).catch((e) => {
-		throw new Error(`${e.message}\nanode 日志:\n${anodeLog(3000)}`);
-	});
+	const doc = await waitAnodeOnline();
 
 	const st = doc.status || {};
 	H.check("中枢记录了节点自报的版本（hello.agentVersion）", !!st.agentVersion, String(st.agentVersion));
@@ -455,6 +425,29 @@ async function partAnodeOnline(bin, token) {
 	);
 	H.check("有效命名空间是真交集（含 default）", Array.isArray(st.effectiveNamespaces) && st.effectiveNamespaces.includes(NS), JSON.stringify(st.effectiveNamespaces));
 	return doc;
+}
+
+// waitAnodeOnline：在线 = 中枢收到了这台机器的 hello。三个字段只有真 hello 才写得进去：
+// agentVersion（D-I13 自报版本）、appliedRevision（config.applied 回路）、instances（物理槽）。
+async function waitAnodeOnline() {
+	return poll(
+		"anode 上线并完成配置对齐（agentVersion + appliedRevision + 槽位）",
+		async () => {
+			const r = await H.req(server.base, `/v1/nodes/${encodeURIComponent(nodeName)}`, { session });
+			if (r.status !== 200) return null;
+			const st = r.json?.status || {};
+			const ok =
+				!!st.agentVersion &&
+				!!st.appliedRevision &&
+				st.appliedRevision === st.configRevision &&
+				Array.isArray(st.instances) &&
+				st.instances.length >= 1;
+			return ok ? r.json || {} : null;
+		},
+		{ timeoutMs: T.handshake },
+	).catch((e) => {
+		throw new Error(`${e.message}\nanode 日志:\n${anodeLog(3000)}`);
+	});
 }
 
 // partDeploy：人工部署 + 真拉取 + 真 apply。
@@ -680,6 +673,58 @@ async function partCancelPending(pendingCap) {
 	H.eq("重复取消 → 409（终态不可再停，不是 5xx）", again.status, 409);
 }
 
+// partSigtermReapThenRestart（#567 验收清单第三项）：运行中被 SIGTERM → Drain 的 cancel.ack
+// 必须先于租约巡检被接受（槽位回收、任务不被判 abandoned）→ 同目录重启后新任务 60s 内拿到
+// grant。修复前这条回执被 invalid_transition 拒绝，只能等巡检兼底且旧任务被改写成 abandoned。
+async function partSigtermReapThenRestart({ bin, token, cap }) {
+	console.log("--- 12. 运行中被 SIGTERM：Drain 回执回收槽位 → 重启后新任务拿到 grant ---");
+	const taskId = await emitEvent({ source: `node-v4-src-${cap.name}`, type: `node.v4.${cap.name}`, payload: {} });
+	await poll(
+		"长任务 running 并占住槽位",
+		async () => {
+			const d = await getTask(taskId);
+			return d.status?.phase === "running" && d.status?.attempt >= 1 ? d : null;
+		},
+		{ timeoutMs: T.cancel, intervalMs: 50 },
+	);
+	const occupied = await peakBusySlot();
+	H.check("SIGTERM 前该槽位处于占用状态", occupied.busyCount >= 1, JSON.stringify(occupied.instances));
+
+	const exited = await anode.stop();
+	H.check("SIGTERM 后自己退了（Drain 跑完，不是被 KILL）", !!exited && exited.sig !== "SIGKILL", JSON.stringify(exited));
+
+	// 「槽位空闲」且「任务仍 running」同时成立 = 回执被接受而不是巡检兼底。
+	const reclaimed = await poll(
+		"cancel.ack 被接受：槽位回到空闲且相位仍为 running",
+		async () => {
+			const snap = await peakBusySlot();
+			const d = await getTask(taskId);
+			return snap.busyCount === 0 && d.status?.phase === "running" ? { snap, d } : null;
+		},
+		{ timeoutMs: T.cancel, intervalMs: 50 },
+	).catch(async (e) => {
+		throw new Error(`${e.message}\nanode 日志:\n${anodeLog(3000)}`);
+	});
+	H.eq("回收回执不改相位（终局仍归巡检）", reclaimed.d.status?.phase, "running");
+
+	// 重启同一台节点（同一 dataDir / token）：恢复旧账本后必须能接新任务。
+	anode = await startAnode({ bin, token, dataDir: anode.dataDir, name: nodeName });
+	await waitAnodeOnline();
+	const nextId = await emitEvent({ source: `node-v4-src-${cap.name}`, type: "node.v4.after-restart", payload: {} });
+	const granted = await poll(
+		"重启后新任务拿到 grant（attempt 递增）",
+		async () => {
+			const d = await getTask(nextId);
+			return d.status?.attempt >= 1 ? d : null;
+		},
+		{ timeoutMs: T.run, intervalMs: 50 },
+	).catch(async (e) => {
+		throw new Error(`${e.message}\nanode 日志:\n${anodeLog(3000)}`);
+	});
+	H.eq("新任务被真授权（attempt=1）", granted.status?.attempt, 1);
+	H.eq("授权落在重启后的同一台节点上", granted.status?.nodeName, nodeName);
+}
+
 // partNodeExit：节点进程退出后中枢不再认为它在线（不伪造发送）。
 async function partNodeExit(cap) {
 	console.log("--- 11. 节点进程退出 → 中枢不再把它当在线（deploy.sent=false 而不是假装发送） ---");
@@ -789,7 +834,8 @@ async function main() {
 	await partCancelRunning(sleeperCap);
 	await partCancelPending(pendingCap);
 
-	// 11. 节点退出后的中枢口径。
+	// 11/12. 运行中 SIGTERM 的回收回执 + 重启后的派发；以及节点退出后的中枢口径。
+	await partSigtermReapThenRestart({ bin, token, cap: sleeperCap });
 	await partNodeExit(probeCap);
 
 	const elapsed = Date.now() - suiteStart;
