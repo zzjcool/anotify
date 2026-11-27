@@ -57,6 +57,36 @@ func TestCapabilityWriteRejectsUnusableParamSchema(t *testing.T) {
 			field:  "spec.params.required",
 			says:   "required 必须是字符串数组",
 		},
+		{
+			name: "未知 type 名", // #580：笔误不能 201 收下（运行期会静默失效）
+			params: map[string]any{"type": "object", "properties": map[string]any{
+				"x": map[string]any{"type": "strin"},
+			}},
+			field: "spec.params.properties.x.type",
+			says:  "未知类型",
+		},
+		{
+			name: "表外关键字 oneOf", // #580：收下但不执行 = 假闸
+			params: map[string]any{"type": "object", "properties": map[string]any{
+				"x": map[string]any{"oneOf": []any{map[string]any{"type": "string"}}},
+			}},
+			field: "spec.params.properties.x.oneOf",
+			says:  "不支持 schema 关键字",
+		},
+		{
+			name: "受控关键字形状非法（enum 是字符串）", // #580 返工点：形状非法同样不能「收下但静默不生效」
+			params: map[string]any{"type": "object", "properties": map[string]any{
+				"env": map[string]any{"type": "string", "enum": "dev"},
+			}},
+			field: "spec.params.properties.env.enum",
+			says:  "enum 必须是数组",
+		},
+		{
+			name:   "根级 additionalProperties 子 schema 不会被应用",
+			params: map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+			field:  "spec.params.additionalProperties",
+			says:   "只支持布尔",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -140,7 +170,10 @@ func TestCapabilityWriteAcceptsUsableParamSchema(t *testing.T) {
 		{},
 		{"type": "object", "properties": map[string]any{"diff": map[string]any{"type": "string"}}},
 		{"type": []any{"object", "null"}},
-		{"type": "object", "properties": map[string]any{"x": map[string]any{"type": "weird"}}},
+		{"type": "object", "properties": map[string]any{"diff": map[string]any{"type": "string", "enum": []any{"a", "b"}, "minLength": 1}}},
+		{"type": "object", "additionalProperties": false, "properties": map[string]any{"n": map[string]any{"type": "integer", "minimum": 1, "maximum": 10}}},
+		{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "array", "maxItems": 2, "items": map[string]any{"type": "string"}}}},
+		{"type": "object", "title": "输入", "properties": map[string]any{"a": map[string]any{"type": "string", "description": "名字"}}},
 	}
 	for i, p := range params {
 		body := capabilityBodyWithParams(t, "good-schema", "#!/bin/sh\necho hi\n", p)

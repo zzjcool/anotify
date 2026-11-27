@@ -21,9 +21,9 @@ import (
 // 必填无 default → 剪枝 `param_missing`；类型不符 → `param_type`；schema 不可用 →
 // `param_schema`。剪枝不是 4xx（§4.1/§6.2）：事件已接收、下游不建 task，回执 `taskId:null`。
 //
-// JSON Schema 子集是**显式**的：只支持 type / properties / required / default / pattern，
-// 嵌套对象按子集校验、数组元素不递归；其余关键字（oneOf / minimum …）被忽略而不是当成失败。
-// pattern 是 RE2（线性时间），只约束字符串值——把子集写进接口文档比假装支持全部更安全。
+// JSON Schema 子集是**显式**的（白名单见 schema.ParseParams）：type / properties / required /
+// additionalProperties / items / prefixItems / enum / min·max / 长度 / 数量 / pattern / default；
+// 表外关键字、未知 type 名与形状非法的关键字值写入期就 400；根级 enum/min·maxProperties 也判。
 
 // Prune 是一次「事件/emit 已接收、下游没有建 task」的观察原因（§8.3）：落库成
 // `source='route'` 的剪枝事件行 + 回执 `pruned[]`；reason 取封闭词表，不新造词。
@@ -76,6 +76,9 @@ func PrepareParams(raw json.RawMessage, input map[string]any) (json.RawMessage, 
 			if issue := prop.Check(name, value); issue != nil {
 				return nil, &Prune{Reason: protocol.ReasonParamType, Detail: issue.Detail, Field: "params." + issue.Field}
 			}
+			if issue := prop.CheckKeywords(name, value); issue != nil {
+				return nil, &Prune{Reason: protocol.ReasonParamType, Detail: issue.Detail, Field: "params." + issue.Field}
+			}
 			out[name] = value
 			continue
 		}
@@ -87,11 +90,51 @@ func PrepareParams(raw json.RawMessage, input map[string]any) (json.RawMessage, 
 			missing = append(missing, name)
 		}
 	}
+	undeclared := make([]string, 0)
+	for name := range s.Required {
+		if _, declared := s.Properties[name]; !declared {
+			undeclared = append(undeclared, name)
+		}
+	}
+	sort.Strings(undeclared)
+	missing = append(missing, undeclared...)
 	if len(missing) > 0 {
 		return nil, &Prune{Reason: protocol.ReasonParamMissing,
 			Detail: "需要 " + strings.Join(missing, ", "), Field: "params." + missing[0]}
 	}
+	if name := undeclaredKey(s, input); name != "" { // additionalProperties:false：多余字段即错（#580）
+		return nil, &Prune{Reason: protocol.ReasonParamType,
+			Detail: "参数 " + name + " 不在 schema.properties 里（additionalProperties=false）",
+			Field:  "params." + name}
+	}
+	if msg := rootKeywords(s, out, "params"); msg != "" { // 根对象本身：enum / min·maxProperties / type
+		return nil, &Prune{Reason: protocol.ReasonParamType, Detail: msg, Field: "params"}
+	}
 	return marshalObject(out), nil
+}
+
+func rootKeywords(s *paramSchema, obj map[string]any, prefix string) string {
+	if s.Root == nil {
+		return ""
+	}
+	return schema.Value(s.Root, obj, prefix)
+}
+
+func undeclaredKey(s *paramSchema, input map[string]any) string { // 排序后的第一个未声明输入键
+	if !s.RejectsAdditional {
+		return ""
+	}
+	extra := make([]string, 0)
+	for name := range input {
+		if _, declared := s.Properties[name]; !declared {
+			extra = append(extra, name)
+		}
+	}
+	if len(extra) == 0 {
+		return ""
+	}
+	sort.Strings(extra) // map 遍历无序：报哪个多余字段要看得到可复现的答案
+	return extra[0]
 }
 
 // ValidatePayload 校验源投递载荷是否符合 `config.payloadSchema`（event_schema 剪枝）。
@@ -123,6 +166,9 @@ func ValidatePayload(raw json.RawMessage, payload map[string]any) *Prune {
 		if issue := prop.Check(name, value); issue != nil {
 			return &Prune{Reason: protocol.ReasonEventSchema, Detail: issue.Detail, Field: "payload." + issue.Field}
 		}
+		if issue := prop.CheckKeywords(name, value); issue != nil {
+			return &Prune{Reason: protocol.ReasonEventSchema, Detail: issue.Detail, Field: "payload." + issue.Field}
+		}
 	}
 	// required 独立于 properties：只写 required 时上面一个名字都看不到 —— 这里只查「键存在」（null 也算）。
 	for name := range s.Required {
@@ -137,6 +183,14 @@ func ValidatePayload(raw json.RawMessage, payload map[string]any) *Prune {
 		sort.Strings(missing) // required 是 map：排序后 detail/Field 才可复现
 		return &Prune{Reason: protocol.ReasonEventSchema, Detail: "载荷缺 " + strings.Join(missing, ", "),
 			Field: "payload." + missing[0]}
+	}
+	if name := undeclaredKey(s, payload); name != "" {
+		return &Prune{Reason: protocol.ReasonEventSchema,
+			Detail: "载荷字段 " + name + " 不在 payloadSchema.properties 里（additionalProperties=false）",
+			Field:  "payload." + name}
+	}
+	if msg := rootKeywords(s, payload, "payload"); msg != "" { // 根级 enum / min·maxProperties / type
+		return &Prune{Reason: protocol.ReasonEventSchema, Detail: msg, Field: "payload"}
 	}
 	return nil
 }

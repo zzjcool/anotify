@@ -103,6 +103,9 @@ func valueObjectSchema(sch map[string]any, v any, path string) string {
 		return valueArray(sch, val, path)
 	case string:
 		return valueString(sch, val, path)
+	case json.Number: // params 用 UseNumber 解码：数字保留原写法，min/max 仍要判
+		n, _ := toFloat(val)
+		return valueNumber(sch, n, path)
 	case float64:
 		return valueNumber(sch, val, path)
 	case int:
@@ -166,10 +169,8 @@ func checkType(raw any, v any, path string) string {
 }
 
 // TypeMatches 判定值是否属于某个 JSON Schema type（`Value` 的通用判据：边字面量、
-// 事件载荷、emit 的 data）。未知类型名判 false。
-//
-// 参数派发**不走这里**：param.go 的 valueMatchesType 是另一份判据（认 json.Number /
-// int32、integer 拒 `e`/`E`、未知类型名放行）。两处各自自洽，改一处要复查另一处。
+// 事件载荷、emit 的 data、参数派发）。未知类型名判 false（ParseParams 在解析/写入期
+// 就先拒绝未知类型名，所以这里不会成为「静默放行」的后门）。
 func TypeMatches(want string, v any) bool {
 	switch want {
 	case "object":
@@ -194,16 +195,18 @@ func TypeMatches(want string, v any) bool {
 			return true
 		case float64:
 			return n == math.Trunc(n)
+		case json.Number: // 与 param.go 的 valueMatchesType 同一口径：`e`/`E`/小数点都不是整数
+			return !strings.ContainsAny(string(n), ".eE")
 		}
 		return false
 	}
 	return false
 }
 
-// IsNumber 判定是否为 JSON 解码出的数字（float64）或整数。
+// IsNumber 判定是否为 JSON 解码出的数字（float64 / json.Number）或整数。
 func IsNumber(v any) bool {
 	switch v.(type) {
-	case float64, int, int64:
+	case json.Number, float64, int, int64:
 		return true
 	}
 	return false
@@ -218,7 +221,7 @@ func TypeName(v any) string {
 		return "boolean"
 	case string:
 		return "string"
-	case float64, int, int64:
+	case json.Number, float64, int, int64:
 		return "number"
 	case []any:
 		return "array"
@@ -386,26 +389,35 @@ func toFloat(v any) (float64, bool) {
 		return float64(n), true
 	case int64:
 		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
 	}
 	return 0, false
 }
 
 // enumContains 判定值是否在枚举列表里（深比较 JSON 语义）。
 func enumContains(list []any, want any) bool {
-	wantJSON, err := json.Marshal(want)
-	if err != nil {
-		return false
-	}
 	for _, e := range list {
-		gotJSON, err := json.Marshal(e)
-		if err != nil {
-			continue
-		}
-		if string(gotJSON) == string(wantJSON) {
+		if jsonValueEqual(e, want) {
 			return true
 		}
 	}
 	return false
+}
+
+func jsonValueEqual(a, b any) bool {
+	if IsNumber(a) && IsNumber(b) {
+		af, aok := toFloat(a)
+		bf, bok := toFloat(b)
+		return aok && bok && af == bf
+	}
+	aJSON, aerr := json.Marshal(a)
+	bJSON, berr := json.Marshal(b)
+	if aerr != nil || berr != nil {
+		return false
+	}
+	return string(aJSON) == string(bJSON)
 }
 
 // matchPattern 用 RE2 正则校验字符串。

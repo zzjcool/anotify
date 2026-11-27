@@ -41,6 +41,26 @@ func TestSourceWriteRejectsUnusablePayloadSchema(t *testing.T) {
 			field: "spec.config.payloadSchema.properties.repo.pattern",
 			says:  "pattern 必须是字符串",
 		},
+		{
+			name: "表外关键字 oneOf", // #580：入口闸的契约同样不能「收下但不执行」
+			schema: map[string]any{
+				"type": "object", "properties": map[string]any{
+					"repo": map[string]any{"oneOf": []any{map[string]any{"type": "string"}}},
+				},
+			},
+			field: "spec.config.payloadSchema.properties.repo.oneOf",
+			says:  "不支持 schema 关键字",
+		},
+		{
+			name: "受控关键字形状非法（enum 是字符串）", // #580 返工点：入口闸同样要判关键字的形状
+			schema: map[string]any{
+				"type": "object", "properties": map[string]any{
+					"env": map[string]any{"type": "string", "enum": "dev"},
+				},
+			},
+			field: "spec.config.payloadSchema.properties.env.enum",
+			says:  "enum 必须是数组",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -113,7 +133,8 @@ func TestSourceWriteAcceptsUsablePayloadSchema(t *testing.T) {
 		{"type": "object", "properties": map[string]any{"repo": map[string]any{"type": "string", "pattern": "^[a-z]+$"}}},
 		{"type": []any{"object", "null"}},
 		{"required": []any{"action"}},
-		{"type": "object", "properties": map[string]any{"repo": map[string]any{"type": "weird"}}},
+		{"type": "object", "properties": map[string]any{"repo": map[string]any{"type": "string", "enum": []any{"a", "b"}, "maxLength": 10}}},
+		{"type": "object", "additionalProperties": false, "properties": map[string]any{"n": map[string]any{"type": "integer", "minimum": 1}}},
 	}
 	for i, schema := range schemas {
 		name := fmt.Sprintf("good.schema%d", i)

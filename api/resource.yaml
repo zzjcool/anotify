@@ -2705,6 +2705,31 @@ components:
             `details.causes[].field` 指到 `spec.params.properties.<name>.pattern`。
             试跑与派发期执行 `pattern`：只约束字符串值，整串匹配请自带 `^...$`
             （RE2 默认子串匹配）。
+
+            受控子集里的关键字**真的执行**（#580）：`enum` / `minimum` / `maximum` /
+            `minLength` / `maxLength` / `minItems` / `maxItems` / `minProperties` /
+            `maxProperties` / `items` / `prefixItems`。关键字的**值也必须是对应的形状**：
+            `enum` 是非空数组、`minimum`/`maximum` 是数字、长度/数量边界是**非负整数**、
+            `items` 是 schema 或布尔（不支持 draft-07 的元组数组）、`prefixItems` 是 schema
+            数组。形状非法写入期就 400 `param_schema`
+            （`details.causes[].field` = `spec.params.<path>.<keyword>`）——否则就是
+            「201 收下、运行期整条约束消失」。
+            违反某项约束 → 试跑 400 `param_type`
+            （`details.causes[].field` = `params.<name>`；根对象整体不满足
+            `enum`/`minProperties`/`maxProperties` 时 = `params`）、派发记
+            `pruned[].reason=param_type`（响应仍 200，事件已接收、下游不建 task）。
+            `additionalProperties` 在 `spec.params` 根上只支持布尔：省略或 `true` 时
+            多余字段仍按同名直取忽略；显式 `false` 时多余字段是错误（试跑 400 / 派发
+            剪枝），不再悄悄删掉（子 schema 形态只在嵌套对象里有意义，根上写入期 400）。
+            `default` 只在 `properties.<name>` 上生效（派发/试跑补缺省值），且必须满足
+            该参数的 schema；根 / `items` / `prefixItems` / `additionalProperties` /
+            更深层 `properties` 上的 `default` 不会被应用，写入期 400。
+
+            表外关键字（`oneOf` / `anyOf` / `$ref` / `format` / `multipleOf` / …）与
+            未知 `type` 名（如 `"strin"`）写入期就 400 `param_schema`，
+            `details.causes[].field` 指到 `spec.params.properties.<name>.<keyword>`——
+            收下但不执行比拒掉更糟（作者会以为闸存在）。纯注解（`title` / `description` /
+            `examples` 等）接受但不求值。
           additionalProperties: true
         next:
           type: array
@@ -3339,7 +3364,9 @@ components:
 
             `config.payloadSchema`（声明**投递进来的**载荷契约）在写入期就过运行期同一个
             解析器（#612）：`type` 必须接受 `object`、`properties` 必须是对象、`required`
-            必须是字符串数组（`null` 视作未声明）、属性 `pattern` 必须能编译。不可用 → 400
+            必须是字符串数组（`null` 视作未声明）、属性 `pattern` 必须能编译；关键字子集
+            与形状判据与 `CapabilitySpec.params` **同源**（#580，含 enum/数值边界/长度/
+            items/additionalProperties 与表外关键字 400）。不可用 → 400
             `invalid_source_config`，`details.causes[].field` 指到
             `spec.config.payloadSchema.<出错的键>`（如 `spec.config.payloadSchema.type`）。
             不这么做的话这种源会 201 落库且 `health: ok`，之后**每个事件**都被

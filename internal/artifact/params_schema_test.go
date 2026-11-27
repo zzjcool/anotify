@@ -54,6 +54,51 @@ func TestValidateRejectsUnusableParamSchema(t *testing.T) {
 			params: `{"type":"object","required":"a"}`,
 			field:  "spec.params.required",
 		},
+		{
+			name:   "未知 type 名（笔误）", // #580：静默放行会让类型判据不存在
+			params: `{"type":"object","properties":{"a":{"type":"strin"}}}`,
+			field:  "spec.params.properties.a.type",
+		},
+		{
+			name:   "表外关键字 oneOf", // #580：收下但运行期不执行 = 假闸
+			params: `{"type":"object","properties":{"a":{"oneOf":[{"type":"string"}]}}}`,
+			field:  "spec.params.properties.a.oneOf",
+		},
+		{
+			name:   "表外关键字 format",
+			params: `{"type":"object","properties":{"a":{"type":"string","format":"uri"}}}`,
+			field:  "spec.params.properties.a.format",
+		},
+		{
+			name:   "enum 形状非法（字符串）", // #580 返工点：形状非法不能 201 收下后静默不生效
+			params: `{"type":"object","properties":{"env":{"type":"string","enum":"dev"}}}`,
+			field:  "spec.params.properties.env.enum",
+		},
+		{
+			name:   "minLength 形状非法（负数）",
+			params: `{"type":"object","properties":{"s":{"type":"string","minLength":-1}}}`,
+			field:  "spec.params.properties.s.minLength",
+		},
+		{
+			name:   "items 形状非法（元组写法）",
+			params: `{"type":"object","properties":{"tags":{"type":"array","items":["string"]}}}`,
+			field:  "spec.params.properties.tags.items",
+		},
+		{
+			name:   "根 additionalProperties 子 schema 不会被应用",
+			params: `{"type":"object","additionalProperties":{"type":"string"}}`,
+			field:  "spec.params.additionalProperties",
+		},
+		{
+			name:   "default 违反自身 schema",
+			params: `{"type":"object","properties":{"n":{"type":"integer","default":"abc"}}}`,
+			field:  "spec.params.properties.n.default",
+		},
+		{
+			name:   "嵌套 default 不会被应用",
+			params: `{"type":"object","properties":{"m":{"type":"object","properties":{"x":{"type":"string","default":"z"}}}}}`,
+			field:  "spec.params.properties.m.properties.x.default",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,6 +129,12 @@ func TestValidateParamSchemaVerdictMatchesRuntime(t *testing.T) {
 		`{"type":"string"}`,
 		`{"type":"object","properties":{"a":{"type":"string","default":"x"}}}`,
 		`{"type":"object","properties":{"a":{"type":"weird"}}}`,
+		`{"type":"object","properties":{"a":{"type":"string","format":"date"}}}`,
+		`{"type":"object","properties":{"a":{"enum":["x","y"],"minimum":1}}}`,
+		`{"type":"object","properties":{"a":{"type":"string","minLength":2,"maxLength":4}}}`,
+		`{"type":"object","items":{"type":"array","maxItems":2}}`,
+		`{"type":"object","required":["a"],"additionalProperties":false,"properties":{"a":{"type":"string"}}}`,
+		`{"type":"object","title":"输入","properties":{"a":{"type":"string","description":"名字"}}}`,
 		`{"type":"object","properties":{"a":3}}`,
 		`{"type":"object","properties":{"a":{"type":"string","pattern":"(["}}}`,
 		`{"type":"object","properties":{"a":{"type":"string","pattern":7}}}`,
