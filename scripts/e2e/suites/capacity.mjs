@@ -390,7 +390,20 @@ async function runRetentionEnabled() {
 		}
 		H.eq("窗口内的事件（刚刚写入）保留", V.eventExists(dbPath, fresh.id), true);
 		H.eq("事件行数 = 清理后剩下的条数", countEvents(dbPath), beforeRows - oldIds.length);
-		H.check("清理日志给了删了多少（retention sweep deleted rows）", hasDeletionLog(server.log(), "events"), server.log().slice(-1200));
+
+		// 日志断言必须**等**，不能读一次快照就下结论（#667）：删除发生在事务里，
+		// `retention sweep deleted rows` 是事务提交之后由同一个巡检 goroutine 打的（lease.go
+		// 里 `RunRetention` 返回后才 `s.log.Info`）。上面那条 DB 事实一成立就立刻查 stdout，
+		// 两次检查之间没有任何等待 —— 而写锁被占（#630 的全表扫、#617/#628 的读入口
+		// BEGIN IMMEDIATE）会把「提交 → 打日志」这段窗口拉大，于是负载高时必现假红。
+		//
+		// 所以这里与其它断言同样用 `tryPoll` 等真实事实：DB 删干净了，日志迟早会来（同一
+		// goroutine 紧接着就写），等不到才是真红。既不写 known-env，也不调大上面那个 45s。
+		const sweepLogged = await V.tryPoll(() => hasDeletionLog(server.log(), "events"), {
+			timeoutMs: 5000,
+			intervalMs: 100,
+		});
+		H.check("清理日志给了删了多少（retention sweep deleted rows）", sweepLogged, server.log().slice(-1200));
 
 		// ---- 幂等 / 可重入：同一份库再起一次服务，第二轮必须「删 0 条、不报错」 ----
 		//
