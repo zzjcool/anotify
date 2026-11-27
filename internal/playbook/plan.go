@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/zzjcool/anotify/internal/artifact"
+	"github.com/zzjcool/anotify/internal/schema"
 	"github.com/zzjcool/anotify/internal/sourcespec"
 )
 
@@ -244,6 +245,9 @@ func PlanForRelease(pkg *Package, values map[string]any, release string, existin
 	if err := planCapabilities(plan, rendered.Capabilities, existing, effNext); err != nil {
 		return nil, err
 	}
+	if err := validateFallbackPlan(rendered.Capabilities); err != nil {
+		return nil, err
+	}
 	if err := planSources(plan, rendered.Sources, existing, effTargets, sens); err != nil {
 		return nil, err
 	}
@@ -254,6 +258,29 @@ func PlanForRelease(pkg *Package, values map[string]any, release string, existin
 		return plan, plan.conflictError()
 	}
 	return plan, nil
+}
+
+func validateFallbackPlan(caps []*artifact.Artifact) error {
+	byName := make(map[string]*artifact.Artifact, len(caps))
+	for _, c := range caps {
+		byName[c.Metadata.Name] = c
+	}
+	for _, c := range caps {
+		fb := c.Spec.Lifecycle.OnFailure
+		if fb == nil {
+			continue
+		}
+		name, _, _ := schema.SplitRef(fb.To)
+		target := byName[name]
+		if target == nil {
+			continue
+		}
+		if missing := artifact.MissingFallbackParams(c.Spec.Params, target.Spec.Params, fb.Params); len(missing) > 0 {
+			return errf(CodeInvalidPlaybook, "能力 %q 的 lifecycle.onFailure 指向 %s，但 %v 既不在父能力 params 的必填/默认值里，也不在 onFailure.params 里",
+				c.Metadata.Name, name, missing)
+		}
+	}
+	return nil
 }
 
 // planCapabilities 走 §4.2 的第 1-7 行。

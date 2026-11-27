@@ -10,8 +10,6 @@ import (
 	"github.com/zzjcool/anotify/internal/protocol"
 )
 
-// TestCapabilityOnFailureStoreRoundTrip 覆盖 #700 的持久化面：reasons / params / to
-// 存进去什么读出来就是什么（store 只落 spec，但仍要证明归一化没吃掉新字段）。
 func TestCapabilityOnFailureStoreRoundTrip(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -49,8 +47,6 @@ func TestCapabilityOnFailureStoreRoundTrip(t *testing.T) {
 	}
 }
 
-// TestCapabilityOnFailureParamsCheckedAtWriteTime 写入期就拦住「兜底下游 required
-// 永远满足不了」的声明，而不是等真失败那天退化成一条 param_missing 剪枝。
 func TestCapabilityOnFailureParamsCheckedAtWriteTime(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()

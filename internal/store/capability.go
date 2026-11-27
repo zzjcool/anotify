@@ -6,11 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/zzjcool/anotify/internal/artifact"
-	"github.com/zzjcool/anotify/internal/schema"
 )
 
 // 能力领域（v4，capability.md §2/§3/§8）。
@@ -247,38 +245,15 @@ func validateFallbackParamsOn(ctx context.Context, ex queryExec, namespaceID str
 	}
 	target, err := resolveRefOn(ctx, ex, namespaceID, fb.To)
 	if errors.Is(err, ErrNotFound) || errors.Is(err, ErrRefUnresolved) {
-		return nil
+		return nil // 目标还没建：留给运行期白名单，或由 playbook 计划检查。
 	}
 	if err != nil {
 		return fmt.Errorf("resolve onFailure target %q: %w", fb.To, err)
 	}
-	down, problems := schema.ParseParams(target.Spec.Params)
-	if down.Permissive || len(problems) > 0 {
-		return nil
-	}
-	parent, problems := schema.ParseParams(spec.Params)
-	if parent.Permissive || len(problems) > 0 {
-		return nil // 父能力自己没有可判的契约：运行期再判
-	}
-	available := make(map[string]bool, len(parent.Properties)+len(fb.Params))
-	for name, prop := range parent.Properties {
-		if parent.Required[name] || prop.HasDefault {
-			available[name] = true
-		}
-	}
-	for name := range fb.Params {
-		available[name] = true
-	}
-	var missing []string
-	for name := range down.Required {
-		if !available[name] {
-			missing = append(missing, name)
-		}
-	}
+	missing := artifact.MissingFallbackParams(spec.Params, target.Spec.Params, fb.Params)
 	if len(missing) == 0 {
 		return nil
 	}
-	sort.Strings(missing)
 	return fmt.Errorf("%w: lifecycle.onFailure 指向 %s，但 %v 既不在父能力 params 的必填/默认值里，也不在 onFailure.params 里（真失败时只会落一条 param_missing 剪枝）",
 		ErrCapabilityInvalid, target.Name, missing)
 }

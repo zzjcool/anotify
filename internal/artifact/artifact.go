@@ -1268,6 +1268,34 @@ func validateOnFailure(lc *Lifecycle, next []string) []string {
 	return p
 }
 
+func MissingFallbackParams(parentParams, targetParams json.RawMessage, declared map[string]any) []string {
+	down, problems := schema.ParseParams(targetParams)
+	if down.Permissive || len(problems) > 0 {
+		return nil
+	}
+	parent, problems := schema.ParseParams(parentParams)
+	if parent.Permissive || len(problems) > 0 {
+		return nil
+	}
+	available := make(map[string]bool, len(parent.Properties)+len(declared))
+	for name, prop := range parent.Properties {
+		if parent.Required[name] || prop.HasDefault {
+			available[name] = true
+		}
+	}
+	for name := range declared {
+		available[name] = true
+	}
+	var missing []string
+	for name := range down.Required {
+		if !available[name] {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
 // validateConcurrency 校验 concurrency.maxPerNode。
 func validateConcurrency(c *Concurrency) []string {
 	if c.MaxPerNode != nil && *c.MaxPerNode < 1 {
