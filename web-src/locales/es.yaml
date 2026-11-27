@@ -2465,6 +2465,8 @@ paging:
   load_more: 'Cargar más'
   showing: 'Mostrando {n}'
   no_match: 'Sin coincidencias'
+  filtered_empty: 'Ningún elemento coincide con los filtros'
+  clear_filters: 'Borrar filtros'
 
 # Página de detalle de solo lectura del origen (source-detail.html).
 source_detail:

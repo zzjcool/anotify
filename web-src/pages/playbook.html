@@ -743,7 +743,7 @@
       $("pb-load-state").textContent = t("pb.v4.loading"); $("pb-summary").setAttribute("aria-busy", "true");
       try {
         await ready(); if (!name) throw new Error(t("pb.v4.missing_id"));
-        $("pb-back").href = scoped("playbooks"); await refreshSummary();
+        $("pb-back").href = Anotify.listBackHref("playbooks.html", scoped("playbooks")); await refreshSummary();
         // Re-check never destroys a user's unsaved whole-map draft.
         if (!draft) await rawTemplate(true);
         $("pb-content").hidden = false; $("pb-load-state").replaceChildren(); await Promise.all([installs(), versions()]);

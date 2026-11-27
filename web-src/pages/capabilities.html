@@ -779,8 +779,8 @@
        * 2026-11 拆分：详情、编辑、部署、删除、版本历史搬到独立页
        * capability.html?namespace=<ns>&name=<cap>（行标题即深链）。本页只负责
        * 「找得到、建得出」：搜索 / 筛选 / 计数 / 空态 / 刷新 + 新建向导。
-       * 列表状态（搜索词、筛选、滚动位置）在离开列表时写进 sessionStorage，
-       * 详情页的「返回列表」带 ?restore=1 回来还原（见 §列表状态保留）。
+       * 列表状态（搜索词、筛选）写在 URL 里（共享 helper Anotify.listState）；
+       * 旧的 sessionStorage 快照与 `?restore=1` 握手已下线。
        *
        * 数据层只用 canonical 层：nsList/nsPath/model.capability/writable、
        * loadErrorNode；失败不伪造数据。 */
@@ -810,11 +810,18 @@
       });
 
       /* ============================== 状态 ============================== */
+      const listState = A.listState({
+        page: "capabilities.html",
+        keys: ["q", "filter"],
+        defaults: { filter: "all" },
+        bind: { q: "caps-search", filter: "caps-filter" },
+        drop: ["restore"],
+      });
       let CAPS = []; // 当前命名空间的能力全集（每次刷新整体替换）
       let LIST_ERR = null; // 列表请求的错误：错误态与空态是两件不同的事
       let LOADING = true;
-      let SEARCH = "";
-      let FILTER = "all";
+      let SEARCH = listState.get("q");
+      let FILTER = listState.get("filter");
       let EDIT = null; // 新建向导的上下文（只有 create 一种模式）
       let WIZ_GUARD = null;
       let BUSY = false;
@@ -825,11 +832,6 @@
       const REF_RE = /^[a-z0-9][a-z0-9._-]{0,62}(@[1-9][0-9]*)?$/;
       const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
       const VALUE_REF_RE = /^vars\.[A-Z][A-Z0-9_]{0,63}$/;
-
-      /* 列表状态快照：详情页的「返回列表」带 restore=1 回来时还原。
-         超过 30 分钟的快照当作过期（换了一个会话上下文，还原反而突兀）。 */
-      const LIST_KEY = "anotify.caps.list";
-      const RESTORE_MAX_MS = 30 * 60 * 1000;
 
       const $ = (id) => document.getElementById(id);
 
@@ -884,55 +886,9 @@
         return t("caps.cond." + type, type);
       }
 
-      /* ========================= 列表状态保留 ========================= */
-      function saveListState() {
-        try {
-          sessionStorage.setItem(
-            LIST_KEY,
-            JSON.stringify({
-              q: SEARCH,
-              filter: FILTER,
-              scrollY: Math.round(window.scrollY || 0),
-              savedAt: Date.now(),
-            }),
-          );
-        } catch (e) {
-          /* 隐私模式写不进去：只是少了还原，不影响功能 */
-        }
-      }
-      function readListState() {
-        try {
-          const raw = sessionStorage.getItem(LIST_KEY);
-          if (!raw) return null;
-          const st = JSON.parse(raw);
-          if (!st || typeof st !== "object") return null;
-          if (typeof st.savedAt !== "number" || Date.now() - st.savedAt > RESTORE_MAX_MS) return null;
-          return st;
-        } catch (e) {
-          return null;
-        }
-      }
-      function dropListState() {
-        try {
-          sessionStorage.removeItem(LIST_KEY);
-        } catch (e) {
-          /* 同上 */
-        }
-      }
-      /* 只在 `?restore=1` 且快照新鲜时还原；返回要滚回的 Y（没有就 null）。
-         还原后立刻删快照：下次不带 restore=1 干净进入时不会被旧条件筛掉列表。 */
-      function restoreListState() {
-        const params = new URLSearchParams(location.search);
-        if (params.get("restore") !== "1") return null;
-        const st = readListState();
-        if (!st) return null;
-        SEARCH = typeof st.q === "string" ? st.q : "";
-        FILTER = typeof st.filter === "string" ? st.filter : "all";
-        $("caps-search").value = SEARCH;
-        $("caps-filter").value = FILTER;
-        dropListState();
-        return Number.isFinite(st.scrollY) ? st.scrollY : 0;
-      }
+      /* ========================= 列表状态保留 =========================
+         #585：搜索词与筛选已在 URL 里（listState 构造时已按 URL 填好控件）；
+         sessionStorage 快照与 `?restore=1` 握手已下线。 */
 
       /* ============================ 列表 ============================ */
       async function loadCaps() {
@@ -1042,10 +998,8 @@
           clear.addEventListener("click", () => {
             SEARCH = "";
             FILTER = "all";
-            $("caps-search").value = "";
-            $("caps-filter").value = "all";
+            listState.clear();
             renderList();
-            saveListState();
           });
           box.append(
             ...(tpl ? [tpl.content.cloneNode(true)] : []),
@@ -1939,19 +1893,13 @@
         $("caps-empty-new").addEventListener("click", () => void openCreate());
         $("caps-search").addEventListener("input", (e) => {
           SEARCH = e.target.value || "";
+          listState.set("q", SEARCH);
           renderList();
-          saveListState();
         });
         $("caps-filter").addEventListener("change", (e) => {
           FILTER = e.target.value;
+          listState.set("filter", FILTER);
           renderList();
-          saveListState();
-        });
-        /* 点行标题 / 「详情」链接离开列表前，把当前搜索词、筛选与滚动位置记下来：
-           详情页的「返回列表」带 ?restore=1 回来时按这份快照还原（≤30 分钟）。 */
-        $("caps-list").addEventListener("click", (e) => {
-          const link = e.target && e.target.closest ? e.target.closest('a[data-act="open"]') : null;
-          if (link) saveListState();
         });
 
         $("cap-next").addEventListener("input", renderNextHints);
@@ -1994,15 +1942,9 @@
 
       document.addEventListener("DOMContentLoaded", () => {
         bind();
-        /* 还原只发生在 `?restore=1`：进入页面拉一次列表，渲染完成后滚回快照位置。
-           （不轮询：status 是服务端读时派生的，刷新按钮随时可拿最新。） */
-        const scrollY = restoreListState();
-        loadCaps().then(() => {
-          if (scrollY == null) return;
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => window.scrollTo(0, scrollY));
-          });
-        });
+        /* 搜索词/筛选来自 URL（listState 构造时已填好控件），这里只拉一次列表：不轮询，
+           status 是服务端读时派生的，刷新按钮随时可拿最新。 */
+        loadCaps();
       });
     </script>
 {{end}}

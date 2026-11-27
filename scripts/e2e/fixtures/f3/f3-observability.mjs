@@ -74,7 +74,11 @@ export async function observability(d, mode) {
     assert.ok(!filtered.url.includes('continue='));
     assert.ok(filtered.response.items.every(event => event.spec.traceUID === d.fx('defaultTrace')));
     await page.locator('#ev-namespace').selectOption('prod');
-    await page.waitForFunction(() => document.querySelector('#ev-list').textContent.includes('No events'));
+    await page.waitForFunction(() => { // #585：带筛选的空态 = 「没有符合筛选条件的条目」+ 清除动作
+      const list = document.getElementById('ev-list');
+      return !!list && list.querySelectorAll('article').length === 0 && !!list.querySelector('.empty');
+    });
+    assert.equal(await page.locator('#ev-list .empty button').count(), 1, '筛选后为空必须给「清除筛选」动作');
     assert.ok((await calls()).findLast(c => c.url.includes('/console/events')).url.includes('namespace=prod'));
     await page.locator('#ev-source').fill(''); await fireChange('#ev-source');
     await page.locator('#ev-trace').fill(''); await fireChange('#ev-trace');

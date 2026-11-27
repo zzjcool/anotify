@@ -256,6 +256,7 @@
        而 Trace GET 可能比 defer 库更快返回（真实现场：响应 132ms、DCL 152ms）。 */
     A.expectGraphics();
     const query = new URLSearchParams(location.search);
+    const backToList = () => A.listBackHref("events.html", "events.html");
     const uid = query.get("traceUID") || "";
     if (query.get("namespace")) saveScope({ namespace: query.get("namespace") });
     A.mountLayout({ active: "events", title: t("trace.title") });
@@ -311,7 +312,7 @@
         title: t("common.load_failed_prefix", "载入失败：") + facts.title,
         desc: facts.hint + (detail ? "\n" + detail : ""),
         retry: facts.retry ? retry : undefined,
-        back: { href: "events.html", text: t("trace.back", "返回事件流") },
+        back: { href: backToList(), text: t("trace.back", "返回事件流") },
       });
     }
     /* 事件事实 / 剪枝诊断里的 JSON：一律走 .code-block 外壳（头 + 复制按钮），
@@ -407,7 +408,7 @@
           icon: ICON_SEARCH,
           title: t("trace.empty_title", "没有任务"),
           desc: t("trace.v4.empty"),
-          back: { href: "events.html", text: t("trace.back", "返回事件流") },
+          back: { href: backToList(), text: t("trace.back", "返回事件流") },
         }));
         tasks.body.append(el("p", { class: "tr-meta", text: t("trace.v4.empty") }));
       }
@@ -500,7 +501,7 @@
             icon: ICON_UNLINK,
             title: t("trace.no_id_title", "缺少 traceId"),
             desc: t("trace.no_id", "URL 里没有 traceId。"),
-            back: { href: "events.html", text: t("trace.back", "返回事件流") },
+            back: { href: backToList(), text: t("trace.back", "返回事件流") },
           })
           : failureState(error, load));
       } finally {

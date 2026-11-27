@@ -325,14 +325,18 @@
     $('nodes-skel').hidden = false; $('nodes-list').setAttribute('aria-busy', 'true');
     try {
       const first = await fetchNodePage('');
-      NODES = first.items; NODES_CURSOR = first.cursor; NODES_MORE = !!first.cursor;
+      NODES = first.items; NODES_CURSOR = first.cursor; NODES_MORE = !!first.cursor; NODES_PAGES = 1;
       renderNodes();
+      NODES_PAGES = await A.replayPages(state.get('pages'), loadMoreNodes);
+      state.set('pages', String(NODES_PAGES));
     } catch (e) { $('nodes-list').replaceChildren(A.loadErrorNode(e, loadNodes)); }
     finally { $('nodes-skel').hidden = true; $('nodes-list').removeAttribute('aria-busy'); }
   }
-  /* #377：首屏只拉一页（≤20 条），DOM 不随总条数线性增长。 */
+  /* #377：首屏只拉一页（≤20 条），DOM 不随总条数线性增长。
+     #585：`q` / `pages` 写进 URL —— 返回、后退、刷新、分享链接都看到同一份筛选与已加载深度。 */
   const NODES_PAGE = 20;
-  let NODES = [], NODES_CURSOR = '', NODES_MORE = false, NODES_QUERY = '';
+  const state = A.listState({ page: 'nodes.html', keys: ['q', 'pages'], defaults: { pages: '1' }, bind: { q: 'nodes-search' } });
+  let NODES = [], NODES_CURSOR = '', NODES_MORE = false, NODES_QUERY = state.get('q'), NODES_PAGES = 1;
   async function fetchNodePage(cursor) {
     const qs = new URLSearchParams({ limit: String(NODES_PAGE) });
     if (cursor) qs.set('continue', cursor);
@@ -364,13 +368,13 @@
       $('nodes-list').appendChild(row);
     }
     if (!NODES.length) $('nodes-list').appendChild(make('div', 'empty', t('empty')));
-    else if (!rows.length) $('nodes-list').appendChild(make('div', 'empty', A.t("paging.no_match")));
+    else if (!rows.length) $('nodes-list').appendChild(A.noMatchNode(() => { NODES_QUERY = ''; state.set('q', ''); renderNodes(); }));
     /* 用 hidden 属性：.nd-more-wrap 自带 display:flex，.hidden class 会被它盖掉。 */
     $('nodes-more-wrap').hidden = !NODES_MORE;
     $('nodes-count').textContent = A.t("paging.showing").replace('{n}', String(rows.length));
   }
   async function loadMoreNodes() {
-    if (!NODES_MORE) return;
+    if (!NODES_MORE) return false;
     $('nodes-load-more').disabled = true;
     try {
       const next = await fetchNodePage(NODES_CURSOR);
@@ -380,10 +384,13 @@
         NODES.push(item); seen.add(item.metadata.name);
       }
       NODES_CURSOR = next.cursor; NODES_MORE = !!next.cursor;
+      NODES_PAGES++;
+      state.set('pages', String(NODES_PAGES));
       renderNodes();
-    } catch (e) { $('nodes-load-more').disabled = false; A.toast(errorText(e), 'error'); }
+      return true;
+    } catch (e) { $('nodes-load-more').disabled = false; A.toast(errorText(e), 'error'); return false; }
   }
-  $('nodes-search').addEventListener('input', (event) => { NODES_QUERY = event.target.value; renderNodes(); });
+  $('nodes-search').addEventListener('input', (event) => { NODES_QUERY = event.target.value; state.set('q', NODES_QUERY); renderNodes(); });
   $('nodes-load-more').addEventListener('click', loadMoreNodes);
   $('nodes-refresh').onclick = loadNodes;
   /* IA（#436）：节点页只负责节点列表。命名空间 vars 在 namespaces.html，

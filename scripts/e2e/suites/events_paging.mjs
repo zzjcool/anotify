@@ -601,8 +601,6 @@ async function main() {
 	);
 
 	// 刷新（重新打开 events.html）→ 回到确定的第一窗口：恰好 50 行、首行是最新一条、
-	// 「加载更多」重新可用。v4 的无限列表**不把游标写进 URL**（没有 ?before=），
-	// 所以「刷新后仍在第 10 页」这条 v3 承诺已不存在；这里换成钉住刷新后的确定状态。
 	await page.goto(base + "/events.html", { waitUntil: "load", timeout: 20000 });
 	await H.waitForAppReady(page, "workspace");
 	await page.selectOption("#ev-limit", String(UI_PAGE_SIZE));
@@ -898,6 +896,68 @@ async function main() {
 	await page.waitForFunction((n) => document.querySelectorAll("#src-list > div[data-name]").length === n, TOTAL, { timeout: 10000 });
 	H.eq("清空搜索恢复全部已加载行", await rowCount(), TOTAL);
 	H.check("sources 页 0 pageerror", errs.length === 0, errs.join(" | "));
+
+	console.log("--- G. 列表状态写进 URL（#585）---");
+	await page.goto(base + "/sources.html", { waitUntil: "load", timeout: 20000 });
+	await H.waitForAppReady(page, "workspace");
+	await page.waitForFunction(() => document.querySelectorAll("#src-list > div[data-name]").length > 0, null, { timeout: 15000 });
+	const searchOf = () => new URL(page.url()).searchParams;
+	const target = (await rowNames())[0];
+	H.check("#585 干净 URL 打开 = 未筛选首页（20 行）", (await rowCount()) === PAGE && !!target, JSON.stringify({ rows: await rowCount(), target }));
+
+	await page.fill("#src-search", "no-such-source-zz");
+	await page.waitForFunction(() => document.querySelectorAll("#src-list > div[data-name]").length === 0, null, { timeout: 10000 });
+	const noMatchText = await page.locator("#src-list .empty").textContent();
+	H.check("#585 筛出 0 条时说明是筛选结果", /没有符合筛选条件/.test(noMatchText), noMatchText);
+	await page.click("#src-list .empty button");
+	await page.waitForFunction((n) => document.querySelectorAll("#src-list > div[data-name]").length === n, PAGE, { timeout: 10000 });
+	H.check("#585 清除筛选后 URL 不再带 q", !searchOf().has("q"), page.url());
+
+	const histBefore = await page.evaluate(() => history.length);
+	await page.fill("#src-search", target);
+	await page.waitForFunction(() => document.querySelectorAll("#src-list > div[data-name]").length === 1, null, { timeout: 10000 });
+	H.eq("#585 搜索后 URL 带 q", searchOf().get("q"), target);
+	const histAfter = await page.evaluate(() => history.length);
+	H.eq("#585 筛选不新增历史记录（replaceState）", histAfter, histBefore);
+
+	await page.reload({ waitUntil: "load" });
+	await H.waitForAppReady(page, "workspace");
+	await page.waitForFunction(() => document.querySelectorAll("#src-list > div[data-name]").length > 0, null, { timeout: 15000 });
+	H.eq("#585 刷新后控件仍是 q", await page.locator("#src-search").inputValue(), target);
+	H.eq("#585 刷新后结果仍是筛过的（1 行）", await rowCount(), 1);
+
+	// ④ 「加载更多」的深度也进 URL：翻一页 → 刷新 → 仍在第 2 页（20 → 40 行）。
+	await page.fill("#src-search", "");
+	await page.waitForFunction((n) => document.querySelectorAll("#src-list > div[data-name]").length === n, PAGE, { timeout: 10000 });
+	await page.locator("#src-load-more").click();
+	await page.waitForFunction((n) => document.querySelectorAll("#src-list > div[data-name]").length > n, PAGE, { timeout: 15000 });
+	H.eq("#585 加载更多后 URL 记下页深", searchOf().get("pages"), "2");
+	await page.reload({ waitUntil: "load" });
+	await H.waitForAppReady(page, "workspace");
+	await page.waitForFunction((n) => document.querySelectorAll("#src-list > div[data-name]").length === n, PAGE * 2, { timeout: 15000 });
+	H.eq("#585 刷新后重放页深（40 行）", await rowCount(), PAGE * 2);
+
+	// ⑤ 列表 → 详情 → 「返回源列表」：返回链接带着列表的筛选，回到的是同一份结果。
+	await page.fill("#src-search", target);
+	await page.waitForFunction(() => document.querySelectorAll("#src-list > div[data-name]").length === 1, null, { timeout: 10000 });
+	await page.click("#src-list > div[data-name] a.src-title");
+	await page.waitForFunction(() => location.pathname.endsWith("source-detail.html"), null, { timeout: 20000 });
+	await page.waitForFunction(
+		() => {
+			const a = document.getElementById("src-detail-back");
+			return !!a && a.getAttribute("href").includes("?");
+		},
+		null,
+		{ timeout: 20000 },
+	);
+	const backHref = await page.locator("#src-detail-back").getAttribute("href");
+	H.eq("#585 详情页「返回源列表」带着列表筛选", new URL(backHref, base).searchParams.get("q"), target);
+	await page.click("#src-detail-back");
+	await H.waitForAppReady(page, "workspace");
+	await page.waitForFunction(() => document.querySelectorAll("#src-list > div[data-name]").length > 0, null, { timeout: 15000 });
+	H.eq("#585 从详情返回后控件仍是 q", await page.locator("#src-search").inputValue(), target);
+	H.eq("#585 从详情返回后结果仍是筛过的（1 行）", await rowCount(), 1);
+	H.check("#585 sources 页 0 pageerror", errs.length === 0, errs.join(" | "));
 
 	const passed = H.summary("events_paging");
 	await browser.close();

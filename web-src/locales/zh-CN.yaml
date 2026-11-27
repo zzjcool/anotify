@@ -2470,6 +2470,8 @@ paging:
   load_more: '加载更多'
   showing: '已显示 {n} 条'
   no_match: '没有匹配项'
+  filtered_empty: '没有符合筛选条件的条目'
+  clear_filters: '清除筛选'
 
 # 源只读详情页（source-detail.html）：页头、四个区块与折叠块。写动作全在编辑页。
 source_detail:

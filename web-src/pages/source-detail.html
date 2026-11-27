@@ -287,7 +287,9 @@ function withNs(ns, page, params) {
 let CUR_RES = null;
 /* 原始资源（未投影）：编辑器要用 metadata.resourceVersion 做 CAS，投影里没有它。 */
 let RAW_RES = null;
-const listHref = (res = CUR_RES) => withNs(linkNs(res), "sources.html");
+const listHref = (res = CUR_RES) =>
+  // 列表带了筛选就回那份筛选；没有来源时回资源自己的 ns（不带筛选的干净链接）
+  A.listBackHref("sources.html", { fallback: withNs(linkNs(res), "sources.html"), namespace: linkNs(res) });
 const traceHref = (res, uid) => withNs(linkNs(res), "trace.html", { traceUID: uid });
 
 /* ============================ 区块构件 ============================ */
