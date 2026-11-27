@@ -54,7 +54,7 @@ field: "_derived.links"           → number：任意深度、键名为 body 的
 | 判定 | `internal/sourcespec/derived.go`（新） | `DerivedPrefix` / `DerivedIsPullRequest` / `DerivedLinks`、`derivedNames`（封闭集合）、`derived`（按需求值）、`countBodyLinks`（递归只认 `body`）、`derivedField`（拆 `_derived.` 前缀） |
 | 判定 | `internal/sourcespec/match.go` | `Matches` 建一份 `derived` 传给每行；`MatchLeaf.left` 分流「派生表 / 载荷指针」；`matchCheck.leaf` 在归一后校验派生名 |
 | 契约 | `api/resource.yaml`（`SourceMatchLeaf` 的 `description` 与 `field.description`） | 两个派生值的语义、纯函数理由、封闭集合与 400 口径 |
-| 单测 | `internal/sourcespec/derived_test.go`（新） | 8 个用例：PR 判据 5 个形态 / 只数 body / 嵌套 body 求和 / 规则表（`links > 3` + `contains`）/ `$.` 前缀同义 / `exists` 恒真 / 三次求值同结论 / 写入期 400 三形态 |
+| 单测 | `internal/sourcespec/derived_test.go`（新 + r1 加固） | 11 个用例：PR 判据 6 个形态 / 只数 body（**精确条数**：`html_url`/`avatar_url`/`diff_url`/`text`/`content` 键一律不算）/ 嵌套 body 求和 / 规则表（`links > 3` + `contains`）/ `$.` 前缀同义 / `exists` 恒真 / `_derived.` 前缀优先于载荷同名键 / 保留前缀要带点 / 读路径未知派生名判假 / 三次求值同结论 / 写入期 400 三形态 |
 
 没有动 `internal/route`：`Matches` 的签名没变，route 的剪枝路径（`no_match` + detail）
 照旧 —— 派生字段只是「左值从哪来」的分叉。
@@ -63,10 +63,10 @@ field: "_derived.links"           → number：任意深度、键名为 body 的
 
 ```
 $ go test ./internal/sourcespec/ -count=1 -v
-46 个顶层用例（含 89 个子用例）全 PASS，0 FAIL
+49 个顶层用例（含 95 个子用例）全 PASS，0 FAIL
 
 $ go test ./internal/sourcespec/ -count=1 -run 'Derived|NormalizeMatchRejectsDerived' -v
-16 个 RUN 全 PASS（新增的 8 个用例 + 8 个子用例）
+25 个 RUN 全 PASS（新增的 11 个用例 + 14 个子用例）
 
 $ go test ./internal/route/ -count=1
 ok  	github.com/zzjcool/anotify/internal/route	2.590s（70 个顶层用例）

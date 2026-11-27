@@ -25,6 +25,7 @@ func TestDerivedIsPullRequest(t *testing.T) {
 		"pull_request 事件自身":    {map[string]any{"pull_request": map[string]any{"number": 2}}, true},
 		"非 GitHub 载荷":          {map[string]any{"kind": "ping"}, false},
 		"空载荷":                  {map[string]any{}, false},
+		"别处的 pull_request 键不算": {map[string]any{"repo": map[string]any{"pull_request": map[string]any{"number": 3}}}, false},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -36,6 +37,37 @@ func TestDerivedIsPullRequest(t *testing.T) {
 }
 
 func TestDerivedLinksCountsBodyOnly(t *testing.T) {
+	cases := map[string]struct {
+		payload map[string]any
+		want    int
+	}{
+		"body 里 http 与 https 各算一条": {map[string]any{"issue": map[string]any{
+			"body": "看 http://a.example 与 https://b.example",
+		}}, 2},
+		"html_url / avatar_url / diff_url 不算": {map[string]any{"issue": map[string]any{
+			"body":       "https://a.example",
+			"html_url":   "https://b.example https://c.example",
+			"avatar_url": "https://d.example",
+			"diff_url":   "https://e.example",
+		}}, 1},
+		"text / content 键不算（只认 body）": {map[string]any{"issue": map[string]any{
+			"body":    "https://a.example",
+			"text":    "https://b.example https://c.example",
+			"content": "https://d.example",
+		}}, 1},
+		"嵌套层的非 body 键也不算": {map[string]any{"issue": map[string]any{
+			"body": "https://a.example",
+			"user": map[string]any{"avatar_url": "https://b.example", "note": "https://c.example"},
+		}}, 1},
+		"没有 body": {map[string]any{"kind": "ping"}, 0},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := (&derived{payload: tc.payload}).countLinks(); got != tc.want {
+				t.Fatalf("链接数 = %d，want %d（只数键名 body 的字符串值）", got, tc.want)
+			}
+		})
+	}
 	m := derivedMatch(t, `[{"capability":"x","match":{"all":[{"field":"_derived.links","op":">=","value":2}]}}]`)
 	spam := map[string]any{"issue": map[string]any{
 		"body":     "看 https://a.example 与 http://b.example 还有 https://c.example",
@@ -44,9 +76,13 @@ func TestDerivedLinksCountsBodyOnly(t *testing.T) {
 	if hit, detail := m.Matches("x", spam); !hit {
 		t.Fatalf("正文 3 条链接应命中 >= 2（detail %q）", detail)
 	}
-	one := map[string]any{"issue": map[string]any{"body": "只有 https://a.example"}}
+	one := map[string]any{"issue": map[string]any{
+		"body":       "只有 https://a.example",
+		"html_url":   "https://b.example https://c.example",
+		"avatar_url": "https://d.example https://e.example",
+	}}
 	if hit, detail := m.Matches("x", one); hit {
-		t.Fatalf("正文 1 条链接不该命中 >= 2（detail %q）", detail)
+		t.Fatalf("正文 1 条 + 平台 URL 4 条不该命中 >= 2（detail %q）", detail)
 	}
 	if hit, _ := m.Matches("x", map[string]any{"kind": "ping"}); hit {
 		t.Fatal("没有 body 的载荷算 0 条")
@@ -57,7 +93,11 @@ func TestDerivedLinksSumsNestedBodies(t *testing.T) {
 	d := &derived{payload: map[string]any{
 		"issue":   map[string]any{"body": "https://a.example"},
 		"comment": map[string]any{"body": "https://b.example https://c.example"},
-		"items":   []any{map[string]any{"body": "http://d.example"}, "https://ignored.example"},
+		"items": []any{
+			map[string]any{"body": "http://d.example"},
+			"https://ignored.example",
+			map[string]any{"text": "https://also-ignored.example", "meta": map[string]any{"html_url": "https://still-ignored.example"}},
+		},
 	}}
 	if got := d.countLinks(); got != 4 {
 		t.Fatalf("链接数 = %d，want 4（任意深度的 body 都算）", got)
@@ -98,6 +138,37 @@ func TestDerivedExistsIsAlwaysTrue(t *testing.T) {
 	m := derivedMatch(t, `[{"capability":"x","match":{"all":[{"field":"_derived.links","op":"exists"}]}}]`)
 	if hit, detail := m.Matches("x", map[string]any{}); !hit {
 		t.Fatalf("派生字段恒可取（0 条也是值），exists 应为真（detail %q）", detail)
+	}
+}
+
+func TestDerivedPrefixWinsOverPayloadKey(t *testing.T) {
+	payload := map[string]any{
+		"_derived": map[string]any{"links": 99},
+		"issue":    map[string]any{"body": "https://a.example"},
+	}
+	one := derivedMatch(t, `[{"capability":"x","match":{"all":[{"field":"_derived.links","op":"==","value":1}]}}]`)
+	if hit, detail := one.Matches("x", payload); !hit {
+		t.Fatalf("_derived.links 应算派生值 1，不是载荷里的 99（detail %q）", detail)
+	}
+	ninety := derivedMatch(t, `[{"capability":"x","match":{"all":[{"field":"_derived.links","op":"==","value":99}]}}]`)
+	if hit, detail := ninety.Matches("x", payload); hit {
+		t.Fatalf("载荷里真有 _derived 键也不该被读到（detail %q）", detail)
+	}
+}
+
+func TestDerivedPrefixNeedsDotBoundary(t *testing.T) {
+	m := derivedMatch(t, `[{"capability":"x","match":{"all":[{"field":"_derivedlike.links","op":"==","value":2}]}}]`)
+	payload := map[string]any{"_derivedlike": map[string]any{"links": 2}}
+	if hit, detail := m.Matches("x", payload); !hit {
+		t.Fatalf("保留前缀是 _derived. 带点，_derivedlike 应按载荷指针取到（detail %q）", detail)
+	}
+}
+
+func TestDerivedUnknownNameOnReadPathIsFalse(t *testing.T) {
+	m := &Match{All: []MatchLeaf{{Field: "_derived.ageDays", Op: MatchOpExists}}}
+	payload := map[string]any{"_derived": map[string]any{"ageDays": 30}}
+	if hit, detail := m.Matches("x", payload); hit {
+		t.Fatalf("读路径上不认识的派生名按「取不到」处理，exists 应为假（detail %q）", detail)
 	}
 }
 
