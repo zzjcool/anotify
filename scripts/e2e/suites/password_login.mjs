@@ -740,28 +740,47 @@ async function main() {
 	);
 
 	// #581（回归）：这个门禁不能被 Esc / 点遮罩绕过 —— 明文只出现这一次，绕过就是永久丢失。
-	// 未修复时全局 Esc 会 closeModal，弹层变 hidden，下面第一条就红。
+	// 未修复时全局 Esc 会 closeModal（同步加 is-closing，退场动完再 hidden），下面第一条就红。
+	// 「按了 Esc 但什么都没发生」不能用固定 sleep 证明（测试纪律 L3 拦 waitForTimeout）：
+	// 在页面里逐帧观测弹层与提示句，任何一帧进入 is-closing/hidden 都会被记下来。
 	const codesUrlBeforeDismiss = page.url();
-	const readCodesPanel = () =>
-		page.evaluate(() => {
-			const modal = document.getElementById("codes-modal");
-			const hint = document.getElementById("codes-hint");
-			return {
-				visible: !!modal && !modal.classList.contains("hidden"),
-				closing: !!modal && modal.classList.contains("is-closing"),
-				continueDisabled: !!document.getElementById("codes-continue")?.disabled,
-				hintShown: !!hint && !hint.classList.contains("hidden"),
-				hintText: (hint?.textContent || "").trim(),
-				url: location.href,
-			};
-		});
+	const observeCodesPanel = (windowMs) =>
+		page.evaluate(
+			async (ms) => {
+				const modal = document.getElementById("codes-modal");
+				const hint = document.getElementById("codes-hint");
+				const deadline = performance.now() + ms;
+				let sawClosing = false;
+				let sawHidden = false;
+				let hintText = "";
+				const readHint = () => {
+					if (hint && !hint.classList.contains("hidden")) {
+						hintText = (hint.textContent || "").trim();
+					}
+				};
+				do {
+					if (modal.classList.contains("is-closing")) sawClosing = true;
+					if (modal.classList.contains("hidden")) sawHidden = true;
+					readHint();
+					await new Promise((r) => setTimeout(r, 16));
+				} while (performance.now() < deadline);
+				return {
+					visible: !modal.classList.contains("hidden"),
+					sawClosing,
+					sawHidden,
+					continueDisabled: !!document.getElementById("codes-continue")?.disabled,
+					hintShown: hintText.length > 0,
+					hintText,
+					url: location.href,
+				};
+			},
+			windowMs,
+		);
 	await page.keyboard.press("Escape");
-	// 关闭是异步的（退场动画 + 计时器）：等一拍再断言，别让「关到一半」被读成没关。
-	await page.waitForTimeout(400);
-	const afterEsc = await readCodesPanel();
+	const afterEsc = await observeCodesPanel(450);
 	H.check(
 		"#581：未勾选时按 Esc → 恢复码弹层仍在（未被关闭）",
-		afterEsc.visible && !afterEsc.closing,
+		afterEsc.visible && !afterEsc.sawClosing && !afterEsc.sawHidden,
 		JSON.stringify(afterEsc),
 	);
 	H.eq("#581：按 Esc 后「继续」仍禁用", afterEsc.continueDisabled, true);
@@ -774,11 +793,10 @@ async function main() {
 
 	// 点遮罩（弹层边缘）：同样不放行。
 	await page.click("#codes-modal", { position: { x: 4, y: 4 } });
-	await page.waitForTimeout(400);
-	const afterBackdrop = await readCodesPanel();
+	const afterBackdrop = await observeCodesPanel(450);
 	H.check(
 		"#581：点遮罩 → 恢复码弹层仍在（未被关闭）",
-		afterBackdrop.visible && !afterBackdrop.closing,
+		afterBackdrop.visible && !afterBackdrop.sawClosing && !afterBackdrop.sawHidden,
 		JSON.stringify(afterBackdrop),
 	);
 	H.eq("#581：点遮罩后「继续」仍禁用", afterBackdrop.continueDisabled, true);

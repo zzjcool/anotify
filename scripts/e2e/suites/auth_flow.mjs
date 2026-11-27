@@ -265,19 +265,35 @@ async function firstRunCase() {
 	H.eq("首跑：未勾选时「继续」禁用", beforeAck.disabled, true);
 
 	// #581（回归）：Passkey 注册路径同一个弹层，Esc 也不许绕过（明文只有这一次）。
+	// 「按了 Esc 但什么都没发生」不能用固定 sleep 证明（测试纪律 L3 拦 waitForTimeout）：
+	// 在页面里逐帧观测弹层状态，任何一帧进入 is-closing/hidden 都会被记下来。
+	const observeCodesModal = (windowMs) =>
+		page.evaluate(
+			async (ms) => {
+				const modal = document.getElementById("codes-modal");
+				const deadline = performance.now() + ms;
+				let sawClosing = false;
+				let sawHidden = false;
+				do {
+					if (modal.classList.contains("is-closing")) sawClosing = true;
+					if (modal.classList.contains("hidden")) sawHidden = true;
+					await new Promise((r) => setTimeout(r, 16));
+				} while (performance.now() < deadline);
+				return {
+					visible: !modal.classList.contains("hidden"),
+					sawClosing,
+					sawHidden,
+					continueDisabled: !!document.getElementById("codes-continue")?.disabled,
+				};
+			},
+			windowMs,
+		);
+
 	await page.keyboard.press("Escape");
-	await page.waitForTimeout(400); // 关闭是异步的（退场动画），等一拍再断言
-	const codesAfterEsc = await page.evaluate(() => {
-		const modal = document.getElementById("codes-modal");
-		return {
-			visible: !!modal && !modal.classList.contains("hidden"),
-			closing: !!modal && modal.classList.contains("is-closing"),
-			continueDisabled: !!document.getElementById("codes-continue")?.disabled,
-		};
-	});
+	const codesAfterEsc = await observeCodesModal(450);
 	H.check(
 		"首跑 #581：按 Esc → 恢复码弹层仍在",
-		codesAfterEsc.visible && !codesAfterEsc.closing,
+		codesAfterEsc.visible && !codesAfterEsc.sawClosing && !codesAfterEsc.sawHidden,
 		JSON.stringify(codesAfterEsc),
 	);
 	H.eq(
