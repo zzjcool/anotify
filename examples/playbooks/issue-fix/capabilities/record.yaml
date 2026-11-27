@@ -49,5 +49,20 @@ spec:
           "$repo" "$issue" "$outcome" "$pr" "$line" > "$art_dir/record.json"
 
         gh issue comment "$issue" --repo "$repo" --body "$line" || echo "写回 issue 失败（不改变结论）" >&2
+
+        if [ -n "$pr" ]; then
+          num=${pr##*/}
+          case "$outcome" in
+            approved) marker='anotify:review-approved'; text='链上 review 通过' ;;
+            escalate) marker='anotify:review-rejected'; text='链上 review 三轮未通过，需人接手' ;;
+            stuck)    marker='anotify:review-rejected'; text='执行体未完成，review 未发生' ;;
+            *)        marker=''; text='' ;;
+          esac
+          if [ -n "$marker" ]; then
+            gh pr comment "$num" --repo "$repo" --body "<!-- $marker --> $text" \
+              || echo "写回 PR 失败（不改变结论）" >&2
+          fi
+        fi
+
         echo "record: $outcome — $line"
 
