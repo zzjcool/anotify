@@ -83,7 +83,7 @@ G1后产出可读的 `EXPORTED-INTERFACES.md`（团队自己的进度目录）�
 
 - 一个零依赖共享协议类型源（建议新增 `internal/protocol/` 或移出原 ws 的纯协议子包）。server/anode直接使用同一份Go定义，禁止各写snake/camel镜像；节点二进制不引SQLite/server依赖。不提供旧frame aliases。
 - 配置子协议：hello/welcome/config.changed/config.get/config.applied，具体字段按config文档，只有机器值快照+revision/hash，未回传凭证值/完整白名单。
-- 执行10帧按capability §8.5：task.dispatch/accept/reject、lease.grant/renew/ack、task.result/result.ack、task.cancel/cancel.ack。dispatch只assignmentId/proposedAttempt、不授lease/token；stale_config仅accept前reject不计attempt；grant由中枢生成leaseId/attemptToken并计attempt。固定默认TTL60s/续租20s/TERM宽限5s后KILL进程组；节点本地ACK deadline失效自行停，旧attempt结果/emit中枢权威拒绝。cancel槽位等processGroupReaped再释放。
+- 执行10帧按capability §8.5：task.dispatch/accept/reject、lease.grant/renew/ack、task.result/result.ack、task.cancel/cancel.ack。dispatch只assignmentId/proposedAttempt、不授lease/token；stale_config仅accept前reject不计attempt；grant由中枢生成leaseId/attemptToken并计attempt。固定默认TTL60s/续租20s/TERM宽限5s后KILL进程组；节点本地ACK deadline失效自行停，旧attempt结果/emit中枢权威拒绝。cancel槽位等processGroupReaped再释放；超过600s宽限仍无该事实时，按「中枢不再等这条执行」补reaped_at并释槽（#682，语义是放弃等待而不是进程已回收）。
 - grant后启动前 missing_requirement/workdir_unavailable/home_unavailable 等确定性错误failed已计attempt，不重试；stale_config回pending/waiting_for_config不耗执行预算，不热循环。仅显式幂等任务的可靠infra事实/失联允许自动重试，普通script非零/timeout/cancel不自动重试。
 - 本机一个HTTP emit网关默认loopback内核端口，可按文档unix形态；转中枢权威派发。请求 `{to,id?,data}`，Bearer attemptToken；无to missing_target400/CLI2；no_target仅Source.targets为空剪枝。可选id以逻辑(taskId,id)跨attempt去重，异to/data409；无id每次不同，不按旧seq自动业务去重；剪枝200 taskId:null/eventId/pruned，exit0。exit5只表示结果未知，可能已派发，不能凭shell退出码推断infra自动整任务重跑。
 - 只有serve/install/emit三个公开子命令；改二进制与服务/config名为anode/anode.yaml/anode.service，不加旧命名alias。curl安装脚本只负责下载并调用anode install（或与它保持单源的最小引导），不能存在两套不同初始化语义。
