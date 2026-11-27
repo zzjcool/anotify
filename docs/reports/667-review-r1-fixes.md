@@ -110,7 +110,27 @@ $ node scripts/check-test-discipline.mjs → DISC_EXIT=0（五项全部与基线
 $ node --check scripts/e2e/suites/capacity.mjs → SYNTAX_OK
 ```
 
-**4) 提交后干净树复跑**：本快照先于该次运行定格，结果记在 PR 正文的「review r1 返工」小节。
+**4) 提交 `0a35dcbf` 的干净树复跑** → 仍绿：
+
+```
+$ ./scripts/e2e/run_all.sh capacity
+  ✅ capacity           84通过/0失败  147.4s  mode=real
+✅ E2E 全绿：1/1 个请求套件均达标（断言 84 通过 / 0 失败）
+  ✅ 临时目录零残留（隔离 TMPDIR 内本次新增 = 0，耗时 147.6s）
+```
+
+**5) `make ci`（PR 门禁本体，r0 漏跑的那一步）**
+
+```
+$ (umask 022; make ci)          → MAKE_CI_EXIT=0
+```
+
+第一次跑（没显式设 umask）红了，但红点与本次改动无关：
+`cmd/anode/internal/install` 的 `TestInstallConfigDirectoryIsTraversableByServiceUser`
+—— 它建配置目录期望 0755，而本节点 shell 的 `umask=0077` 把 `MkdirAll(0755)` 削成了 0700。
+归因自证：单跑该包，`umask=0077` → FAIL、`umask=0022` → ok；同一棵树只变 umask。
+CI runner 的默认 umask 是 0022，所以这不是 PR 的问题，也不是 `make ci` 的真红。
+除它之外那一次跑的所有目标（contract / lint-go / fe / check-dist-fresh / 各守卫）都是绿的。
 
 ## 遗留 / 未覆盖
 
