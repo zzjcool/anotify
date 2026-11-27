@@ -403,6 +403,7 @@ func (h *Hub) DispatchOnce(ctx context.Context, limit int) (int, error) {
 	}
 	dispatched := 0
 	configRevisions := map[string]string{}
+	memo := &store.DispatchBudgetMemo{} // 一次 sweep 内共享：机器/能力侧读不变，在飞候选按任务重算
 	for _, task := range tasks {
 		if task.CancelRequestedAt != nil {
 			continue
@@ -420,10 +421,14 @@ func (h *Hub) DispatchOnce(ctx context.Context, limit int) (int, error) {
 			h.log.Warn("free slots failed", "task_id", task.ID, "err", err)
 			continue
 		}
-		budgets, berr := h.db.DispatchBudgets(ctx, task, nodeIDs(nodes), now)
-		if berr != nil {
-			h.log.Warn("dispatch budgets failed", "task_id", task.ID, "err", berr)
-			budgets = nil
+		var budgets map[string]store.DispatchNodeBudget
+		if len(nodes) > 1 { // 单候选时 dispatchCandidates 原样返回：预算表算完就丢，不查（#681 review）。
+			read, berr := h.db.DispatchBudgetsMemoized(ctx, task, nodeIDs(nodes), now, memo)
+			if berr != nil {
+				h.log.Warn("dispatch budgets failed", "task_id", task.ID, "err", berr)
+			} else {
+				budgets = read
+			}
 		}
 		nsVars := h.namespaceVarsFor(ctx, task)
 		proposed := task.Attempt + 1

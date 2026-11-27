@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/artifact"
+	"github.com/zzjcool/anotify/internal/protocol"
 )
 
 func capPerNode(t *testing.T, db *DB, nsID, name string, maxPerNode int) *CapabilityVersion {
@@ -177,5 +178,131 @@ func TestDispatchBudgetsIgnoreTerminalTasks(t *testing.T) {
 	}
 	if !budgets[node.ID].AdmitsOne() {
 		t.Fatalf("终态任务不得继续占选点余量（#660）：%+v", budgets[node.ID])
+	}
+}
+
+func TestDispatchBudgetsSeeMachineTotalLayer(t *testing.T) { // 机器总量层单独断言：最容易被「简化 OverBy」削掉的一层。
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	filler := capPerNode(t, db, nsID, "fill-total-681", 4)
+	target := capPerNode(t, db, nsID, "triage-total-681", 4) // pinned 层留余量：只让总量层满
+	node := v4Node(t, db, "host-ws", 1)
+	putV4NodeCfg(t, db, node.ID, []string{"*"}, nil, map[string]any{"total": 1})
+	v4RecordApplied(t, db, node.ID)
+
+	busy := v4Task(t, db, nsID, filler, "tr_681_fill_total", "")
+	v4Grant(t, db, busy.ID, node.ID, "asg_681_fill_total")
+
+	next := v4Task(t, db, nsID, target, "tr_681_total_next", "")
+	budgets, err := db.DispatchBudgets(ctx, next, []string{node.ID}, 0)
+	if err != nil {
+		t.Fatalf("dispatch budgets: %v", err)
+	}
+	got := budgets[node.ID]
+	if got.TotalUsed != 1 || got.TotalLimit != 1 {
+		t.Fatalf("机器总量层应是 1/1（total=1，跑着一条别能力的执行）：%+v", got)
+	}
+	if got.CapabilityLimited || got.PinnedUsed != 0 || got.PinnedLimit != 4 {
+		t.Fatalf("按能力层没配、pinned 有余量，只有总量层能拒：%+v", got)
+	}
+	if got.AdmitsOne() {
+		t.Fatalf("机器总量已满（1/1）必须判不许再收：%+v", got)
+	}
+	if over := got.OverBy(); over != 1 {
+		t.Fatalf("总量层超出 1 个，OverBy 应是 1，得到 %d（%+v）", over, got)
+	}
+
+	if err := db.AssignTask(ctx, next.ID, node.ID, "asg_681_total_next", 1); err != nil {
+		t.Fatalf("assign next: %v", err)
+	}
+	_, _, _, _, _, gerr := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
+		next.ID, "asg_681_total_next", 1, 0, Now())
+	if !errors.Is(gerr, ErrSlotUnavailable) || !strings.Contains(gerr.Error(), "机器总量预算") {
+		t.Fatalf("预算表说满，grant 必须按同口径拒在总量层，得到 %v", gerr)
+	}
+}
+
+// memo 只复用「一次 sweep 内不变」的读：在飞候选必须按任务重算，否则任务会把自己算成占用。
+func TestDispatchBudgetsMemoReusesRealButNotInflight(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	c := capPerNode(t, db, nsID, "triage-memo-681", 2)
+	node := v4Node(t, db, "host-ws", 4)
+	now := Now()
+
+	inflight := v4Task(t, db, nsID, c, "tr_681_memo_inflight", "")
+	if _, err := db.ProposeTaskAssignment(ctx, AssignmentProposalInputs{
+		TaskID: inflight.ID, NodeID: node.ID, ProposedAttempt: 1, Now: now,
+	}); err != nil {
+		t.Fatalf("提议候选: %v", err)
+	}
+	next := v4Task(t, db, nsID, c, "tr_681_memo_next", "")
+
+	memo := &DispatchBudgetMemo{}
+	fromNext, err := db.DispatchBudgetsMemoized(ctx, next, []string{node.ID}, now, memo)
+	if err != nil {
+		t.Fatalf("dispatch budgets (memo, next): %v", err)
+	}
+	if got := fromNext[node.ID]; got.PinnedUsed != 1 || !got.AdmitsOne() {
+		t.Fatalf("别的任务的在飞候选要算进余量：%+v", got)
+	}
+	fromSelf, err := db.DispatchBudgetsMemoized(ctx, inflight, []string{node.ID}, now, memo)
+	if err != nil {
+		t.Fatalf("dispatch budgets (memo, self): %v", err)
+	}
+	if got := fromSelf[node.ID]; got.PinnedUsed != 0 || !got.AdmitsOne() {
+		t.Fatalf("共用 memo 也必须按任务排掉自己的候选：%+v", got)
+	}
+	for _, pair := range []struct {
+		name string
+		task *Task
+		want DispatchNodeBudget
+	}{{"next", next, fromNext[node.ID]}, {"self", inflight, fromSelf[node.ID]}} {
+		fresh, ferr := db.DispatchBudgets(ctx, pair.task, []string{node.ID}, now)
+		if ferr != nil {
+			t.Fatalf("dispatch budgets (%s): %v", pair.name, ferr)
+		}
+		if fresh[node.ID] != pair.want {
+			t.Fatalf("共用 memo 的结果必须与逐次读一致（%s）：memo=%+v fresh=%+v",
+				pair.name, pair.want, fresh[node.ID])
+		}
+	}
+}
+
+// 三层预算按需统计（grant 在 BEGIN IMMEDIATE 里，没配的层不该花 2 条 SQL 去查）。
+func TestBudgetShapeLayersAreOnDemand(t *testing.T) {
+	narrow := budgetShapeFor(protocol.Limits{Total: 2}, "triage", 0).layers()
+	if narrow != (budgetLayers{total: true}) {
+		t.Fatalf("没配 perCapability、也没有 pinned 上限时只统计总量层：%+v", narrow)
+	}
+	wildcard := budgetShapeFor(protocol.Limits{Total: 2, PerCapability: map[string]int{"*": 1}}, "other", 0)
+	if !wildcard.capLimited || wildcard.capLimit != 1 || !wildcard.layers().capability {
+		t.Fatalf("\"*\" 是未单列能力的预算：%+v", wildcard)
+	}
+	wide := budgetShapeFor(protocol.Limits{Total: 2, PerCapability: map[string]int{"triage": 3}}, "triage", 2).layers()
+	if wide != (budgetLayers{total: true, capability: true, pinned: true}) {
+		t.Fatalf("三层都配了就要全查：%+v", wide)
+	}
+}
+
+// 派发侧的读失败不能把排查方向指向 grant（review ⑥：「授予租约: 统计…」是共用前的旧文案）。
+func TestDispatchBudgetErrorsAreSideNeutral(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	c := capPerNode(t, db, nsID, "triage-text-681", 1)
+	node := v4Node(t, db, "host-ws", 1)
+	task := v4Task(t, db, nsID, c, "tr_681_text", "")
+	if err := db.Close(); err != nil {
+		t.Fatalf("关库: %v", err)
+	}
+	_, err := db.DispatchBudgets(ctx, task, []string{node.ID}, 0)
+	if err == nil {
+		t.Fatalf("关掉的库必须报错")
+	}
+	if !strings.Contains(err.Error(), "dispatch budgets") || strings.Contains(err.Error(), "授予租约") {
+		t.Fatalf("派发侧读失败应指向 dispatch budgets，不该说「授予租约」：%v", err)
 	}
 }

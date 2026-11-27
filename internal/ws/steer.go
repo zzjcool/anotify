@@ -61,7 +61,21 @@ func (h *Hub) noteSlotFull(ctx context.Context, nodeID, taskID string, now int64
 	h.markSlotFull(nodeID, task.NamespaceID, task.Capability, now)
 }
 
+func (h *Hub) nodeSteered(nodeID string) bool { // 读库前的快筛：多数租约根本没有建议，不该为此多读一次 task。
+	h.steer.mu.Lock()
+	defer h.steer.mu.Unlock()
+	for key := range h.steer.until {
+		if key.nodeID == nodeID {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Hub) clearSlotFullSteer(ctx context.Context, nodeID, taskID string) {
+	if !h.nodeSteered(nodeID) {
+		return
+	}
 	task, err := h.db.GetTaskByID(ctx, taskID)
 	if err != nil || task == nil {
 		return
