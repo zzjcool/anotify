@@ -740,40 +740,9 @@ async function main() {
 	);
 
 	const codesUrlBeforeDismiss = page.url();
-	const observeCodesPanel = (windowMs) => // #581：逐帧观测，任何一帧进入 is-closing/hidden 都记下来（固定 sleep 被 L3 拦）
-		page.evaluate(
-			async (ms) => {
-				const modal = document.getElementById("codes-modal");
-				const hint = document.getElementById("codes-hint");
-				const deadline = performance.now() + ms;
-				let sawClosing = false;
-				let sawHidden = false;
-				let hintText = "";
-				const readHint = () => {
-					if (hint && !hint.classList.contains("hidden")) {
-						hintText = (hint.textContent || "").trim();
-					}
-				};
-				do {
-					if (modal.classList.contains("is-closing")) sawClosing = true;
-					if (modal.classList.contains("hidden")) sawHidden = true;
-					readHint();
-					await new Promise((r) => setTimeout(r, 16));
-				} while (performance.now() < deadline);
-				return {
-					visible: !modal.classList.contains("hidden"),
-					sawClosing,
-					sawHidden,
-					continueDisabled: !!document.getElementById("codes-continue")?.disabled,
-					hintShown: hintText.length > 0,
-					hintText,
-					url: location.href,
-				};
-			},
-			windowMs,
-		);
+	const defaultViewport = page.viewportSize() || { width: 1280, height: 720 };
 	await page.keyboard.press("Escape"); // #581（回归）：未勾选时 Esc 不许关掉恢复码弹层
-	const afterEsc = await observeCodesPanel(450);
+	const afterEsc = await H.observeCodesModal(page);
 	H.check(
 		"#581：未勾选时按 Esc → 恢复码弹层仍在（未被关闭）",
 		afterEsc.visible && !afterEsc.sawClosing && !afterEsc.sawHidden,
@@ -786,20 +755,75 @@ async function main() {
 		JSON.stringify(afterEsc),
 	);
 	H.eq("#581：按 Esc 不跳转（URL 未变）", afterEsc.url, codesUrlBeforeDismiss);
+	H.eq(
+		"#581：未勾选时 beforeunload 会先问一句（刷新/后退不静默丢掉明文）",
+		await H.beforeUnloadPrevented(page),
+		true,
+	);
 
-	await page.click("#codes-modal", { position: { x: 4, y: 4 } }); // 点遮罩（弹层边缘）同样不放行
-	const afterBackdrop = await observeCodesPanel(450);
+	await page.setViewportSize({ width: 390, height: 844 }); // #581 review r1：issue 自己列的最窄复现视口
+	await page.keyboard.press("Escape");
+	const onMobile = await H.observeCodesModal(page, 250);
 	H.check(
-		"#581：点遮罩 → 恢复码弹层仍在（未被关闭）",
-		afterBackdrop.visible && !afterBackdrop.sawClosing && !afterBackdrop.sawHidden,
+		"#581：390×844 下提示句与勾选框都在弹层可视区内（不再被裁在 body 下沿）",
+		onMobile.hintInView && onMobile.ackInView,
+		JSON.stringify(onMobile),
+	);
+	H.check(
+		"#581：390×844 下按 Esc 也关不掉",
+		onMobile.visible && !onMobile.sawClosing && !onMobile.sawHidden,
+		JSON.stringify(onMobile),
+	);
+	await page.setViewportSize(defaultViewport);
+
+	const clearedForBackdrop = await page.evaluate(() => { // 点遮罩：先清掉提示/抖动，只断言新 handler 才产生的副作用（未修复版本本来就关不掉 → 断言「弹层仍在」是假绿，review r1）
+		const hint = document.getElementById("codes-hint");
+		hint.classList.add("hidden");
+		hint.textContent = "";
+		document
+			.querySelector("#codes-modal .codes-ack")
+			?.classList.remove("is-nudge");
+		return {
+			hintHidden: hint.classList.contains("hidden"),
+			nudged: !!document
+				.querySelector("#codes-modal .codes-ack")
+				?.classList.contains("is-nudge"),
+		};
+	});
+	H.check(
+		"#581：点遮罩前提示/抖动已清空（下面的断言才有区分力）",
+		clearedForBackdrop.hintHidden && !clearedForBackdrop.nudged,
+		JSON.stringify(clearedForBackdrop),
+	);
+	await page.click("#codes-modal", { position: { x: 4, y: 4 } }); // 点遮罩（弹层边缘）同样不放行
+	const afterBackdrop = await H.observeCodesModal(page, 250);
+	H.check(
+		"#581：点遮罩 → 提示句重新出现（新 handler 的真实副作用）",
+		afterBackdrop.hintShown,
 		JSON.stringify(afterBackdrop),
 	);
-	H.eq("#581：点遮罩后「继续」仍禁用", afterBackdrop.continueDisabled, true);
+	H.check(
+		"#581：点遮罩 → 勾选框拿到 is-nudge",
+		afterBackdrop.nudged,
+		JSON.stringify(afterBackdrop),
+	);
+	H.check(
+		"#581：点遮罩后弹层仍在且「继续」仍禁用",
+		afterBackdrop.visible &&
+			!afterBackdrop.sawClosing &&
+			afterBackdrop.continueDisabled,
+		JSON.stringify(afterBackdrop),
+	);
 
 	await page.check("#codes-saved-ack");
 	H.check(
 		"勾选“我已保存”后「继续」可用",
 		await page.isEnabled("#codes-continue"),
+	);
+	H.eq(
+		"#581：勾选后 beforeunload 不再拦（守卫按勾选态放行）",
+		await H.beforeUnloadPrevented(page),
+		false,
 	);
 	H.eq(
 		"#581：勾选后（唯一出口打开）提示句收起",
@@ -809,6 +833,19 @@ async function main() {
 		),
 		true,
 	);
+	await page.uncheck("#codes-saved-ack");
+	const uncheckedAgain = await page.evaluate(() => ({
+		disabled: !!document.getElementById("codes-continue")?.disabled,
+		hintShown:
+			!document.getElementById("codes-hint")?.classList.contains("hidden"),
+	}));
+	H.eq("#581：取消勾选 → 「继续」重新禁用", uncheckedAgain.disabled, true);
+	H.eq(
+		"#581：取消勾选 → 提示句回来（不再只能显示一次）",
+		uncheckedAgain.hintShown,
+		true,
+	);
+	await page.check("#codes-saved-ack");
 	await page.click("#codes-continue");
 	const signupLanded = await waitForWorkspaceNav();
 	let signupPath = "";
