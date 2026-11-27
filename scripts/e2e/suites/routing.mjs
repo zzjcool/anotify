@@ -1924,12 +1924,18 @@ async function main() {
 		V.expectStatus(`17.2 第 ${i + 1} 单入队 → 200`, res, 200);
 		H.eq(`17.2 第 ${i + 1} 单恰好 1 个任务`, (res.json?.tasks || []).length, 1);
 	}
-	await V.tryPoll(() => dispatchedOn(spreadA).size > 0 && dispatchedOn(spreadB).size > 0, { timeoutMs: 10000 });
-	H.eq(
-		"17.3 四单在两台候选上各 2 条提案（不是 4:0）",
-		[dispatchedOn(spreadA).size, dispatchedOn(spreadB).size],
-		[2, 2],
-	);
+	let spreadSeen = null;
+	const spreadDone = await V.tryPoll(() => {
+		const a = dispatchedOn(spreadA).size;
+		const b = dispatchedOn(spreadB).size;
+		if (a === 2 && b === 2) {
+			spreadSeen = [a, b];
+			return true;
+		}
+		return false;
+	}, { timeoutMs: 10000 });
+	H.check("17.3 两台候选各 2 条提案在 10s 内到齐", spreadDone, "超时仍是中间态");
+	H.eq("17.3 四单在两台候选上各 2 条提案（不是 4:0）", spreadSeen, [2, 2]);
 
 	const accepted = [];
 	for (const node of [spreadA, spreadB]) {
