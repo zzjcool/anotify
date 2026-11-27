@@ -2632,12 +2632,12 @@ release:
   restore: Restore from snapshot
   restore_confirm_title: Restore this instance from its snapshot
   restore_confirm_body: "Rebuild these capabilities from the snapshot: {caps}. Sources involved: {sources}."
-  restore_confirm_note: "Sources are not rebuilt: if any source is missing, the restore is rejected (409)."
+  restore_confirm_note: "Sources are rebuilt too: they are re-rendered from the snapshot package version and the values of this install, and the restore is rejected (409) only when that is not possible."
   restore_confirm_ok: Restore from snapshot
   restore_list_sep: ", "
   restore_more: "…and {n} in total"
   restore_no_snapshot: This install left no snapshot, so it cannot be restored from one.
   restore_already_installed: This instance is still in effect, so no restore is needed.
   restore_pinned_gone: A capability version from the snapshot has been deleted, so the restore cannot proceed.
-  restore_pin_missing_source: A source from the snapshot does not exist in this namespace; create it first, then restore.
+  restore_pin_missing_source: This source cannot be rebuilt from the snapshot package version; create the source first, then restore.
   restore_conflict: A capability with the same name and version already exists with different content, so the restore cannot proceed.

@@ -2632,12 +2632,12 @@ release:
   restore: Restaurar desde instantánea
   restore_confirm_title: Restaurar esta instancia desde su instantánea
   restore_confirm_body: "Se reconstruirán estas capacidades desde la instantánea: {caps}. Fuentes implicadas: {sources}."
-  restore_confirm_note: "Las fuentes no se reconstruyen: si falta alguna, la restauración se rechaza (409)."
+  restore_confirm_note: "Las fuentes también se reconstruyen: se vuelven a renderizar con la versión del paquete en la instantánea y los valores de esta instalación, y la restauración solo se rechaza (409) cuando eso no es posible."
   restore_confirm_ok: Restaurar desde instantánea
   restore_list_sep: ", "
   restore_more: "…{n} en total"
   restore_no_snapshot: Esta instalación no dejó instantánea, así que no se puede restaurar desde ella.
   restore_already_installed: Esta instancia sigue vigente, así que no hace falta restaurar.
   restore_pinned_gone: Se eliminó una versión de capacidad de la instantánea, así que no se puede restaurar.
-  restore_pin_missing_source: Una fuente de la instantánea no existe en este espacio de nombres; cree la fuente y vuelva a restaurar.
+  restore_pin_missing_source: Esta fuente no se puede reconstruir con la versión del paquete en la instantánea; cree la fuente y vuelva a restaurar.
   restore_conflict: Ya existe una capacidad con el mismo nombre y versión pero con otro contenido, así que no se puede restaurar.
