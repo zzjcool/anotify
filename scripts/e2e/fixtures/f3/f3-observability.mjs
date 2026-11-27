@@ -297,7 +297,9 @@ export async function observability(d, mode) {
       assert.equal(await count('#emissions-list [data-event-id]'), 2);
       await page.locator('#emissions-more').click();
       await page.waitForFunction(() => document.querySelectorAll('#emissions-list [data-event-id]').length === 3);
-      assert.match(await page.locator('#emissions-list').innerText(), /param_schema/);
+      const emissionsText = await page.locator('#emissions-list').innerText();
+      assert.match(emissionsText, /params do not satisfy the target contract/);
+      assert.ok(!emissionsText.includes('param_schema'), '页面文案不出现实现术语（原因码只在 API/标题里）');
       assert.match(await page.locator('#task-env').innerText(), /SOURCE_ROOT/);
       const envPairs = await page.locator('#task-env dl > div').evaluateAll(rows => rows.map(row => ({
         name: row.querySelector('dt').textContent, source: row.querySelector('dd').textContent,
