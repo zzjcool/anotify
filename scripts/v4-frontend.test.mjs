@@ -3492,8 +3492,19 @@ test("F2b2 trace/index controllers: actual namespace Trace graph and task deep l
  * DOMContentLoaded 的时序由测试精确控制，图库在“defer 脚本执行”那一刻才注入。
  * ------------------------------------------------------------------ */
 function traceStartup(options = {}) {
-  const run = loadMock({ graphs: false, search: '?namespace=default&traceUID=trace_mock_t1' });
+  const run = loadMock({
+    graphs: false,
+    pathname: options.pathname || '/index.html',
+    search: options.search || '?namespace=default&traceUID=trace_mock_t1',
+  });
   const nodes = new Map();
+  const replacements = []; // #582：vm 沙箱没有 history（真浏览器有），记下真实写入并同步 location.search —— 断言看「改写成什么」
+  run.sandbox.history = {
+    replaceState(_, __, url) {
+      replacements.push(String(url));
+      run.sandbox.location.search = new URL(String(url), 'http://localhost').search;
+    },
+  };
   function element(tag) {
     const node = fakeNode(tag);
     const listeners = new Map();
@@ -3563,7 +3574,7 @@ function traceStartup(options = {}) {
     state.readyState = 'complete';
   };
   const traceCalls = () => calls.filter(c => c.url.includes('/traces/')).length;
-  return { ...run, nodes, calls, state, domReady, settle, fireDomReady, loadGraphs, traceCalls, get: id => run.sandbox.document.getElementById(id) };
+  return { ...run, nodes, calls, state, domReady, replacements, settle, fireDomReady, loadGraphs, traceCalls, get: id => run.sandbox.document.getElementById(id) };
 }
 
 test("TRACE-STARTUP barrier: first render waits for the deferred graph library instead of reading taskChain too early", async () => {
@@ -3635,6 +3646,58 @@ test("TRACE-STARTUP loaded path: already interactive/complete documents render w
   }
 });
 
+test("TRACE missing-id (#582): the empty state names the parameter and the prefix the page actually reads", async () => {
+  const run = traceStartup({ graphs: true, pathname: '/trace.html', search: '?namespace=default' });
+  await run.settle();
+  await run.fireDomReady();
+  await run.settle();
+  assert.equal(run.traceCalls(), 0, 'no id means no Trace GET');
+  assert.deepEqual(run.replacements, [], 'an id-less link has nothing to normalize');
+  const text = b2Text(run.get('trace-error'));
+  assert.match(text, /\?traceUID=evt_…/, 'the hint names the real parameter and the real prefix: ' + text);
+  assert.doesNotMatch(text, /traceId=|trace_xxx/, 'the hint must not teach a URL shape this page cannot open: ' + text);
+});
+
+test("TRACE alias (#582): ?traceId= opens the trace and the address is normalized to traceUID", async () => {
+  const run = traceStartup({ // 场景：从 API 文档 / CLI 回执拿到 traceId，手动拼 ?traceId=…（页面实际只读 traceUID）
+    graphs: true, pathname: '/trace.html', search: '?namespace=default&traceId=trace_mock_t1',
+  });
+  await run.settle();
+  await run.fireDomReady();
+  await run.settle();
+  assert.equal(run.traceCalls(), 1, 'the alias really drives the Trace GET');
+  assert.equal(run.get('trace-tasks').children.length, 7, 'an ?traceId= link renders the trace instead of the missing-id state');
+  assert.equal(b2Text(run.get('trace-error')), '', 'no missing-id empty state for the alias');
+  assert.deepEqual(
+    run.replacements,
+    ['/trace.html?namespace=default&traceUID=trace_mock_t1'],
+    'the address is rewritten to the canonical traceUID and keeps the other params',
+  );
+  assert.equal(run.sandbox.location.search, '?namespace=default&traceUID=trace_mock_t1');
+  const canonical = traceStartup({ // 规范形（traceUID）不得再改写一次 —— 否则每次刷新都会 replaceState
+    graphs: true, pathname: '/trace.html', search: '?namespace=default&traceUID=trace_mock_t1',
+  });
+  await canonical.settle();
+  await canonical.fireDomReady();
+  await canonical.settle();
+  assert.deepEqual(canonical.replacements, [], 'the canonical form is left alone');
+  assert.equal(canonical.get('trace-tasks').children.length, 7);
+});
+
+test("TRACE copy (#582): all four locales point at ?traceUID=evt_… and never at the unroutable ?traceId=trace_xxx", async () => {
+  const { LANGS, parseLocale } = await import(path.join(ROOT, 'scripts', 'check-i18n-keys.mjs'));
+  for (const lang of LANGS) {
+    const file = path.join(ROOT, 'web-src/locales', lang + '.yaml');
+    const { entries } = parseLocale(readFileSync(file, 'utf8'), file);
+    const noId = entries.get('trace.no_id');
+    const title = entries.get('trace.no_id_title');
+    assert.ok(noId && title, lang + ': trace.no_id / trace.no_id_title must exist');
+    assert.match(noId.value, /\?traceUID=evt_…/, lang + ': the hint must name traceUID with the real evt_ prefix: ' + noId.value);
+    assert.doesNotMatch(noId.value, /traceId=|trace_xxx/, lang + ': the old hint taught a URL this page cannot open: ' + noId.value);
+    assert.doesNotMatch(title.value, /traceId|trace_xxx/, lang + ': the title must not name the unroutable parameter: ' + title.value);
+  }
+});
+
 test("TRACE-STARTUP native: delayed defer graph library, missing-script retry recovery and loaded page", { timeout: 55000 }, () => {
   let rejected, output;
   try {
@@ -3647,7 +3710,7 @@ test("TRACE-STARTUP native: delayed defer graph library, missing-script retry re
   console.log(output || '');
   if (rejected) console.log(rejected.stderr);
   assert.equal(rejected, undefined, 'the native startup dependency cases must pass (see stderr/output above)');
-  for (const id of ['trace-startup-delayed-graphs', 'trace-startup-missing-graphs', 'trace-startup-loaded-page']) {
+  for (const id of ['trace-startup-delayed-graphs', 'trace-startup-missing-graphs', 'trace-startup-loaded-page', 'trace-startup-traceid-alias']) {
     assert.match(output, new RegExp('TRACE-STARTUP PASS ' + id));
   }
   assert.match(output, /TRACE-STARTUP OK /, 'the helper reports its own source epoch and runId');

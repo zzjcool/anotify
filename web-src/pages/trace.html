@@ -256,7 +256,14 @@
        而 Trace GET 可能比 defer 库更快返回（真实现场：响应 132ms、DCL 152ms）。 */
     A.expectGraphics();
     const query = new URLSearchParams(location.search);
-    const uid = query.get("traceUID") || "";
+    const uid = query.get("traceUID") || query.get("traceId") || ""; // #582：API 文档 / CLI 回执叫它 traceId，两个名字都认
+    if (uid && !query.get("traceUID")) { // 命中别名就把地址规范成 traceUID：复制出去的链接只长一种样子，刷新也不来回跳
+      query.delete("traceId");
+      query.set("traceUID", uid);
+      const canonical = query.toString();
+      history.replaceState(null, "", location.pathname + (canonical ? "?" + canonical : "") + location.hash);
+    }
+    const NO_ID = "从事件流点「查看链路」打开，或在地址后加上 ?traceUID=evt_…（事件流每行的 Trace UID）。"; // 与 locale 的 trace.no_id 同一句；参数名与前缀按页面真读的写（#582）
     if (query.get("namespace")) saveScope({ namespace: query.get("namespace") });
     A.mountLayout({ active: "events", title: t("trace.title") });
     const content = document.getElementById("trace-content");
@@ -485,7 +492,7 @@
         document.getElementById("trace-sub").textContent = [readScope().namespace, uid].filter(Boolean).join(" · ");
         if (!uid) {
           /* 缺参不是「载入失败」：它没有可重试的东西，给的是「怎么进这一页」的说明 + 返回事件流。 */
-          throw Object.assign(new Error(t("trace.no_id", "URL 里没有 traceId。")), { traceMissingId: true });
+          throw Object.assign(new Error(t("trace.no_id", NO_ID)), { traceMissingId: true });
         }
         const doc = await api(nsPath("traces", uid));
         if (!Array.isArray(doc.events) || !Array.isArray(doc.tasks) || !Array.isArray(doc.pruned)) throw new Error("malformed Trace");
@@ -498,8 +505,8 @@
         errorBox.replaceChildren(error && error.traceMissingId
           ? stateNode({
             icon: ICON_UNLINK,
-            title: t("trace.no_id_title", "缺少 traceId"),
-            desc: t("trace.no_id", "URL 里没有 traceId。"),
+            title: t("trace.no_id_title", "链接里缺少链路 ID"),
+            desc: t("trace.no_id", NO_ID),
             back: { href: "events.html", text: t("trace.back", "返回事件流") },
           })
           : failureState(error, load));
