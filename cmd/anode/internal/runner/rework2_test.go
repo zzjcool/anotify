@@ -20,10 +20,7 @@ import (
 	"github.com/zzjcool/anotify/internal/protocol"
 )
 
-// 本文件（与 rework_test.go）等异步 ACK/帧/真实请求一律走 waitTest，上限
-// testWaitLimit=15s，不再是 2s：这些等待等的是 goroutine 送出的异步事实，2s 硬墙钟
-// 在 CI 负载下会被吃掉，曾让「只改文档」的 PR 被合并闸随机拦红（anotify#478）。
-// 放宽的只有 deadline，断言条件没动：等不到那个 ACK 仍然 Fatal。
+// 同 rework_test.go：异步 ACK/帧/真实请求一律走 waitTest（testWaitLimit，anotify#478）。
 
 // The clock's wall time can pass without delivering a timer: expiry must be
 // checked by the sender, not inferred from waitResultAck having run already.

@@ -610,15 +610,15 @@ func TestSchemaBaselineLayoutMarkerIsSeparateFromLedger(t *testing.T) {
 	if got := rawUserVersion(t, path); got != 4 {
 		t.Fatalf("新库 PRAGMA user_version = %d, want 4（v4 布局格式标记）", got)
 	}
-	if v, err := db.SchemaVersion(); err != nil || v != 11 {
-		t.Fatalf("SchemaVersion = %d, %v; want 11（记账 = 块数，不是布局标记）", v, err)
+	if v, err := db.SchemaVersion(); err != nil || v != 12 {
+		t.Fatalf("SchemaVersion = %d, %v; want 12（记账 = 块数，不是布局标记）", v, err)
 	}
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&n); err != nil {
 		t.Fatalf("count schema_version: %v", err)
 	}
-	if n != 11 {
-		t.Fatalf("schema_version 行数 = %d, want 11（baseline + release + 卸载标记 + 包版本历史 + router 结局表 + 轮询状态 + 依赖索引 + 安装时快照 + 凭据审计 + 手动拉取审计 + 复原审计）", n)
+	if n != 12 {
+		t.Fatalf("schema_version 行数 = %d, want 12（baseline + release + 卸载标记 + 包版本历史 + router 结局表 + 轮询状态 + 依赖索引 + 安装时快照 + 凭据审计 + 手动拉取审计 + 复原审计 + 保留期表达式索引）", n)
 	}
 }
 

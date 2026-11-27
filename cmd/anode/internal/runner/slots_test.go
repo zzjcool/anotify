@@ -229,14 +229,15 @@ func TestOldLeaseACKDoesNotExtendNewAttempt(t *testing.T) {
 	h.r.mu.Lock()
 	att := h.r.running["t1"]
 	h.r.mu.Unlock()
-	// 旧 attempt 的 lease.ack 不能刷新 attempt 2 的 deadline。
+	// 旧 attempt 的 lease.ack 不能刷新 attempt 2 的 deadline：推到 60s 必须判失联（决策点），之后的 TERM 宽限才靠推进收尾。
 	h.r.HandleLeaseAck(&protocol.LeaseAckFrame{
 		Type: protocol.FrameLeaseAck, TaskID: "t1", Attempt: 1, LeaseID: "lease-1",
 	})
+	h.clk.Advance(protocol.LeaseTTL)
 	h.waitFrameAdvancing(t, func(f any) bool {
 		ack, ok := f.(*protocol.CancelAckFrame)
 		return ok && ack.TaskID == "t1" && ack.Attempt == 2 && ack.LeaseID == "lease-2" && ack.Slot != nil && *ack.Slot == att.slot && ack.ProcessGroupReaped
-	}, 5*time.Second, 15*time.Second)
+	}, 2*protocol.LeaseTermGrace, 15*time.Second)
 	rework2AssertExpiredArchive(t, h, att)
 }
 
