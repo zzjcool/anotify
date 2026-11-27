@@ -464,6 +464,7 @@ login:
     continue: 保存した · ワークスペースへ
     warn: 表示は今回限りです。コードがなく、すべての Passkey 端末を失うとログインできません。
     ack: リカバリーコードを保存しました
+    ack_required: 先にリカバリーコードを保存し、チェックを入れてから進んでください。
   trust:
     data_local: データはあなたのサーバーにのみ保存
     webauthn: WebAuthn 標準

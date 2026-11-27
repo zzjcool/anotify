@@ -489,6 +489,26 @@
         margin: 2px 0 0;
         accent-color: var(--accent-strong);
       }
+      .codes-ack.is-nudge { /* #581：Esc / 点遮罩被拦下时抖一下，把视线拉回勾选框 */
+        animation: codes-nudge var(--dur-slow) var(--ease) both;
+      }
+      @keyframes codes-nudge {
+        0%,
+        100% {
+          transform: translateX(0);
+        }
+        25% {
+          transform: translateX(-4px);
+        }
+        75% {
+          transform: translateX(4px);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .codes-ack.is-nudge {
+          animation: none;
+        }
+      }
 
       .codes-warn {
         margin: 12px 0 0;
@@ -979,7 +999,7 @@
       <p class="codes-sub">{{t "login.codes.subtitle"}}</p>
       <div id="codes-grid" class="codes-grid"></div>
       <p class="codes-warn">{{t "login.codes.warn"}}</p>
-      <!-- #381：这组码只明文出现一次，离开前必须显式确认（未勾选「继续」禁用）。 -->
+      <p id="codes-hint" class="codes-warn hidden" role="alert"></p>
       <label class="codes-ack" for="codes-saved-ack">
         <input type="checkbox" id="codes-saved-ack" />
         <span>{{t "login.codes.ack"}}</span>
@@ -2008,8 +2028,66 @@
           }
         }
 
+        /* #581：恢复码明文只出现这一次 —— Esc / 点遮罩被 modal:dismiss 拦下后 preventDefault()，唯一出口是勾选后点「继续」。 */
+        const codesModal = document.getElementById("codes-modal");
+        const codesBody = codesModal && codesModal.querySelector(".modal-body");
+        const codesAck = document.getElementById("codes-saved-ack");
+        const codesHint = document.getElementById("codes-hint");
+        const codesOpen = () =>
+          !!codesModal &&
+          !codesModal.classList.contains("hidden") &&
+          !codesModal.classList.contains("is-closing");
+
+        function showCodesHint() { // 说清为什么没关（文案在 locales/，兜底与 zh-CN 同值）
+          if (!codesHint) return;
+          codesHint.textContent = t(
+            "login.codes.ack_required",
+            "请先保存恢复码，勾选后再继续。",
+          );
+          codesHint.classList.remove("hidden");
+        }
+
+        function revealCodesHint() { // 提示 + 把它滚进可视区：390 宽下提示落在 body 可视区外（review r1）
+          showCodesHint();
+          if (codesBody) codesBody.scrollTop = codesBody.scrollHeight; // 提示就在勾选框上方，滚到底两者都在
+        }
+
+        function nudgeCodesAck() { // 被拦下时把视线拉回勾选框：提示 + 抖动 + 焦点
+          revealCodesHint();
+          const label = codesModal && codesModal.querySelector(".codes-ack");
+          if (label) {
+            label.classList.remove("is-nudge");
+            void label.offsetWidth; // 强制回流：连续按 Esc 也要重播动画
+            label.classList.add("is-nudge");
+          }
+          if (codesAck && typeof codesAck.focus === "function") {
+            codesAck.focus({ preventScroll: true }); // 滚动已在 revealCodesHint 里做过，别和焦点抢
+          }
+        }
+
+        let codesGuardBound = false;
+        function bindCodesGuard() {
+          if (codesGuardBound || !codesModal) return;
+          codesGuardBound = true;
+          codesModal.addEventListener("modal:dismiss", (event) => {
+            event.preventDefault(); // 弹层不关
+            nudgeCodesAck();
+          });
+          codesModal.addEventListener("click", (event) => { // 点遮罩也不放行（未来加点击关闭也不能成后门）
+            if (event.target !== codesModal) return;
+            event.preventDefault();
+            event.stopPropagation();
+            nudgeCodesAck();
+          });
+          if (typeof Anotify.guardUnload === "function") { // 刷新/后退/关页先问一句，别静默丢掉明文
+            Anotify.guardUnload(
+              () => codesOpen() && !(codesAck && codesAck.checked),
+            );
+          }
+        }
+
         function showCodesPanel(codes, onContinue) {
-          const modal = document.getElementById("codes-modal");
+          bindCodesGuard();
           const grid = document.getElementById("codes-grid");
           grid.replaceChildren();
           codes.forEach((c) => {
@@ -2029,20 +2107,24 @@
           });
           const copyAll = document.getElementById("codes-copy-all");
           copyAll.onclick = () => copyText(codes.join("\n"), copyAll);
-          const ack = document.getElementById("codes-saved-ack");
+          const ack = codesAck;
           const cont = document.getElementById("codes-continue");
           // 每次打开都重新问一遍：上一轮的勾选不能代替这一轮（这一组码不同）。
           ack.checked = false;
           cont.disabled = true;
+          if (codesHint) codesHint.classList.add("hidden");
           ack.onchange = () => {
             cont.disabled = !ack.checked;
+            if (!codesHint) return;
+            if (ack.checked) codesHint.classList.add("hidden");
+            else revealCodesHint(); // 取消勾选 = 门禁重新生效：提示不能只在第一次出现（review r1）
           };
           cont.onclick = () => {
-            if (!ack.checked) return;
-            Anotify.closeModal(modal);
+            if (!ack.checked) return; // 唯一的出口：勾了才走
+            Anotify.closeModal(codesModal);
             if (typeof onContinue === "function") onContinue();
           };
-          Anotify.openModal(modal);
+          Anotify.openModal(codesModal);
         }
       })();
     </script>

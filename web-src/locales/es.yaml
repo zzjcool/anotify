@@ -464,6 +464,7 @@ login:
     continue: Guardados — entrar al espacio de trabajo
     warn: Es la única vez que se muestran. Sin ellos, si pierdes todos los dispositivos con Passkey no podrás entrar.
     ack: He guardado estos códigos de recuperación
+    ack_required: Guarda tus códigos y marca la casilla para continuar.
   trust:
     data_local: Tus datos solo en tu servidor
     webauthn: Estándar WebAuthn

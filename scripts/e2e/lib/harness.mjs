@@ -351,6 +351,69 @@ export async function waitForAppReady(page, pageType, opts = {}) {
 	}
 }
 
+export async function observeCodesModal(page, windowMs = 450) { // #581 恢复码门禁探针：逐帧看弹层是否被关（任何一帧 is-closing/hidden 都算），并收集提示/勾选/可视区几何
+	return page.evaluate(async (ms) => {
+		const modal = document.getElementById("codes-modal");
+		if (!modal) {
+			return {
+				visible: false,
+				sawClosing: false,
+				sawHidden: false,
+				continueDisabled: false,
+				hintShown: false,
+				hintText: "",
+				nudged: false,
+				hintInView: false,
+				ackInView: false,
+				url: location.href,
+			};
+		}
+		const body = modal.querySelector(".modal-body");
+		const hint = document.getElementById("codes-hint");
+		const label = modal.querySelector(".codes-ack");
+		const box = (el) => {
+			const r = el && el.getBoundingClientRect();
+			return r ? { top: r.top, bottom: r.bottom } : null;
+		};
+		const deadline = performance.now() + ms;
+		let sawClosing = false;
+		let sawHidden = false;
+		let hintText = "";
+		do {
+			if (modal.classList.contains("is-closing")) sawClosing = true;
+			if (modal.classList.contains("hidden")) sawHidden = true;
+			if (hint && !hint.classList.contains("hidden")) {
+				hintText = (hint.textContent || "").trim();
+			}
+			await new Promise((r) => setTimeout(r, 16));
+		} while (performance.now() < deadline);
+		const bodyBox = box(body);
+		const inView = (r) =>
+			!!r &&
+			!!bodyBox &&
+			r.top >= bodyBox.top - 0.5 &&
+			r.bottom <= bodyBox.bottom + 0.5;
+		return {
+			visible: !modal.classList.contains("hidden"),
+			sawClosing,
+			sawHidden,
+			continueDisabled: !!document.getElementById("codes-continue")?.disabled,
+			hintShown: hintText.length > 0,
+			hintText,
+			nudged: !!label && label.classList.contains("is-nudge"),
+			hintInView: inView(box(hint)),
+			ackInView: inView(box(label)),
+			url: location.href,
+		};
+	}, windowMs);
+}
+
+export async function beforeUnloadPrevented(page) { // #581 未勾选时刷新/后退要被浏览器问一句：监听者 preventDefault 后 dispatchEvent 返回 false
+	return page.evaluate(
+		() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })),
+	);
+}
+
 // ---------- 命名空间（v4：ns 进路径，只有三个保留读模型走 ?namespace=） ----------
 //
 // v4 把命名空间放进了**路径**：`/v1/namespaces/{ns}/capabilities` 等（契约 §5.2）。

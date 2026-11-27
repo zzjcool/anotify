@@ -263,12 +263,49 @@ async function firstRunCase() {
 	H.check("首跑：恢复码弹窗有「我已保存」勾选", beforeAck.hasAck);
 	H.eq("首跑：勾选默认未选中", beforeAck.checked, false);
 	H.eq("首跑：未勾选时「继续」禁用", beforeAck.disabled, true);
+
+	await page.keyboard.press("Escape"); // #581：未勾选时 Esc 不许关掉恢复码弹层
+	const codesAfterEsc = await H.observeCodesModal(page);
+	H.check(
+		"首跑 #581：按 Esc → 恢复码弹层仍在",
+		codesAfterEsc.visible && !codesAfterEsc.sawClosing && !codesAfterEsc.sawHidden,
+		JSON.stringify(codesAfterEsc),
+	);
+	H.eq(
+		"首跑 #581：按 Esc 后「继续」仍禁用",
+		codesAfterEsc.continueDisabled,
+		true,
+	);
+	H.check(
+		"首跑 #581：按 Esc 给出「先勾选」提示并抖动勾选框",
+		codesAfterEsc.hintShown && codesAfterEsc.nudged,
+		JSON.stringify(codesAfterEsc),
+	);
+	H.eq(
+		"首跑 #581：未勾选时 beforeunload 会先问一句",
+		await H.beforeUnloadPrevented(page),
+		true,
+	);
+
 	await page.click("#codes-saved-ack");
 	H.eq(
 		"首跑：勾选后「继续」可用",
 		await page.evaluate(
 			() => !!document.getElementById("codes-continue")?.disabled,
 		),
+		false,
+	);
+	H.eq(
+		"首跑 #581：勾选后提示句收起",
+		await page.evaluate(
+			() =>
+				!!document.getElementById("codes-hint")?.classList.contains("hidden"),
+		),
+		true,
+	);
+	H.eq(
+		"首跑 #581：勾选后 beforeunload 放行",
+		await H.beforeUnloadPrevented(page),
 		false,
 	);
 	await page.click("#codes-continue");
