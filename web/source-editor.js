@@ -76,6 +76,8 @@ ${A.t("sources.v4.kind")}
 <p class="field-hint">
 ${A.t("sources.v4.immutable")}
 </p>
+<p id="f-kept" class="field-hint hidden" role="note">
+</p>
 </div>
 <div id="f-cron-wrap">
 <div class="src-cols">
@@ -345,6 +347,13 @@ ${A.t("sources.v4.save")}
   const POLL_HEADER_MAX = 10;
   const POLL_TIMEOUT_DEFAULT = 10000;
   const POLL_MAXITEMS_DEFAULT = 100;
+  const FORM_OWNS = { /* 表单 own 的 config 键（每 kind 一张）：不在表里的键**没有控件**，保存时从存储值原样带走（见 configBase，#568） */
+    cron: ["expr", "tz", "payload", "payloadSchema"],
+    webhook: ["token", "secret", "sample", "payloadSchema"],
+    manual: ["payload", "payloadSchema"],
+    poll: ["url", "headers", "secretRef", "secret", "schedule", "timeoutMs", "maxItems", "envelope", "payload", "payloadSchema"],
+  };
+  const ORIG_TARGETS = new WeakMap(); /* 行 → 存储的 target：表单行只有 capability + params 两个控件，match / outcomes 保存时以原对象为底带上（#568） */
 
   /* 当前命名空间：调用方给的资源 ns 优先（详情页深链的权威来源），否则才用持久化 scope。 */
   function nsNow() {
@@ -448,6 +457,9 @@ function targetRow(target={
   },null,2);
   paramLabel.append(params);
   row.append(label,paramLabel,action("remove_target",()=>row.remove()));
+  const kept=[...(target.match ? ["match"] : []),...(target.outcomes ? ["outcomes"] : [])]; /* 这一行还有表单不认识的条件：说出来，否则用户以为「表单里没有 = 没配」 */
+  if(kept.length)row.append(el("p","field-hint",t("kept_target").replace("{keys}",kept.join(" · "))));
+  ORIG_TARGETS.set(row,target);
   return row;
 }
 
@@ -499,6 +511,7 @@ async function openEditor(src){
   $("hook-read").replaceChildren();
   if(cfg.hookUrl)$("hook-read").append(el("code","source-wrap",cfg.hookUrl),el("p","source-status","secretSet: "+String(cfg.secretSet)));
   syncKind();
+  syncKept();
   syncEditorLocks();
   A.openModal($("src-modal"));
   if(POLLERR)scrollToResult(); // 打开之前滚是空操作（弹层还 hidden），所以补在 openModal 之后
@@ -708,12 +721,29 @@ function suggest(){
     error($("avail-src"),err);
   }
 }
+function configBase(){ /* 基底 = 存储的那份 config（同 #540 的 poll，只覆盖表单 own 的键）：拿字面量重建会静默抹掉 webhook 的 envelope / signature / payload 与任意 kind 的 sample（#568） */
+  const stored=EDITING?.spec?.config;
+  const cfg=stored&&typeof stored==="object"&&!Array.isArray(stored) ? JSON.parse(JSON.stringify(stored)) : {
+  };
+  delete cfg.hookUrl; /* 读投影不是配置：写进请求体会被服务端当未知字段拒掉（400） */
+  delete cfg.secretSet;
+  return cfg;
+}
+function syncKept(){ /* 表单不认识但会被原样保留的 config 键必须说出来：否则用户以为「表单里没有 = 没配」 */
+  const stored=EDITING?.spec?.config||{
+  };
+  const own=FORM_OWNS[$("f-kind").value]||[];
+  const keys=Object.keys(stored).filter(k=>!own.includes(k)&&k!=="hookUrl"&&k!=="secretSet").sort();
+  const box=$("f-kept");
+  if(!box)return;
+  box.textContent=keys.length ? t("kept_config").replace("{keys}",keys.join(" · ")) : "";
+  box.classList.toggle("hidden",!keys.length);
+}
 function writeSource(){
   const kind=$("f-kind").value;
-  const config=kind==="poll" ? pollConfig() : {
-    payloadSchema:json($("f-payload-schema"),true)||null
-  };
+  const config=kind==="poll" ? pollConfig() : configBase();
   if(kind!=="poll"){
+    config.payloadSchema=json($("f-payload-schema"),true)||null;
     if(kind==="cron"){
       config.expr=$("f-expr").value.trim();
       config.tz=$("f-tz").value.trim()||"Local";
@@ -723,9 +753,11 @@ function writeSource(){
         const value=$("f-"+key).value.trim();
         if(value)config[key]=value;
       }
-    }else config.payload=json($("f-payload"));
+    }else if(kind==="manual")config.payload=json($("f-payload"));
   }
-  const targets=[...$("f-targets").children].map(row=>({
+  const targets=[...$("f-targets").children].map(row=>Object.assign({ /* 以原 target 为底：只覆盖两个控件 own 的键，match / outcomes 原样带走 */
+  },ORIG_TARGETS.get(row)||{
+  },{
     capability:row.querySelector("input").value.trim(),params:json(row.querySelector("textarea"))
   }));
   const name=$("f-name").value.trim();
