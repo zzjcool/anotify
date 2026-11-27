@@ -1,7 +1,6 @@
 package store
 
-// 按快照重装（#561）的领域验收：版本不漂移、冲突整包 0 写（#535 的 6 表指纹）、源缺按钉住包体重建
-// （#632：只在**重算不可能**时才 409）、审计一行。
+// 按快照重装（#561）的领域验收：版本不漂移、冲突整包 0 写（#535 的 6 表指纹）、源缺按钉住包体重建（#632）、审计一行。
 
 import (
 	"context"
@@ -22,8 +21,6 @@ func restoreBundle(slug, script string) map[string]string {
 	return restoreBundleV(slug, script, 1)
 }
 
-// restoreBundleV 是带包版本号的 restoreBundle：真正的版本升级必须是版本号也变（同一个版本号写不同正文
-// 是**覆盖**那一版，见 recordPlaybookVersionOn——这时按 vN 复原不该拿新正文当旧正文用）。
 func restoreBundleV(slug, script string, version int) map[string]string {
 	return map[string]string{
 		"playbook.yaml":            pbEntry(slug, version, []string{"capabilities/review.yaml"}, []string{"sources/on-push.yaml"}),
@@ -206,8 +203,6 @@ func TestRestoreUsesPinnedVersionNotLatest(t *testing.T) {
 	if v2 != 0 {
 		t.Fatalf("复原 alpha 不该让 v2 复活（那是 beta 的快照）, got %d 行", v2)
 	}
-	// 卸载会物理删源，复原必须把它重建出来（钉住的是 v1 的包体，不是当前的 v2）——
-	// 重建走的是「钉住包体 × 回执 values」的重算路径，所以记在 created，不是 skipped。
 	if rcpt.Created.Sources == nil || len(rcpt.Created.Sources) != 1 || rcpt.Created.Sources[0] != "alpha-on-push" {
 		t.Fatalf("created.sources = %v, want [alpha-on-push]（重建，不是复用）", rcpt.Created.Sources)
 	}
@@ -421,8 +416,6 @@ func TestRestoreCauseIndexPointsAtPinnedSlot(t *testing.T) {
 	}
 }
 
-// 验收 6（#632 改写）：源被物理删掉、**且重算不可能**（钉住版本行被硬删）→ 仍 409 pin_missing_source + 0 写。
-// 这一档盖的是「不可重算」；能重算的那一档见 TestRestoreRecreatesOwnSourceAfterUninstall。
 func TestRestoreMissingSource(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -433,7 +426,6 @@ func TestRestoreMissingSource(t *testing.T) {
 	if _, err := db.UninstallPlaybookRelease(ctx, nsID, slug, "alpha", ""); err != nil {
 		t.Fatalf("卸载: %v", err)
 	}
-	// 包升到 v2（v1 的正文先留在版本历史里），再把 v1 那一行硬删：钉住的那份正文从此不可用 → 源无法重算。
 	if _, err := db.ReplacePlaybook(ctx, nsID, slug, pbVersionToken(t, db, nsID, slug),
 		restoreBundleV(slug, "#!/bin/sh\necho v2\n", 2), ""); err != nil {
 		t.Fatalf("升级包体: %v", err)
@@ -474,8 +466,6 @@ func TestRestoreMissingSource(t *testing.T) {
 	}
 }
 
-// #632 的主验收：带源的预案「卸载 → 按快照重装」不该 409。卸载物理删掉了本实例建的源，
-// 复原按「钉住的包版本 + 回执 values」把它重算重建（与首次安装同一条渲染 / 写入路径）。
 func TestRestoreRecreatesOwnSourceAfterUninstall(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -533,8 +523,6 @@ func TestRestoreRecreatesOwnSourceAfterUninstall(t *testing.T) {
 	if !reflect.DeepEqual(after.Targets, before.Targets) {
 		t.Fatalf("复原源的 targets = %+v, want %+v", after.Targets, before.Targets)
 	}
-	// webhook token 是服务端在**创建期**生成的：复原会重新生成一个（同一条 createInstalledSourceOn），
-	// 所以只比除 token 之外的 config——拿旧 token 当“复原是否正确”的判据是个假靶子。
 	afterCfg := sourcespec.ParseConfig(after.Kind, after.Config)
 	if afterCfg.Token == "" || afterCfg.Token == beforeCfg.Token {
 		t.Fatalf("复原源的 token = %q, want 服务端重新生成的另一个非空 token（原 %q）", afterCfg.Token, beforeCfg.Token)
@@ -566,8 +554,6 @@ func TestRestoreRecreatesOwnSourceAfterUninstall(t *testing.T) {
 	}
 }
 
-// 同一个版本号的正文可以被覆盖（recordPlaybookVersionOn）：回执的 filesDigest 是“当时那一份”的唯一证明，
-// 不符就不许拿现在的内容冒充旧正文（否则就是凭空造一个源出来）。
 func TestRestoreRefusesOverwrittenPinnedBody(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -578,7 +564,6 @@ func TestRestoreRefusesOverwrittenPinnedBody(t *testing.T) {
 	if _, err := db.UninstallPlaybookRelease(ctx, nsID, slug, "alpha", ""); err != nil {
 		t.Fatalf("卸载: %v", err)
 	}
-	// 版本号不变、正文换了（同一个 v1 被覆盖）：这就是 digest 守卫存在的理由。
 	if _, err := db.ReplacePlaybook(ctx, nsID, slug, pbVersionToken(t, db, nsID, slug),
 		restoreBundle(slug, "#!/bin/sh\necho v9\n"), ""); err != nil {
 		t.Fatalf("覆盖 v1 正文: %v", err)
@@ -604,8 +589,6 @@ func TestRestoreRefusesOverwrittenPinnedBody(t *testing.T) {
 	}
 }
 
-// restoreMaskedBundle 是「writeOnly 字段进源 config」的包：回执里的 values 是打码后的，重算会拿 “***”
-// 当成真实 token 写进源——打码守卫必须拦住它（宁可 409，不可把占位符当凭据）。
 func restoreMaskedBundle(slug string) map[string]string {
 	return map[string]string{
 		"playbook.yaml": `apiVersion: anotify/v1
@@ -636,7 +619,6 @@ spec:
 	}
 }
 
-// 回执 values 里 writeOnly 字段已打码（"***"）→ 重算不可能 → 409 pin_missing_source，且库里不多出源行。
 func TestRestoreRefusesMaskedSourceValues(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -694,8 +676,6 @@ func TestRestoreAuditAndReceipt(t *testing.T) {
 	if restored.Values["project"] != "demo" {
 		t.Fatalf("回执 values = %v, want 沿用来源回执", restored.Values)
 	}
-	// 这个用例手工把源提前建好：走的是「同名源已存在 → 复用」那条分支（不重算、不覆盖），
-	// 所以源记在 skipped 而不是 created。
 	if got := restored.Skipped.Sources; len(got) != 1 || got[0] != "demo-on-push" {
 		t.Fatalf("skipped.sources = %v, want [demo-on-push]（已存在 → 复用）", got)
 	}

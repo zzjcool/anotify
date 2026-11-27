@@ -1498,9 +1498,6 @@ function capabilityRowOf(ctx, name, version) {
 	);
 }
 
-// sourceShapeOf 把 GET 源的读形态收成可逐字节比较的形状：webhook token 是服务端**生成**的（重建必然换新，
-// 而 hookUrl 里就带着它），所以扔掉 token / secret / hookUrl；其余（kind / enabled / config 的其它键 /
-// targets / displayName）是「这份源是什么」的事实，重建前后必须一致。
 function sourceShapeOf(doc) {
 	const spec = doc?.spec || {};
 	const config = { ...(spec.config || {}) };
@@ -1760,8 +1757,6 @@ async function partRestore(ctx) {
 	const srcSlug = "pb-restore-src";
 	const srcCap = "restore-src-review";
 	const srcName = "restore-src-push";
-	// 包版本要显式声明：源的重算原料就是「钉住的包版本」（entryDoc 的 version 缺省 = 不参与身份，
-	// 那等于没有原料，复原只能 409）。
 	await createPackage(ctx, srcSlug, {
 		"playbook.yaml": entryDoc(srcSlug, ["capabilities/review.yaml"], ["sources/on-push.yaml"], 1),
 		"capabilities/review.yaml": capabilityDoc(srcCap, []),
@@ -1780,7 +1775,6 @@ async function partRestore(ctx) {
 		404,
 		"NotFound",
 	);
-	// 缺源不再是硬错：源没有版本，但正文是「确定的包体 × 确定的 values」渲染出来的，能按钉住的版本重算。
 	const srcBack = await restoreRelease(ctx, srcSlug, "nosrc", srcInst.json?.valuesDigest);
 	V.expectStatus("⑥ 缺源复原 → 200（按钉住的包版本 + 回执 values 重算重建）", srcBack, 200);
 	const srcRe = srcBack.json || {};
@@ -1805,8 +1799,6 @@ async function partRestore(ctx) {
 		)[0] || {};
 	H.eq("⑥ 重建的源归属这次复原（installed_from = 新回执 install.id）", srcRow.installed_from, srcRe.install?.id);
 
-	// 同结构，但「钉住的那份正文」被回收：重算的原料没了 → 仍要 409，且整包 0 写。
-	// slug 不能用 pb-restore-gone（④ 已占用，指向能力版那个面）——一个套件里 slug 是唯一键。
 	const deadSlug = "pb-restore-src-dead";
 	const deadCap = "restore-src-dead-review";
 	const deadSrc = "restore-src-dead-push";
@@ -1818,8 +1810,6 @@ async function partRestore(ctx) {
 	const deadInst = await install(ctx, deadSlug, "gone");
 	V.expectStatus("⑥ 对照：装 release gone → 200", deadInst, 200);
 	V.expectStatus("⑥ 对照：卸载 release gone → 200", await uninstall(ctx, deadSlug, "gone"), 200);
-	// 先删掉钉住的那一行，再把当前版本号推走：只删行不推版本的话，resolvePlaybookFilesOn 还会回退到
-	// playbooks.files（版本行缺失 + version == 当前版本 = 用当前正文），「重算不出来」就永远测不到。
 	const wiped = V.withDB(ctx.dbPath, (db) => {
 		const del = db
 			.prepare(
