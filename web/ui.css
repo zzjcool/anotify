@@ -2167,15 +2167,31 @@ html.flograph-fullscreen-open body {
 	border-color: var(--line);
 }
 
+/* 侧栏导航的**唯一**滚动容器（#578）。
+ * 以前 nav 与 #admin-nav-section 是两个平级 flex 子项，只有 nav 会收缩/滚动：
+ *   761px 以上 nav 是 overflow: visible ⇒ 溢出的导航项画在紧随其后的「管理」组
+ *   下面，文字互相压住；760px 以下 nav 内部能滚，但 admin 组不在滚动区里，
+ *   永远贴着 nav 盒子底边，挡住本应滚出来的「API 文档 / 账户 / 安全与登录」。
+ * 把两者包进同一个 flex 子项后，「能滚的是谁」只有一个答案：内容放得下就不滚
+ * （无滚动条），放不下就整体一起滚，而 .app-sidebar-foot 永远在滚动区外。
+ * 代价：overflow-y:auto 会连带把 x 轴也变成滚动/裁剪（一轴非 visible，另一轴
+ * 就不能是 visible），折叠态的 ::after tooltip 于是伸不出侧栏 —— 退化为
+ * partials.js 折叠时给 a.side-link 挂的 title（与原 ≤760px 的退化方案一致）。 */
+.app-nav-scroll {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	overflow-x: hidden;
+	/* 键盘滚动到底时不要把滚轮/方向键继续传给整页（抽屉里尤其明显） */
+	overscroll-behavior: contain;
+}
 .app-nav {
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
-	flex: 1 1 auto;
-	min-height: 0;
+	/* 收缩与滚动归 .app-nav-scroll；nav 只按内容长高，绝不再压扁自己 */
+	flex: none;
 	padding-top: 2px;
-	/* 桌面不裁切：折叠态的 ::after tooltip 要能伸出侧栏 */
-	overflow: visible;
 }
 /* 侧栏图标：一套 24 网格 / 18px / stroke 1.75（D4）—— 图标形状换了之后，
  * 描边粗细也必须同一档，否则「能力」比「源」看起来重一档（SH-3）。 */
@@ -4127,11 +4143,8 @@ html.theme-switching *::after {
 		 * 抽屉实测 1 帧跳完（审计事实）。桌面折叠仍走基类的 width 200ms。 */
 		transition: transform var(--dur-drawer) var(--ease);
 	}
-	/* 抽屉里要能滚动，tooltip 在移动端不显示 */
-	.app-nav {
-		overflow-y: auto;
-		overflow-x: hidden;
-	}
+	/* 抽屉里要能滚动：滚动容器是 .app-nav-scroll（基类已声明），
+	 * 这里不再单独给 .app-nav 开 overflow（那会造出第二层嵌套滚动）。 */
 	/* 折叠按钮只属于桌面 */
 	.app-brand-btn {
 		display: none;
@@ -4571,14 +4584,9 @@ html.theme-switching *::after {
 .skeleton.is-line-sm { height: 10px; }
 .skeleton.is-line-lg { height: 16px; }
 .skeleton.is-block { height: 88px; border-radius: var(--r-md); }
-/* 极矮视口（笔记本 620px 以下）才允许导航内部滚动：
-   overflow-y:auto 会强制另一轴也 auto，tooltip 会被裁 → 此时退化为 title 兜底
-   （partials.js 在折叠时给每个 a.side-link 挂了 title）。 */
-@media (max-height: 760px) {
-	.app-nav {
-		overflow-y: auto;
-	}
-}
+/* 导航滚动不再按视口高度切换：.app-nav-scroll 永远可滚（#578）。
+   旧的 @media (max-height: 760px) { .app-nav { overflow-y: auto } } 只把 nav 自己
+   变成滚动容器，admin 组留在外面继续挡路 —— 已删除，别再按高度加回来。 */
 
 /* 跳过导航（F21）：键盘用户第一次 Tab 就能直达主内容，不必穿过整条侧栏 /
  * 顶栏。默认移出视口，获得焦点时滑入（transform 不参与布局，不会闪）。 */

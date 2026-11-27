@@ -1340,9 +1340,12 @@
 			/* 初始 hidden（member 用户保持隐藏，e2e 断言 classList 含 hidden）；
 			   超管由 loadMe 去 hidden 并注入 .side-label + a.side-link[admin.html]。
 			   它在 <nav> 之外：e2e 的 `#sidebar nav .side-label` 只该看到两个分组标签。
+			   但必须和 nav **同一个滚动容器**（.app-nav-scroll，#578）——否则只有 nav
+			   能收缩/滚动，这一组就贴在 nav 盒子底边，压住滚动区里本应露出来的项。
 			   **不加 px-\***：这一组和 nav 里的 .side-group 必须同基线，多一层 12px
-			   内边距会让「管理」标题和「管理后台」文字整体右移（用户反馈的对齐问题）。 */
-			class: "hidden side-group pt-4",
+			   内边距会让「管理」标题和「管理后台」文字整体右移（用户反馈的对齐问题）。
+			   分组间距也不另加 pt-*：.side-group 自带 margin-top: 12px，与 nav 里的组一致。 */
+			class: "hidden side-group",
 		});
 		const nav = el("nav", { class: "app-nav" });
 		for (const group of NAV) {
@@ -1495,8 +1498,10 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 				{ class: "flex h-full flex-col" },
 				brandRow,
 				scopeSlot,
-				nav,
-				adminNav,
+				/* #578：nav + admin 分组放进同一个滚动容器 —— flex 里只能有一个
+				   可收缩、可滚动的导航区；两个兄弟节点各自为政时，页面放不下的那部分
+				   会画在「管理」组下面（720–850px 高的笔记本视口实测互相压住）。 */
+				el("div", { class: "app-nav-scroll" }, nav, adminNav),
 				el(
 					"div",
 					{ class: "app-sidebar-foot" },
@@ -1877,6 +1882,9 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 					label,
 				);
 				section.append(a);
+				/* 折叠态兜底：这一组是 loadMe 之后才注入的，初始 paintCollapsedHints
+				   已经跑过；现在补挂 title（导航滚动容器会裁掉 ::after tooltip）。 */
+				paintCollapsedHints();
 			}
 
 			/* 超管：顶栏头像菜单里补一条「管理后台」（插在退出登录之前） */
