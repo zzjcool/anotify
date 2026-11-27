@@ -264,10 +264,7 @@ async function firstRunCase() {
 	H.eq("首跑：勾选默认未选中", beforeAck.checked, false);
 	H.eq("首跑：未勾选时「继续」禁用", beforeAck.disabled, true);
 
-	// #581（回归）：Passkey 注册路径同一个弹层，Esc 也不许绕过（明文只有这一次）。
-	// 「按了 Esc 但什么都没发生」不能用固定 sleep 证明（测试纪律 L3 拦 waitForTimeout）：
-	// 在页面里逐帧观测弹层状态，任何一帧进入 is-closing/hidden 都会被记下来。
-	const observeCodesModal = (windowMs) =>
+	const observeCodesModal = (windowMs) => // #581：逐帧观测，任何一帧进入 is-closing/hidden 都记下来（固定 sleep 被 L3 拦）
 		page.evaluate(
 			async (ms) => {
 				const modal = document.getElementById("codes-modal");
@@ -289,7 +286,7 @@ async function firstRunCase() {
 			windowMs,
 		);
 
-	await page.keyboard.press("Escape");
+	await page.keyboard.press("Escape"); // #581：未勾选时 Esc 不许关掉恢复码弹层
 	const codesAfterEsc = await observeCodesModal(450);
 	H.check(
 		"首跑 #581：按 Esc → 恢复码弹层仍在",

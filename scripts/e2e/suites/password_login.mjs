@@ -739,12 +739,8 @@ async function main() {
 		await page.isDisabled("#codes-continue"),
 	);
 
-	// #581（回归）：这个门禁不能被 Esc / 点遮罩绕过 —— 明文只出现这一次，绕过就是永久丢失。
-	// 未修复时全局 Esc 会 closeModal（同步加 is-closing，退场动完再 hidden），下面第一条就红。
-	// 「按了 Esc 但什么都没发生」不能用固定 sleep 证明（测试纪律 L3 拦 waitForTimeout）：
-	// 在页面里逐帧观测弹层与提示句，任何一帧进入 is-closing/hidden 都会被记下来。
 	const codesUrlBeforeDismiss = page.url();
-	const observeCodesPanel = (windowMs) =>
+	const observeCodesPanel = (windowMs) => // #581：逐帧观测，任何一帧进入 is-closing/hidden 都记下来（固定 sleep 被 L3 拦）
 		page.evaluate(
 			async (ms) => {
 				const modal = document.getElementById("codes-modal");
@@ -776,7 +772,7 @@ async function main() {
 			},
 			windowMs,
 		);
-	await page.keyboard.press("Escape");
+	await page.keyboard.press("Escape"); // #581（回归）：未勾选时 Esc 不许关掉恢复码弹层
 	const afterEsc = await observeCodesPanel(450);
 	H.check(
 		"#581：未勾选时按 Esc → 恢复码弹层仍在（未被关闭）",
@@ -791,8 +787,7 @@ async function main() {
 	);
 	H.eq("#581：按 Esc 不跳转（URL 未变）", afterEsc.url, codesUrlBeforeDismiss);
 
-	// 点遮罩（弹层边缘）：同样不放行。
-	await page.click("#codes-modal", { position: { x: 4, y: 4 } });
+	await page.click("#codes-modal", { position: { x: 4, y: 4 } }); // 点遮罩（弹层边缘）同样不放行
 	const afterBackdrop = await observeCodesPanel(450);
 	H.check(
 		"#581：点遮罩 → 恢复码弹层仍在（未被关闭）",

@@ -489,9 +489,7 @@
         margin: 2px 0 0;
         accent-color: var(--accent-strong);
       }
-      /* #581：Esc / 点遮罩被拦下时，提醒句出现 + 勾选框抖一下（视线拉回「我已保存」）。
-         抖动的类由 JS 先摘再回流再加，所以连续按 Esc 每次都会重播。 */
-      .codes-ack.is-nudge {
+      .codes-ack.is-nudge { /* #581：Esc / 点遮罩被拦下时抖一下，把视线拉回勾选框 */
         animation: codes-nudge 0.3s var(--ease) both;
       }
       @keyframes codes-nudge {
@@ -1001,12 +999,10 @@
       <p class="codes-sub">{{t "login.codes.subtitle"}}</p>
       <div id="codes-grid" class="codes-grid"></div>
       <p class="codes-warn">{{t "login.codes.warn"}}</p>
-      <!-- #381：这组码只明文出现一次，离开前必须显式确认（未勾选「继续」禁用）。 -->
       <label class="codes-ack" for="codes-saved-ack">
         <input type="checkbox" id="codes-saved-ack" />
         <span>{{t "login.codes.ack"}}</span>
       </label>
-      <!-- #581：Esc / 点遮罩被拦下时由 JS 填字并显示（role=alert 保证读屏也听得到）。 -->
       <p id="codes-hint" class="codes-warn hidden" role="alert"></p>
     </div>
     <div class="modal-foot">
@@ -2032,11 +2028,7 @@
           }
         }
 
-        /* #581：恢复码明文只出现这一次，所以这个弹层是**硬门禁**——
-         * Esc 和点遮罩都不放行，唯一出口是勾选「我已保存」后点 #codes-continue。
-         * 机制：全局 Esc（web/partials.js 的 onModalEscape）向最上层 .modal-backdrop
-         * 派发可取消的 modal:dismiss，监听者 preventDefault() 表示「我自己处理，别关」。
-         * 没有监听者的弹层会被直接 closeModal —— 那正是本 issue 的绕过路径。 */
+        /* #581：恢复码明文只出现这一次 —— Esc / 点遮罩被 modal:dismiss 拦下后 preventDefault()，唯一出口是勾选后点「继续」。 */
         const codesModal = document.getElementById("codes-modal");
         const codesAck = document.getElementById("codes-saved-ack");
         const codesHint = document.getElementById("codes-hint");
@@ -2045,8 +2037,7 @@
           !codesModal.classList.contains("hidden") &&
           !codesModal.classList.contains("is-closing");
 
-        // 被拦下时说明为什么没关，并把视线拉回勾选框。
-        function nudgeCodesAck() {
+        function nudgeCodesAck() { // 被拦下时说明为什么没关，并把视线拉回勾选框
           if (codesHint) {
             codesHint.textContent = t(
               "login.codes.ack_required",
@@ -2073,15 +2064,13 @@
             event.preventDefault(); // 弹层不关
             nudgeCodesAck();
           });
-          // 点遮罩同样不放行（当前 openModal 不因点遮罩关闭；将来会了也不能变成后门）。
-          codesModal.addEventListener("click", (event) => {
+          codesModal.addEventListener("click", (event) => { // 点遮罩也不放行（未来加点击关闭也不能成后门）
             if (event.target !== codesModal) return;
             event.preventDefault();
             event.stopPropagation();
             nudgeCodesAck();
           });
-          // 刷新 / 后退 / 关标签页：先让浏览器问一句，别让明文在无确认下消失。
-          if (typeof Anotify.guardUnload === "function") {
+          if (typeof Anotify.guardUnload === "function") { // 刷新/后退/关页先问一句，别静默丢掉明文
             Anotify.guardUnload(
               () => codesOpen() && !(codesAck && codesAck.checked),
             );
