@@ -52,7 +52,7 @@ config:
 | 1 | 游标 `status.cursor` + `lastPollAt` + `consecutiveFailures` + `lastError`，成功后写回 | `store.MarkSourcePolled` + `srcStatusView` |
 | 2 | **游标只在整轮成功后前进**（失败沿用旧值，靠 deliveryId 幂等重抓） | `MarkSourcePolled` 对失败用 `COALESCE(?, poll_cursor)` |
 | 3 | **不重叠**：上一轮没结束 → 本 tick 跳过并 `skippedOverlaps++` | `Poller.begin/done` + `BumpSourceSkippedOverlaps` |
-| 4 | **退避** `min(base << (failures-1), 30min)`；`429 Retry-After` 优先；成功清零 | `Poller.failureNextFire` |
+| 4 | **退避** `base` = 计划间隔（相邻两格之差），`min(base << (failures-1), 30min)` 再叠按源 ±10% 抖动、仍裁到 30min；`429 Retry-After` 优先（不叠抖动）；成功清零 | `Poller.failureNextFire` |
 | 5 | **SSRF 默认拒**（写入期 + 解析后 + dial 时三道闸；跨主机重定向不跟随） | `sourcespec.CheckPollURL` / `Poller.checkResolvedHost` / `blockPrivateDial` |
 | 6 | **上限**：`maxItems`（默认 100/上限 500）、响应体 4 MiB；超限=该轮失败并留痕 | `Poller.items` / `readLimited` |
 
@@ -60,9 +60,10 @@ config:
 
 **(a) 游标长什么样、怎么"带上"。** 游标的正确性**不依赖**增量协议（issue 明说），所以：
 `status.cursor` = 上一次**整轮成功**响应的 `ETag`（优先）或 `Last-Modified`（都没有就保持原值）；
-下一轮把它作为 `If-None-Match` 发回；`304` = 成功的空轮（0 item、游标不变、失败计数清零）。
-这样验收 2 的「重启后带上游标、不从头抓」是可机检的事实（test server 断言收到的头），
-而验收 1 的「再轮一次仍是 duplicate」也在没有 ETag 的源上天然成立。
+下一轮按游标形态分流发回：entity-tag → `If-None-Match`；HTTP-date（只有 `Last-Modified` 的上游）
+→ `If-Modified-Since`（RFC 9110 §13.1.2：日期串不是 entity-tag，按 `If-None-Match` 发永远打不中）
+⇒ `304` = 成功的空轮（0 item、游标不变、失败计数清零）。这样验收 2 的「重启后带上游标、不从头抓」
+是可机检的事实（test server 断言收到的头），而验收 1 的「再轮一次仍是 duplicate」也在没有 ETag 的源上天然成立。
 
 **(b) 「命名空间凭据」的最小落地。** 仓库此前**没有**这个概念（全仓 `secretRef` 0 命中），
 所以按最小面落地：新表 `namespace_secrets(namespace_id, name, value, …)`，
@@ -131,11 +132,14 @@ $ go test ./internal/store/ -run TestSourcePollStateRoundTrip -v -count=1
 失败响应故意**带** `ETag: "v2"`：游标仍是 `"v1"`（这条断言就是变异 ① 的靶子）；`lastPollAt`
 每轮推进、`lastFiredAt` 只在成功轮推进；恢复成功后 `consecutiveFailures = 0`、`lastError = ""`。
 
-### 验收 4 · 退避：两次失败 → 第三次 ≥ base×2；`429 Retry-After: 7` → 下一次 ≥ 7s
+### 验收 4 · 退避：两次失败 → 第三次 ≈ base×2；`429 Retry-After: 7` → 下一次 = 7s
 
 同一条用例（注入时钟，直接断言落库的 `next_fire_at`）：
-第一次失败后 `next_fire_at - now = base`（`*/5` → 300s），第二次失败后 `gap ≥ 2 × firstGap`；
-`429` + `Retry-After: 7` 的源失败一次后 `gap == 7`（Retry-After 优先于 base）。
+第一次失败后 `next_fire_at - now = base ± 10%`（`*/5` → 300s；抖动按源确定，同一源的倍率仍是 2），
+第二次失败后 `gap ≈ 2 × firstGap`（±2s 落库取整容忍）；`429` + `Retry-After: 7` 的源失败一次后 `gap == 7`
+（Retry-After 优先于 base，不叠抖动）。抖动本身另有三条用例：`TestFailureNextFireJitterIsPerSourceSymmetricWithin10Percent`
+（40 个源都落在 ±10%、同源两次逐字相同、正负两侧都有）、`TestFailureNextFireJitterSurvivesCap`（封顶档仍错开、且不超过 30min）、
+`TestFailureNextFireRetryAfterSkipsJitter`（Retry-After 路径逐字等于 7s）。
 
 ### 验收 5 · 不重叠：test server 挂住 + tick 20ms → `skippedOverlaps ≥ 1`，事件不翻倍
 
