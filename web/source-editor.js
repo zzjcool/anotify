@@ -753,7 +753,7 @@ function writeSource(){
         const value=$("f-"+key).value.trim();
         if(value)config[key]=value;
       }
-    }else if(kind==="manual")config.payload=json($("f-payload"));
+    }else config.payload=json($("f-payload")); /* cron 与 manual 共用这个 else：cron 的 payload 也是表单控件（#f-payload-wrap 只对 webhook 隐藏），摘掉它 = 在表单里改 cron 的 payload 保存后静默不生效（review r1 BLOCKER） */
   }
   const targets=[...$("f-targets").children].map(row=>Object.assign({ /* 以原 target 为底：只覆盖两个控件 own 的键，match / outcomes 原样带走 */
   },ORIG_TARGETS.get(row)||{

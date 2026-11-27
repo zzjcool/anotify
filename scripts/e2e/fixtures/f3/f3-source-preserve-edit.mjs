@@ -161,6 +161,29 @@ export async function sourcePreserveEdit(d) { /* #568：只改显示名保存时
   assert.deepEqual((await doc(CRON)).body.spec, cronBefore.spec, 'cron 只改显示名：spec 必须逐字段相等');
   check('PRESERVE-08 a cron source keeps config.sample (and its schedule) through a rename-only save');
 
+  const cronPayload = { env: 'cron-edited' };
+  await goto('sources', 'namespace=default&edit=' + CRON, 'zh-CN');
+  await visible('#src-modal:not(.hidden)');
+  await page.waitForFunction((n) => document.querySelector('#f-name')?.value === n, CRON, { timeout: 20000 });
+  const cronKept = (await page.locator('#f-kept').innerText()).trim(); /* 表单 own 的键不许出现在「保留」提示里：r1 的回归正是提示说 payload 归表单、写入路径却把它摘掉 */
+  assert.ok(cronKept.includes('sample'), 'cron 的保留提示必须点名 sample，实际 ' + JSON.stringify(cronKept));
+  assert.equal(cronKept.includes('payload'), false, 'cron 的 payload 有表单控件（表单 own），不许在「保留」提示里把它说成由 YAML 管理，实际 ' + JSON.stringify(cronKept));
+  await page.locator('#f-payload').fill(JSON.stringify(cronPayload, null, 2)); /* 表单 own 的键必须真的写得进去：只改显示名的用例对这一步是瞎的 */
+  const cronReqP = page.waitForRequest((r) => r.method() === 'PATCH' && r.url().endsWith(PATH + CRON), { timeout: 20000 });
+  const cronRespP = page.waitForResponse((r) => r.request().method() === 'PATCH' && r.url().endsWith(PATH + CRON), { timeout: 20000 });
+  await page.locator('#modal-save').click();
+  const [cronReq, cronResp] = await Promise.all([cronReqP, cronRespP]);
+  assert.equal(cronResp.status(), 200, '在表单里改 cron payload 再保存必须 200，实际 ' + cronResp.status());
+  await page.locator('#src-modal').waitFor({ state: 'hidden', timeout: 20000 });
+  const cronEditSent = JSON.parse(cronReq.postData() || '{}');
+  assert.deepEqual(cronEditSent.spec.config.payload, cronPayload, '表单里改的 cron payload 必须出现在 PATCH 体里（r1 把这个键从写入路径摘掉，保存静默不生效），实际 ' + JSON.stringify(cronEditSent.spec.config));
+  assert.deepEqual(cronEditSent.spec.config.sample, CRON_CONFIG.sample, '同一次保存仍不许抹掉 cron 的 sample，实际 ' + JSON.stringify(cronEditSent.spec.config));
+  const cronAfter = (await doc(CRON)).body.spec.config;
+  assert.deepEqual(cronAfter.payload, cronPayload, '存储里的 cron payload 必须真的变成表单里那份，实际 ' + JSON.stringify(cronAfter.payload));
+  assert.deepEqual(cronAfter.sample, CRON_CONFIG.sample, '存储里的 cron sample 必须还在，实际 ' + JSON.stringify(cronAfter.sample));
+  assert.equal(cronAfter.expr, CRON_CONFIG.expr, '这次保存不许改掉排期，实际 ' + cronAfter.expr);
+  check('PRESERVE-09 a cron save really writes the form-owned config.payload, keeps the non-owned sample, and the kept hint never names a form-owned key');
+
   await goto('sources', 'namespace=default', 'zh-CN');
   await page.locator('#btn-new').click();
   await visible('#src-modal:not(.hidden)');
@@ -173,7 +196,7 @@ export async function sourcePreserveEdit(d) { /* #568：只改显示名保存时
   assert.equal(await page.locator('#f-token').inputValue(), '', '切到 manual 之后 webhook 的 token 必须当场清掉');
   assert.equal(await page.locator('#f-secret').inputValue(), '', '切到 manual 之后 webhook 的 secret 必须当场清掉');
   assert.equal(await page.locator('#f-sample').inputValue(), '', '切到 manual 之后 webhook 的样例必须当场清掉');
-  check('PRESERVE-09 a new source still clears the other kind fields when the kind changes (#540 口径不回归)');
+  check('PRESERVE-10 a new source still clears the other kind fields when the kind changes (#540 口径不回归)');
   await page.locator('#f-name').fill('preserve-kind-switch');
   await acceptDialog(page, () => page.locator('#modal-cancel').click());
   await page.locator('#src-modal').waitFor({ state: 'hidden', timeout: 20000 });
