@@ -553,6 +553,14 @@ components:
             `envelope`（三个维度各自可缺省）与 `signature.scheme`（`github-sha256` 或
             `anotify-sha256`）的形状与规则见 `resource.yaml` 的 `SourceSpec.config`。
             读投影 `hookUrl` / `secretSet` 在预览里被剥离（不当成未知字段报错）。
+
+            `payloadSchema`（声明**投递进来的**载荷契约）在写入期就要过运行期同一个
+            解析器（#612）：`type` 必须接受 `object`、`properties` 必须是对象、
+            `required` 必须是字符串数组、属性 `pattern` 必须能编译。不可用 → 400
+            `invalid_source_config`，`details.causes[].field` 指到
+            `spec.config.payloadSchema.<出错的键>`（如 `spec.config.payloadSchema.type`）。
+            不这么做的话这种源会 201 落库且 `health: ok`，之后**每个事件**都被
+            `event_schema` 剪掉（对 webhook 而言外部系统看到的全是 200）。
         targets:
           type: array
           items:

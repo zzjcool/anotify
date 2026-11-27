@@ -13,6 +13,7 @@ import { chromium } from 'playwright-core';
 import * as H from '../../lib/harness.mjs';
 import { installTraceEvidence, traceEvidenceTools } from './f3-trace-evidence.mjs';
 import { bringUpFixtureNode, deployApplied, capRef } from './f3-node.mjs';
+import { withDB } from '../../lib/v4.mjs';
 export const ROOT = H.ROOT_DIR;
 export const TEAM = path.join(ROOT, 'scripts/e2e/fixtures/f3');
 export const OUT = path.join(TEAM, 'screenshots/f3');
@@ -179,6 +180,18 @@ async function ensureCapability(server, session, ns, name, next = [], extra = {}
   });
   assert.equal(created.status, 201, `T1 seam: create ${ns}/${name} capability must be 201, got ${created.status} ${JSON.stringify(created.body)}`);
   return created.body;
+}
+
+function seedLegacyParamSchema(server, ns, name, params) { // #612：写入期已拒坏 schema，这里造「升级前的存量坏行」
+  withDB(server.dbPath, (db) => {
+    const row = db.prepare(`SELECT cv.id AS id, cv.spec AS spec FROM capability_versions cv
+      JOIN namespaces n ON n.id = cv.namespace_id
+      WHERE n.slug = ? AND cv.name = ? AND cv.deleted_at IS NULL`).get(ns, name);
+    assert.ok(row, `seedLegacyParamSchema: ${ns}/${name} 不存在`);
+    const spec = JSON.parse(row.spec);
+    spec.params = params;
+    db.prepare('UPDATE capability_versions SET spec = ? WHERE id = ?').run(JSON.stringify(spec), row.id);
+  });
 }
 
 // ensureSource 幂等地建一个 webhook 源（真实 POST）。形状和 mock 的 `deploy-hook`
@@ -390,8 +403,11 @@ async function chainScenario(server, fixtures) {
   const envRef = (name) => ({ valueFrom: { fieldRef: { fieldPath: 'vars.' + name } } });
   const leaf = await ensureCapability(server, s, DEFAULT_NS, 'chain-leaf');
   const mid = await ensureCapability(server, s, DEFAULT_NS, 'chain-mid', ['chain-leaf']);
-  // params schema 非法（type 不是 object）→ 向它的 emit 被 route 以 param_schema 剪枝。
-  const broken = await ensureCapability(server, s, DEFAULT_NS, 'chain-broken', [], { params: { type: 'array' } });
+  // params schema 非法（type 不是 object）→ emit 被 param_schema 剪枝（存量坏行由 seedLegacyParamSchema 造，#612）。
+  const broken = await ensureCapability(server, s, DEFAULT_NS, 'chain-broken', [], {
+    params: { type: 'object', properties: { hop: { type: 'string' } } },
+  });
+  seedLegacyParamSchema(server, DEFAULT_NS, 'chain-broken', { type: 'array', items: { type: 'string' } });
   const root = await ensureCapability(server, s, DEFAULT_NS, 'chain-root', ['chain-mid', 'chain-broken'], {
     env: { SOURCE_ROOT: envRef('SOURCE_ROOT'), GIT_TERMINAL_PROMPT: envRef('GIT_TERMINAL_PROMPT') },
     requires: { values: ['vars.SOURCE_ROOT', 'vars.GIT_TERMINAL_PROMPT'] },
@@ -473,7 +489,10 @@ async function messageScenario(server, fixtures) {
   const s = fixtures.adminSession;
   const envRef = (name) => ({ valueFrom: { fieldRef: { fieldPath: 'vars.' + name } } });
   const child = await ensureCapability(server, s, DEFAULT_NS, 'msg-child');
-  const broken = await ensureCapability(server, s, DEFAULT_NS, 'msg-broken', [], { params: { type: 'array' } });
+  const broken = await ensureCapability(server, s, DEFAULT_NS, 'msg-broken', [], {
+    params: { type: 'object', properties: { n: { type: 'integer' } } },
+  });
+  seedLegacyParamSchema(server, DEFAULT_NS, 'msg-broken', { type: 'array', items: { type: 'string' } });
   const root = await ensureCapability(server, s, DEFAULT_NS, 'msg-root', ['msg-child', 'msg-broken'], {
     env: { SOURCE_ROOT: envRef('SOURCE_ROOT'), GIT_TERMINAL_PROMPT: envRef('GIT_TERMINAL_PROMPT') },
     requires: { values: ['vars.SOURCE_ROOT', 'vars.GIT_TERMINAL_PROMPT'] },

@@ -366,12 +366,16 @@ def check_boundary() -> list[str]:
         return [f"`go list -deps {ANODE_PKG}` 失败（code={code}）：{err.strip() or out.strip()}"]
 
     deps = [line.strip() for line in out.splitlines() if line.strip()]
-    allowed_central = {f"{MODULE}/internal/protocol", f"{MODULE}/internal/artifact"}
+    allowed_central = {  # schema 是零依赖叶子包（只用标准库）：写入期与节点侧校验必须同一份语义
+        f"{MODULE}/internal/protocol",
+        f"{MODULE}/internal/artifact",
+        f"{MODULE}/internal/schema",
+    }
     central = {d for d in deps if d.startswith(f"{MODULE}/internal/")}
     extra = central - allowed_central
     if extra:
         errors.append(
-            "cmd/anode 依赖了中枢包（节点只能依赖 protocol + artifact）："
+            "cmd/anode 依赖了中枢包（节点只能依赖 protocol + artifact + schema）："
             + ", ".join(sorted(extra))
         )
     for forbidden in ("database/sql", "modernc.org/sqlite"):
@@ -422,7 +426,7 @@ def main() -> int:
         f"{len(sub_flags['install'])} 个 install flag、"
         f"版本 {TEST_LABEL}（--version JSON 与 install-anode.sh 的核对一致）；"
         "下发副本 web/install-anode.sh 与 scripts/install-anode.sh 字节一致；"
-        "边界：仅依赖 internal/protocol + internal/artifact，不直连数据库"
+        "边界：仅依赖 internal/protocol + internal/artifact + internal/schema，不直连数据库"
     )
     return 0
 

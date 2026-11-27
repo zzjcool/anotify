@@ -2645,6 +2645,15 @@ components:
           type: object
           description: |
             任务输入契约（JSON Schema 对象；省略 = `{}` = 怎么传都过）。
+
+            写入期用**运行期同一个解析器**判断这份 schema 可不可用（#612）：
+            `type` 必须接受 `object`、`properties` 必须是对象、`required` 必须是
+            字符串数组、属性 `pattern` 必须能编译。不可用 → 400 `param_schema`，
+            `details.causes[].field` 指到 `spec.params.<出错的键>`
+            （如 `spec.params.type` / `spec.params.properties.a`）。这条判据的意义：
+            写入期接受的 schema 与派发/试跑期不剪枝的是**同一批**，不会「建得成、
+            永不派发」。
+
             写入期编译 `pattern`（RE2）：编不过 / 不是字符串 / 超过长度上限 → 400
             `param_pattern_invalid`，`details.causes[].field` 指到
             `spec.params.properties.<name>.pattern`。试跑与派发期执行 `pattern`：

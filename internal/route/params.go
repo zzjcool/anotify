@@ -3,8 +3,6 @@ package route
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -40,212 +38,52 @@ type Prune struct {
 	Field string `json:"-"`
 }
 
-// paramProperty 是 JSON Schema 子集里的一个属性声明。
-type paramProperty struct {
-	types       []string
-	def         any
-	hasDefault  bool
-	nested      *paramSchema
-	pattern     *regexp.Regexp
-	patternText string
-}
-
-type paramIssue struct {
-	field  string
-	detail string
-}
-
-// paramSchema 是 spec.params / payloadSchema 解析出的可用子集。
-type paramSchema struct {
-	// permissive 表示「{} / 省略 / null」：怎么传都过（capability.md §2.3）。
-	permissive bool
-	properties map[string]paramProperty
-	required   map[string]bool
-	order      []string
-}
+// paramSchema 是子集解析结果的别名：判据在 internal/schema（写入期与运行期同一份）。
+type paramSchema = schema.Params
 
 // parseParamSchema 解析参数 schema 子集；不可用时返回 param_schema 剪枝。
+//
+// **判据只有一处**：schema.ParseParams。写入期（artifact.Validate / sourcespec）拒的
+// 就是这里剪的（#612）——两边各写一套必然漂移，症状是「建得成、永不派发」。
 func parseParamSchema(raw json.RawMessage) (*paramSchema, *Prune) {
-	s := &paramSchema{properties: map[string]paramProperty{}, required: map[string]bool{}}
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || string(trimmed) == "null" || string(trimmed) == "{}" {
-		s.permissive = true
-		return s, nil
-	}
-	var doc map[string]json.RawMessage
-	if err := json.Unmarshal(trimmed, &doc); err != nil || doc == nil {
-		return nil, &Prune{Reason: protocol.ReasonParamSchema, Detail: "参数 schema 不是 JSON 对象"}
-	}
-	if rawType, ok := doc["type"]; ok {
-		if !schemaIsObjectType(rawType) {
-			return nil, &Prune{Reason: protocol.ReasonParamSchema, Detail: "参数 schema.type 必须是 object"}
-		}
-	}
-	if rawProps, ok := doc["properties"]; ok {
-		var props map[string]json.RawMessage
-		if err := json.Unmarshal(rawProps, &props); err != nil || props == nil {
-			return nil, &Prune{Reason: protocol.ReasonParamSchema, Detail: "参数 schema.properties 不是对象"}
-		}
-		for name, rawProp := range props {
-			prop, prune := parseParamProperty(name, rawProp)
-			if prune != nil {
-				return nil, prune
-			}
-			s.properties[name] = prop
-			s.order = append(s.order, name)
-		}
-		sort.Strings(s.order)
-	}
-	if rawRequired, ok := doc["required"]; ok {
-		var names []string
-		if err := json.Unmarshal(rawRequired, &names); err != nil {
-			return nil, &Prune{Reason: protocol.ReasonParamSchema, Detail: "参数 schema.required 必须是字符串数组"}
-		}
-		for _, name := range names {
-			s.required[name] = true
-		}
+	s, problems := schema.ParseParams(raw)
+	if len(problems) > 0 {
+		return nil, &Prune{Reason: protocol.ReasonParamSchema, Detail: problems[0].Msg}
 	}
 	return s, nil
-}
-
-// parseParamProperty 解析一个属性（type/default/嵌套 properties）。
-func parseParamProperty(name string, raw json.RawMessage) (paramProperty, *Prune) {
-	var prop paramProperty
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || string(trimmed) == "null" {
-		return prop, nil
-	}
-	var doc map[string]json.RawMessage
-	if err := json.Unmarshal(trimmed, &doc); err != nil || doc == nil {
-		return prop, &Prune{Reason: protocol.ReasonParamSchema,
-			Detail: fmt.Sprintf("参数 %s 的 schema 不是对象", name)}
-	}
-	if rawType, ok := doc["type"]; ok {
-		types, terr := schemaTypes(rawType)
-		if terr != nil {
-			return prop, &Prune{Reason: protocol.ReasonParamSchema,
-				Detail: fmt.Sprintf("参数 %s：%v", name, terr)}
-		}
-		prop.types = types
-	}
-	if rawPattern, ok := doc["pattern"]; ok {
-		var pattern string
-		if err := json.Unmarshal(rawPattern, &pattern); err != nil {
-			return prop, &Prune{Reason: protocol.ReasonParamSchema,
-				Detail: fmt.Sprintf("参数 %s 的 pattern 必须是字符串", name)}
-		}
-		re, perr := schema.CompilePattern(pattern)
-		if perr != nil {
-			return prop, &Prune{Reason: protocol.ReasonParamSchema,
-				Detail: fmt.Sprintf("参数 %s 的 pattern %q 不可用：%v", name, pattern, perr)}
-		}
-		prop.pattern = re
-		prop.patternText = pattern
-	}
-	if rawDefault, ok := doc["default"]; ok {
-		dec := json.NewDecoder(bytes.NewReader(rawDefault))
-		dec.UseNumber()
-		var v any
-		if err := dec.Decode(&v); err != nil {
-			return prop, &Prune{Reason: protocol.ReasonParamSchema,
-				Detail: fmt.Sprintf("参数 %s 的 default 不是合法 JSON", name)}
-		}
-		prop.def = v
-		prop.hasDefault = true
-	}
-	if rawProps, ok := doc["properties"]; ok {
-		// 嵌套对象按同一子集校验：把 properties 重新包成一份 schema 交给解析器。
-		wrapped, err := json.Marshal(map[string]json.RawMessage{
-			"type":       json.RawMessage(`"object"`),
-			"properties": rawProps,
-		})
-		if err == nil {
-			// required 可能在外层；嵌套的 required 也在同一份 doc 里。
-			if rawRequired, rok := doc["required"]; rok {
-				var merged map[string]json.RawMessage
-				if json.Unmarshal(wrapped, &merged) == nil {
-					merged["required"] = rawRequired
-					if again, merr := json.Marshal(merged); merr == nil {
-						wrapped = again
-					}
-				}
-			}
-			nested, prune := parseParamSchema(wrapped)
-			if prune != nil {
-				return prop, prune
-			}
-			prop.nested = nested
-		}
-	}
-	return prop, nil
-}
-
-// schemaIsObjectType 判断 schema.type 是否接受 object（字符串或数组两种写法）。
-func schemaIsObjectType(raw json.RawMessage) bool {
-	types, err := schemaTypes(raw)
-	if err != nil {
-		return false
-	}
-	for _, t := range types {
-		if t == "object" {
-			return true
-		}
-	}
-	return false
-}
-
-// schemaTypes 解析 type 字段（字符串或字符串数组）。
-func schemaTypes(raw json.RawMessage) ([]string, error) {
-	var single string
-	if err := json.Unmarshal(raw, &single); err == nil {
-		if single == "" {
-			return nil, fmt.Errorf("type 为空")
-		}
-		return []string{single}, nil
-	}
-	var many []string
-	if err := json.Unmarshal(raw, &many); err != nil {
-		return nil, fmt.Errorf("type 必须是字符串或字符串数组")
-	}
-	for _, t := range many {
-		if t == "" {
-			return nil, fmt.Errorf("type 数组里有空值")
-		}
-	}
-	return many, nil
 }
 
 // PrepareParams 把一份输入对齐到下游能力的参数契约（emit 同名直取 / 源模板求值后共用）。
 //
 // 返回：规范化后的 params（JSON 对象字节）或一条剪枝。空 schema 表示「怎么传都过」，
 // 此时输入原样成为 params（仍会序列化成对象）。
-func PrepareParams(schema json.RawMessage, input map[string]any) (json.RawMessage, *Prune) {
-	s, prune := parseParamSchema(schema)
+func PrepareParams(raw json.RawMessage, input map[string]any) (json.RawMessage, *Prune) {
+	s, prune := parseParamSchema(raw)
 	if prune != nil {
 		return nil, prune
 	}
 	out := make(map[string]any, len(input))
-	if s.permissive {
+	if s.Permissive {
 		for name, value := range input {
 			out[name] = value
 		}
 		return marshalObject(out), nil
 	}
 	missing := []string{}
-	for _, name := range s.order {
-		prop := s.properties[name]
+	for _, name := range s.Order {
+		prop := s.Properties[name]
 		if value, ok := input[name]; ok {
-			if issue := prop.check(name, value); issue != nil {
-				return nil, &Prune{Reason: protocol.ReasonParamType, Detail: issue.detail, Field: "params." + issue.field}
+			if issue := prop.Check(name, value); issue != nil {
+				return nil, &Prune{Reason: protocol.ReasonParamType, Detail: issue.Detail, Field: "params." + issue.Field}
 			}
 			out[name] = value
 			continue
 		}
-		if prop.hasDefault {
-			out[name] = prop.def
+		if prop.HasDefault {
+			out[name] = prop.Default
 			continue
 		}
-		if s.required[name] {
+		if s.Required[name] {
 			missing = append(missing, name)
 		}
 	}
@@ -260,35 +98,35 @@ func PrepareParams(schema json.RawMessage, input map[string]any) (json.RawMessag
 //
 // 返回 nil 表示通过；否则 reason 固定是 event_schema（source.md §6）。载荷 schema 不可用时同样按
 // event_schema 拒绝——那不是投递方的错，但不能放一批形状未知的载荷进去（写路径已拒绝坏 schema，这里是防御）。
-func ValidatePayload(schema json.RawMessage, payload map[string]any) *Prune {
-	trimmed := bytes.TrimSpace(schema)
+func ValidatePayload(raw json.RawMessage, payload map[string]any) *Prune {
+	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || string(trimmed) == "null" || string(trimmed) == "{}" {
 		return nil
 	}
-	s, prune := parseParamSchema(schema)
+	s, prune := parseParamSchema(raw)
 	if prune != nil {
 		return &Prune{Reason: protocol.ReasonEventSchema, Detail: "payloadSchema 不可用：" + prune.Detail}
 	}
-	if s.permissive {
+	if s.Permissive {
 		return nil
 	}
 	missing := []string{}
-	for _, name := range s.order {
-		prop := s.properties[name]
+	for _, name := range s.Order {
+		prop := s.Properties[name]
 		value, ok := payload[name]
 		if !ok {
-			if s.required[name] {
+			if s.Required[name] {
 				missing = append(missing, name)
 			}
 			continue
 		}
-		if issue := prop.check(name, value); issue != nil {
-			return &Prune{Reason: protocol.ReasonEventSchema, Detail: issue.detail, Field: "payload." + issue.field}
+		if issue := prop.Check(name, value); issue != nil {
+			return &Prune{Reason: protocol.ReasonEventSchema, Detail: issue.Detail, Field: "payload." + issue.Field}
 		}
 	}
 	// required 独立于 properties：只写 required 时上面一个名字都看不到 —— 这里只查「键存在」（null 也算）。
-	for name := range s.required {
-		if _, declared := s.properties[name]; declared {
+	for name := range s.Required {
+		if _, declared := s.Properties[name]; declared {
 			continue
 		}
 		if _, ok := payload[name]; !ok {
@@ -301,119 +139,6 @@ func ValidatePayload(schema json.RawMessage, payload map[string]any) *Prune {
 			Field: "payload." + missing[0]}
 	}
 	return nil
-}
-
-// check 校验一个值是否符合属性声明；nil 表示通过。
-func (p paramProperty) check(path string, value any) *paramIssue {
-	if len(p.types) > 0 {
-		matched := false
-		for _, t := range p.types {
-			if valueMatchesType(t, value) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return &paramIssue{field: path,
-				detail: fmt.Sprintf("参数 %s 类型应为 %s，实际 %s", path, strings.Join(p.types, "|"), jsonKind(value))}
-		}
-	}
-	if p.pattern != nil {
-		if s, ok := value.(string); ok && !p.pattern.MatchString(s) {
-			return &paramIssue{field: path,
-				detail: fmt.Sprintf("参数 %s 应匹配 pattern %q，实际 %q", path, p.patternText, s)}
-		}
-	}
-	if p.nested != nil {
-		if obj, ok := value.(map[string]any); ok {
-			if issue := p.nested.checkObject(obj, path); issue != nil {
-				return issue
-			}
-		}
-	}
-	return nil
-}
-
-// checkObject 用子集规则校验一个对象值（不含 default 补全）。
-func (s *paramSchema) checkObject(obj map[string]any, prefix string) *paramIssue {
-	if s.permissive {
-		return nil
-	}
-	missing := []string{}
-	for _, name := range s.order {
-		prop := s.properties[name]
-		value, ok := obj[name]
-		if !ok {
-			if s.required[name] {
-				missing = append(missing, prefix+"."+name)
-			}
-			continue
-		}
-		if issue := prop.check(prefix+"."+name, value); issue != nil {
-			return issue
-		}
-	}
-	if len(missing) > 0 {
-		return &paramIssue{field: missing[0], detail: "缺少 " + strings.Join(missing, ", ")}
-	}
-	return nil
-}
-
-// valueMatchesType 判断一个解码后的 JSON 值是否符合 schema 类型名。
-func valueMatchesType(want string, value any) bool {
-	switch want {
-	case "string":
-		_, ok := value.(string)
-		return ok
-	case "number":
-		switch value.(type) {
-		case json.Number, float64, float32, int, int64, int32:
-			return true
-		}
-		return false
-	case "integer":
-		switch v := value.(type) {
-		case json.Number:
-			return !strings.ContainsAny(string(v), ".eE")
-		case float64:
-			return v == float64(int64(v))
-		case int, int64, int32:
-			return true
-		}
-		return false
-	case "boolean":
-		_, ok := value.(bool)
-		return ok
-	case "object":
-		_, ok := value.(map[string]any)
-		return ok
-	case "array":
-		_, ok := value.([]any)
-		return ok
-	case "null":
-		return value == nil
-	}
-	// 未知类型名（JSON Schema 扩展）：不做判定，放行而不是误剪。
-	return true
-}
-
-// jsonKind 是给人看的 JSON 类型名（detail 用）。
-func jsonKind(value any) string {
-	switch value.(type) {
-	case nil:
-		return "null"
-	case string:
-		return "string"
-	case bool:
-		return "boolean"
-	case map[string]any:
-		return "object"
-	case []any:
-		return "array"
-	case json.Number, float64:
-		return "number"
-	}
-	return "unknown"
 }
 
 // marshalObject 把 map 序列成 JSON 对象（确定性：encoding/json 对 map 键排序）。

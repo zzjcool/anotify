@@ -49,6 +49,7 @@ import (
 	"strings"
 
 	"github.com/zzjcool/anotify/internal/protocol"
+	"github.com/zzjcool/anotify/internal/schema"
 	"gopkg.in/yaml.v3"
 )
 
@@ -128,7 +129,8 @@ const (
 	CodeConcurrencyInvalid = "concurrency_invalid"
 	// CodeParamEnvCollision 是两个参数名归一后撞同一个 ANOTIFY_PARAM_*。
 	CodeParamEnvCollision   = "param_env_collision"
-	CodeParamPatternInvalid = "param_pattern_invalid"
+	CodeParamPatternInvalid = "param_pattern_invalid" // pattern 不是字符串 / 编译不过 / 超长
+	CodeParamSchemaInvalid  = "param_schema"          // 运行期不可用的形状（type 不是 object 等，#612）
 	// CodeRequiresInvalid 是 requires 不是对象 / 元素不合格 / 超上限 / 未知子键。
 	CodeRequiresInvalid = "requires_invalid"
 	// CodeVersionContentImmutable 是显式同版内容不同（store 判定，本包给辅助）。
@@ -634,6 +636,10 @@ func Validate(a *Artifact) error {
 		p = append(p, located.problem)
 		fields = append(fields, located.field)
 	}
+	for _, located := range validateParamSchemaUsable(a.Spec.Params) {
+		p = append(p, located.problem)
+		fields = append(fields, located.field)
+	}
 	addProblems(validateNext(a.Spec.Next))
 	addProblems(validateRequires(&a.Spec.Requires))
 	addProblems(validateRun(&a.Spec, params))
@@ -756,6 +762,27 @@ func validateParamPatterns(params json.RawMessage) []locatedProblem {
 		}
 	}
 	walk(node, "spec.params")
+	return out
+}
+
+func validateParamSchemaUsable(params json.RawMessage) []locatedProblem { // #612：与运行期同一个解析器
+	if len(bytes.TrimSpace(params)) == 0 {
+		return nil
+	}
+	_, problems := schema.ParseParams(params)
+	out := make([]locatedProblem, 0, len(problems))
+	for _, problem := range problems {
+		if problem.Path == "" { // 根问题（不是对象）由 validateParams 报（同一件事不报两遍）
+			continue
+		}
+		if problem.Path == "pattern" || strings.HasSuffix(problem.Path, ".pattern") {
+			continue
+		}
+		out = append(out, locatedProblem{
+			problem: CodeParamSchemaInvalid + ": " + problem.Msg,
+			field:   "spec.params." + problem.Path,
+		})
+	}
 	return out
 }
 
