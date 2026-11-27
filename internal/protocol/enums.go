@@ -141,6 +141,7 @@ const (
 
 	// 运行期：可判定失败（默认终态，不自动重试）。
 	ReasonMaxAttemptsExceeded = "max_attempts_exceeded"
+	ReasonNoProgress          = "no_progress" // 日志与导出目录连续无新字节的提前终态（#700）。
 	// ReasonTimeout 是 lifecycle.timeoutSec 到点（capability.md §2.3：failed，不自动重跑）。
 	//
 	// 注意：capability.md §6.2 的表里没有单列这个码（只说「到点 → failed」），
@@ -189,6 +190,7 @@ const (
 	ReasonNoDecision           = "no_decision"            // router 成功但没提交决策
 	ReasonRouterFailed         = "router_failed"          // router 失败/放弃：不执行结局
 	ReasonOutcomeDropped       = "outcome_dropped"        // 选中空动作结局（drop: []）
+	ReasonTaskFailed           = "task_failed"            // 没有结局表的任务终态失败观察行（payload 带 failureReason）。
 )
 
 // pruneReasons 是「事件已接收、下游没建 task」的观察原因（capability.md §8.3）。
@@ -211,6 +213,7 @@ var pruneReasons = []string{
 var routeObservationReasons = []string{
 	ReasonNoDecision,
 	ReasonRouterFailed,
+	ReasonTaskFailed,
 	ReasonOutcomeDropped,
 	ReasonOutcomeNotDeclared,
 }
@@ -251,6 +254,32 @@ var retryableInfraReasons = []string{
 func IsRetryableInfra(reason string) bool {
 	return containsString(retryableInfraReasons, reason)
 }
+
+var taskFailureReasons = []string{
+	ReasonTimeout,
+	ReasonNoProgress,
+	ReasonScriptFailed,
+	ReasonFilesEscape,
+	ReasonWorkDirUnavailable,
+	ReasonHomeUnavailable,
+	ReasonMissingRequirement,
+	ReasonArtifactExportInvalid,
+	ReasonMaxAttemptsExceeded,
+	ReasonNodeLost,
+	ReasonLeaseExpired,
+	ReasonInfraTransient,
+	ReasonDownstreamMissing,
+	ReasonCancelledByUser,
+	ReasonAbandonedByUser,
+	ReasonStaleConfig,
+	ReasonSlotUnavailable,
+}
+
+func IsTaskFailureReason(reason string) bool {
+	return containsString(taskFailureReasons, reason)
+}
+
+func TaskFailureReasons() []string { return append([]string(nil), taskFailureReasons...) }
 
 // TaskRejectReasons 是 task.reject 允许的 reason 集合（A3 扩为两项）。
 //

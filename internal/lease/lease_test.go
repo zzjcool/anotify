@@ -425,6 +425,31 @@ func TestRunOnceAbandonsExpiredLeaseWithoutBudget(t *testing.T) {
 	}
 }
 
+func TestRunOnceNotifiesAbandonedTasks(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	now := store.Now()
+	capability := f.capability(t, "notify-once", false, 1)
+	task := f.runningTask(t, capability, now)
+	running, err := f.db.GetTask(ctx, f.ns.ID, task.ID)
+	if err != nil || running.LeaseUntil == nil {
+		t.Fatalf("读 running 任务: %+v err=%v", running, err)
+	}
+	var got []string
+	sweeper := NewSweeper(f.db, nil)
+	sweeper.OnAbandoned(func(_ context.Context, taskID string) { got = append(got, taskID) })
+	if _, err := sweeper.RunOnce(ctx, *running.LeaseUntil+1); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if len(got) != 1 || got[0] != task.ID {
+		t.Fatalf("终态回调应收到 %s，实际 %v", task.ID, got)
+	}
+	dead, err := f.db.GetTask(ctx, f.ns.ID, task.ID)
+	if err != nil || dead.Phase != store.TaskAbandoned {
+		t.Fatalf("回调时任务必须已是 abandoned：%+v err=%v", dead, err)
+	}
+}
+
 // TestLongTaskAcrossTwoTTLsIsNotAbandoned 是验收 ③：真实长执行跨过 ≥2 个 TTL 仍 running
 // （口径同生产，只缩小量级：TTL=2s、续租 200ms、巡检 50ms、跑 2.25 个 TTL）。
 func TestLongTaskAcrossTwoTTLsIsNotAbandoned(t *testing.T) {

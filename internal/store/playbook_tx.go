@@ -355,6 +355,9 @@ func insertInstalledCapabilityOn(ctx context.Context, ex queryExec, namespaceID,
 	if verr := artifact.Validate(norm); verr != nil {
 		return fmt.Errorf("%w: %s", ErrCapabilityInvalid, verr.Error())
 	}
+	if err := validateFallbackParamsOn(ctx, ex, namespaceID, norm.Spec); err != nil {
+		return err
+	}
 	name, version := norm.Metadata.Name, norm.Metadata.Version
 	if version < 1 {
 		return fmt.Errorf("planned capability %q 没有版本号（Plan 必须先定 version）", name)

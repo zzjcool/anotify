@@ -26,6 +26,13 @@ spec:
   lifecycle:
     idempotent: false
     timeoutSec: 1800
+    idleTimeoutSec: 900
+    onFailure:
+      to: '{{values.project}}-record'
+      reasons: [timeout, no_progress]
+      params:
+        outcome: timeout
+        findings: '因超时或无进展终止：lifecycle.timeoutSec / idleTimeoutSec 到点被平台终止'
   run:
     entrypoint: run.sh
     files:

@@ -683,3 +683,25 @@ func TestPlanWithoutRequiresIsUnchanged(t *testing.T) {
 		t.Fatalf("无依赖的回执必须写 dependencies: []: %s", raw)
 	}
 }
+
+func TestValidateFallbackPlanRejectsMissingParams(t *testing.T) {
+	target := &artifact.Artifact{
+		Metadata: artifact.Metadata{Name: "issue-record"},
+		Spec: artifact.Spec{Params: json.RawMessage(`{"type":"object","required":["repo","issue"],
+			"properties":{"repo":{"type":"string"},"issue":{"type":"integer"}}}`)},
+	}
+	parent := &artifact.Artifact{
+		Metadata: artifact.Metadata{Name: "issue-implement"},
+		Spec: artifact.Spec{
+			Params:    json.RawMessage(`{"type":"object","required":["repo"],"properties":{"repo":{"type":"string"}}}`),
+			Lifecycle: artifact.Lifecycle{OnFailure: &artifact.Fallback{To: "issue-record"}},
+		},
+	}
+	if err := validateFallbackPlan([]*artifact.Artifact{parent, target}); err == nil {
+		t.Fatal("兜底缺下游必填参数应在安装计划阶段被拒")
+	}
+	parent.Spec.Lifecycle.OnFailure.Params = map[string]any{"issue": 700}
+	if err := validateFallbackPlan([]*artifact.Artifact{parent, target}); err != nil {
+		t.Fatalf("声明了缺的那个字面参数后应当通过：%v", err)
+	}
+}

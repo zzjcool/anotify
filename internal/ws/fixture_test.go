@@ -108,7 +108,7 @@ func newEnv(t *testing.T) *env {
 	return e
 }
 
-func (e *env) capability(t *testing.T, name, params string, idempotent bool, next []string) *store.CapabilityVersion {
+func (e *env) capability(t *testing.T, name, params string, idempotent bool, next []string, mutate ...func(*artifact.Spec)) *store.CapabilityVersion {
 	t.Helper()
 	if params == "" {
 		params = `{"type":"object"}`
@@ -121,6 +121,11 @@ func (e *env) capability(t *testing.T, name, params string, idempotent bool, nex
 			Files:      map[string]string{"run.sh": "#!/bin/sh\nexit 0\n"},
 		},
 		Lifecycle: artifact.Lifecycle{Idempotent: idempotent},
+	}
+	for _, fn := range mutate {
+		if fn != nil {
+			fn(&spec)
+		}
 	}
 	capability := &store.CapabilityVersion{NamespaceID: e.ns.ID, Name: name, Version: 1, Spec: spec}
 	if err := e.db.CreateCapability(context.Background(), capability); err != nil {

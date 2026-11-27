@@ -339,6 +339,10 @@ type Lifecycle struct {
 	ResultTTLSec *int `json:"resultTtlSec,omitempty"`
 	// TimeoutSec 是本地执行超时（从子进程启动起算，0..86400；0 = 不设）。
 	TimeoutSec int `json:"timeoutSec"`
+	// IdleTimeoutSec 是「无进展」上限（秒，省略 = 节点默认，节点缺省 = 关闭；0 = 关闭）（#700）。
+	IdleTimeoutSec *int `json:"idleTimeoutSec,omitempty"`
+	// OnFailure 是终态失败的兜底下游（#700）：被 timeout 杀掉的是进程组，脚本回写不了。
+	OnFailure *Fallback `json:"onFailure,omitempty"`
 }
 
 // EffectiveMaxAttempts 返回生效的总尝试次数（省略 → 3）。
@@ -359,6 +363,49 @@ func (l Lifecycle) EffectiveResultTTLSec() int {
 
 // EffectiveTimeoutSec 返回生效的本地执行超时。
 func (l Lifecycle) EffectiveTimeoutSec() int { return l.TimeoutSec }
+
+func (l Lifecycle) EffectiveIdleTimeoutSec(nodeDefault int) int {
+	if l.IdleTimeoutSec == nil {
+		return nodeDefault
+	}
+	return *l.IdleTimeoutSec
+}
+
+type Fallback struct {
+	To      string         `json:"to"`
+	Params  map[string]any `json:"params,omitempty"`
+	Reasons []string       `json:"reasons,omitempty"` // 省略 = 任何失败都触发；零重合不派。
+}
+
+func (f *Fallback) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return &fieldError{code: CodeBadRequest,
+			msg: "lifecycle.onFailure 必须是对象（{to,params}），实际 " + compactJSON(data)}
+	}
+	var out Fallback
+	for key, value := range raw {
+		switch key {
+		case "to":
+			if err := json.Unmarshal(value, &out.To); err != nil {
+				return &fieldError{code: CodeBadRequest, msg: "lifecycle.onFailure.to 必须是字符串"}
+			}
+		case "params":
+			if err := json.Unmarshal(value, &out.Params); err != nil {
+				return &fieldError{code: CodeBadRequest, msg: "lifecycle.onFailure.params 必须是 JSON 对象"}
+			}
+		case "reasons":
+			if err := json.Unmarshal(value, &out.Reasons); err != nil {
+				return &fieldError{code: CodeBadRequest, msg: "lifecycle.onFailure.reasons 必须是字符串数组"}
+			}
+		default:
+			return &fieldError{code: CodeBadRequest,
+				msg: fmt.Sprintf("lifecycle.onFailure 不认识的子键 %q（只有 to / params / reasons）", key)}
+		}
+	}
+	*f = out
+	return nil
+}
 
 // Concurrency 是「这台节点上最多同时跑几个」。
 type Concurrency struct {
@@ -653,6 +700,7 @@ func validateArtifact(a *Artifact, checkParamUsable bool) error {
 	addProblems(validateRequires(&a.Spec.Requires))
 	addProblems(validateRun(&a.Spec, params))
 	addProblems(validateLifecycle(&a.Spec.Lifecycle))
+	addProblems(validateOnFailure(&a.Spec.Lifecycle, a.Spec.Next))
 	addProblems(validateConcurrency(&a.Spec.Concurrency))
 
 	return errIfLocated(p, fields)
@@ -1176,7 +1224,77 @@ func validateLifecycle(lc *Lifecycle) []string {
 		add("lifecycle.timeoutSec 必须在 0..%d 之间（0 = 不设本地执行超时），实际 %d",
 			MaxTimeoutSec, lc.TimeoutSec)
 	}
+	if lc.IdleTimeoutSec != nil && (*lc.IdleTimeoutSec < 0 || *lc.IdleTimeoutSec > MaxTimeoutSec) {
+		add("lifecycle.idleTimeoutSec 必须在 0..%d 之间（0 = 关闭无进展判据），实际 %d",
+			MaxTimeoutSec, *lc.IdleTimeoutSec)
+	}
 	return p
+}
+
+func validateOnFailure(lc *Lifecycle, next []string) []string {
+	if lc == nil || lc.OnFailure == nil {
+		return nil
+	}
+	var p []string
+	add := func(format string, args ...any) {
+		p = append(p, CodeBadRequest+": "+fmt.Sprintf(format, args...))
+	}
+	to := strings.TrimSpace(lc.OnFailure.To)
+	if to == "" {
+		return append(p, CodeBadRequest+": lifecycle.onFailure.to 不能为空：必须是 spec.next 里的下游引用")
+	}
+	if strings.Contains(to, "$(") {
+		return append(p, CodeBadRequest+": lifecycle.onFailure.to 是静态声明，不能写模板（实际 "+to+"）")
+	}
+	if _, declared := schema.DeclaredRef(next, to); !declared {
+		add("lifecycle.onFailure.to %q 不在 spec.next (%v) 里", to, next)
+	}
+	for name, value := range lc.OnFailure.Params {
+		if s, ok := value.(string); ok && strings.Contains(s, "$(") {
+			add("lifecycle.onFailure.params.%s 只能是字面值（实际 %q）：上下文由父任务 params 带过来", name, s)
+		}
+	}
+	seen := make(map[string]bool, len(lc.OnFailure.Reasons))
+	for _, reason := range lc.OnFailure.Reasons {
+		if !protocol.IsTaskFailureReason(reason) {
+			add("lifecycle.onFailure.reasons 里的 %q 不是任务失败码（允许：%v）",
+				reason, protocol.TaskFailureReasons())
+			continue
+		}
+		if seen[reason] {
+			add("lifecycle.onFailure.reasons 里的 %q 重复", reason)
+		}
+		seen[reason] = true
+	}
+	return p
+}
+
+func MissingFallbackParams(parentParams, targetParams json.RawMessage, declared map[string]any) []string {
+	down, problems := schema.ParseParams(targetParams)
+	if down.Permissive || len(problems) > 0 {
+		return nil
+	}
+	parent, problems := schema.ParseParams(parentParams)
+	if parent.Permissive || len(problems) > 0 {
+		return nil
+	}
+	available := make(map[string]bool, len(parent.Properties)+len(declared))
+	for name, prop := range parent.Properties {
+		if parent.Required[name] || prop.HasDefault {
+			available[name] = true
+		}
+	}
+	for name := range declared {
+		available[name] = true
+	}
+	var missing []string
+	for name := range down.Required {
+		if !available[name] {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	return missing
 }
 
 // validateConcurrency 校验 concurrency.maxPerNode。

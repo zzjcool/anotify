@@ -99,6 +99,8 @@ anode serve --check --config /etc/anode/anode.yaml --data /var/lib/anode
 ```
 
 - `--config` 是**严格**的 `anode.yaml`：未知字段启动失败，不热更（改配置就重启）。
+  键清单与语义（含 `idleTimeoutSec` 这个无进展默认）见 `anode-install.md` §10 的完整样例：
+  写错键名不会静默忽略，而是启动失败。
 - `--data` 是私有数据目录（缓存的能力产物、执行档案、emit 端点信息）。
 - 启动是**全有或全无**：身份被拒 / 配置不合法就退出，不存在「半在线」。
 - `--check` 是**一次性自检**：握手走到 `welcome` 就退出。成功时 stdout 只有一行

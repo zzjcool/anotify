@@ -243,6 +243,16 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	sched := trigger.New(db, sources, slog.Default())
 	poller := source.NewPoller(db, sources, slog.Default())
 	sweeper := lease.NewSweeper(db, slog.Default())
+	sweeper.OnAbandoned(func(ctx context.Context, taskID string) {
+		task, err := db.GetTaskByID(ctx, taskID)
+		if err != nil {
+			slog.Warn("lease abandon: read task failed", "task_id", taskID, "err", err)
+			return
+		}
+		if err := router.DispatchFailure(ctx, task); err != nil {
+			slog.Warn("lease abandon: failure backstop failed", "task_id", taskID, "err", err)
+		}
+	})
 
 	// 产物托管池（#332 / A1）：中枢自有的 0700 目录 + 0600 对象文件。
 	//
