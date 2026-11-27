@@ -142,6 +142,12 @@ anode emit --to deploy-preview --id apply-fix --data '{"ok":true}'
 | `emit_unreachable` | 端点不可达/结果未知——**可能已派发**，重发请带同一个 `--id` | 5 |
 | `emit_id_conflict` | 同 `--id` 但 `to`/`data` 不同 | 6 |
 
+被拒绝的 emit（`target_not_declared`）**不是静默的**：中枢会在同一个授权事务里留下
+两样可查询的事实——一行 `emits`（`to` 是真实请求引用，不带 `emit_id`，所以修好 `next`
+后可以带同一个 `--id` 重发）和一行 `source='route'` 的观察事件（`type=target_not_declared`，
+在 trace 的「剪枝留痕」与任务详情的 emissions 里都能看到）。脚本吞掉退出码时，
+用户仍然能回答「为什么下游没跑」。
+
 ## 5. 版本与帮助
 
 ```bash

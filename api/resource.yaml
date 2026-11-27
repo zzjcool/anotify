@@ -4703,6 +4703,11 @@ components:
       description: |
         一次 emit 调用的事实。`taskId`/`pruned` 是可空事实：剪枝回执的 `taskId`
         就是**真 null**（已接收、没派发）；解析不出时给 null，不猜。
+
+        被中枢**拒绝**的 emit（目标不在 `spec.next` 里 → 调用方拿到 400
+        `target_not_declared`）也留一行：`taskId` 是 null、`pruned.reason` 是
+        `target_not_declared`、`id` 恒空（拒绝不进幂等域）。这是「为什么下游没跑」
+        的权威线索：脚本吞掉退出码时任务仍会显示成功。
       required: [eventId, to, taskId, pruned]
       properties:
         eventId: {type: string}
@@ -4726,7 +4731,10 @@ components:
               properties:
                 reason:
                   type: string
-                  description: "剪枝原因（封闭集合：no_target / param_missing / downstream_missing …）"
+                  description: |
+                    原因码（封闭集合：no_target / param_missing / downstream_missing …；
+                    被拒绝的 emit 是 `target_not_declared` —— 那次调用本身回了 400，
+                    这里记的是它留下的观察事实）
                 detail:
                   type: string
                   description: "人话补充（缺哪个参数/字段），不参与判定"

@@ -13,7 +13,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/zzjcool/anotify/internal/protocol"
 )
 
 // emitFixture 建能力 + 节点 + 任务并授租约，返回 (cap, node, task, auth, leaseID)。
@@ -294,5 +297,140 @@ func TestEmitColumnsInBaseline(t *testing.T) {
 		if !cols[col] {
 			t.Fatalf("emits 表缺列 %q", col)
 		}
+	}
+}
+
+// TestEmitAuthorizedPlannedRejectionLeavesObservation 钉住 #636：拒绝要留下两样可查询的事实。
+func TestEmitAuthorizedPlannedRejectionLeavesObservation(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	_, _, task, auth, _ := emitFixture(t, db, nsID, "review", "emit-reject", "tr_emit_reject")
+
+	rec := &EmitRecord{
+		TaskID: task.ID, ToRef: "ghost", Data: json.RawMessage(`{"n":1}`),
+		PlannedRejection: &EmitRejectionFact{
+			To: "ghost", Capability: "ghost",
+			Reason: protocol.ReasonTargetNotDeclared, Detail: `"ghost" 不在 review 的 next 里`,
+		},
+	}
+	if _, _, err := db.EmitAuthorized(ctx, auth, rec, nil); err != nil {
+		t.Fatalf("拒绝事实应能落库: %v", err)
+	}
+
+	emits, err := db.ListEmits(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("list emits: %v", err)
+	}
+	if len(emits) != 1 {
+		t.Fatalf("拒绝事实应恰好一行 emits，得到 %d", len(emits))
+	}
+	if emits[0].ToRef != "ghost" || emits[0].EmitID != nil {
+		t.Fatalf("拒绝行必须保真实 to_ref 且不带 emit_id（不进幂等域）: %+v", emits[0])
+	}
+	if !strings.Contains(string(emits[0].Result), protocol.ReasonTargetNotDeclared) {
+		t.Fatalf("拒绝行的 result 必须记下原因码: %s", emits[0].Result)
+	}
+
+	events, err := db.ListEvents(ctx, nsID, task.TraceID, "", 50)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var rejected []*Event
+	for _, ev := range events {
+		if ev.Type == protocol.ReasonTargetNotDeclared {
+			rejected = append(rejected, ev)
+		}
+	}
+	if len(rejected) != 1 {
+		t.Fatalf("拒绝观察事件应恰好一条，得到 %d（%d 条事件）", len(rejected), len(events))
+	}
+	if rejected[0].Source != EventPruneSource || rejected[0].Reason != EventReasonPruned {
+		t.Fatalf("拒绝行必须走中枢观察通道（source=route/reason=Pruned）: %+v", rejected[0])
+	}
+	var payload struct {
+		To         string `json:"to"`
+		Capability string `json:"capability"`
+		Reason     string `json:"reason"`
+		Detail     string `json:"detail"`
+		TaskID     string `json:"taskId"`
+	}
+	if err := json.Unmarshal(rejected[0].Payload, &payload); err != nil {
+		t.Fatalf("解析拒绝 payload: %v", err)
+	}
+	if payload.To != "ghost" || payload.Capability != "ghost" ||
+		payload.Reason != protocol.ReasonTargetNotDeclared || payload.Detail == "" ||
+		payload.TaskID != task.ID {
+		t.Fatalf("拒绝 payload 不对: %+v", payload)
+	}
+	// 拒绝不建任务、也不写进剪枝闭集（IsPruneReason 必须仍是 false）。
+	if protocol.IsPruneReason(protocol.ReasonTargetNotDeclared) {
+		t.Fatal("target_not_declared 不得混进剪枝闭集")
+	}
+	var children int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE parent_task_id = ?`, task.ID).Scan(&children); err != nil {
+		t.Fatalf("统计子任务: %v", err)
+	}
+	if children != 0 {
+		t.Fatalf("拒绝不得建任务，子任务数 = %d", children)
+	}
+}
+
+// TestEmitAuthorizedPlannedRejectionIsNotIdempotencyFact：拒绝不得进幂等域（带 emit_id 即拒）。
+func TestEmitAuthorizedPlannedRejectionIsNotIdempotencyFact(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	_, _, task, auth, _ := emitFixture(t, db, nsID, "review", "emit-reject-id", "tr_emit_reject_id")
+
+	emitID := "retry-after-fix"
+	_, _, err := db.EmitAuthorized(ctx, auth, &EmitRecord{
+		TaskID: task.ID, EmitID: &emitID, ToRef: "ghost", Data: json.RawMessage(`{}`),
+		PlannedRejection: &EmitRejectionFact{
+			To: "ghost", Capability: "ghost", Reason: protocol.ReasonTargetNotDeclared, Detail: "x",
+		},
+	}, nil)
+	if err == nil {
+		t.Fatal("带 emit_id 的拒绝事实被接受了（拒绝会污染幂等域）")
+	}
+	emits, lerr := db.ListEmits(ctx, task.ID)
+	if lerr != nil {
+		t.Fatalf("list emits: %v", lerr)
+	}
+	if len(emits) != 0 {
+		t.Fatalf("被拒的写入不得留 emit 行，得到 %d", len(emits))
+	}
+	events, eerr := db.ListEvents(ctx, nsID, task.TraceID, "", 50)
+	if eerr != nil {
+		t.Fatalf("list events: %v", eerr)
+	}
+	for _, ev := range events {
+		if ev.Type == protocol.ReasonTargetNotDeclared {
+			t.Fatal("被拒的写入不得留观察事件")
+		}
+	}
+}
+
+func TestEmitAuthorizedPlannedRejectionReasonIsClosed(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	_, _, task, auth, _ := emitFixture(t, db, nsID, "review", "emit-reject-code", "tr_emit_reject_code")
+
+	for _, reason := range []string{protocol.ReasonParamMissing, protocol.ReasonScriptFailed, ""} {
+		_, _, err := db.EmitAuthorized(ctx, auth, &EmitRecord{
+			TaskID: task.ID, ToRef: "ghost", Data: json.RawMessage(`{}`),
+			PlannedRejection: &EmitRejectionFact{To: "ghost", Capability: "ghost", Reason: reason, Detail: "x"},
+		}, nil)
+		if err == nil {
+			t.Fatalf("reason=%q 被当成拒绝码接受了", reason)
+		}
+	}
+	emits, err := db.ListEmits(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("list emits: %v", err)
+	}
+	if len(emits) != 0 {
+		t.Fatalf("非法拒绝码不得留事实，得到 %d 行", len(emits))
 	}
 }

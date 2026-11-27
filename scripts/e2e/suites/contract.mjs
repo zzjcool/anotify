@@ -602,8 +602,7 @@ async function main() {
 
 	// ================= 执行链（A6/A7/A8/A9 + D2）=================
 	//
-	// 这一段用共享 MockNode 扮演节点：握手 → 部署回执 → accept → lease.grant →
-	// emit → result。真执行器（子进程、产物、取消、日志）在 node_v4（真 anode 二进制）。
+	// 这一段用共享 MockNode 扮演节点；真执行器（子进程、产物、取消、日志）在 node_v4。
 	console.log("--- 执行链：emit 路由 / 环 / out 退役 / 不自动重试 / D2 两版配置 ---");
 	const fin = await defineCap("c.fin");
 	const fanA = await defineCap("c.fan.a");
@@ -655,6 +654,22 @@ async function main() {
 			["c.fan.a", "c.fin"],
 		);
 		AEq("A6", "父任务的 attempt 计在 grant 上（=1）", done?.status?.attempt, 1);
+
+		// ---- #636：被拒的 emit 必须留一条可查询的事实（旧行为 hub 一条记录都没有）----
+		const rejectedPrune = (tr.pruned || []).filter((p) => p?.spec?.eventType === "target_not_declared");
+		AEq("A6", "#636 trace.pruned 里有被拒 emit 的事实", rejectedPrune.length, 1);
+		A(
+			"A6",
+			"#636 拒绝事实点明原因与真实目标",
+			rejectedPrune[0]?.status?.pruned?.reason === "target_not_declared" &&
+				String(rejectedPrune[0]?.status?.pruned?.detail || "").includes("c.not.next"),
+			JSON.stringify(rejectedPrune[0]?.status?.pruned),
+		);
+		const emissions = (await H.req(server.base, V.P.taskEmissions(NS, taskId), { session })).json?.items || [];
+		const rejectedEmit = emissions.filter((it) => it?.to === "c.not.next" && it?.pruned?.reason === "target_not_declared");
+		AEq("A6", "#636 任务详情 emissions 里能看到被拒的 emit", rejectedEmit.length, 1);
+		A("A6", "#636 被拒的 emit 没有 taskId（B 没建 task）", rejectedEmit[0]?.taskId === null, JSON.stringify(rejectedEmit[0]));
+		A("A6", "#636 被拒的 emit 不带幂等键（--id 不占幂等域）", !rejectedEmit[0]?.id, JSON.stringify(rejectedEmit[0]));
 		// A8：任务信封里没有任何 out 键（v3 的 tasks.out 列与出口语义都已退役）
 		const keys = [Object.keys(done || {}), Object.keys(done?.spec || {}), Object.keys(done?.status || {})].flat();
 		A("A8 Task 信封（含 spec/status）没有 out 键", !keys.includes("out"), JSON.stringify(keys));
