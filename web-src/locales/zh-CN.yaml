@@ -1952,8 +1952,8 @@ trace:
   back: 返回事件流
   refresh: 刷新
   loading: 正在加载链路…
-  no_id: URL 里没有 traceId。从事件流点「查看链路」进来，或手动填 ?traceId=trace_xxx。
-  no_id_title: 缺少 traceId
+  no_id: 从事件流点「查看链路」打开，或在地址后加上 ?traceUID=evt_…（事件流每行的 Trace UID）。
+  no_id_title: 链接里缺少链路 ID
   copy: 复制
   copied: 已复制
   copy_failed: 复制失败

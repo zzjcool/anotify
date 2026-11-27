@@ -256,7 +256,21 @@
        而 Trace GET 可能比 defer 库更快返回（真实现场：响应 132ms、DCL 152ms）。 */
     A.expectGraphics();
     const query = new URLSearchParams(location.search);
-    const uid = query.get("traceUID") || "";
+    /* 同一个概念有两个名字（#582）：页面与事件模型用 `traceUID`，API 文档、CLI 回执与
+       事件流筛选框用 `traceId`。两个都认 —— 拿着 API 的叫法手动拼 ?traceId=… 的人
+       也应该能进来（原来提示教的正是这个拼法，却打不开）。命中别名后把地址规范成
+       `traceUID`：复制出去的链接只长一种样子，刷新也不会来回跳。 */
+    const uid = query.get("traceUID") || query.get("traceId") || "";
+    if (uid && !query.get("traceUID")) {
+      query.delete("traceId");
+      query.set("traceUID", uid);
+      const canonical = query.toString();
+      history.replaceState(null, "", location.pathname + (canonical ? "?" + canonical : "") + location.hash);
+    }
+    /* 缺参说明只有一处：locale 的 trace.no_id（四语）与这里的兜底句保持同一个说法。
+       必须写真实参数名 traceUID 与真实前缀 evt_ —— 原来写的 ?traceId=trace_xxx 是
+       「照着提示做仍然打不开」的那条错提示（#582）。 */
+    const NO_ID = "从事件流点「查看链路」打开，或在地址后加上 ?traceUID=evt_…（事件流每行的 Trace UID）。";
     if (query.get("namespace")) saveScope({ namespace: query.get("namespace") });
     A.mountLayout({ active: "events", title: t("trace.title") });
     const content = document.getElementById("trace-content");
@@ -485,7 +499,7 @@
         document.getElementById("trace-sub").textContent = [readScope().namespace, uid].filter(Boolean).join(" · ");
         if (!uid) {
           /* 缺参不是「载入失败」：它没有可重试的东西，给的是「怎么进这一页」的说明 + 返回事件流。 */
-          throw Object.assign(new Error(t("trace.no_id", "URL 里没有 traceId。")), { traceMissingId: true });
+          throw Object.assign(new Error(t("trace.no_id", NO_ID)), { traceMissingId: true });
         }
         const doc = await api(nsPath("traces", uid));
         if (!Array.isArray(doc.events) || !Array.isArray(doc.tasks) || !Array.isArray(doc.pruned)) throw new Error("malformed Trace");
@@ -498,8 +512,8 @@
         errorBox.replaceChildren(error && error.traceMissingId
           ? stateNode({
             icon: ICON_UNLINK,
-            title: t("trace.no_id_title", "缺少 traceId"),
-            desc: t("trace.no_id", "URL 里没有 traceId。"),
+            title: t("trace.no_id_title", "链接里缺少链路 ID"),
+            desc: t("trace.no_id", NO_ID),
             back: { href: "events.html", text: t("trace.back", "返回事件流") },
           })
           : failureState(error, load));

@@ -13,6 +13,10 @@
 //      点击原重试按钮必须真的再取一次 Trace API 并画出真图。
 //   3. trace-startup-loaded-page
 //      正常已加载页面（无注入）成功：7 rows、真实图、无 error、无全局 pageerror。
+//   4. trace-startup-traceid-alias
+//      #582 的别名参数：API 文档 / CLI 回执把 trace 的唯一键叫 traceId，而页面读 traceUID。
+//      用 ?traceId=… 进来也必须真的打开（7 rows、无缺参空态），且地址被规范成 traceUID
+//      （其它参数保留、别名不留在地址里）。
 //
 // 有界：每步 Playwright 4.5s 超时、外层 watchdog 55s 真实 exit，无轮询/无忙等。
 // 退出码：0 全部通过；1 断言失败；2 watchdog。
@@ -217,6 +221,23 @@ async function loadedPage(d) {
   return { observed };
 }
 
+// case 4：#582 别名参数 —— 用户照 API / CLI 的叫法拼 ?traceId=… 也必须能打开，地址规范成 traceUID
+async function traceIdAlias(d) {
+  await d.page.goto(d.base + '/trace.html?namespace=default&traceId=trace_mock_t1', { waitUntil: 'domcontentloaded', timeout: 7000 });
+  await d.page.waitForFunction(() => document.querySelectorAll('#trace-tasks [data-task]').length === 7, null, { timeout: 4500 });
+  const observed = await scene(d);
+  console.log('TRACE-STARTUP SCENE traceId-alias ' + JSON.stringify(observed));
+  assert.equal(observed.rows, 7, 'an ?traceId= link renders the real trace');
+  assert.equal(observed.error, '', 'no missing-id empty state for the alias: ' + observed.error);
+  const landed = new URL(d.page.url());
+  assert.equal(landed.pathname, '/trace.html');
+  assert.equal(landed.searchParams.get('traceUID'), 'trace_mock_t1', 'the address was normalized to traceUID: ' + d.page.url());
+  assert.equal(landed.searchParams.has('traceId'), false, 'the alias must not stay in the address: ' + d.page.url());
+  assert.equal(landed.searchParams.get('namespace'), 'default', 'the other params survive normalization');
+  await d.finish();
+  return { observed, landed: landed.pathname + landed.search };
+}
+
 async function main() {
   await mkdir(TEAM, { recursive: true });
   const epoch = await sourceEpoch();
@@ -224,6 +245,7 @@ async function main() {
   await runCase('trace-startup-delayed-graphs', delayedGraphs);
   await runCase('trace-startup-missing-graphs', missingGraphs);
   await runCase('trace-startup-loaded-page', loadedPage);
+  await runCase('trace-startup-traceid-alias', traceIdAlias);
   console.log('TRACE-STARTUP OK ' + JSON.stringify({ runId: RUN, epoch, cases: results.map((r) => ({ id: r.id, ok: r.ok })) }));
 }
 

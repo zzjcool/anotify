@@ -1950,8 +1950,8 @@ trace:
   back: Volver a eventos
   refresh: Actualizar
   loading: Cargando traza…
-  no_id: No hay traceId en la URL. Ábrela desde "ver cadena" en el flujo de eventos, o pasa ?traceId=trace_xxx.
-  no_id_title: Falta traceId
+  no_id: 'Ábrela desde «Abrir traza» en el flujo de eventos, o añade ?traceUID=evt_… (el Trace UID que aparece en cada evento).'
+  no_id_title: Falta el ID de la traza en el enlace
   copy: Copiar
   copied: Copiado
   copy_failed: No se pudo copiar

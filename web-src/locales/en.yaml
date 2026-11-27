@@ -1950,8 +1950,8 @@ trace:
   back: Back to events
   refresh: Refresh
   loading: Loading trace…
-  no_id: No traceId in the URL. Open this from "view chain" in the event stream, or pass ?traceId=trace_xxx.
-  no_id_title: Missing traceId
+  no_id: 'Open it from "Open trace" in the event stream, or add ?traceUID=evt_… (the Trace UID shown on each event).'
+  no_id_title: The link is missing a trace ID
   copy: Copy
   copied: Copied
   copy_failed: Copy failed

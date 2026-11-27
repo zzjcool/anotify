@@ -1950,8 +1950,8 @@ trace:
   back: イベント一覧へ戻る
   refresh: 更新
   loading: トレースを読み込み中…
-  no_id: URL に traceId がありません。イベント一覧の「チェーンを表示」から開くか、?traceId=trace_xxx を指定してください。
-  no_id_title: traceId がありません
+  no_id: 'イベント一覧の「トレースを開く」から開くか、アドレスに ?traceUID=evt_…（各イベントの Trace UID）を追加してください。'
+  no_id_title: リンクにトレース ID がありません
   copy: コピー
   copied: コピーしました
   copy_failed: コピーに失敗
