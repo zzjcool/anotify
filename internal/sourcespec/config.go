@@ -57,9 +57,9 @@ type manualConfig struct {
 	Sample        map[string]any  `json:"sample,omitempty"`
 }
 
-// NormalizeConfig 归一化 config：只保留该 kind 认得的字段、补默认值——「库里存的就是规范
-// 形态」，同语义两份 config 落库字节一致，坏形状在写路径当场拒。**不做**：不生成 token
-// （空 = 待 store 补）、不校验 targets（那是 ValidateTargets 的事）。
+// NormalizeConfig 归一化 config：只保留该 kind 认得的字段、补默认值——「库里存的就是规范形态」，同语义
+// 两份 config 落库字节一致，坏形状在写路径当场拒。**不做**：不生成 token（空 = 待 store 补）、不校验
+// targets（那是 ValidateTargets 的事）。
 func NormalizeConfig(kind string, raw json.RawMessage) (json.RawMessage, error) {
 	if !IsKind(kind) {
 		return nil, errKind(kind)
@@ -157,10 +157,10 @@ func NormalizeConfig(kind string, raw json.RawMessage) (json.RawMessage, error) 
 	return nil, errKind(kind)
 }
 
-// MergeConfig 把 PATCH 语义应用到已有 config 上：**凭证字段「省略 = 保留已有」**。GET 永不
-// 回显 token/secret 原文（§3.1），按「省略 = 清空」处理会让一次「只改 payloadSchema」的 PATCH
-// 顺手换掉 webhook 的 URL——那是数据丢失。其它字段省略即清空/缺省（poll 的凭据不在 config
-// 里，所以它的 PATCH 天然「省略 = 保留」，见 normalizePollConfig）。
+// MergeConfig 把 PATCH 语义应用到已有 config 上：**凭证字段「省略 = 保留已有」**。GET 永不回显
+// token/secret 原文（§3.1），按「省略 = 清空」处理会让一次「只改 payloadSchema」的 PATCH 顺手换掉
+// webhook 的 URL——那是数据丢失。其它字段省略即清空/缺省（poll 的凭据不在 config 里，所以它的 PATCH
+// 天然「省略 = 保留」，见 normalizePollConfig）。
 func MergeConfig(kind string, existing, patch json.RawMessage) (json.RawMessage, error) {
 	if !IsKind(kind) {
 		return nil, errKind(kind)
@@ -193,7 +193,6 @@ func MergeConfig(kind string, existing, patch json.RawMessage) (json.RawMessage,
 }
 
 // ValidateSpec 校验一份源 spec（kind / config / targets）。
-//
 // forWrite 区分时机：true = 创建/更新（webhook 的 token **可以**为空，服务端随后生成）；
 // false = 读/比对（webhook 的 token 必须已存在——没有 token 的源在外面对不上任何 URL）。**空 targets 合法**（§5：先建入口再接能力是正常顺序，触发时留一条 no_target 剪枝痕）。
 func ValidateSpec(spec Spec, forWrite bool) error {
