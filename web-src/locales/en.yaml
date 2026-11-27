@@ -348,6 +348,12 @@ message:
     current: Current
   v4:
     diagnostics: "Execution diagnostics"
+    pending_title: "Pending · not dispatched yet"
+    pending_checking: "Checking the reason…"
+    pending_reason_label: "Reason: "
+    pending_unknown: "No node can run this version right now."
+    pending_next: "Open the capability to deploy"
+    pending_hint: "Once this version is deployed, the task is dispatched on the next round."
     attempt: "Attempt / maximum"
     cancel: "Cancel task"
     abandon: "Abandon task"
@@ -1166,6 +1172,17 @@ caps:
     submitting: 'Deploying…'
     title: 'Manual deploy of {name}'
     version: 'Target version'
+    banner_title: "v{v} isn't deployed to any node yet"
+    banner_body: 'Sources and upstream capabilities that reference it by bare name always resolve to the newest version: their new tasks keep waiting until this version is deployed.'
+    banner_deploy: 'Deploy v{v}'
+    pick_nodes: 'Pick nodes…'
+  save:
+    and_deploy: 'Save and deploy to {n} node(s)'
+    only: "Save only (don't deploy)"
+    warn_title: 'Saving creates a new version: nodes still run the old one'
+    warn_text: '{nodes} run v{old}. Sources and upstream capabilities that reference it by bare name always dispatch the newest version: their new tasks wait until it is deployed.'
+    warn_no_online: 'No deploy candidate is online right now: after saving, referencing tasks will wait too.'
+    deploy_failed_title: 'Deploy failed: {reason}'
   detail:
     back: 'Back to capabilities'
     btn: 'Details'

@@ -396,12 +396,12 @@ func TestEligibleNodesReasons(t *testing.T) {
 	if got := store.NodeAvailabilityReason(map[string]string{"n1": "NotAReason"}); got != protocol.ConditionReasonNoMatchingNode {
 		t.Errorf("未知 reason 汇总 = %q, want NoMatchingNode", got)
 	}
-	// 混合优先级：离线压住缺值。
+	// 混合优先级（#575）：在线节点的具体原因压住离线 —— 离线解释不了在线节点为什么也没派出去。
 	if got := store.NodeAvailabilityReason(map[string]string{
 		"n1": protocol.ConditionReasonValueMissing,
 		"n2": protocol.ConditionReasonNodeOffline,
-	}); got != protocol.ConditionReasonNodeOffline {
-		t.Fatalf("混合原因汇总 = %q, want NodeOffline", got)
+	}); got != protocol.ConditionReasonValueMissing {
+		t.Fatalf("混合原因汇总 = %q, want ValueMissing", got)
 	}
 	// 有可用节点时汇总为 ""（Valid）。
 	if got := store.NodeAvailabilityReason(map[string]string{

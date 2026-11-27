@@ -465,6 +465,45 @@
       row.append(link, status);
       return row;
     }
+    /* ---------- #575：pending 任务的「原因 + 下一步」 ----------
+       任务停在 pending 且 waitingReason 为空 = 中枢找不到能派发的节点。旧版这里只列
+       「未设置 waitingReason」，用户看不出该修什么。这里读一次能力的 NodesAvailable
+       条件（服务端已按**每台节点**给出原因），把真实原因原样带出来，并给一条直达
+       能力详情的入口（那里有部署按钮）。读不到就如实说找不到，不编原因。 */
+    let diagnosisRequest = 0;
+    function pendingDiagnosis() {
+      const box = el("div", { class: "grid gap-4", id: "task-pending-diagnosis" });
+      const reason = el("p", { class: "card-sub", text: t("message.v4.pending_checking", "正在确认原因…") });
+      const link = el("a", {
+        class: "btn btn-ghost btn-sm",
+        href: "capability.html?namespace=" + encodeURIComponent(task.namespace) +
+          "&name=" + encodeURIComponent(task.capability.name),
+        text: t("message.v4.pending_next", "到能力详情查看并部署"),
+      });
+      box.append(
+        el("p", { class: "b2-wrap", id: "task-pending-title", text: t("message.v4.pending_title", "待执行 · 还没有派发出去") }),
+        reason,
+        el("div", { class: "flex flex-wrap gap-2" }, link),
+        el("p", { class: "card-sub", text: t("message.v4.pending_hint", "部署这个版本后，这条任务会在下一轮派发时被执行。") }),
+      );
+      const current = revision;
+      const request = ++diagnosisRequest;
+      api(nsPath("capabilities", task.capability.name))
+        .then(res => {
+          if (request !== diagnosisRequest || current !== revision) return;
+          const conditions = res && res.status && Array.isArray(res.status.conditions) ? res.status.conditions : [];
+          const avail = conditions.find(c => c && c.type === "NodesAvailable");
+          const detail = avail && avail.status !== "True" ? String(avail.message || avail.reason || "") : "";
+          reason.textContent = t("message.v4.pending_reason_label", "原因：") +
+            (detail || t("message.v4.pending_unknown", "中枢暂时找不到能执行这个版本的节点。"));
+        })
+        .catch(() => {
+          if (request !== diagnosisRequest || current !== revision) return;
+          reason.textContent = t("message.v4.pending_reason_label", "原因：") +
+            t("message.v4.pending_unknown", "中枢暂时找不到能执行这个版本的节点。");
+        });
+      return box;
+    }
     function render() {
       content.replaceChildren();
       node("msg-title").textContent = task.capability.name + "@" + task.capability.version;
@@ -511,6 +550,9 @@
           el("span", { text: unset.join(" · ") })));
       }
       facts.append(devFold(devEntries));
+      /* #575：pending 且没有任何等待原因 = 中枢找不到能执行这个版本的节点。
+         旧版这里只显示「未设置 waitingReason」，排障链就断在这里。 */
+      if (task.phase === "pending" && !task.attempt && !task.waitingReason) facts.append(pendingDiagnosis());
       const actions = el("div", { class: "flex flex-wrap gap-2" });
       for (const kind of ["cancel", "abandon"]) {
         const button = el("button", { id: "task-" + kind, class: "btn btn-ghost", type: "button", text: t("message.v4." + kind) });

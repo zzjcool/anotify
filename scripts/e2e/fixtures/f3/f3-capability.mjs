@@ -617,20 +617,23 @@ export async function capability(d){
 
 			const dp = await openCap(page, "deploy-preview");
 			const dpConds = await dp.textContent('[data-sec="conditions"]');
-			// 原因优先级是全局的（internal/store/node.go·nodeIneligibilityReason：离线 >
-			// 授权 > 配置未 apply > 未部署 > 缺命令 > 缺值）。真实权威下仓里登记着**离线**的
-			// anode-1/anode-2，任何命名空间的能力都会先报 NodeOffline；而下面 prod-deploy 又
-			// 要求 NodeOffline —— 两条在真实派生下不可能同时成立（有离线节点就压过 ValueMissing，
-			// 没有离线节点就出不了 NodeOffline）。所以值这一路的原因只在 mock 种子里可验。
+			// #575：汇总原因不再让无关的离线节点盖掉在线节点的事实。这个用例前面建过一台在线的
+			// f3-deploy-target（它没有 deploy-preview），所以真实权威下的原因必须是 NotDeployed
+			// （该去点部署）；旧口径「离线优先」会把它报成 NodeOffline，把人引去查网络。
+			// 逐节点明细同时要列出离线节点的名字：汇总回答「该找谁」，明细回答每台差什么。
 			assert.match(
 				dpConds,
-				d.mock ? /ValueMissing/ : /NodeOffline/,
-				d.mock ? "deploy-preview 的 NodesAvailable 必须给 ValueMissing 原因" : "真实权威下 deploy-preview 的原因是 NodeOffline（离线优先）",
+				d.mock ? /ValueMissing/ : /NotDeployed/,
+				(d.mock ? "deploy-preview 的 NodesAvailable 必须给 ValueMissing 原因" : "真实权威下 deploy-preview 的原因是 NotDeployed（在线节点没部署这个版本）") + "；实际：" + String(dpConds).slice(0, 500),
 			);
+			if (!d.mock) {
+				assert.ok(!/NodeOffline/.test(dpConds), "无关的离线节点不得压掉在线节点的 NotDeployed：" + String(dpConds).slice(0, 500));
+				assert.match(dpConds, /anode-1 离线/, "逐节点明细必须列出离线节点的事实：" + String(dpConds).slice(0, 500));
+			}
 			const dpResolved = await dp.textContent('[data-sec="resolved"]');
 			assert.match(dpResolved, /终端能力/, "next=[] 必须显示终端能力空态");
 
-			return "fixer 四条件+resolved+emits；deploy-preview ValueMissing";
+			return "fixer 四条件+resolved+emits；deploy-preview NotDeployed（逐节点明细带离线节点）";
 		});
 
 		/* ---------- 10) observed：真实任务 → taskId/24h 计数；没跑过 → 诚实空态 ----------
@@ -760,8 +763,14 @@ export async function capability(d){
 			await shot(page, "09-detail-diagnostics-prod-missing");
 			const pd = await openCap(page, "prod-deploy");
 			const pdConds = await pd.textContent('[data-sec="conditions"]');
-			assert.match(pdConds, /NodeOffline/, "prod-deploy 的 NodesAvailable 必须给 NodeOffline");
-			return "report.send NotFound/pruned；prod-deploy NodeOffline";
+			// #575：prod 的节点申报的是 default，所以在线的 f3-deploy-target 给出 NamespaceUnauthorized
+			// （先解决授权）；旧口径「离线优先」会把它报成 NodeOffline，把人引去查网络。
+			assert.match(
+				pdConds,
+				d.mock ? /NodeOffline/ : /NamespaceUnauthorized/,
+				(d.mock ? "prod-deploy 的 NodesAvailable 必须给 NodeOffline" : "prod-deploy 的 NodesAvailable 必须给 NamespaceUnauthorized（在线节点未申报 prod）") + "；实际：" + String(pdConds).slice(0, 300),
+			);
+			return "report.send NotFound/pruned；prod-deploy NamespaceUnauthorized（不再被离线节点盖掉）";
 		});
 
 		/* ---------- 13) 四语言页面：无裸 key ---------- */

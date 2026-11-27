@@ -1244,7 +1244,9 @@ func (a *capabilityAPI) nodesAvailableCondition(ctx context.Context, row *store.
 	if reason := store.NodeAvailabilityReason(reasons); reason != "" {
 		condition.Status = protocol.ConditionStatusFalse
 		condition.Reason = reason
-		condition.Message = capabilityNodeAvailabilityMessage(reason, len(nodes))
+		condition.Message = capabilityNodeAvailabilityMessage(reason, len(nodes), reasons, func(nodeID string) string {
+			return a.nodeName(ctx, nodeID)
+		})
 		return condition
 	}
 	if len(nodes) == 0 {
@@ -1258,16 +1260,59 @@ func (a *capabilityAPI) nodesAvailableCondition(ctx context.Context, row *store.
 }
 
 // capabilityNodeAvailabilityMessage 是人话（message 可变、不参与判断）。
-func capabilityNodeAvailabilityMessage(reason string, eligible int) string {
+//
+// #575：只给一句汇总原因会把页面引到错的排查方向（一台无关的离线节点就能把「这个版本
+// 没部署到在线节点」盖成「没有在线节点」）。所以在汇总原因后面**按每台节点**列事实：
+// 汇总回答「该找谁」，逐节点明细回答「每台机器各差什么」。最多列 4 台（这是给人看的诊断
+// 视图，不是数据导出），其余折叠成「等 N 台」。
+func capabilityNodeAvailabilityMessage(reason string, eligible int, reasons map[string]string, nameOf func(string) string) string {
+	message := capabilityNodeAvailabilitySummary(reason, eligible)
+	if len(reasons) == 0 {
+		return message
+	}
+	type detail struct{ name, text string }
+	rows := make([]detail, 0, len(reasons))
+	for nodeID, nodeReason := range reasons {
+		if nodeReason == "" {
+			continue // 可用节点不参与「为什么不可用」
+		}
+		name := nodeID
+		if nameOf != nil {
+			name = nameOf(nodeID)
+		}
+		rows = append(rows, detail{name: name, text: capabilityNodeReasonText(nodeReason)})
+	}
+	if len(rows) == 0 {
+		return message
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
+	const maxRows = 4
+	parts := make([]string, 0, maxRows)
+	for i, row := range rows {
+		if i == maxRows {
+			parts = append(parts, fmt.Sprintf("等 %d 台", len(rows)))
+			break
+		}
+		if row.text == "" {
+			parts = append(parts, row.name)
+			continue
+		}
+		parts = append(parts, row.name+" "+row.text)
+	}
+	return message + "：" + strings.Join(parts, "；")
+}
+
+// capabilityNodeAvailabilitySummary 是汇总原因那一句。
+func capabilityNodeAvailabilitySummary(reason string, eligible int) string {
 	switch reason {
 	case protocol.ConditionReasonNodeOffline:
-		return "没有在线节点能执行这个能力"
+		return "所有节点都离线"
 	case protocol.ConditionReasonNamespaceUnauthorized:
 		return "没有节点的命名空间申报/授权覆盖本命名空间"
 	case protocol.ConditionReasonConfigPending:
 		return "节点的机器级配置还没有 applied"
 	case protocol.ConditionReasonNotDeployed:
-		return "节点上还没有部署这个 digest"
+		return "没有在线节点部署了这个版本"
 	case protocol.ConditionReasonCommandMissing:
 		return "没有节点声明 requires.commands 里的全部命令"
 	case protocol.ConditionReasonValueMissing:
@@ -1277,6 +1322,26 @@ func capabilityNodeAvailabilityMessage(reason string, eligible int) string {
 			return "有可用节点"
 		}
 		return "没有节点同时满足在线、授权、配置 applied 与 requires"
+	}
+}
+
+// capabilityNodeReasonText 是逐节点的一短语事实（空串 = 不解释，只列名字）。
+func capabilityNodeReasonText(reason string) string {
+	switch reason {
+	case protocol.ConditionReasonNodeOffline:
+		return "离线"
+	case protocol.ConditionReasonNamespaceUnauthorized:
+		return "未申报/未授权本命名空间"
+	case protocol.ConditionReasonConfigPending:
+		return "配置还没有 applied"
+	case protocol.ConditionReasonNotDeployed:
+		return "在线，但没有部署这个版本"
+	case protocol.ConditionReasonCommandMissing:
+		return "缺少 requires.commands 里的命令"
+	case protocol.ConditionReasonValueMissing:
+		return "缺 requires.values 的值"
+	default:
+		return ""
 	}
 }
 
