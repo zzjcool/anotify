@@ -51,7 +51,7 @@ func newCliAuthTestEnv(t *testing.T) *cliAuthTestEnv {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	cookie := &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID}
+	cookie := &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token}
 
 	keyV := authn.KeyValidatorFunc(func(_ context.Context, key string) (string, []string, error) {
 		return km.ValidateKey(key)

@@ -306,7 +306,8 @@ paths:
         分页：`limit` 缺省 50（`<=0` 按 50，`>500` 钳到 500），`continue` 是绑定当前
         用户的不透明游标；末页回 `continue: ""`。坏游标 / 别人的游标 → `400`。
 
-        注意 `id` 本身是一条 bearer 凭据（`<sessionID>.<随机后缀>`），不要当无害日志字段。
+        `id` 是**可公开**的会话标识（`sess_<不透明随机串>`）：它不是凭据，也不能当 Cookie 用 ——
+        令牌原文只在 `Set-Cookie` 里出现过一次，服务端只存它的 sha256（#589）。
       operationId: listAuthSessions
       security: [{ session: [] }]
       parameters:
@@ -1476,6 +1477,8 @@ paths:
       description: |
         只列**未过期**会话（`expiresAt > now`），按 `lastSeen` 倒序，硬顶 500 条。
         空时为 `[]`（不是 `null`）。
+
+        `id` 是公开标识，管理端拿到它也**不能**冒充该用户（#589）：令牌原文既不落库也不出接口。
       operationId: listAdminSessions
       security: [{ adminSession: [] }]
       responses:
@@ -1634,12 +1637,15 @@ components:
 
     Session:
       type: object
-      description: 登录会话（`sessions` 表一行）。`id` 本身是一条 bearer 凭据。
+      description: |
+        登录会话（`sessions` 表一行）。
+        `id` 是**可公开**标识（列表、吊销路径、日志都允许出现），**不是** Cookie 的值：
+        令牌原文只在签发时的 `Set-Cookie` 里出现一次，库里只保存它的 sha256。
       required: [id, userId, deviceName, createdAt, expiresAt, lastSeen]
       properties:
         id:
           type: string
-          description: 会话 id（`<sessionID>.<随机后缀>`，即 Cookie `anotify_session` 的值）
+          description: 会话的公开标识（`sess_<不透明随机串>`）；拿到它无法冒充该会话
         userId: { type: string }
         deviceName:
           type: string
@@ -2138,10 +2144,10 @@ components:
 
     AdminSessionRow:
       type: object
-      description: 全站活跃会话总览的一行（只含未过期会话）。
+      description: 全站活跃会话总览的一行（只含未过期会话；`id` 是公开标识，不是凭据）。
       required: [id, userId, username, deviceName, createdAt, expiresAt, lastSeen]
       properties:
-        id: { type: string }
+        id: { type: string, description: 会话公开标识（不是 Cookie 值，不能用来冒充） }
         userId: { type: string }
         username: { type: string, description: 关联用户的用户名（用户已删时为空串） }
         deviceName: { type: string }

@@ -19,22 +19,22 @@ func TestMigrationSchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("schema version: %v", err)
 	}
-	if v != 15 {
-		t.Fatalf("v4 库版本 = %d, want 15", v)
+	if v != 16 {
+		t.Fatalf("v4 库版本 = %d, want 16", v)
 	}
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&n); err != nil {
 		t.Fatalf("count schema_version: %v", err)
 	}
-	if n != 15 {
-		t.Fatalf("schema_version 行数 = %d, want 14（每块只记账一次）", n)
+	if n != 16 {
+		t.Fatalf("schema_version 行数 = %d, want 16（每块只记账一次）", n)
 	}
 	var version int
 	if err := db.QueryRow(`SELECT max(version) FROM schema_version`).Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 15 {
-		t.Fatalf("记账最高版本 = %d, want 15", version)
+	if version != 16 {
+		t.Fatalf("记账最高版本 = %d, want 16", version)
 	}
 }
 
@@ -68,8 +68,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db2.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&n); err != nil {
 		t.Fatalf("count after reopen: %v", err)
 	}
-	if n != 15 {
-		t.Fatalf("重开后 schema_version 行数 = %d, want 14（每块一行，不重复记账）", n)
+	if n != 16 {
+		t.Fatalf("重开后 schema_version 行数 = %d, want 16（每块一行，不重复记账）", n)
 	}
 	if after := snapshotDatabase(t, path); after != snapshot {
 		t.Fatalf("重开改变了行值/DDL/marker:\n before %s\n after %s", snapshot, after)
@@ -240,8 +240,16 @@ func TestMigration13IndexesReachLibraryRecordedAt12(t *testing.T) {
 			t.Fatalf("drop %s: %v", idx, err)
 		}
 	}
+	// 块 16 是**结构**变更（加列），所以退回旧库时也要把列撤掉：
+	// 只删记账不删列，得到的库「记着 12、却长着 16」，那就不是「存量 1..12 库」了。
+	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_sessions_token_hash`); err != nil {
+		t.Fatalf("drop idx_sessions_token_hash: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE sessions DROP COLUMN token_hash`); err != nil {
+		t.Fatalf("drop sessions.token_hash: %v", err)
+	}
 	if _, err := db.Exec(`DELETE FROM schema_version WHERE version >= 13`); err != nil {
-		t.Fatalf("delete ledger 13..15: %v", err)
+		t.Fatalf("delete ledger 13..16: %v", err)
 	}
 	if v, err := db.SchemaVersion(); err != nil || v != 12 {
 		t.Fatalf("退回后的版本 = %d, %v; want 12", v, err)
@@ -255,8 +263,8 @@ func TestMigration13IndexesReachLibraryRecordedAt12(t *testing.T) {
 		t.Fatalf("reopen 1..12 库: %v", err)
 	}
 	defer func() { _ = db2.Close() }()
-	if v, err := db2.SchemaVersion(); err != nil || v != 15 {
-		t.Fatalf("存量库重开后的版本 = %d, %v; want 15", v, err)
+	if v, err := db2.SchemaVersion(); err != nil || v != 16 {
+		t.Fatalf("存量库重开后的版本 = %d, %v; want 16", v, err)
 	}
 	for _, idx := range indexes {
 		if !hasIndex(db2, idx) {

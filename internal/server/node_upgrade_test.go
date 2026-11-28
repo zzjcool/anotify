@@ -94,7 +94,7 @@ func newUpgradeFixture(t *testing.T, binEnabled bool) *upgradeFixture {
 	f := &upgradeFixture{
 		db:     db,
 		target: "9.9.9+test",
-		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
+		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token},
 	}
 
 	binPath := filepath.Join(t.TempDir(), "nonexistent-agent")

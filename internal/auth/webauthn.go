@@ -230,7 +230,7 @@ func (s *Service) FinishRegister(username string, r *http.Request) (sessionID st
 	if err != nil {
 		return "", nil, fmt.Errorf("auth: 签发恢复码失败: %w", err)
 	}
-	return sess.ID, codes, nil
+	return sess.Token, codes, nil // 交给 handler 写 Cookie 的必须是**令牌原文**（id 只是公开标识）
 }
 
 // ensureRegisteredUser 把「刚校验完 attestation 的用户」落库：
@@ -395,7 +395,7 @@ func (s *Service) FinishLogin(username string, r *http.Request) (sessionID strin
 	if err != nil {
 		return "", err
 	}
-	return sess.ID, nil
+	return sess.Token, nil // 交给 handler 写 Cookie 的必须是**令牌原文**（id 只是公开标识）
 }
 
 // BeginDiscoverableLogin 开始可发现（conditional / passkey）登录，无需用户名。
@@ -441,7 +441,7 @@ func (s *Service) FinishDiscoverableLogin(token string, r *http.Request) (sessio
 	if err != nil {
 		return "", err
 	}
-	return sess.ID, nil
+	return sess.Token, nil // 交给 handler 写 Cookie 的必须是**令牌原文**（id 只是公开标识）
 }
 
 // ---------- Passkey 设备授权补建凭证（匿名） ----------

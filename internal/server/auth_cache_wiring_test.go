@@ -80,7 +80,7 @@ func newWiringEnv(t *testing.T) *wiringEnv {
 
 	return &wiringEnv{
 		db: db, svc: svc, mux: mux, userID: uid,
-		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
+		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token},
 	}
 }
 
@@ -168,7 +168,7 @@ func TestAdminDisableInvalidatesSessionCache(t *testing.T) {
 
 	// ② 超管禁用他。
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/users/"+env.userID+"/disable", nil)
-	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: adminSess.ID})
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: adminSess.Token})
 	rr := httptest.NewRecorder()
 	env.mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {

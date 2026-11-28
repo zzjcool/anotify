@@ -148,7 +148,7 @@ func (s *Service) LoginWithRecoveryCode(username, code, deviceName string) (sess
 		"user_id", user.ID,
 		"recovery_code_id", matched.ID,
 	)
-	return sess.ID, nil
+	return sess.Token, nil // 交给 handler 写 Cookie 的必须是**令牌原文**（id 只是公开标识）
 }
 
 // RecoveryStatus 返回未用恢复码数量（不含明文）。

@@ -19,6 +19,7 @@ import (
 //
 // 安全取舍（为什么缓存不降级安全性）：
 //   - 缓存只存 userID / expiresAt / 时间戳，不存 Cookie、不存任何凭据；
+//   - key 是令牌的 sha256（HashSessionToken），内存里也没有明文令牌可被 dump 出来（#589）；
 //   - 命中路径仍然校验 expiresAt（不止看缓存年龄），过期会话不会被缓存复活超过一个 cacheTTL；
 //   - 会话失效必须显式失效：Revoke 成功后同步删条目，禁用用户由 InvalidateUser 删（见 session.go）；
 //   - 任何 DB 读错误一律 fail-closed（401），不做「查不到就放行」。
@@ -40,7 +41,7 @@ const (
 //
 // 用指针存于 map：lastTouch 必须是同一个原子量实例，否则 CAS 抢写权失效。
 type sessEntry struct {
-	// userID 是会话归属用户；命中缓存时直接注入 context，跳过 GetSession+GetUserByID。
+	// userID 是会话归属用户；命中缓存时直接注入 context，跳过 GetSessionByTokenHash+GetUserByID。
 	userID string
 	// expiresAt 是会话自身的过期时间（unix 秒，来自 sessions.expires_at）。
 	// 命中路径必须再校验它：否则缓存会让已过期会话多活一个 cacheTTL。
@@ -68,13 +69,13 @@ func (m *SessionManager) cacheEnabled() bool {
 	return m.cacheTTL > 0 && m.cache != nil
 }
 
-// cacheLookup 取一条缓存（不存在返回 nil）。
-func (m *SessionManager) cacheLookup(sessionID string) *sessEntry {
+// cacheLookup 取一条缓存（不存在返回 nil）。key 是令牌哈希（HashSessionToken），不是令牌。
+func (m *SessionManager) cacheLookup(tokenHash string) *sessEntry {
 	if !m.cacheEnabled() {
 		return nil
 	}
 	m.mu.RLock()
-	e := m.cache[sessionID]
+	e := m.cache[tokenHash]
 	m.mu.RUnlock()
 	return e
 }
@@ -84,13 +85,13 @@ func (m *SessionManager) cacheLookup(sessionID string) *sessEntry {
 // 已存在的条目**原地刷新**（保留 lastTouch）：否则每次 cacheTTL 过期，
 // 节流窗口都会被重置，活跃会话的 last_seen 写入会从「每 touchInterval 一次」
 // 退化回「每 cacheTTL 一次」。
-func (m *SessionManager) cacheStore(sessionID, userID string, expiresAt int64, now time.Time) *sessEntry {
+func (m *SessionManager) cacheStore(tokenHash, userID string, expiresAt int64, now time.Time) *sessEntry {
 	if !m.cacheEnabled() {
 		return nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if e, ok := m.cache[sessionID]; ok {
+	if e, ok := m.cache[tokenHash]; ok {
 		e.userID = userID
 		e.expiresAt = expiresAt
 		e.createdAt = now
@@ -105,7 +106,7 @@ func (m *SessionManager) cacheStore(sessionID, userID string, expiresAt int64, n
 		}
 	}
 	e := &sessEntry{userID: userID, expiresAt: expiresAt, createdAt: now}
-	m.cache[sessionID] = e
+	m.cache[tokenHash] = e
 	return e
 }
 
@@ -119,13 +120,14 @@ func (m *SessionManager) pruneExpiredLocked(now time.Time) {
 }
 
 // InvalidateSession 删除单个会话的缓存条目。
+// 参数是令牌哈希（HashSessionToken(token)），与缓存 key 同一形式；
 // 用法：任何「让某个会话失效」的写路径，在 DB 写成功之后调用。
-func (m *SessionManager) InvalidateSession(sessionID string) {
+func (m *SessionManager) InvalidateSession(tokenHash string) {
 	if !m.cacheEnabled() {
 		return
 	}
 	m.mu.Lock()
-	delete(m.cache, sessionID)
+	delete(m.cache, tokenHash)
 	m.mu.Unlock()
 }
 
@@ -171,17 +173,20 @@ func (m *SessionManager) CacheStats() (entries int, hits, misses uint64) {
 //
 // 返回的 *sessEntry 交给调用方做 TouchSession 节流；缓存关闭或写满时为 nil。
 // userID 在「账户被禁用」这个错误路径上也会返回（用于日志），其它错误路径返回空串。
-func (m *SessionManager) authSession(sessionID string) (string, *sessEntry, error) {
+func (m *SessionManager) authSession(token string) (string, *sessEntry, error) {
 	now := time.Now()
+	// 令牌原文只在这里被哈希一次，之后（缓存 key / DB 条件 / 活跃时间写）用的都是哈希：
+	// 服务端没有任何一处按「明文令牌」去比较或查库（#589）。
+	tokenHash := HashSessionToken(token)
 
-	// 命中路径：0 次 DB 往返（GetSession + GetUserByID 都省掉）。
-	if e := m.cacheLookup(sessionID); e != nil && e.fresh(now, m.cacheTTL) {
+	// 命中路径：0 次 DB 往返（GetSessionByTokenHash + GetUserByID 都省掉）。
+	if e := m.cacheLookup(tokenHash); e != nil && e.fresh(now, m.cacheTTL) {
 		m.hits.Add(1)
 		return e.userID, e, nil
 	}
 	m.misses.Add(1)
 
-	s, err := m.db.GetSession(sessionID)
+	s, err := m.db.GetSessionByTokenHash(tokenHash)
 	if err != nil {
 		// 不区分「会话不存在」和「查询失败」，统一按无效会话处理：
 		// 既避免泄露会话是否存在，也保证 DB 故障时 fail-closed。
@@ -203,7 +208,7 @@ func (m *SessionManager) authSession(sessionID string) (string, *sessEntry, erro
 	}
 	// 写缓存。注意「账户被禁用」不进缓存（负结果不缓存）：宁可让禁用账户每次都走一次 DB，
 	// 也不要把「禁用」固化进缓存、或是让批量禁用账户把缓存冲满。
-	entry := m.cacheStore(sessionID, s.UserID, s.ExpiresAt, now)
+	entry := m.cacheStore(tokenHash, s.UserID, s.ExpiresAt, now)
 	return s.UserID, entry, nil
 }
 
@@ -236,14 +241,14 @@ func (m *SessionManager) authSession(sessionID string) (string, *sessEntry, erro
 // 不再需要「等异步写落地」的 sleep 赌时序。
 //
 // last_seen 只有秒精度，因此节流粒度天然是整秒：touchInterval < 1s 时按 1s 生效。
-func (m *SessionManager) touchSession(sessionID string, e *sessEntry) {
+func (m *SessionManager) touchSession(tokenHash string, e *sessEntry) {
 	now := time.Now().Unix()
 	if e == nil {
 		// 缓存关闭（或条目写满被拒）→ 保持旧行为：每请求同步刷新。
 		// 这里刻意同步而不是异步：不能让「缓存是否命中」改变 last_seen 的可见时机，
 		// 否则运维排查「最近活跃」时会看到两种时延语义。
 		m.touchWrites.Add(1)
-		_ = m.db.TouchSession(sessionID, now)
+		_ = m.db.TouchSessionByTokenHash(tokenHash, now)
 		return
 	}
 	last := e.lastTouch.Load()
@@ -262,7 +267,7 @@ func (m *SessionManager) touchSession(sessionID string, e *sessEntry) {
 	// 写失败忽略：last_seen 只是活跃统计（会话列表的「最近使用」），不参与鉴权判定，
 	// 丢了这次刷新只影响统计精度；反过来把统计写失败上抛成 5xx 才是真的降级。
 	// 同步执行，理由见上面「为什么这里是同步写」。
-	_ = m.db.TouchSession(sessionID, now)
+	_ = m.db.TouchSessionByTokenHash(tokenHash, now)
 }
 
 // TouchWriteCount 返回「节流放行了多少次 last_seen 写库」的累计计数。

@@ -73,7 +73,7 @@ func TestArtifactRoutesAreWiredOnProductionMux(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create session: %v", err)
 		}
-		cookie := &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID}
+		cookie := &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token}
 
 		// ① ns 存在、task 不存在、hash 合法 → 404（不是 401/500）。这条同时证明
 		//    handler 跑通了 authorizePathNamespace + GetTaskArtifactDownload 的前半段。

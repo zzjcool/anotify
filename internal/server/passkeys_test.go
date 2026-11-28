@@ -24,6 +24,8 @@ type passkeysTestEnv struct {
 	svc    *auth.Service
 	userID string
 	cookie *http.Cookie
+	// sessionID 是登录会话的**公开 id**（#589：它不再是 Cookie 值，而是列表里的 id）。
+	sessionID string
 }
 
 func newPasskeysTestEnv(t *testing.T) *passkeysTestEnv {
@@ -64,11 +66,12 @@ func newPasskeysTestEnv(t *testing.T) *passkeysTestEnv {
 	mux.Handle("/v1/auth/", noStore(http.HandlerFunc(authH.ServeHTTP)))
 
 	return &passkeysTestEnv{
-		mux:    mux,
-		db:     db,
-		svc:    svc,
-		userID: uid,
-		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
+		mux:       mux,
+		db:        db,
+		svc:       svc,
+		userID:    uid,
+		cookie:    &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token},
+		sessionID: sess.ID,
 	}
 }
 

@@ -89,7 +89,7 @@ func newPasswordTestEnv(t *testing.T) *passwordTestEnv {
 
 	return &passwordTestEnv{
 		mux: mux, db: db, svc: svc, userID: uid,
-		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
+		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token},
 	}
 }
 

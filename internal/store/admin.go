@@ -300,6 +300,9 @@ func (d *DB) ListGlobalEvents(ctx context.Context, limit int) ([]*AdminGlobalEve
 }
 
 // AdminSessionRow 是管理后台活跃会话总览的一行。
+//
+// ID 是**可公开**的会话标识（#589）：不再是 Cookie 值，管理员拿到它也冒充不了用户。
+// token_hash 刻意不在这里出现 —— 管理接口没有理由读凭据派生值。
 type AdminSessionRow struct {
 	ID         string `json:"id"`
 	UserID     string `json:"userId"`

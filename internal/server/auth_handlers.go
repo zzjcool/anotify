@@ -53,7 +53,9 @@ func (h *authHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "password":
 		h.password(w, r)
 	default:
-		writeErr(w, 404, "unknown auth endpoint: "+sub)
+		// 回固定文案，不拼 sub：路径里可能带着客户端的凭据（#589 实测：旧版前端把会话令牌
+		// 拼进 DELETE /v1/auth/sessions/<令牌>，这里原样回显给调用方，等于再泄一次）。
+		writeErr(w, 404, "unknown auth endpoint")
 	}
 }
 
@@ -182,10 +184,11 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 			// 不能把 500 抛给用户（Cookie 已经要清了，抛错只会让前端卡在“点了没反应”），
 			// 但**绝不能静默吞**：会话行还在库里，谁拿到那个 Cookie 值谁就还能继续用。
 			// 留 Error 级证据让运维能发现（#241 审查发现）。
-			// 只记 session id 的前缀：它本身就是一条 bearer 凭据，不能因日志泄露。
+			// 只记令牌**哈希**的前缀：原文是凭据（现在的会话 id 只是公开标识，拿不到原文），
+			// 记哈希前缀既能定位是哪个会话，又不会把可用凭据写成日志。
 			slog.Error("logout: 会话删除失败（Cookie 已清但会话行可能仍存在）",
 				"event", "auth.logout.revoke_failed",
-				"session_prefix", sessionIDPrefix(c.Value),
+				"token_hash_prefix", sessionIDPrefix(auth.HashSessionToken(c.Value)),
 				"error", rerr.Error(),
 			)
 		}
@@ -219,7 +222,9 @@ func (h *authHandler) me(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// sessionIDPrefix 取会话 id 的前缀，用于日志（会话 id 本身是 bearer 凭据，不能整条落日志）。
+// sessionIDPrefix 取会话标识的前缀，用于日志。
+//
+// 调用方传入的必须是**公开 id 或令牌哈希**（两者都不是凭据）；明文令牌不得经过这里（#589）。
 func sessionIDPrefix(id string) string {
 	if len(id) > 12 {
 		return id[:12] + "…"

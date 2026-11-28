@@ -66,7 +66,7 @@ func newAuditReadEnv(t *testing.T) *auditReadEnv {
 
 	return &auditReadEnv{
 		t: t, db: db, mux: mux,
-		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
+		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token},
 		userID: user.ID,
 		nsA:    defaultNS.ID, nsB: secondNS.ID,
 	}

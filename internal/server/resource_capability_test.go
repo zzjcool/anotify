@@ -94,7 +94,7 @@ func newCapTestEnv(t *testing.T) *capTestEnv {
 		db:     db,
 		deps:   deps,
 		mux:    mux,
-		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
+		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token},
 		nsA:    defaultNS.ID,
 		nsB:    secondNS.ID,
 		slugA:  defaultNS.Slug,

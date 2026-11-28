@@ -78,7 +78,7 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // accessLog 是请求级日志中间件，包在最外层覆盖所有路由。
 // 记录 method/path(剥离 query)/status/latency_ms/ip/request_id/user_id。
-// redactLogPath 抹掉路径里的凭据段（目前只有 webhook token）。
+// redactLogPath 抹掉路径里的凭据段（webhook token、会话令牌）。
 //
 // 只做「按前缀替换」，不解析路由：访问日志在热路径上，任何正则/路由匹配都会变成
 // 每个请求的固定开销，而需要脱敏的前缀是可以穷举的少数几个。
@@ -86,6 +86,13 @@ func redactLogPath(path string) string {
 	const hooksPrefix = "/v1/hooks/"
 	if strings.HasPrefix(path, hooksPrefix) && len(path) > len(hooksPrefix) {
 		return hooksPrefix + "***"
+	}
+	// 会话吊销路径（DELETE /v1/auth/sessions/{id}）现在只该带公开 id，但旧客户端/脚本在轮换期
+	// 仍可能把令牌拼进路径（#589 实测：hub.log 明文记下了整条 Cookie）。日志是长期留存的，
+	// 所以不赌客户端行为：整个尾段一律隐去。
+	const sessionsPrefix = "/v1/auth/sessions/"
+	if strings.HasPrefix(path, sessionsPrefix) && len(path) > len(sessionsPrefix) {
+		return sessionsPrefix + "***"
 	}
 	return path
 }

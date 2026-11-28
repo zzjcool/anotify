@@ -475,8 +475,14 @@ func TestAuthSessionsAndPasskeysPagingHTTP(t *testing.T) {
 			t.Fatalf("会话翻页漏了未过期会话 %s，got %v", id, got)
 		}
 	}
-	if !seen[env.cookie.Value] {
-		t.Fatalf("会话翻页漏了登录会话本身 %s，got %v", env.cookie.Value, got)
+	// 登录会话本身同样必须在：按它的**公开 id** 找（#589 起 Cookie 是令牌原文，不再是列表 id）。
+	if !seen[env.sessionID] {
+		t.Fatalf("会话翻页漏了登录会话本身 %s，got %v", env.sessionID, got)
+	}
+	// 反过来：列表里出现的 id 不能拿来做 Cookie（否则列表就是一张凭据表）。
+	rr := pkReq(t, env, http.MethodGet, "/v1/auth/me", nil, false)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("无 Cookie 应 401, got %d", rr.Code)
 	}
 
 	// ---- passkeys：3 条，limit=2 翻两页 ----
