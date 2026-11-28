@@ -34,6 +34,9 @@ as_of: 2026-11-16 · area: store · 门禁: `go test ./internal/store/... -count
 5. 空列表返回 `[]` 不返 `null`；资源 `status` 无事实时返 `{}` 不返 `null`。
 6. 写路径用 `BEGIN IMMEDIATE`（DSN `_txlock=immediate` + `busy_timeout=5000`），别靠重试兜锁。
    连接池是 8（`store.go:38`）——**不要**假设单连接串行化。
+   **纯读入口禁止 `BeginTx(ctx, nil)`**：`_txlock=immediate` 是 DSN 级开关，空事务也抢写锁，
+   写者持锁时读会排队到写者提交、满 `busy_timeout` 就报 `database is locked`（#008 / #617）。
+   真需要一致快照才用 `&sql.TxOptions{ReadOnly: true}`；守门用例：`config_read_paths_test.go`。
 7. **改表结构至少改三处**：`schema.sql`（列 + 注释）+ 本模块单测（往返 + 结构）+ 结构验收
    （`schema_baseline_test.go` / `v4test/schema_baseline_test.go` 的必需列清单）。
    `migrate.go` 只在引入新迁移块或改引擎时动。
