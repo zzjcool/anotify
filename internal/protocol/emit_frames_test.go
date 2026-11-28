@@ -387,6 +387,7 @@ func TestTaskEmitAckStatusMapping(t *testing.T) {
 		ReasonTokenInvalid:      401,
 		ReasonTaskNotRunning:    409,
 		ReasonEmitIDConflict:    409,
+		ReasonParamsTooLarge:    413,
 		ReasonEmitUnreachable:   500,
 	}
 	for code, wantStatus := range codes {

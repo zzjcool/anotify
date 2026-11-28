@@ -21,13 +21,9 @@ import (
 
 var builtOld, builtNew string
 
-// shortTmpDir 是给 unix socket 这类受 `sun_path` 上限（Linux 上 108 字节）限制的路径用的**短**临时目录。
-//
-// 为什么不用 t.TempDir()：它把「测试名 + /001 序号」拼进路径。TMPDIR 一长（例如
-// make ci 里 scripts/check-tmp-leaks.mjs 给的隔离 TMPDIR、或开发者自己设的
-// 日志目录），`<tmp>/<测试名>/001/emit.sock` 就顶到上限，bind 直接报
-// `invalid argument` —— 那是夹具对「TMPDIR 很短」的隐式假设，不是产品缺陷。
-// socket 单独放这里（路径只多一个短前缀），其它文件仍用 t.TempDir()。
+// shortTmpDir 给 unix socket 这类受 `sun_path` 上限（Linux 108 字节）限制的路径用**短**临时目录：
+// 不用 t.TempDir() 是因为它把「测试名 + 序号」拼进路径，TMPDIR 一长就顶到上限、bind 报
+// `invalid argument`（那是夹具的环境假设，不是产品缺陷）。其它文件仍用 t.TempDir()；
 // 前缀故意带 anotify-：万一没清掉，check-tmp-leaks 的零残留断言会点名它。
 func shortTmpDir(t *testing.T) string {
 	t.Helper()
@@ -131,6 +127,7 @@ func TestEmitEveryExitCodePrunedAndNoCredentialLeaks(t *testing.T) {
 		{"task", 200, 0, `{"taskId":"down","to":"next","version":1}`},
 		{"pruned", 200, 0, `{"taskId":null,"eventId":"ev","to":"next","version":1,"pruned":{"reason":"param_type"}}`},
 		{"badrequest", 400, 2, `{"error":"target_not_declared"}`},
+		{"paramsover", 413, 2, `{"error":"params_too_large","message":"params too large"}`},
 		{"token", 401, 3, `{"error":"token_invalid"}`},
 		{"late", 409, 4, `{"error":"task_not_running"}`},
 		{"conflict", 409, 6, `{"error":"emit_id_conflict"}`},
@@ -168,6 +165,89 @@ func TestEmitEveryExitCodePrunedAndNoCredentialLeaks(t *testing.T) {
 		})
 	}
 }
+
+// TestEmitDataFileReadsFileAndStdin --data-file（文件 / stdin）避开 argv 的 ARG_MAX，
+// 且 413 params_too_large 必须回 2（确定失败）而不是 5（结果未知）/#571。
+func TestEmitDataFileReadsFileAndStdin(t *testing.T) {
+	blob := strings.Repeat("a", 200<<10)
+	payload := `{"blob":"` + blob + `"}`
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var body struct {
+			To   string         `json:"to"`
+			Data map[string]any `json:"data"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if got, _ := body.Data["blob"].(string); body.To != "sink" || len(got) != len(blob) {
+			t.Errorf("--data-file 未原样上行：to=%q blob=%d", body.To, len(got))
+		}
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		fmt.Fprint(w, `{"error":"params_too_large","message":"params too large: 205000 bytes, limit is 122880"}`)
+	}))
+	defer srv.Close()
+	t.Setenv("ANOTIFY_TASK_TOKEN", "fixture-secret")
+	t.Setenv("ANOTIFY_EMIT_ENDPOINT", srv.URL)
+
+	file := filepath.Join(t.TempDir(), "payload.json")
+	if err := os.WriteFile(file, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		stdin bool
+	}{
+		{"file", []string{"sink", "--data-file", file}, false},
+		{"stdin", []string{"sink", "--data-file", "-"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.stdin {
+				in, err := os.Open(file)
+				if err != nil {
+					t.Fatal(err)
+				}
+				saved := os.Stdin
+				os.Stdin = in
+				t.Cleanup(func() { os.Stdin = saved; _ = in.Close() })
+			}
+			var out, stderr bytes.Buffer
+			code := emit(tc.args, &out, &stderr)
+			if code != 2 {
+				t.Fatalf("退出码 = %d，期望 2（确定性失败，不是 5）: %s%s", code, out.String(), stderr.String())
+			}
+			if !strings.Contains(out.String(), protocol.ReasonParamsTooLarge) || strings.Count(out.String(), "\n") != 1 {
+				t.Fatalf("stdout 必须是一行 params_too_large: %q", out.String())
+			}
+			if strings.Count(stderr.String(), "\n") != 1 {
+				t.Fatalf("stderr 必须是一行人话: %q", stderr.String())
+			}
+		})
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("每个用例应当只发一次请求（不重试）：%d", calls.Load())
+	}
+}
+
+func TestEmitDataFileConflictsAndReadErrors(t *testing.T) {
+	t.Setenv("ANOTIFY_TASK_TOKEN", "fixture-secret")
+	t.Setenv("ANOTIFY_EMIT_ENDPOINT", "http://127.0.0.1:1")
+	for _, args := range [][]string{
+		{"sink", "--data", "{}", "--data-file", "-"},
+		{"sink", "--data-file", filepath.Join(t.TempDir(), "missing.json")},
+	} {
+		var out, stderr bytes.Buffer
+		if code := emit(args, &out, &stderr); code != 2 {
+			t.Fatalf("%v => 退出码 %d，期望 2: %s", args, code, out.String())
+		}
+		if !strings.Contains(out.String(), protocol.ReasonParamType) {
+			t.Fatalf("%v => %q，期望 param_type", args, out.String())
+		}
+	}
+}
+
 func TestEmitInvalidDataReasonIsParamType(t *testing.T) {
 	for _, data := range []string{"[1]", "1", "null", `"str"`, "{x", "{} {}"} {
 		var out, stderr bytes.Buffer

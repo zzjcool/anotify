@@ -162,6 +162,24 @@ func TestEmitAckErrorsMapToStatus(t *testing.T) {
 	}
 }
 
+func TestEmitAckParamsTooLargePassesThrough(t *testing.T) {
+	gw, sender, srv := newTestGateway(t)
+	sender.onSend = func(f *protocol.TaskEmitFrame) {
+		gw.HandleEmitAck(&protocol.TaskEmitAckFrame{
+			Type: protocol.FrameTaskEmitAck, RequestID: f.RequestID,
+			TaskID: f.TaskID, Attempt: f.Attempt, HTTPStatus: 413,
+			Error: &protocol.EmitError{Error: protocol.ReasonParamsTooLarge, Message: "params too large"},
+		})
+	}
+	resp, body := postEmit(t, srv, "tok-1", `{"to":"fixer","data":{"blob":"x"}}`)
+	if resp.StatusCode != 413 || body["error"] != protocol.ReasonParamsTooLarge {
+		t.Fatalf("中枢 413 必须原样回（#571）：status=%d body=%v", resp.StatusCode, body)
+	}
+	if resp.Header.Get("Content-Type") != protocol.EmitContentType {
+		t.Fatalf("错误体 media type = %q", resp.Header.Get("Content-Type"))
+	}
+}
+
 func TestEmitOfflineIsUnknownNotSuccess(t *testing.T) {
 	_, sender, srv := newTestGateway(t)
 	sender.offline = true

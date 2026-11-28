@@ -11,10 +11,9 @@ import "encoding/json"
 const (
 	// EmitPath 是 emit 网关的 HTTP 路径（拼在 ANOTIFY_EMIT_ENDPOINT 之后）。
 	EmitPath = "/emit"
-	// EmitAuthScheme 是凭据头的 scheme：`Authorization: Bearer <attemptToken>`。
+	// EmitAuthScheme / EmitAuthHeader 是凭据头：`Authorization: Bearer <attemptToken>`。
 	// 凭据走头，不进 payload，也不进 argv。
 	EmitAuthScheme = "Bearer"
-	// EmitAuthHeader 是凭据头。
 	EmitAuthHeader = "Authorization"
 	// EmitContentType 是请求体的 media type。
 	EmitContentType = "application/json"
@@ -60,10 +59,9 @@ type EmitResponse struct {
 }
 
 // EmitError 是本地 emit 网关的错误体（`{error, message}` + CLI 退出码）。
-//
 // 它不是公共 API 的 Status：不要拿它当 HTTP 资源的错误信封。
 type EmitError struct {
-	// Error 是封闭码（target_not_declared / missing_target / param_type /
+	// Error 是封闭码（target_not_declared / missing_target / param_type / params_too_large /
 	// token_invalid / task_not_running / emit_id_conflict / emit_unreachable）。
 	Error string `json:"error"`
 	// Message 是人话，可以变，不参与任何判断。
@@ -78,14 +76,13 @@ type EmitError struct {
 const (
 	// EmitExitOK 接受，任务已建（或剪枝：taskId=null + pruned）。
 	EmitExitOK = 0
-	// EmitExitBadRequest 目标不在 next 里 / 没给目标 / data 不是 JSON 对象（400）。
+	// EmitExitBadRequest 目标/参数被确定拒绝（400；params 超上限是 413）。
 	EmitExitBadRequest = 2
 	// EmitExitTokenInvalid 令牌无效或过期（401）。
 	EmitExitTokenInvalid = 3
 	// EmitExitTaskNotRunning 任务已结束（I8，409）。
 	EmitExitTaskNotRunning = 4
-	// EmitExitUnknown 端点不可达 / 请求结果未知：**可能已派发**，不能凭它推断
-	// infra 失败并整任务重跑（要安全重发就带同一个 --id）。
+	// EmitExitUnknown 结果未知（可能已派发）：不能据此当 infra 失败重跑。
 	EmitExitUnknown = 5
 	// EmitExitIDConflict 同 id 不同请求（409）。
 	EmitExitIDConflict = 6
@@ -93,13 +90,13 @@ const (
 
 // EmitExitCode 把 emit 的结论码翻译成 CLI 退出码。
 //
-// 未知码 → EmitExitUnknown：宁可让脚本认为「结果未知」，也不要错误地报成
-// 「确定失败」（那会诱使作者加重试，而重试可能重复派发）。
+// 未知码 → EmitExitUnknown：宁可让脚本认为「结果未知」，也不要错报成
+// 「确定失败」（那会诱使作者加重试）。
 func EmitExitCode(reason string) int {
 	switch reason {
 	case "":
 		return EmitExitOK
-	case ReasonTargetNotDeclared, ReasonMissingTarget, ReasonParamType:
+	case ReasonTargetNotDeclared, ReasonMissingTarget, ReasonParamType, ReasonParamsTooLarge:
 		return EmitExitBadRequest
 	case ReasonTokenInvalid:
 		return EmitExitTokenInvalid
@@ -120,6 +117,9 @@ func EmitHTTPStatus(reason string) int {
 		return 200
 	case ReasonTargetNotDeclared, ReasonMissingTarget, ReasonParamType:
 		return 400
+	// 413 不并入 400：病因是体积，且它永远确定性拒绝（零写入），不能落进「结果未知」。
+	case ReasonParamsTooLarge:
+		return 413
 	case ReasonTokenInvalid:
 		return 401
 	case ReasonTaskNotRunning, ReasonEmitIDConflict:

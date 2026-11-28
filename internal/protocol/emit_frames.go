@@ -164,6 +164,7 @@ var emitErrorCodes = map[string]bool{
 	ReasonTokenInvalid:      true,
 	ReasonTaskNotRunning:    true,
 	ReasonEmitIDConflict:    true,
+	ReasonParamsTooLarge:    true,
 	ReasonEmitUnreachable:   true,
 }
 

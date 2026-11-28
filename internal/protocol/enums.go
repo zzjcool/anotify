@@ -131,6 +131,9 @@ const (
 	ReasonTokenInvalid      = "token_invalid"
 	ReasonTaskNotRunning    = "task_not_running"
 	ReasonEmitIDConflict    = "emit_id_conflict"
+	// ReasonParamsTooLarge 是 emit 的 data 超过中枢 params 硬上限（413）：确定性拒绝、零写入；
+	// 并进 emit_unreachable 会把「永远失败」报成「可能已派发」（#571）。
+	ReasonParamsTooLarge = "params_too_large"
 	// 结果未知（可能已派发）：只用于本地 emit 网关的 CLI 退出码 5，不是任务失败码。
 	ReasonEmitUnreachable = "emit_unreachable"
 

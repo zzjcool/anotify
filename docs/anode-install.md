@@ -348,12 +348,12 @@ anode emit review --id logical-report --data '{"summary":"ready"}'
 anode emit --to review --data '{}'
 ```
 
-目标可以位置参数或 `--to`（矛盾目标明确失败）；只有 `--id`、`--data`，data 必须是 JSON object。token 只从 `protocol.EnvTaskToken`（`ANOTIFY_TASK_TOKEN`）、端点只从 `protocol.EnvEmitEndpoint`（`ANOTIFY_EMIT_ENDPOINT`）读取；token 只放 Authorization header，**不进 argv/query/payload**。TCP 使用节点实际端点；`unix://path` 自定义 HTTP transport 请求 `/emit`。网关经唯一 E1 task.emit/task.emit.ack WS 向中枢请求，只有中枢授权/幂等/建下游是权威。
+目标可以位置参数或 `--to`（矛盾目标明确失败）；只有 `--id`、`--data`、`--data-file`（`-` = stdin，与 `--data` 二选一），data 必须是 JSON object。token 只从 `protocol.EnvTaskToken`（`ANOTIFY_TASK_TOKEN`）、端点只从 `protocol.EnvEmitEndpoint`（`ANOTIFY_EMIT_ENDPOINT`）读取；token 只放 Authorization header，**不进 argv/query/payload**。TCP 使用节点实际端点；`unix://path` 自定义 HTTP transport 请求 `/emit`。网关经唯一 E1 task.emit/task.emit.ack WS 向中枢请求，只有中枢授权/幂等/建下游是权威。
 
 | 退出码 | 判据 |
 |---|---|
 | 0 | HTTP 200 已接受，包括 taskId:null + eventId/pruned 的剪枝 |
-| 2 | 缺目标/非法参数/HTTP 400 |
+| 2 | 缺目标/非法参数/HTTP 400/HTTP 413（params 超过 120 KiB，确定未派发） |
 | 3 | 缺/无效 attempt token、HTTP 401 |
 | 4 | HTTP 409 task_not_running |
 | 6 | HTTP 409 emit_id_conflict（同逻辑 id 异 body） |
