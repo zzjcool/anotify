@@ -576,13 +576,62 @@
       choice.addEventListener("change", () => loadLogs());
       logs.append(controls, el("div", { id: "logs-status", class: "card-sub" }), el("div", { id: "logs-output" }));
     }
+    function logClock(at) { // 时间戳缩成 HH:MM:SS.mmm；解析不出来就原样显示（不猜也不隐藏）
+      const text = at == null ? "" : String(at);
+      const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?)/.exec(text);
+      return match ? match[2] : text;
+    }
+    function logLineText(line) {
+      return logClock(line.at) + " [" + line.stream + "] " + line.text;
+    }
+    function logLines(lines, label) { // #586：不走 json()——那会把拼好的串再 stringify（引号 + 字面 \n + 挤成一行）
+      const text = lines.map(logLineText).join("\n");
+      const body = el("pre", { class: "code-body log-body" }); // .log-body 覆盖 pre → pre-wrap，长行自动折行
+      for (const line of lines) {
+        const row = el("span", { class: "log-line" + (line.stream === "stderr" ? " is-stderr" : "") }); // stderr 行单独上色
+        row.append(
+          el("span", { class: "log-at", title: line.at == null ? "" : String(line.at), text: logClock(line.at) + " " }),
+          el("span", { class: "log-tag", text: "[" + line.stream + "] " }),
+          el("span", { "data-raw-content": "", text: String(line.text) + "\n" })); // 行尾是真换行；原文是用户数据
+        body.append(row);
+      }
+      const button = el("button", { type: "button", class: "copy-btn", text: t("docs.copy", "复制") });
+      button.addEventListener("click", () => copyText(button, () => text));
+      return el("div", { class: "code-block" },
+        el("div", { class: "code-head" }, el("span", { text: label || t("message.v4.logs") }), button), body);
+    }
+    function logsNotStarted() { // #586：attempt 0 且没 startedAt = 还没执行；后端那个 410 会把它说成「已过期」
+      return !task.startedAt && !(task.attempt > 0);
+    }
+    async function logRetentionDays() { // 保留期在钉住的那个版本上（lifecycle.resultTtlSec）；读不到就不说天数
+      const cap = task.capability;
+      if (!cap || !cap.name || cap.version == null) return "";
+      try {
+        const doc = await api(nsPath("capabilities", cap.name) + "/versions/" + encodeURIComponent(String(cap.version)));
+        const ttl = doc && doc.spec && doc.spec.lifecycle ? doc.spec.lifecycle.resultTtlSec : null;
+        if (!Number.isFinite(ttl) || ttl <= 0) return "";
+        return ttl % 86400 === 0 ? String(ttl / 86400) : (ttl / 86400).toFixed(1);
+      } catch {
+        return "";
+      }
+    }
     let logRequest = 0;
     async function loadLogs() {
       const current = revision;
       const request = ++logRequest;
       const output = node("logs-output");
+      node("logs-status").textContent = "";
       output.replaceChildren(el("p", { class: "card-sub", text: t("events.v4.loading") }));
       try {
+        if (logsNotStarted()) {
+          output.replaceChildren(stateNode({
+            compact: true,
+            title: t("message.v4.logs_not_started", "任务还没开始执行，暂无日志。"),
+            desc: t("message.v4.logs_not_started_hint", "执行诊断里有它正在等待的原因。"),
+            back: { href: "#task-facts", text: t("message.v4.diagnostics", "执行诊断") },
+          }));
+          return;
+        }
         const params = new URLSearchParams({ previous: node("logs-previous").value });
         if (node("logs-tail").value !== "") params.set("tailLines", node("logs-tail").value);
         if (node("logs-since").value !== "") params.set("sinceSeconds", node("logs-since").value);
@@ -593,10 +642,30 @@
           " · " + t(doc.truncated ? "message.v4.truncated" : "message.v4.complete");
         output.replaceChildren();
         if (!doc.lines.length) output.append(el("p", { class: "card-sub", text: t("message.v4.logs_empty") }));
-        else output.append(json(doc.lines.map(line =>
-          line.sequence + " " + line.at + " [" + line.stream + "] " + line.text).join("\n"), t("message.v4.logs")));
+        else output.append(logLines(doc.lines, t("message.v4.logs")));
       } catch (error) {
-        if (current === revision && request === logRequest) output.replaceChildren(inlineFailure(error, loadLogs));
+        if (current !== revision || request !== logRequest) return;
+        if (error && error.status === 410) { // 已结束 = 档案真过期；还在跑/等 = 还没档案（后端并成一个封闭码）
+          if (task.finishedAt) {
+            const days = await logRetentionDays();
+            if (current !== revision || request !== logRequest) return;
+            output.replaceChildren(stateNode({
+              compact: true,
+              title: t("message.v4.logs_expired", "日志已过保留期"),
+              desc: days
+                ? t("message.v4.logs_expired_ttl", "这个能力的日志保留期是 {n} 天，超期后档案已被清理，不会再恢复。").replace("{n}", days)
+                : t("message.v4.logs_expired_gone", "档案已被清理，不会再恢复。"),
+            }));
+          } else {
+            output.replaceChildren(stateNode({
+              compact: true,
+              title: t("message.v4.logs_not_archived", "这次执行还没有日志档案"),
+              desc: t("message.v4.logs_not_archived_hint", "节点还在执行，或日志刚生成尚未归档；结束后再刷新。"),
+            }));
+          }
+          return;
+        }
+        output.replaceChildren(inlineFailure(error, loadLogs));
       }
     }
     async function loadEmissions(more = false) {

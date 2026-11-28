@@ -755,6 +755,21 @@ body {
 	color: var(--code-text);
 	white-space: pre;
 }
+.log-body { /* #586：日志行自带真换行，靠 pre-wrap 折行（.code-body 的 pre 会横向滚动） */
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	word-break: break-word;
+}
+.log-line { /* 不是 block：行尾已有换行符，block 会让一个换行翻成两行 */
+	overflow-wrap: anywhere;
+}
+.log-at,
+.log-tag {
+	color: var(--faint);
+}
+.log-line.is-stderr {
+	color: var(--error);
+}
 .tk-key {
 	color: var(--accent-strong);
 }

@@ -3461,6 +3461,47 @@ test("F2b2 message controller: diagnostics mask env, actual previous logs/emissi
   assert.match(b2Text(expired.get('task-result')), /message.v4.artifact_expired/);
 });
 
+test('#586 message logs render real plain-text lines (stderr kept, no JSON quoting) and a never-run task asks for no logs', async () => {
+  const run = await b2Page('message', '?namespace=default&id=tsk_mock_2', ({ Mock }) => {
+    Mock.state.taskLogs.find(l => l.task === 'tsk_mock_2').lines = [
+      { sequence: 1, stream: 'stdout', text: 'checking PR #99 of acme/api', at: '2026-11-24T22:45:58.254702693Z' },
+      { sequence: 2, stream: 'stderr', text: 'lint failed: 3 errors in src/main.go', at: '2026-11-24T22:45:58.256989324Z' },
+    ];
+  });
+  const pre = b2Find(run.get('task-logs'), n => n.tagName === 'PRE')[0];
+  assert.ok(pre, 'logs render in their own <pre>');
+  assert.match(String(pre.className), /(^| )log-body( |$)/, 'plain-text log body, not the JSON component');
+  const rows = b2Find(pre, n => /(^| )log-line( |$)/.test(String(n.className)));
+  assert.equal(rows.length, 2, 'one span per log line');
+  const text = rows.map(row => b2Text(row)).join('');
+  assert.equal(text.trimStart().startsWith('"'), false, 'no JSON quote wrapper: ' + text);
+  assert.equal(text.includes('\\n'), false, 'newlines are real, not the literal \\n');
+  assert.equal((text.match(/\n/g) || []).length, 2, 'every rendered line keeps a real newline');
+  assert.ok(text.indexOf('lint failed: 3 errors in src/main.go') > text.indexOf('checking PR #99 of acme/api'), 'stderr line stays last and visible: ' + text);
+  assert.equal(String(rows[0].className).includes('is-stderr'), false);
+  assert.equal(String(rows[1].className).includes('is-stderr'), true, 'stderr rows are marked for the failure colour');
+  assert.match(text, /22:45:58\.254/, 'timestamps shrink to HH:MM:SS.mmm');
+  const clips = [];
+  run.sandbox.navigator.clipboard.writeText = async value => { clips.push(value); };
+  const copy = b2Find(run.get('task-logs'), n => n.tagName === 'BUTTON' && String(n.className).includes('copy-btn'))[0];
+  assert.ok(copy, 'the log block still has its copy button');
+  await copy.fire('click');
+  assert.equal(clips.length, 1);
+  assert.equal(clips[0].includes('\\n'), false, 'copy is not an escaped JSON string: ' + clips[0]);
+  assert.equal(clips[0].split('\n').length, 2, 'copy is two real lines: ' + clips[0]);
+  assert.match(clips[0].split('\n')[1], /\[stderr\] lint failed: 3 errors in src\/main\.go/);
+
+  const never = await b2Page('message', '?namespace=default&id=tsk_mock_5', ({ Mock }) => {
+    const task = Mock.state.tasks.find(x => x.name === 'tsk_mock_5');
+    task.attempt = 0; task.startedAt = null; task.phase = 'pending';
+  });
+  assert.equal(never.calls.filter(c => String(c.url).includes('/logs')).length, 0, 'a task that never ran must not ask for logs at all');
+  const empty = b2Text(never.get('logs-output'));
+  assert.match(empty, /任务还没开始执行/);
+  assert.equal(/内容已过期|载入失败/.test(empty), false, 'never-ran is not "expired": ' + empty);
+  assert.equal(b2Text(never.get('logs-status')).trim(), '');
+});
+
 test("F2b2 trace/index controllers: actual namespace Trace graph and task deep links, stats only", async () => {
   const trace = await b2Page('trace', '?namespace=default&traceUID=trace_mock_t1');
   assert.equal(trace.calls.filter(c => c.url.includes('/traces/')).length, 1);
