@@ -84,7 +84,6 @@ func (s *Session) Send(ctx context.Context, frame any) error {
 	return nil
 }
 
-// close 关闭底层连接（幂等）。
 func (s *Session) close(code websocket.StatusCode, reason string) {
 	s.stateMu.Lock()
 	if s.isClosed {
@@ -103,7 +102,6 @@ func (s *Session) closedFlag() {
 	s.stateMu.Unlock()
 }
 
-// closed 报告会话是否已经关闭。
 func (s *Session) closed() bool {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()

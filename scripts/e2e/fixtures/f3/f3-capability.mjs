@@ -1,6 +1,7 @@
 // Attributed F2a fill/open and ten actual action chains with exact recorder.
 import assert from 'node:assert/strict';
 import { bringUpFixtureNode, deployApplied, capRef } from './f3-node.mjs';
+import { poll } from '../../lib/v4.mjs';
 
 // 真实权威下「人工部署」用例落到的节点名。它同时是页面候选 checkbox 的 value，
 // 所以断言直接拿这个名字对账（不是随便哪个在线节点）。
@@ -170,7 +171,6 @@ async function fillCreateForm(page) {
 	const rows3 = page.locator("#cap-env .cap-env-row");
 	await rows3.nth(1).locator("input.input").nth(1).fill("vars.SOURCE_ROOT");
 
-	// lifecycle
 	await page.check("#cap-idempotent");
 	await page.fill("#cap-max-attempts", "2");
 	await page.fill("#cap-result-ttl", "604800");
@@ -413,7 +413,6 @@ export async function capability(d){
 			assert.equal(await page.inputValue("#cap-version"), "2", "400 后输入保留");
 			assert.equal(await page.locator("#cap-modal:not(.hidden)").count(), 1);
 			await shot(page, "04-version-immutable-400");
-			// 版本切换：显式改成 3 再存
 			await page.fill("#cap-version", "3");
 			await takeRec(page);
 			await page.click("#cap-submit");
@@ -617,15 +616,14 @@ export async function capability(d){
 
 			const dp = await openCap(page, "deploy-preview");
 			const dpConds = await dp.textContent('[data-sec="conditions"]');
-			// 原因优先级是全局的（internal/store/node.go·nodeIneligibilityReason：离线 >
-			// 授权 > 配置未 apply > 未部署 > 缺命令 > 缺值）。真实权威下仓里登记着**离线**的
-			// anode-1/anode-2，任何命名空间的能力都会先报 NodeOffline；而下面 prod-deploy 又
-			// 要求 NodeOffline —— 两条在真实派生下不可能同时成立（有离线节点就压过 ValueMissing，
-			// 没有离线节点就出不了 NodeOffline）。所以值这一路的原因只在 mock 种子里可验。
+			// 汇总规则（internal/store/node.go·NodeAvailabilityReason）：有在线节点就只取在线节点的
+			// 原因（授权 > 配置未 apply > 未部署 > 缺命令 > 缺值），全部离线才报 NodeOffline。真实
+			// 权威下本轮人工部署起的那台节点（f3-deploy-target）在线、却没部署过 deploy-preview，
+			// 所以这里必须报 NotDeployed；值这一路的原因只在 mock 种子里可验。
 			assert.match(
 				dpConds,
-				d.mock ? /ValueMissing/ : /NodeOffline/,
-				d.mock ? "deploy-preview 的 NodesAvailable 必须给 ValueMissing 原因" : "真实权威下 deploy-preview 的原因是 NodeOffline（离线优先）",
+				d.mock ? /ValueMissing/ : /NotDeployed/,
+				d.mock ? "deploy-preview 的 NodesAvailable 必须给 ValueMissing 原因" : "真实权威下 deploy-preview 的在线节点只差部署（在线节点的原因压过离线）",
 			);
 			const dpResolved = await dp.textContent('[data-sec="resolved"]');
 			assert.match(dpResolved, /终端能力/, "next=[] 必须显示终端能力空态");
@@ -742,6 +740,11 @@ export async function capability(d){
 
 		/* ---------- 12) prod 命名空间诊断：missing 下游 + NodeOffline + pruned ---------- */
 		await check("诊断（prod）：scope 切换后 report.send DownstreamResolved=NotFound，prod-deploy NodeOffline，observed pruned", async () => {
+			// 全离线是 NodeOffline 的判据（#569）：在线夹具节点在 prod 里只差授权，先关掉它。
+			if (!d.mock) {
+				for (const node of d.fixtures.__holdNodes ?? []) node.close();
+				await poll("在线夹具节点真的下线", async () => !(await d.api("/v1/nodes/" + DEPLOY_TARGET)).body.status.online, { timeoutMs: 8000 });
+			}
 			await page.locator(".scope-trigger").click();
 			await page.locator('[data-ns-id="prod"]').click();
 			await page.waitForSelector('[data-cap="report.send"]', { timeout: 20000 });

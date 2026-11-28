@@ -434,6 +434,22 @@ func TestEligibleNodesReasons(t *testing.T) {
 			},
 			want: protocol.ConditionReasonValueMissing,
 		},
+		{
+			name: "脏值 + 离线",
+			reasons: map[string]string{
+				"n1": "NotAReason",
+				"n2": protocol.ConditionReasonNodeOffline,
+			},
+			want: protocol.ConditionReasonNoMatchingNode,
+		},
+		{
+			name: "脏值 + 在线具体原因",
+			reasons: map[string]string{
+				"n1": "NotAReason",
+				"n2": protocol.ConditionReasonConfigPending,
+			},
+			want: protocol.ConditionReasonConfigPending,
+		},
 	} {
 		if got := store.NodeAvailabilityReason(tc.reasons); got != tc.want {
 			t.Fatalf("%s：汇总原因 = %q, want %q", tc.name, got, tc.want)

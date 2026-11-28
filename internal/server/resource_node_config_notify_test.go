@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,8 @@ type nodeConfigNotifyFixture struct {
 	token  string
 	hub    *ws.Hub
 	srv    *hubServer
+	deps   *serverDeps
+	logs   *bytes.Buffer
 }
 
 func newNodeConfigNotifyFixture(t *testing.T) *nodeConfigNotifyFixture {
@@ -68,9 +71,10 @@ func newNodeConfigNotifyFixture(t *testing.T) *nodeConfigNotifyFixture {
 	}
 
 	hub := ws.NewHub(db, route.New(db))
+	logs := &bytes.Buffer{}
 	deps := &serverDeps{
 		DB: db, Router: route.New(db), Hub: hub,
-		Log: slog.Default(), Now: nowMilli, Session: svc.Sessions().Middleware,
+		Log: slog.New(slog.NewTextHandler(logs, nil)), Now: nowMilli, Session: svc.Sessions().Middleware,
 	}
 	mux := http.NewServeMux()
 	newNodeAPI(deps).register(mux)
@@ -78,7 +82,7 @@ func newNodeConfigNotifyFixture(t *testing.T) *nodeConfigNotifyFixture {
 	f := &nodeConfigNotifyFixture{
 		db: db, mux: mux,
 		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
-		node:   node, token: token, hub: hub,
+		node:   node, token: token, hub: hub, deps: deps, logs: logs,
 	}
 	f.srv = newHubServer(t, hub)
 	return f
@@ -306,4 +310,32 @@ spec:
 			t.Fatalf("已对齐的节点在「只改 tags」的 PATCH 后不该收到帧，得到 %T", frame)
 		}
 	})
+}
+
+// TestNodeConfigWriteSurvivesNotifyFailure：写库已成功，推送失败只记 WARN（#569 review r1）。
+func TestNodeConfigWriteSurvivesNotifyFailure(t *testing.T) {
+	f := newNodeConfigNotifyFixture(t)
+	dead, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open dead db: %v", err)
+	}
+	if err := dead.Close(); err != nil {
+		t.Fatalf("close dead db: %v", err)
+	}
+	f.deps.Hub = ws.NewHub(dead, route.New(f.db))
+
+	rr := f.do(t, http.MethodPut, "/v1/nodes/"+f.node.Name+"/config", map[string]any{
+		"metadata":   map[string]any{"resourceVersion": f.configRV(t)},
+		"namespaces": []string{"default"},
+		"vars":       map[string]string{"FOO": "bar"},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("推送失败不该影响已经落库的写入：status = %d, want 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	if got := f.configRevision(t); got == "0" {
+		t.Fatalf("配置必须真的落库，configRevision 仍是 %s", got)
+	}
+	if !strings.Contains(f.logs.String(), "api.nodes.config_notify_failed") {
+		t.Fatalf("推送失败必须留下 WARN（event=api.nodes.config_notify_failed），日志：%s", f.logs.String())
+	}
 }

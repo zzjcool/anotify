@@ -129,9 +129,10 @@ type Hub struct {
 	sessions map[string]*Session // nodeID → session（同一节点只保留最新连接）
 	logs     map[string]*logRequest
 
-	// cfgNudgeMu 保护 lastCfgNudge（config.changed 兜底补推的节流时刻）。
+	// config.changed 兜底补推的 per-node 节流时刻 / 单轮闸门（config_notify.go）。
 	cfgNudgeMu   sync.Mutex
-	lastCfgNudge time.Time
+	cfgNudgeAt   map[string]time.Time
+	cfgNudgeBusy sync.Mutex
 
 	steer slotSteer // 「这台节点刚说过这个能力没槽」的调度建议（#681，见 steer.go）
 }

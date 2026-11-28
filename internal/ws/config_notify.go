@@ -50,21 +50,39 @@ func (h *Hub) pushConfigChanged(ctx context.Context, nodeID string) error {
 	return nil
 }
 
+// nudgeStaleConfigs 起一轮兜底补推：异步 + per-node 节流，一条黑洞会话不占住派发 tick。
 func (h *Hub) nudgeStaleConfigs(ctx context.Context) {
-	now := time.Now()
-	h.cfgNudgeMu.Lock()
-	if !h.lastCfgNudge.IsZero() && now.Sub(h.lastCfgNudge) < configNudgeInterval {
-		h.cfgNudgeMu.Unlock()
+	if !h.cfgNudgeBusy.TryLock() {
 		return
 	}
-	h.lastCfgNudge = now
-	h.cfgNudgeMu.Unlock()
-
-	for _, nodeID := range h.onlineNodeIDs() {
-		if err := h.pushConfigChanged(ctx, nodeID); err != nil {
-			h.log.Warn("config.changed nudge failed", "node_id", nodeID, "err", err)
+	due := h.dueConfigNudges()
+	go func() {
+		defer h.cfgNudgeBusy.Unlock()
+		for _, nodeID := range due {
+			if err := h.pushConfigChanged(ctx, nodeID); err != nil {
+				h.log.Warn("config.changed nudge failed", "node_id", nodeID, "err", err)
+			}
 		}
+	}()
+}
+
+func (h *Hub) dueConfigNudges() []string {
+	online := h.onlineNodeIDs()
+	now := time.Now()
+	h.cfgNudgeMu.Lock()
+	defer h.cfgNudgeMu.Unlock()
+	live := make(map[string]time.Time, len(online))
+	due := make([]string, 0, len(online))
+	for _, nodeID := range online {
+		if at, seen := h.cfgNudgeAt[nodeID]; seen && now.Sub(at) < configNudgeInterval {
+			live[nodeID] = at
+			continue
+		}
+		live[nodeID] = now
+		due = append(due, nodeID)
 	}
+	h.cfgNudgeAt = live
+	return due
 }
 
 func (h *Hub) onlineNodeIDs() []string {

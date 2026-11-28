@@ -393,7 +393,7 @@ SCENARIOS.set('capability-actions', async (server, fixtures) => {
   }
   // 用例 9 切到 prod 后要看的也是两件 mock 种子同名的真实事实：
   //   · report.send：`next` 里有一个解析不到的 ghost-cap（DownstreamResolved = NotFound）；
-  //   · prod-deploy：NodesAvailable = NodeOffline（仓里登记的节点不在线，离线优先于其它原因）。
+  //   · prod-deploy：NodesAvailable = NodeOffline（仓里登记的两个节点都没有会话，全离线才报它）。
   await ensureCapability(server, s, PROD, 'report.send', ['ghost-cap']);
   await ensureCapability(server, s, PROD, 'prod-deploy');
   // report.send 的「最近一次运行」：经真实源投一条 prod 事件，让中枢自己长出 report.send 的

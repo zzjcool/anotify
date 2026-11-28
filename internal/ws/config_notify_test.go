@@ -157,3 +157,34 @@ func TestNudgeStaleConfigsPushesMissedNotification(t *testing.T) {
 		t.Fatalf("节流窗口内的第二轮补推不该再发帧，得到 %T", frame)
 	}
 }
+
+// TestDispatchLoopNudgesStaleConfig 钉住兜底补推的**调用点**（#569 review r1）。
+func TestDispatchLoopNudgesStaleConfig(t *testing.T) {
+	e := newEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	conn, _ := e.dialCaptureWelcome(t)
+
+	revision := bumpNodeConfig(t, e, map[string]string{"FOO": "bar"}) // 不调通知：模拟写入口丢帧
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.hub.RunDispatchLoop(ctx, 20*time.Millisecond)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	frame, _, err := e.readRaw(t, conn, 5*time.Second)
+	if err != nil {
+		t.Fatalf("派发循环 5s 内没有补推 config.changed（tick 里的 nudgeStaleConfigs 没接线）: %v", err)
+	}
+	changed, ok := frame.(*protocol.ConfigChangedFrame)
+	if !ok {
+		t.Fatalf("兜底补推的第一帧应是 config.changed，得到 %T", frame)
+	}
+	if changed.Revision != strconv.FormatInt(revision, 10) {
+		t.Fatalf("兜底补推的 revision = %q, want %d", changed.Revision, revision)
+	}
+}

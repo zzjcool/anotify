@@ -77,6 +77,7 @@ type nodeAPI struct {
 func newNodeAPI(d *serverDeps) *nodeAPI { return &nodeAPI{d: d} }
 
 // notifyConfigChanged 推 config.changed（#569）：中枢只写库，节点要靠它才会 config.get → apply。
+// create 不调：新节点刚铸出 id，还没有任何会话，推了也是 no-op。
 func (a *nodeAPI) notifyConfigChanged(ctx context.Context, nodeID string) {
 	if a == nil || a.d == nil || a.d.Hub == nil || nodeID == "" {
 		return
@@ -409,7 +410,6 @@ func (a *nodeAPI) create(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, err)
 			return
 		}
-		a.notifyConfigChanged(r.Context(), n.ID)
 	}
 	env, err := a.readEnvelope(r.Context(), n, "")
 	if err != nil {

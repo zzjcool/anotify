@@ -60,7 +60,6 @@ const (
 	artifactUploadErrForbidden    = "forbidden"
 )
 
-// logger 返回非 nil logger（避免 handler 里到处判空）。
 func (h *artifactUploadHandler) logger() *slog.Logger {
 	if h == nil || h.log == nil {
 		return slog.Default()
