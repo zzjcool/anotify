@@ -1,18 +1,4 @@
 #!/usr/bin/env node
-/**
- * Anotify.errorMessage 的单测（#587）。
- *
- * 为什么需要它：安全页的每个失败分支都只读 `body.message`，而认证域回的是扁平的
- * `{"error": "…"}` —— 服务端写好的「当前密码不正确」「至少保留一种登录方式：请先设置
- * 密码，再删除最后一个 Passkey。」全被吞成「HTTP 400 / 409」。这类事故的判据是
- * **把真的响应体喂进真的函数**，看它吐出什么；静态扫 `body.message` 出没出现是扫不出来的
- * （两种错误体并存，两种写法字符串都在）。
- *
- * 做法照 `scripts/admin-messages.test.mjs`：在 vm 上下文里**真执行** web/partials.js，
- * 只 stub 掉加载期会碰的浏览器表面，然后调 window.Anotify.errorMessage。
- *
- * 不测什么：不测各页面把返回值拼进 toast 的那层 —— 那需要整套 DOM/交互，e2e 的活。
- */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -21,11 +7,6 @@ import vm from "node:vm";
 
 const PARTIALS_PATH = "web/partials.js";
 const PARTIALS_SRC = fs.readFileSync(PARTIALS_PATH, "utf8");
-
-/* ------------------------------------------------------------------ *
- * 最小浏览器沙箱（只够加载 partials.js 并调用 Anotify.errorMessage）
- * 形状与 scripts/admin-messages.test.mjs 的同名函数一致：那边证明过够用。
- * ------------------------------------------------------------------ */
 
 function fakeNode(tag = "div") {
 	const attrs = new Map();
@@ -141,7 +122,6 @@ function makeSandbox() {
 	};
 }
 
-/** 在独立 vm context 里加载一份 partials.js，返回 window.Anotify。 */
 function loadAnotify(src = PARTIALS_SRC) {
 	const ctx = vm.createContext(makeSandbox());
 	vm.runInContext("globalThis.window = globalThis; globalThis.self = globalThis;", ctx);
@@ -149,10 +129,6 @@ function loadAnotify(src = PARTIALS_SRC) {
 	return ctx.Anotify;
 }
 
-/**
- * 造一个只够 errorMessage 用的假 Response。
- * json() 只会成功一次（真 Response 也是）—— 重复读会抛，用来钉住「别读两次」。
- */
 function fakeResponse(status, body, { jsonThrows = false } = {}) {
 	let read = false;
 	return {
@@ -169,12 +145,12 @@ function fakeResponse(status, body, { jsonThrows = false } = {}) {
 
 const Anotify = loadAnotify();
 
-test("v4 Status 信封：取 message", async () => {
+test("#587 v4 Status 信封：取 message", async () => {
 	const res = fakeResponse(400, { kind: "Status", status: "Failure", code: 400, reason: "bad_request", message: "当前密码不正确" });
 	assert.equal(await Anotify.errorMessage(res), "当前密码不正确");
 });
 
-test("认证域扁平体：取 error（#587 的主症状）", async () => {
+test("#587 认证域扁平体：取 error", async () => {
 	const cases = [
 		[409, "至少保留一种登录方式：请先设置密码，再删除最后一个 Passkey。"],
 		[400, "当前密码不正确"],
@@ -186,12 +162,12 @@ test("认证域扁平体：取 error（#587 的主症状）", async () => {
 	}
 });
 
-test("两种字段都有时 message 优先（资源域口径）", async () => {
+test("#587 两种字段都有时 message 优先", async () => {
 	const res = fakeResponse(400, { message: "Status 的话", error: "扁平的话" });
 	assert.equal(await Anotify.errorMessage(res), "Status 的话");
 });
 
-test("非 JSON / 空体 / 空串：退回 HTTP <status>，不伪造成功", async () => {
+test("#587 非 JSON / 空体：退回 HTTP <status>", async () => {
 	assert.equal(await Anotify.errorMessage(fakeResponse(502, null, { jsonThrows: true })), "HTTP 502");
 	assert.equal(await Anotify.errorMessage(fakeResponse(500, null)), "HTTP 500");
 	assert.equal(await Anotify.errorMessage(fakeResponse(400, { message: "", error: "" })), "HTTP 400");
@@ -199,7 +175,7 @@ test("非 JSON / 空体 / 空串：退回 HTTP <status>，不伪造成功", asyn
 	assert.equal(await Anotify.errorMessage({ status: 0 }), "HTTP 0", "网络不可达（没有 res.json）也要有话说");
 });
 
-test("响应体只读一次（调用方 !res.ok 之后直接交给它）", async () => {
+test("#587 响应体只读一次", async () => {
 	const res = fakeResponse(400, { error: "读一次就好" });
 	assert.equal(await Anotify.errorMessage(res), "读一次就好");
 	assert.equal(res.reads(), true);
