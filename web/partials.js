@@ -1190,9 +1190,9 @@
 		return map;
 	})();
 
-	/* 抽屉陷阱与弹层 Tab 环共用这一份选择器（契约 D2 要求逐字相同）。 */
+	/* 抽屉陷阱与弹层 Tab 环共用（契约 D2）：summary 与 contenteditable 也是天然可聚焦元素。 */
 	const FOCUSABLE_SELECTOR =
-		'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+		'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"])';
 
 	function focusableItems(root) {
 		if (!root || typeof root.querySelectorAll !== "function") return [];
@@ -3510,6 +3510,7 @@
 		try {
 			if (backdrop.isConnected === false) return; /* 弹层已被移出文档：不抢焦点 */
 			let target = backdrop.querySelector("[data-autofocus]");
+			if (target && !(target.offsetWidth > 0 || target.offsetHeight > 0)) target = null; // 不可见的标记等于没标（focus() 静默失败）
 			if (!target) target = focusableItems(backdrop)[0] || null;
 			if (!target) {
 				target = backdrop.querySelector(".modal-panel");
@@ -3557,7 +3558,9 @@
 			if (targets.indexOf(old) >= 0) continue;
 			try {
 				old.removeAttribute("inert");
-				if (!MODAL_INERT_ARIA.get(old)) old.removeAttribute("aria-hidden");
+				const wasAria = MODAL_INERT_ARIA.get(old);
+				if (wasAria === null) old.removeAttribute("aria-hidden");
+				else old.setAttribute("aria-hidden", wasAria);
 				MODAL_INERT_ARIA.delete(old);
 			} catch (e) {
 				/* 元素已随页面重渲染消失：没有要撤的 */
@@ -3569,7 +3572,7 @@
 			if (!el || typeof el.setAttribute !== "function") continue;
 			try {
 				if (!MODAL_INERT_ARIA.has(el))
-					MODAL_INERT_ARIA.set(el, !!el.hasAttribute("aria-hidden"));
+					MODAL_INERT_ARIA.set(el, el.getAttribute("aria-hidden"));
 				el.setAttribute("inert", "");
 				el.setAttribute("aria-hidden", "true");
 			} catch (e) {
@@ -3600,7 +3603,7 @@
 		const first = items[0];
 		const last = items[items.length - 1];
 		const active = safeActiveElement();
-		const inside = items.indexOf(active) >= 0;
+		const inside = !!active && typeof top.contains === "function" && top.contains(active); // 包含关系而非 items 成员：summary 不在环里
 		if (event.shiftKey) {
 			if (inside && active !== first) return;
 			event.preventDefault();
@@ -3636,10 +3639,10 @@
 		if (at >= 0) MODAL_STACK.splice(at, 1);
 		MODAL_STACK.push(backdrop);
 		bindModalEscape();
-		/* #588 D2：先停背景再搬焦点（中途不留一帧焦点落到背景）。 */
+		/* #588 D2：先搬焦点再停背景 —— 反序会在焦点仍在背景子树时挂 aria-hidden，Chrome 拒绝应用并告警。 */
 		bindModalTrap();
-		syncModalInert();
 		focusModalEntry(backdrop);
+		syncModalInert();
 	}
 
 	function closeModal(backdrop) {
@@ -3652,7 +3655,7 @@
 		if (backdrop.classList.contains("is-closing")) return; /* 重复调用不叠加 */
 		backdrop.classList.add("is-closing");
 		returnModalFocus(backdrop);
-		/* #588 D2：returnModalFocus 已弹栈并撤 inert；还有下一层就继续，真没了才彻底恢复。 */
+		/* #588 D2：returnModalFocus 里已按新栈撤过；这里再同步一次是幂等兜底（页面可能直接改过栈）。 */
 		syncModalInert();
 		/* 时长与 CSS 同源；reduce 下该 token 是 0ms，0 必须当有效值 */
 		const raw = parseFloat(

@@ -6928,6 +6928,10 @@ test('#588 D2: openModal 接管焦点/外壳惰性/键盘陷阱，closeModal 先
     assert.ok(open.includes(call),
       `#588: openModal 没有调用 ${call} —— 弹层打开后${call === 'focusModalEntry(' ? '焦点还留在背景里' : call === 'syncModalInert(' ? '外壳没有退出无障碍树' : 'Tab 会跑到背景里'}`);
   }
+  const focusAtOpen = open.indexOf('focusModalEntry(');
+  const inertAtOpen = open.indexOf('syncModalInert(');
+  assert.ok(focusAtOpen < inertAtOpen,
+    '#588: openModal 必须先搬焦点再给背景惰性化 —— 反序会在焦点仍在背景子树里时给祖先挂 aria-hidden=true，Chrome 拒绝应用并打印干预告警');
 
   const close = sliceFnBody(source, '\tfunction closeModal(backdrop) {');
   const returnAt = close.indexOf('returnModalFocus(');
@@ -6945,6 +6949,73 @@ test('#588 D2: syncModalInert 同时处理 inert 与 #app-shell', () => {
   const shell = /#app-shell/.test(body) || /getElementById\(\s*["']app-shell["']\s*\)/.test(body);
   assert.ok(shell, '#588: syncModalInert 没有定位 #app-shell（惰性没挂到弹层所在的外壳上）');
   assert.ok(/aria-hidden/.test(body), '#588: syncModalInert 没有同步 aria-hidden（只靠 inert 时老读屏仍能念到外壳）');
+});
+
+test('#588 D2: 关闭弹层后 inert / aria-hidden 还原成打开前的值（显式 aria-hidden="false" 不能留成 true）', () => {
+  const source = readFileSync(path.join(ROOT, 'web/partials.js'), 'utf8');
+  const body = sliceFnBody(source, '\tfunction syncModalInert(');
+  const mkEl = (attrs) => {
+    const map = new Map(Object.entries(attrs));
+    return {
+      map,
+      setAttribute: (k, v) => map.set(k, String(v)),
+      getAttribute: (k) => (map.has(k) ? map.get(k) : null),
+      removeAttribute: (k) => map.delete(k),
+      hasAttribute: (k) => map.has(k),
+      contains: () => false,
+    };
+  };
+  const shell = mkEl({ 'aria-hidden': 'false' });
+  const ctx = vm.createContext({
+    topOpenModal: () => ctx.__open,
+    document: { getElementById: () => shell },
+    MODAL_INERTED: [],
+    MODAL_INERT_ARIA: new WeakMap(),
+  });
+  vm.runInContext(`${body}\n globalThis.syncModalInert = syncModalInert;`, ctx);
+
+  ctx.__open = mkEl({});
+  ctx.syncModalInert();
+  assert.equal(shell.getAttribute('inert'), '', '#588: 打开弹层时 #app-shell 没有设 inert');
+  assert.equal(shell.getAttribute('aria-hidden'), 'true', '#588: 打开弹层时 #app-shell 没有设 aria-hidden=true');
+
+  ctx.__open = null;
+  ctx.syncModalInert();
+  assert.equal(shell.hasAttribute('inert'), false, '#588: 关闭后 #app-shell 的 inert 没有摘掉（键盘/读屏永久困在弹层里）');
+  assert.equal(shell.getAttribute('aria-hidden'), 'false',
+    '#588: 关闭后 aria-hidden 要还原成打开前的 "false"，不能永久留成 "true"（会把本来显式可读的子树永久藏掉）');
+});
+
+test('#588 D2: 弹层焦点环不把环外可选元素（details>summary）当成跑到弹层外面', () => {
+  const source = readFileSync(path.join(ROOT, 'web/partials.js'), 'utf8');
+  assert.ok(/const FOCUSABLE_SELECTOR =\s*\n\s*'[^']*summary/.test(source),
+    '#588: FOCUSABLE_SELECTOR 不含 summary —— summary 天然可聚焦却不在环内，Tab 到它就会被重置回首项');
+
+  const body = sliceFnBody(source, '\tfunction onModalTab(event) {');
+  const run = (kind, shift) => {
+    const calls = { prevented: 0, focused: [] };
+    const els = { first: { id: 'first' }, last: { id: 'last' }, summary: { id: 'summary' } };
+    const top = { contains: (n) => n === els.first || n === els.last || n === els.summary };
+    const ctx = vm.createContext({
+      topOpenModal: () => top,
+      focusableItems: () => [els.first, els.last],
+      safeActiveElement: () => els[kind] || { id: kind },
+      focusQuietly: (n) => { calls.focused.push(n.id); },
+    });
+    vm.runInContext(`${body}\n globalThis.onModalTab = onModalTab;`, ctx);
+    ctx.onModalTab({ key: 'Tab', shiftKey: !!shift, preventDefault: () => { calls.prevented += 1; } });
+    return calls;
+  };
+
+  assert.deepEqual(run('summary', false), { prevented: 0, focused: [] },
+    '#588: 焦点在 details>summary 上按 Tab 被拦并重置了 —— 它后面的字段与保存按钮从此正向 Tab 不可达');
+  assert.deepEqual(run('summary', true), { prevented: 0, focused: [] },
+    '#588: 焦点在 details>summary 上按 Shift+Tab 被拦了（回退方向同样要放行）');
+  assert.deepEqual(run('last', false), { prevented: 1, focused: ['first'] }, '#588: 末项 Tab 没有环绕到首项');
+  assert.deepEqual(run('first', true), { prevented: 1, focused: ['last'] }, '#588: 首项 Shift+Tab 没有环绕到末项');
+  assert.deepEqual(run('outside', false), { prevented: 1, focused: ['first'] },
+    '#588: 焦点跑到弹层外面时没有抢回弹层（Tab 会一路走到背景侧栏）');
+  assert.deepEqual(run('outside', true), { prevented: 1, focused: ['last'] }, '#588: 焦点在弹层外按 Shift+Tab 没有抢回末项');
 });
 
 test('#588 D3: mountLayout 把 .skip-link 再 prepend 到 body 最前，Tab 第一下才落在跳转链接', () => {
