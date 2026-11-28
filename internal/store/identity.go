@@ -11,34 +11,25 @@ import (
 // 后一个 BeginTx 要等前一个提交，必然读到那一行。本值**不能**被其它写用户路径接受（它们只认 admin|member）。
 const RoleAuto = "auto"
 
-// 注册（#204 A1 / #205）：建用户 + 建 `default` 命名空间，**在一个事务内**——代码里不存在
-// 「没有命名空间」的分支，半成品没人会发现。已无组织层（不建组织、不写 org_members）；
-// 首个注册用户是超管的判定同样在这个事务里（RoleAuto，见上，避免 #240 的双 admin 竞态）。
+// 注册（#204 A1 / #205）：建用户 + 建 `default` 命名空间，**在一个事务内**（不存在
+// 「没有命名空间」的分支）。首用户判定与注册闸门（#574）也在这个事务里（见 RoleAuto）。
 func (d *DB) RegisterUser(ctx context.Context, u *User) (*Namespace, error) {
 	// Passkey 注册路径：不写密码列（"" / 0 = 迁移 8 的列默认值）。
 	return d.registerUser(ctx, u, "", 0)
 }
 
 // RegisterUserWithPassword 与 RegisterUser **完全同语义**（RoleAuto 首用户判定 /
-// 默认命名空间），额外在**同一个事务**里写入密码列。
-//
-// 为什么必须同事务（契约「追加：用密码注册」§A1）：密码是这条注册路径唯一的登录方式。
-// 若先把用户行提交、再 UPDATE 密码，中间失败就留下一个「有账号、却没有任何登录方式」
-// 的半成品——它既进不去（没有 Passkey），又会占住用户名。一个事务全成或全不成。
-//
-// passwordHash 必须是 argon2id PHC 串（由 auth 层用 hashKey 生成）；store 不解析它，
-// 也不做校验——这层只保证「存什么读什么」。
+// 默认命名空间），额外在**同一个事务**里写入密码列（契约「追加：用密码注册」§A1）：
+// 先提交用户行再 UPDATE 密码会在中途失败时留下「有账号、没有任何登录方式」的半成品。
+// passwordHash 必须是 argon2id PHC 串；store 不解析也不校验（只保证存什么读什么）。
 func (d *DB) RegisterUserWithPassword(
 	ctx context.Context, u *User, passwordHash string, passwordUpdatedAt int64,
 ) (*Namespace, error) {
 	return d.registerUser(ctx, u, passwordHash, passwordUpdatedAt)
 }
 
-// registerUser 是两个导出注册入口的共同主体：
-// 建用户 + 建 `default` 命名空间，**在同一个事务里**完成。
-//
-// v4 不再播种任何内置能力：链尾就是 next: [] 的普通脚本能力，没有中枢内置执行器，
-// 因此也没有「每个命名空间必须有一份 notify.phone」这种起点。
+// registerUser 是两个导出注册入口的共同主体：建用户 + 建 `default` 命名空间，同一个事务里完成。
+// v4 不再播种内置能力（链尾就是 next: [] 的普通脚本能力，没有中枢内置执行器）。
 func (d *DB) registerUser(ctx context.Context, u *User, passwordHash string, passwordUpdatedAt int64) (*Namespace, error) {
 	if u == nil {
 		return nil, fmt.Errorf("register user: nil user")
@@ -49,17 +40,27 @@ func (d *DB) registerUser(ctx context.Context, u *User, passwordHash string, pas
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// 自助注册闸门（#574）：与 INSERT 同事务（理由同 RoleAuto）；计数同时服务两者。
+	policy := d.RegistrationPolicy()
+	needCount := policy == RegistrationFirstUserOnly || u.Role == RoleAuto
+	var userCount int64
+	if needCount {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&userCount); err != nil {
+			return nil, fmt.Errorf("count users for registration policy: %w", err)
+		}
+	}
+	if policy == RegistrationFirstUserOnly && userCount > 0 {
+		// 提交前返回（defer 的 Rollback 收尾）：拒绝路径不写任何行。
+		return nil, ErrRegistrationClosed
+	}
+
 	role := u.Role
 	switch role {
 	case "":
 		role = RoleMember
 	case RoleAuto:
-		// 首用户判定与 INSERT 同事务：读必须走 tx（同快照），不能走池（见 RoleAuto）。
-		var n int64
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&n); err != nil {
-			return nil, fmt.Errorf("count users for auto role: %w", err)
-		}
-		if n == 0 {
+		// 首用户判定与 INSERT 同事务：userCount 就是上面那次 tx 查询的结果。
+		if userCount == 0 {
 			role = RoleAdmin
 		} else {
 			role = RoleMember

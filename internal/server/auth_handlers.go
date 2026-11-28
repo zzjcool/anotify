@@ -62,6 +62,12 @@ func (h *authHandler) registerOptions(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 405, "method not allowed")
 		return
 	}
+	if rateLimited(w, rlPasskeyRegisterIP, clientIP(r)) {
+		return
+	}
+	if !h.registrationGate(w, r) {
+		return
+	}
 	var req usernameReq
 	if err := readJSON(r, &req); err != nil || req.Username == "" {
 		writeErr(w, 400, "缺少 username")
@@ -84,6 +90,12 @@ func (h *authHandler) register(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 405, "method not allowed")
 		return
 	}
+	if rateLimited(w, rlPasskeyRegisterIP, clientIP(r)) {
+		return
+	}
+	if !h.registrationGate(w, r) {
+		return
+	}
 	// username 从 query 传（WebAuthn 断言在 body）
 	username := r.URL.Query().Get("username")
 	if username == "" {
@@ -92,6 +104,10 @@ func (h *authHandler) register(w http.ResponseWriter, r *http.Request) {
 	}
 	sessID, codes, err := h.svc.FinishRegister(username, r)
 	if err != nil {
+		if errors.Is(err, store.ErrRegistrationClosed) {
+			writeRegistrationClosed(w, r)
+			return
+		}
 		slog.Warn("register failed",
 			"event", "auth.register.fail",
 			"ip", clientIP(r),
@@ -605,6 +621,9 @@ func (h *authHandler) passwordRegister(w http.ResponseWriter, r *http.Request) {
 	if rateLimited(w, rlPasswordRegisterIP, clientIP(r)) {
 		return
 	}
+	if !h.registrationGate(w, r) {
+		return
+	}
 	var req struct {
 		Username    string `json:"username"`
 		Password    string `json:"password"`
@@ -617,6 +636,10 @@ func (h *authHandler) passwordRegister(w http.ResponseWriter, r *http.Request) {
 	sessID, codes, err := h.svc.RegisterWithPassword(
 		r.Context(), req.Username, req.DisplayName, req.Password, auth.DeviceNameFromUA(r.UserAgent()))
 	if err != nil {
+		if errors.Is(err, store.ErrRegistrationClosed) {
+			writeRegistrationClosed(w, r)
+			return
+		}
 		// 文案原样回给前端（用户名已存在 / 密码太短 / 用户名不合法都由 auth 层给定）；
 		// 不记 username、不记明文、不记哈希。
 		slog.Warn("password register failed",

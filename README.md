@@ -241,6 +241,10 @@ curl -X POST https://你的域名/v1/namespaces/{namespace}/events \
 | `ANOTIFY_RP_ID` | `localhost` | WebAuthn RP 域名（=访问域名） |
 | `ANOTIFY_RP_ORIGIN` | `http://localhost:8080` | WebAuthn Origin（含协议） |
 | `ANOTIFY_CDN_PREFIX` | 空 | CDN 前缀（生产静态加速） |
+| `ANOTIFY_REGISTRATION` | `first-user-only` | 自助注册策略（#574）：`first-user-only` = 仅空库首个用户可注册（之后 403 `registration_closed`）；`open` = 任何人可注册（启动打 WARN，**公网部署勿用**）。`invite` 尚未实现，配了会拒绝启动 |
+
+> 升级注意：默认值从「开放注册」变成 `first-user-only`，**已有用户的部署升级后注册会立刻关闭**。
+> 想保持旧行为：`ANOTIFY_REGISTRATION=open`。当前状态可查 `GET /v1/auth/registration`。
 
 ## 文件结构
 
@@ -267,4 +271,8 @@ scripts/integration.sh / ws_test.mjs                 测试脚本
 - API Key **只存 argon2id 哈希**，明文仅创建时显示一次，scope 目前只有 `notify:send`（它护的是事件入口 `POST /v1/namespaces/{ns}/events`）
 - Passkey(WebAuthn) 无密码；也可注册时选密码，或登录后在安全页设置密码作为第二套登录方式；会话 httpOnly Cookie
 - **每个账号至少保留一种登录方式**：删除最后一个 Passkey 需先设置密码，移除密码需先有 Passkey
+- **自助注册默认关闭**（#574）：`ANOTIFY_REGISTRATION` 默认 `first-user-only` —— 空库时首个注册者
+  成为管理员，之后三条注册入口（Passkey 两跳 + 密码注册）一律 `403 registration_closed`。
+  「已登录」是几乎所有写操作的唯一授权条件（含能力部署/触发执行/签发节点令牌），所以
+  「谁能注册」必须有闸门；把实例隧道挂到公网前请确认这一项是默认值。
   - `*.db` / `.env.local` / `.env.dev` 已 gitignore，勿提交

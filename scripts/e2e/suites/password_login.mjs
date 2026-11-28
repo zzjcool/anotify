@@ -278,7 +278,7 @@ async function main() {
 	console.log(
 		"=== SUITE: password_login（密码登录 · 真后端 + 真 Chrome · 虚拟认证器）===",
 	);
-	server = await H.startServer({ suiteName: SUITE, rpId: RP });
+	server = await H.startServer({ suiteName: SUITE, rpId: RP, extraEnv: { ANOTIFY_REGISTRATION: "open" } });
 	browser = await chromium.launch({
 		channel: "chrome",
 		headless: true,

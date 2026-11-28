@@ -46,8 +46,9 @@ type DB struct {
 	// stmts 是只读路径的 per-DB 语句缓存（#242，见 stmt.go）。
 	// 用值类型而非指针：零值就是一个能用的空缓存，包内直造的测试 DB
 	// （`&DB{DB: sqlDB}`）不会因为忘了初始化而静默退化成直查。
-	stmts    stmtCache
-	leaseTTL atomic.Int64 // 租约时长（纳秒；0 = 协议下限），见 lease_config.go
+	stmts        stmtCache
+	leaseTTL     atomic.Int64 // 租约时长（纳秒；0 = 协议下限），见 lease_config.go
+	registration atomic.Int32 // 自助注册闸门（#574；0 = RegistrationOpen），见 registration.go
 }
 
 // Open 打开（并迁移）一个 SQLite 数据库。path 可为 ":memory:"。

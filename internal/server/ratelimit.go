@@ -31,6 +31,13 @@ const (
 	// 它不需要猜），username 维留给登录那两条路径。这里要拦的是“一台机器批量
 	// 灌号”与“argon2 计算洪泛”——两条都是 IP 维能盖住、username 维盖不住的。
 	rlPasswordRegisterPerMin = 10 // 10/min/IP
+
+	// Passkey 注册两跳与密码注册同一档 10/min/IP：都是匿名且昂贵的写入口
+	// （challenge 占内存 + attestation 校验 + argon2），#574 之前这两跳没有限流。
+	rlPasskeyRegisterPerMin = 10 // 10/min/IP
+
+	// 注册策略查询：登录页每次加载都问，额度高一档；吐的是公开状态，限流只为防枚举。
+	rlRegistrationStatusPerMin = 120 // 120/min/IP
 )
 
 var (
@@ -49,6 +56,10 @@ var (
 	// 密码注册只有 IP 维（见上面的常量注释）。
 	rlPasswordRegisterIP = newFixedWindow(rlPasswordRegisterPerMin, time.Minute)
 
+	// Passkey 注册两跳共用同一个限速器；注册策略查询是登录页每次加载都问一次的匿名只读。
+	rlPasskeyRegisterIP    = newFixedWindow(rlPasskeyRegisterPerMin, time.Minute)
+	rlRegistrationStatusIP = newFixedWindow(rlRegistrationStatusPerMin, time.Minute)
+
 	// hooks 入口是**双维度**限流（见 rateLimitedHook 的注释）。
 	// nil 表示该维度被显式关闭（配置为负数，见 configureHookRateLimit）。
 	rlHookIP    = newFixedWindow(defaultHookRatePerIPPerMin, time.Minute)
@@ -57,18 +68,9 @@ var (
 
 // /v1/hooks/{token} 的默认限流额度（每分钟），可被 env 覆盖（见 Config.hookRateLimits）。
 //
-// 为什么这个端点必须有：它是**唯一不需要登录的公开写端点**（token 即凭据）。
-// 拿到（或猜到）一个 token 就能直接触发派发；没有限流时，一个 token 泄露
-// 等于把中枢的派发能力无上限地交给外网。
-//
-// 为什么是两维（#245）：
-//   - 只看 IP：一个出口 IP 后面挂多个源（或批量告警回放）时会被总量掐死 ——
-//     老实现 60/min 让批量告警从第 61 条起全 429，这是 issue #245 的现场。
-//   - 只看 token：token 是攻击者手里**可以换**的东西（多个源各一个），换个 token
-//     就绕过，等于没限流。
-//
-// 所以两维都要放行才算放行：token 维管“单通道稳态速率”，IP 维管“单机总量”。
-// 600/min（10 RPS）够一条告警通道批量回放几百条；1200/min（20 RPS）给同 IP 多源留一倍余量。
+// 它是**唯一不需要登录的公开写端点**（token 即凭据），所以必须限流。两维（#245）：
+// 只看 IP 会把「一个出口 IP + 批量告警」在第 61 条后全 429；只看 token 换个 token 就绕过。
+// 两维都放行才算放行：600/min 够单通道批量回放，1200/min 给同 IP 多源留一倍余量。
 const (
 	defaultHookRatePerMin      = 600  // 每 token 每分钟（10 RPS）
 	defaultHookRatePerIPPerMin = 1200 // 每 IP 每分钟（20 RPS）

@@ -21,6 +21,7 @@ services:
       ANOTIFY_RP_ID: ${ANOTIFY_RP_ID:?请在 .env 中设置}
       ANOTIFY_RP_ORIGIN: ${ANOTIFY_RP_ORIGIN:?请在 .env 中设置}
       ANOTIFY_RP_DISPLAY: ${ANOTIFY_RP_DISPLAY:-Anotify}
+      ANOTIFY_REGISTRATION: ${ANOTIFY_REGISTRATION:-first-user-only}
       # --- 其他 ---
       ANOTIFY_ADDR: :8080
       # 「今日」/热力图日界使用的服务端时区；例：Asia/Shanghai

@@ -235,6 +235,11 @@ curl -X POST https://your-domain/v1/namespaces/{namespace}/events \
 | `ANOTIFY_RP_ID` | `localhost` | WebAuthn RP domain (= access domain) |
 | `ANOTIFY_RP_ORIGIN` | `http://localhost:8080` | WebAuthn Origin (with protocol) |
 | `ANOTIFY_CDN_PREFIX` | empty | CDN prefix (production static acceleration) |
+| `ANOTIFY_REGISTRATION` | `first-user-only` | Self-service sign-up policy (#574): `first-user-only` = only the first user of an empty database may register (afterwards `403 registration_closed`); `open` = anyone can register (logs a WARN, **do not use on public deployments**). `invite` is not implemented yet and refuses to start |
+
+> Upgrade note: the default changed from open sign-up to `first-user-only`, so **an existing deployment
+> closes self-service sign-up as soon as it upgrades**. To keep the old behaviour: `ANOTIFY_REGISTRATION=open`.
+> The effective state is exposed at `GET /v1/auth/registration`.
 
 ## File Structure
 

@@ -4,6 +4,22 @@
 
 ## 未发布
 
+### 中枢（anotify）
+
+- **安全：自助注册默认关闭**（#574）。新增 `ANOTIFY_REGISTRATION`：
+  - `first-user-only`（**默认**）：只有空库的首个注册者可以建号（成为管理员），之后三条注册入口
+    （Passkey `register/options` + `register`、密码注册）一律 `403 registration_closed`；
+  - `open`：旧的「谁都能注册」行为，启动时打一条 WARN（公网部署不要用）。
+    显式配 `invite` 会拒绝启动——邀请表随第 2 步落地。
+  - **升级注意**：这是行为变更。已有用户的部署升级后注册会立刻关闭；要保留旧习惯请设
+    `ANOTIFY_REGISTRATION=open`。启动日志新增 `server.registration.configured`（含 `policy` /
+    `users_existing` / `accepting_registration`），`open` 额外打 `server.registration.open` WARN。
+- 新增匿名只读 `GET /v1/auth/registration` → `{"registration":"open"|"closed"}`（空库 + `first-user-only`
+  折算为 `open`），供登录页判断是否展示注册入口；限流 120/min/IP。
+- Passkey 注册两跳（`register/options`、`register`）补 IP 限流 10/min/IP（#574：此前只有密码注册有限流）。
+- 注册闸门在 store 的注册事务内判定（`BEGIN IMMEDIATE` 里数 `users`，与 INSERT 同事务），
+  所以并发首注册仍然恰好一个账号成功。
+
 ### 节点（anode）
 
 - 任务环境的 `PATH` 改为「**跟着服务用户的登录 shell 走，但只抓一次**」：安装脚本用
