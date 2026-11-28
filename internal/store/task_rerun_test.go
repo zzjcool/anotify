@@ -43,7 +43,6 @@ func TestCreateRerun_DefaultsToLiveVersionAndCopiesParams(t *testing.T) {
 	if err := db.CreateTasks(ctx, []*Task{orig}); err != nil {
 		t.Fatalf("create original task: %v", err)
 	}
-	// 原任务走到终态失败（#605 里「脚本 exit 1」的形状）。
 	if _, err := db.Exec(
 		`UPDATE tasks SET phase = ?, attempt = 1, error = ?, summary = ?, finished_at = ?
 		  WHERE id = ?`,
@@ -55,7 +54,6 @@ func TestCreateRerun_DefaultsToLiveVersionAndCopiesParams(t *testing.T) {
 		t.Fatalf("read original before rerun: %v", err)
 	}
 
-	// 默认（version=0）= 当前 live 版本 v2，不是原任务的 v1。
 	created, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID})
 	if err != nil {
 		t.Fatalf("create rerun task: %v", err)
@@ -85,7 +83,6 @@ func TestCreateRerun_DefaultsToLiveVersionAndCopiesParams(t *testing.T) {
 	if !reflect.DeepEqual(gotP, wantP) {
 		t.Fatalf("rerun params = %s, want %s", created.Params, params)
 	}
-	// rerun_of 往返一致。
 	reread, err := db.GetTask(ctx, ns, created.ID)
 	if err != nil {
 		t.Fatalf("read rerun task: %v", err)
@@ -97,7 +94,6 @@ func TestCreateRerun_DefaultsToLiveVersionAndCopiesParams(t *testing.T) {
 		t.Fatalf("读回的 params = %s, want %s", reread.Params, created.Params)
 	}
 
-	// 原任务一个字段都没变。
 	after, err := db.GetTask(ctx, ns, orig.ID)
 	if err != nil {
 		t.Fatalf("read original after rerun: %v", err)
@@ -130,7 +126,6 @@ func TestCreateRerun_ExplicitVersionAndRejections(t *testing.T) {
 		t.Fatalf("create original task: %v", err)
 	}
 
-	// 显式版本 = 原版本 v1。
 	pinned, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID, Version: 1})
 	if err != nil {
 		t.Fatalf("create rerun @1: %v", err)
@@ -139,7 +134,6 @@ func TestCreateRerun_ExplicitVersionAndRejections(t *testing.T) {
 		t.Fatalf("显式版本重跑钉住 %d/%s, want 1/sha256:pin-v1", pinned.Version, pinned.Digest)
 	}
 
-	// 不存在的版本 / 已删除的版本 / 看不见的任务：一律 404（不回退成 live）。
 	if _, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID, Version: 9}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("version=9 err = %v, want ErrNotFound", err)
 	}
@@ -149,7 +143,6 @@ func TestCreateRerun_ExplicitVersionAndRejections(t *testing.T) {
 	if _, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID, Version: 1}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("已删除版本 err = %v, want ErrNotFound", err)
 	}
-	// 跨命名空间：任务不可见 → 404（不泄露存在性）。
 	if _, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: other, TaskID: orig.ID}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("跨 ns err = %v, want ErrNotFound", err)
 	}
@@ -164,7 +157,6 @@ func TestCreateRerun_UnresolvedFailureUsesRequestedName(t *testing.T) {
 	ns, _ := newTestNS(t, db)
 	seedRerunCapability(t, db, ns, "late-capability", 1, "sha256:late-v1")
 
-	// tasks_unresolved_failure_shape 那条 CHECK 的唯一合法形状。
 	now := Now()
 	id := NewTaskID()
 	if _, err := db.Exec(
