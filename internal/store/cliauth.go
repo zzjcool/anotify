@@ -318,12 +318,8 @@ func (d *DB) UpdateCliAuthSessionRequestedWithSecret(id, deviceHint, secretHash 
 	return n > 0, nil
 }
 
-// UpdateCliAuthSessionApprovedFromRequested 原子迁移 requested→approved（Passkey 授权批准）。
-//
-// initiatorID 是会话发起者（建会话时写入的 user_id）。条件里带 `AND user_id = ?`，
-// 因为 `user_id` 只表示「谁发起」，批准者不允许改写它（#625：任何登录用户都能批准
-// 别人的会话并把新设备绑进自己的账号）。返回 false 表示会话不在 requested 状态
-// 或发起者不匹配。
+// UpdateCliAuthSessionApprovedFromRequested 原子迁移 requested→approved（只有发起者）。
+// 条件带 `AND user_id = ?`（user_id 只表示「谁发起」，批准者不得改写）；false = 状态不对或不是发起者。
 func (d *DB) UpdateCliAuthSessionApprovedFromRequested(id, initiatorID string) (bool, error) {
 	res, err := d.Exec(
 		`UPDATE cli_auth_sessions SET status = ? WHERE id = ? AND status = ? AND user_id = ?`,
@@ -339,8 +335,7 @@ func (d *DB) UpdateCliAuthSessionApprovedFromRequested(id, initiatorID string) (
 	return n > 0, nil
 }
 
-// UpdateCliAuthSessionDeniedFromRequested 原子迁移 requested→denied（Passkey 授权拒绝）。
-// 同批准：initiatorID 必须是发起者，返回 false 表示状态不对或不是属主。
+// UpdateCliAuthSessionDeniedFromRequested 原子迁移 requested→denied（只有发起者）。
 func (d *DB) UpdateCliAuthSessionDeniedFromRequested(id, initiatorID string) (bool, error) {
 	res, err := d.Exec(
 		`UPDATE cli_auth_sessions SET status = ? WHERE id = ? AND status = ? AND user_id = ?`,

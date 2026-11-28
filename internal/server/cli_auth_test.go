@@ -582,13 +582,10 @@ func createSessionHelper(t *testing.T, env *cliAuthTestEnv) createdSession {
 	}
 }
 
-// TestCliAuthByCode_RateLimitedPerUserAndPerIP by-code 双维限流（#625）：
-// uid 维拦住「同一个账号换 IP 继续试码」，IP 维拦住「同一台机器换账号继续试码」。
 func TestCliAuthByCode_RateLimitedPerUserAndPerIP(t *testing.T) {
 	env := newCliAuthTestEnv(t)
 	created := createSessionHelper(t, env)
 
-	// 第二个普通用户（cli-auth 会话本身没有属主，这里验的是限流维度）。
 	sm := auth.NewSessionManager(env.db, 0, false)
 	uidB, err := env.db.InsertUser(context.Background(), "", "bycodeuser2", "ByCode User 2")
 	if err != nil {
@@ -611,22 +608,18 @@ func TestCliAuthByCode_RateLimitedPerUserAndPerIP(t *testing.T) {
 		return rr.Code
 	}
 
-	// 用户 A 在 IP A 上用满 uid 维（同时把 IP A 的桶也填满）。
 	for i := 0; i < rlByCodePerMin; i++ {
 		if got := byCode(env.cookie, ipA); got != 200 {
 			t.Fatalf("用户 A 第 %d 次 by-code status=%d want 200", i+1, got)
 		}
 	}
 
-	// uid 维：同一账号换 IP 也被拒。
 	if got := byCode(env.cookie, ipB); got != 429 {
 		t.Errorf("同账号换 IP 应被 uid 维限速为 429, got %d", got)
 	}
-	// IP 维：同一 IP 换账号也被拒。
 	if got := byCode(cookieB, ipA); got != 429 {
 		t.Errorf("同 IP 换账号应被 IP 维限速为 429, got %d", got)
 	}
-	// 对照：新账号 + 新 IP 仍然放行（证明上面两个 429 分别来自两个维度）。
 	if got := byCode(cookieB, ipB); got != 200 {
 		t.Errorf("新账号 + 新 IP 应 200, got %d", got)
 	}

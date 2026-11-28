@@ -112,7 +112,6 @@ func enrollDoReq(t *testing.T, env *enrollTestEnv, method, path string, body any
 	return rr
 }
 
-// addUser 建一个普通用户并返回其登录 cookie（越权用例用）。
 func (env *enrollTestEnv) addUser(t *testing.T, username string) *http.Cookie {
 	t.Helper()
 	uid, err := env.db.InsertUser(context.Background(), "", username, username)
@@ -126,7 +125,6 @@ func (env *enrollTestEnv) addUser(t *testing.T, username string) *http.Cookie {
 	return &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID}
 }
 
-// enrollDoReqAs 以指定登录 cookie 发请求（越权用例用）。
 func enrollDoReqAs(t *testing.T, env *enrollTestEnv, method, path string, body any, cookie *http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
 	var buf bytes.Buffer
@@ -518,8 +516,6 @@ func TestEnroll_CliAuthZeroRegression(t *testing.T) {
 	}
 }
 
-// TestPasskeyEnrollApprove_NonInitiator_Returns404AndKeepsOwner 任何登录用户都能批准别人的
-// 会话、并把 user_id 覆盖成自己（#625）——修后非发起者 404，状态与属主都不变。
 func TestPasskeyEnrollApprove_NonInitiator_Returns404AndKeepsOwner(t *testing.T) {
 	env := newEnrollTestEnv(t)
 	created := enrollCreateHelper(t, env)
@@ -544,7 +540,6 @@ func TestPasskeyEnrollApprove_NonInitiator_Returns404AndKeepsOwner(t *testing.T)
 		t.Errorf("userID got %q want %q（发起者不得被批准者覆盖）", got.UserID, env.userID)
 	}
 
-	// 发起者不受影响：仍能 watch 到 requested。
 	rr2 := enrollDoReq(t, env, "GET", base+"/watch", nil, true)
 	if rr2.Code != 200 {
 		t.Fatalf("发起者 watch 应 200, got %d body=%s", rr2.Code, rr2.Body.String())
@@ -554,7 +549,6 @@ func TestPasskeyEnrollApprove_NonInitiator_Returns404AndKeepsOwner(t *testing.T)
 	}
 }
 
-// TestPasskeyEnrollDeny_NonInitiator_Returns404 非发起者不能拒绝别人的授权（#625）。
 func TestPasskeyEnrollDeny_NonInitiator_Returns404(t *testing.T) {
 	env := newEnrollTestEnv(t)
 	created := enrollCreateHelper(t, env)
@@ -574,8 +568,6 @@ func TestPasskeyEnrollDeny_NonInitiator_Returns404(t *testing.T) {
 	}
 }
 
-// TestPasskeyEnrollNonInitiator_ExpiredSessionStill404 api/auth.yaml 的契约（#625 review r1）：
-// 非发起者对过期会话也必须 404，且不能因为会话是否被别人的请求先惰性过期过而漂移成 409。
 func TestPasskeyEnrollNonInitiator_ExpiredSessionStill404(t *testing.T) {
 	env := newEnrollTestEnv(t)
 	other := env.addUser(t, "bob")
@@ -588,16 +580,13 @@ func TestPasskeyEnrollNonInitiator_ExpiredSessionStill404(t *testing.T) {
 				t.Fatalf("knock: %d %s", rr.Code, rr.Body.String())
 			}
 
-			// 让会话在 manager 的时钟上过期（TTL 默认 10 分钟）。
 			env.mgr.SetClock(func() time.Time { return time.Now().Add(11 * time.Minute) })
 			t.Cleanup(func() { env.mgr.SetClock(time.Now) })
 
-			// 1) 没有任何请求碰过 → 非发起者 404（修复前 lazyExpire 会给出 409）。
 			rr := enrollDoReqAs(t, env, "POST", base+"/"+action, nil, other)
 			if rr.Code != 404 {
 				t.Fatalf("非发起者操作未迁移的过期会话应 404, got %d body=%s", rr.Code, rr.Body.String())
 			}
-			// 越权请求不得推进状态（过期是惰性迁移，此时尚未发生）。
 			got, err := env.db.GetCliAuthSession(created.sessionID)
 			if err != nil {
 				t.Fatalf("get session: %v", err)
@@ -606,7 +595,6 @@ func TestPasskeyEnrollNonInitiator_ExpiredSessionStill404(t *testing.T) {
 				t.Fatalf("越权请求改动了会话: status=%q userID=%q", got.Status, got.UserID)
 			}
 
-			// 2) 属主 watch 触发惰性过期后 → 同一非发起者请求仍 404（修复前会从 409 变成 404）。
 			if rrw := enrollDoReq(t, env, "GET", base+"/watch", nil, true); rrw.Code != 200 {
 				t.Fatalf("属主 watch 过期会话应 200, got %d body=%s", rrw.Code, rrw.Body.String())
 			}
@@ -615,7 +603,6 @@ func TestPasskeyEnrollNonInitiator_ExpiredSessionStill404(t *testing.T) {
 				t.Fatalf("会话已惰性过期后非发起者仍应 404, got %d body=%s", rr2.Code, rr2.Body.String())
 			}
 
-			// 对照：属主操作过期会话 → 409 + status=expired。
 			rro := enrollDoReq(t, env, "POST", base+"/"+action, nil, true)
 			if rro.Code != 409 {
 				t.Fatalf("属主操作过期会话应 409, got %d body=%s", rro.Code, rro.Body.String())
@@ -627,20 +614,21 @@ func TestPasskeyEnrollNonInitiator_ExpiredSessionStill404(t *testing.T) {
 	}
 }
 
-// TestPasskeyEnrollNonInitiator_ExpiredSession_NoStateChange 非发起者的 watch/cancel
-// 也必须在惰性过期之前被属主校验拦住（#625 review r1）：响应恒 404，且不替别人的
-// 会话推进状态机（status 仍是 requested）。
-func TestPasskeyEnrollNonInitiator_ExpiredSession_NoStateChange(t *testing.T) {
+func TestPasskeyEnrollNonInitiator_NoStateChange(t *testing.T) {
 	env := newEnrollTestEnv(t)
 	other := env.addUser(t, "bob")
 
 	for _, tc := range []struct {
-		name   string
-		method string
-		suffix string
+		name    string
+		method  string
+		suffix  string
+		expired bool
+		want    string
 	}{
-		{"watch", "GET", "/watch"},
-		{"cancel", "DELETE", ""},
+		{"watch", "GET", "/watch", false, store.CliAuthRequested},
+		{"cancel", "DELETE", "", false, ""},
+		{"watch_expired", "GET", "/watch", true, store.CliAuthExpired},
+		{"cancel_expired", "DELETE", "", true, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			created := enrollCreateHelper(t, env)
@@ -648,40 +636,57 @@ func TestPasskeyEnrollNonInitiator_ExpiredSession_NoStateChange(t *testing.T) {
 			if rr := enrollDoReq(t, env, "POST", base+"/request", map[string]any{"deviceHint": "Chrome"}, false); rr.Code != 200 {
 				t.Fatalf("knock: %d %s", rr.Code, rr.Body.String())
 			}
-
-			env.mgr.SetClock(func() time.Time { return time.Now().Add(11 * time.Minute) })
-			t.Cleanup(func() { env.mgr.SetClock(time.Now) })
+			if tc.expired {
+				env.mgr.SetClock(func() time.Time { return time.Now().Add(11 * time.Minute) })
+				t.Cleanup(func() { env.mgr.SetClock(time.Now) })
+			}
 
 			rr := enrollDoReqAs(t, env, tc.method, base+tc.suffix, nil, other)
 			if rr.Code != 404 {
-				t.Fatalf("非发起者 %s 过期会话应 404, got %d body=%s", tc.name, rr.Code, rr.Body.String())
+				t.Fatalf("非发起者 %s 应 404, got %d body=%s", tc.name, rr.Code, rr.Body.String())
 			}
 			got, err := env.db.GetCliAuthSession(created.sessionID)
 			if err != nil {
 				t.Fatalf("get session: %v", err)
 			}
-			if got.Status != store.CliAuthRequested {
-				t.Fatalf("越权 %s 不得推进状态机: status=%q", tc.name, got.Status)
+			if got.Status != store.CliAuthRequested || got.UserID != env.userID {
+				t.Fatalf("越权 %s 不得推进状态机: status=%q userID=%q", tc.name, got.Status, got.UserID)
 			}
 
-			// 属主读取/取消仍正常：watch 看到 expired，cancel 能删掉。
-			if tc.name == "watch" {
-				rro := enrollDoReq(t, env, "GET", base+"/watch", nil, true)
-				if rro.Code != 200 || enrollDecodeBody(t, rro)["status"] != store.CliAuthExpired {
-					t.Fatalf("属主 watch 过期会话应 200/expired, got %d body=%s", rro.Code, rro.Body.String())
-				}
-			} else {
-				rro := enrollDoReq(t, env, "DELETE", base, nil, true)
-				if rro.Code != 200 {
+			if tc.method == "DELETE" {
+				if rro := enrollDoReq(t, env, "DELETE", base, nil, true); rro.Code != 200 {
 					t.Fatalf("属主 cancel 应 200, got %d body=%s", rro.Code, rro.Body.String())
 				}
+				return
+			}
+			rro := enrollDoReq(t, env, "GET", base+"/watch", nil, true)
+			if rro.Code != 200 || enrollDecodeBody(t, rro)["status"] != tc.want {
+				t.Fatalf("属主 watch 应 200/%s, got %d body=%s", tc.want, rro.Code, rro.Body.String())
 			}
 		})
 	}
 }
 
-// TestPasskeyEnrollWatch_InitiatorStillSeesAfterApprove 批准不会把发起者挤出去（#625）：
-// approve 不再覆盖 user_id，发起者批准后仍能 watch，状态为 approved。
+func TestPasskeyEnrollApprove_NonInitiatorOnAPIKeyKind_Returns404(t *testing.T) {
+	env := newEnrollTestEnv(t)
+	other := env.addUser(t, "bob")
+	cliMgr := auth.NewCliAuthManager(env.db, 0)
+	created, err := cliMgr.CreateSession("test", []string{"notify:send"})
+	if err != nil {
+		t.Fatalf("create cli-auth session: %v", err)
+	}
+	if _, err := env.db.UpdateCliAuthSessionRequestedWithSecret(created.SessionID, "Chrome", "hash"); err != nil {
+		t.Fatalf("mark requested: %v", err)
+	}
+
+	for _, action := range []string{"approve", "deny"} {
+		rr := enrollDoReqAs(t, env, "POST", "/v1/passkey-enroll/sessions/"+created.SessionID+"/"+action, nil, other)
+		if rr.Code != 404 {
+			t.Fatalf("非发起者操作 apikey-kind 会话 %s 应 404（属主先于 kind guard）, got %d body=%s", action, rr.Code, rr.Body.String())
+		}
+	}
+}
+
 func TestPasskeyEnrollWatch_InitiatorStillSeesAfterApprove(t *testing.T) {
 	env := newEnrollTestEnv(t)
 	created := enrollCreateHelper(t, env)
@@ -701,7 +706,6 @@ func TestPasskeyEnrollWatch_InitiatorStillSeesAfterApprove(t *testing.T) {
 	}
 }
 
-// TestPasskeyEnrollKnock_OnlyOnce 第二次敲门 409，且不重发 secret（secret_hash 不变）。
 func TestPasskeyEnrollKnock_OnlyOnce(t *testing.T) {
 	env := newEnrollTestEnv(t)
 	created := enrollCreateHelper(t, env)

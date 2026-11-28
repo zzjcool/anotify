@@ -274,7 +274,6 @@ func (m *CliAuthManager) Poll(id, secret string) (*PollResult, error) {
 		return &PollResult{Status: store.CliAuthConsumed, Scopes: s.ScopesGranted}, nil
 	case store.CliAuthApproved:
 		// kind guard（D-C-6）：apikey poll 端点只消费 apikey-kind 会话。
-		// passkey-kind 会话必须走 /v1/passkey-enroll/ 端点族，不得在此签发 API Key。
 		if s.Kind != store.CliAuthKindAPIKey {
 			return nil, ErrInvalidParam
 		}
@@ -286,7 +285,6 @@ func (m *CliAuthManager) Poll(id, secret string) (*PollResult, error) {
 
 // consumeAndMintKey 在事务内完成 approved→consumed + 建 Key。
 func (m *CliAuthManager) consumeAndMintKey(s *store.CliAuthSession) (*PollResult, error) {
-	// 构建 Key 记录（复用 hashKey/scopeLabel，同包可见）。
 	raw := make([]byte, keyRandomLen)
 	if _, err := rand.Read(raw); err != nil {
 		return nil, errors.New("auth: 随机数生成失败")
@@ -369,10 +367,6 @@ func generateUserCode() (string, error) {
 	return generateUserCodeFrom(rand.Reader)
 }
 
-// generateUserCodeFrom 从 r 采样 8 个字符（拒绝采样，无取模偏差）。
-//
-// 字符集 31 个字符：256 % 31 = 8，直接用 int(b)%31 会让前 8 个字符的概率高 1/32。
-// 这里只接受 < 248（= 31*8）的字节，≥248 的字节丢弃重采（#625）。
 func generateUserCodeFrom(r io.Reader) (string, error) {
 	const limit = 256 - 256%len(userCodeCharset) // 248：≤255 中 31 的最大倍数
 	out := make([]byte, 0, userCodeLen)

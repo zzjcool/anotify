@@ -44,6 +44,7 @@ git show <sha>:<path>                                          # 具体某一份
 | [`agent-install.md`](agent-install.md) · [`anode-install.md`](anode-install.md) | 运维 | 节点/agent 的安装、自升级、退出码与排查 |
 | [`dev-docker.md`](dev-docker.md) | 开发者 | 用容器起一套本地服务 |
 | [`lint-guards.md`](lint-guards.md) | 贡献者 | 静态检查总账：哪条纪律由哪个检查负责 |
+| [`passkey-enroll.md`](passkey-enroll.md) | 贡献者 · 排障者 | 新设备补建 Passkey 的时序与属主校验（含未实现项） |
 | [`contracts/`](contracts/) | 贡献者 | 冻结契约与不变量（**规范性**） |
 | [`reports/`](reports/) | 排障者 | 事故与交付的历史取证记录，**只读快照** |
 | [`history/`](history/) | 排障者 | 更早的档案与已迁移的协调者台账 |

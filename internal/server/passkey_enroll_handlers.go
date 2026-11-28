@@ -36,8 +36,8 @@ type enrollCreateResp struct {
 type enrollAnonView struct {
 	SessionID     string `json:"sessionId"`
 	Status        string `json:"status"`
-	InitiatorName string `json:"initiatorName,omitempty"` // 批准后才有值
-	DeviceHint    string `json:"deviceHint,omitempty"`    // requested 后才有值
+	InitiatorName string `json:"initiatorName,omitempty"` // 所有状态都回（建会话时已存发起者）
+	DeviceHint    string `json:"deviceHint,omitempty"`    // 仅 requested/approved/consumed
 	ExpiresAt     int64  `json:"expiresAt"`
 }
 
@@ -320,7 +320,6 @@ func (h *passkeyEnrollHandler) complete(w http.ResponseWriter, r *http.Request, 
 // cancel 旧设备取消会话（需登录 Cookie，属主校验）。
 func (h *passkeyEnrollHandler) cancel(w http.ResponseWriter, r *http.Request, id string) {
 	uid := auth.UserIDFromContext(r.Context())
-	// 属主校验先于惰性过期迁移：非发起者一律 404，且不会替别人的会话推进状态机。
 	s, err := h.mgr.GetByIDAsOwner(id, uid)
 	if err != nil {
 		writeErr(w, 404, "授权会话不存在或已过期")

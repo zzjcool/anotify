@@ -775,6 +775,10 @@ paths:
         20/min，每个客户端 IP 也 20/min（会话是匿名创建的，没有属主可校验，
         短码枚举只能靠限流拦——只按用户限速的话，换个账号就能接着刷同一台机器）。
         任一维超限即 `429`。
+
+        IP 维取的就是 `clientIP`：部署在反向代理后需要设 `ANOTIFY_TRUST_PROXY=1`，
+        否则所有请求被算成同一个 IP（与既有 `rlCreate` 同口径），IP 维会退化成
+        全实例共享的 20/min。
       operationId: findCLIAuthSessionByCode
       security: [{ session: [] }]
       parameters:
@@ -1041,7 +1045,7 @@ paths:
       description: |
         `status` 走 `pending → requested → approved → consumed`。`approved` 时返回
         `attestationOptions`（creation options）与一次性 `registrationToken`（提交
-        `/complete` 时用），并带 `initiatorName`（批准者显示名）。
+        `/complete` 时用），并带 `initiatorName`（发起者显示名，即会话发起账号）。
 
         - `secret` 错 `401`
         - kind 不匹配（apikey-kind 会话走了 enroll 轮询）`403`
@@ -1178,6 +1182,8 @@ paths:
         批准后新设备的 `poll` 才能拿到归属发起者的 attestation options。
         非发起者一律回 `404`（与 `watch` 一致，不泄露会话是否存在）——属主校验先于
         惰性过期迁移，因此会话即使已过期也同样是 `404`，不会变成 `409`。
+        属主校验也先于 kind guard：非发起者拿 apikey-kind 会话的 id 来批准回 `404`
+        （不是 `400`，少一层存在性泄露）；发起者操作 apikey-kind 会话才是 `400`。
         发起者操作过期会话则回 `409`（body `{"status":"expired"}`）。
         错误：参数不合法 `400`；会话不存在或不是发起者 `404`；状态不对 `409`
         （body `{"status":"<当前状态>"}`）；其它 `500`。
@@ -1208,6 +1214,7 @@ paths:
       description: |
         只有会话发起者（`user_id`）可以拒绝。非发起者一律回 `404`（否则任何登录用户都能
         拒掉别人的授权，形成 DoS；属主校验先于惰性过期迁移，过期会话也不会变成 `409`）。
+        属主校验同样先于 kind guard：非发起者拿 apikey-kind 会话的 id 来拒绝也是 `404`。
         发起者操作过期会话回 `409`（body `{"status":"expired"}`）。
         错误：参数不合法 `400`；会话不存在或不是发起者 `404`；状态不对 `409`
         （body `{"status":"<当前状态>"}`）；其它 `500`。
@@ -2007,7 +2014,7 @@ components:
           description: 一次性凭证，提交 `/complete` 时用（二次 poll 会覆盖旧 token）
         initiatorName:
           type: string
-          description: 批准者显示名（approved 时才有值）
+          description: 发起者显示名（approved 时才有值）
 
     PasskeyEnrollKnockRequest:
       type: object

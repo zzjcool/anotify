@@ -70,7 +70,6 @@ async function approve(server, sid, session) {
 // 不是前端页面挂载等待，无法用事件替代。
 async function pollSafe(server, sid, secret) {
 	const r = await poll(server, sid, secret);
-	// setTimeout 保留：后端 pollGuard 最小间隔（2s + buffer）
 	await new Promise((r) => setTimeout(r, 2300));
 	return r;
 }
@@ -472,6 +471,45 @@ async function main() {
 			`/v1/passkey-enroll/sessions/${s.json.sessionId}/watch`,
 		);
 		H.eq("鉴权: 未登录 watch → 401", noAuthWatch.status, 401);
+	}
+
+	// 7b. 非发起者越权（#625）
+	{
+		const other = H.seed(server.dbPath, "enrollother_" + Date.now());
+		H.check("越权用例: devseed 建第二个用户", !!other.session);
+		const s = await createEnrollSession(server, session, "cross-user");
+		const sid = s.json.sessionId;
+		const knockResp = await knock(server, sid, "Chrome · macOS");
+		H.eq("越权用例: 敲门 200", knockResp.status, 200);
+
+		H.eq(
+			"越权: 非发起者 watch → 404",
+			(await watch(server, sid, other.session)).status,
+			404,
+		);
+		H.eq(
+			"越权: 非发起者 approve → 404",
+			(await approve(server, sid, other.session)).status,
+			404,
+		);
+		H.eq(
+			"越权: 非发起者 deny → 404",
+			(
+				await H.req(server.base, `/v1/passkey-enroll/sessions/${sid}/deny`, {
+					method: "POST",
+					session: other.session,
+				})
+			).status,
+			404,
+		);
+		const ownerWatch = await watch(server, sid, session);
+		H.eq("越权后发起者 watch 仍 200", ownerWatch.status, 200);
+		H.eq("越权后状态仍是 requested", ownerWatch.json.status, "requested");
+		H.eq(
+			"越权后新设备仍可轮询",
+			(await poll(server, sid, knockResp.json.secret)).status,
+			200,
+		);
 	}
 
 	// ============================================================

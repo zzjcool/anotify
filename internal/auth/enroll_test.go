@@ -458,7 +458,6 @@ func TestEnroll_RegistrationTokenSupersededByNextPoll(t *testing.T) {
 	}
 }
 
-// TestEnroll_Approve_NonInitiator 非发起者批准：ErrNotOwner，状态与 user_id 都不变（#625）。
 func TestEnroll_Approve_NonInitiator(t *testing.T) {
 	db, svc, uid := newEnrollTestDB(t)
 	clock := &fakeClock{t: time.Now()}
@@ -481,7 +480,6 @@ func TestEnroll_Approve_NonInitiator(t *testing.T) {
 	}
 }
 
-// TestEnroll_Deny_NonInitiator 非发起者拒绝：ErrNotOwner，状态不变（#625）。
 func TestEnroll_Deny_NonInitiator(t *testing.T) {
 	db, svc, uid := newEnrollTestDB(t)
 	clock := &fakeClock{t: time.Now()}
@@ -499,7 +497,6 @@ func TestEnroll_Deny_NonInitiator(t *testing.T) {
 	}
 }
 
-// TestEnroll_Delete_NonInitiator 非发起者不能取消别人的会话（#625）。
 func TestEnroll_Delete_NonInitiator(t *testing.T) {
 	db, svc, uid := newEnrollTestDB(t)
 	clock := &fakeClock{t: time.Now()}
@@ -514,21 +511,18 @@ func TestEnroll_Delete_NonInitiator(t *testing.T) {
 	}
 }
 
-// TestEnroll_NonInitiator_ExpiredSession_StillNotOwner 属主校验必须先于惰性过期
-// （#625 review r1）：非发起者面对过期会话也必须得到 ErrNotOwner（handler 投影 404），
-// 不能因为会话刚被 lazyExpire 迁移成 expired 就变成 ErrAlreadyTerminal（409）；
-// 同一请求的响应也不得取决于这行是否已被别人的请求先惰性过期过。
 func TestEnroll_NonInitiator_ExpiredSession_StillNotOwner(t *testing.T) {
 	db, svc, uid := newEnrollTestDB(t)
 	clock := &fakeClock{t: time.Unix(1000000, 0)}
 	m := newEnrollMgrWithClock(db, svc, clock)
 
 	cases := []struct {
-		name   string
-		byUser func(id string) error
+		name    string
+		byUser  func(id string) error
+		byOwner func(id string) error
 	}{
-		{"approve", func(id string) error { return m.Approve(id, "usr_attacker") }},
-		{"deny", func(id string) error { return m.Deny(id, "usr_attacker") }},
+		{"approve", func(id string) error { return m.Approve(id, "usr_attacker") }, func(id string) error { return m.Approve(id, uid) }},
+		{"deny", func(id string) error { return m.Deny(id, "usr_attacker") }, func(id string) error { return m.Deny(id, uid) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -540,13 +534,11 @@ func TestEnroll_NonInitiator_ExpiredSession_StillNotOwner(t *testing.T) {
 				t.Fatalf("request knock: %v", err)
 			}
 
-			// 墙钟过期，但还没有任何请求触发惰性迁移。
 			clock.advance(11 * time.Minute)
 			if err := tc.byUser(created.SessionID); !errors.Is(err, ErrNotOwner) {
 				t.Fatalf("非发起者操作未迁移的过期会话应 ErrNotOwner, got %v", err)
 			}
 
-			// 属主读一次 → lazyExpire 把状态迁移成 expired；非发起者仍应是 ErrNotOwner。
 			if _, err := m.GetByID(created.SessionID); err != nil {
 				t.Fatalf("owner get: %v", err)
 			}
@@ -554,21 +546,13 @@ func TestEnroll_NonInitiator_ExpiredSession_StillNotOwner(t *testing.T) {
 				t.Fatalf("会话已被惰性过期后，非发起者仍应 ErrNotOwner, got %v", err)
 			}
 
-			// 对照：属主自己操作过期会话才是 409 语义（ErrAlreadyTerminal）。
-			ownerErr := m.Approve(created.SessionID, uid)
-			if tc.name == "deny" {
-				ownerErr = m.Deny(created.SessionID, uid)
-			}
-			if !errors.Is(ownerErr, ErrAlreadyTerminal) {
+			if ownerErr := tc.byOwner(created.SessionID); !errors.Is(ownerErr, ErrAlreadyTerminal) {
 				t.Fatalf("属主操作过期会话应 ErrAlreadyTerminal, got %v", ownerErr)
 			}
 		})
 	}
 }
 
-// TestEnroll_GetByIDAsOwner_ExpiredSession 属主校验先于惰性过期（#625 review r1）：
-// 非发起者读取过期会话得到 ErrNotOwner，且不会替别人的会话推进状态机；
-// 属主读取才触发惰性过期。
 func TestEnroll_GetByIDAsOwner_ExpiredSession(t *testing.T) {
 	db, svc, uid := newEnrollTestDB(t)
 	clock := &fakeClock{t: time.Unix(1000000, 0)}
@@ -586,12 +570,10 @@ func TestEnroll_GetByIDAsOwner_ExpiredSession(t *testing.T) {
 	if _, err := m.GetByIDAsOwner(created.SessionID, "usr_attacker"); !errors.Is(err, ErrNotOwner) {
 		t.Fatalf("非发起者读取过期会话应 ErrNotOwner, got %v", err)
 	}
-	// 越权读取是只读的：状态仍是 requested，没有被替别人惰性过期。
 	if got, _ := db.GetCliAuthSession(created.SessionID); got.Status != store.CliAuthRequested {
 		t.Fatalf("越权读取不得推进状态机: status=%q", got.Status)
 	}
 
-	// 属主读取触发惰性过期，返回 expired。
 	s, err := m.GetByIDAsOwner(created.SessionID, uid)
 	if err != nil {
 		t.Fatalf("属主读取应成功: %v", err)
@@ -601,8 +583,6 @@ func TestEnroll_GetByIDAsOwner_ExpiredSession(t *testing.T) {
 	}
 }
 
-// TestEnroll_RequestKnock_SanitizesDeviceHint deviceHint 由匿名客户端自报，
-// 落库前剔除控制字符（含换行）并截断长度，否则可伪造日志行（#625）。
 func TestEnroll_RequestKnock_SanitizesDeviceHint(t *testing.T) {
 	db, svc, uid := newEnrollTestDB(t)
 	clock := &fakeClock{t: time.Now()}
@@ -623,7 +603,6 @@ func TestEnroll_RequestKnock_SanitizesDeviceHint(t *testing.T) {
 		t.Errorf("deviceHint got %q", got.DeviceHint)
 	}
 
-	// 零宽连接符（ZWJ）不是双向控制符，应保留（emoji 序列不被拆散）。
 	createdZWJ, _ := m.CreateSession(uid, "old-mac-zwj")
 	zwj := "\U0001f468\u200d\U0001f469"
 	if _, err := m.RequestKnock(createdZWJ.SessionID, zwj); err != nil {
@@ -634,7 +613,6 @@ func TestEnroll_RequestKnock_SanitizesDeviceHint(t *testing.T) {
 		t.Errorf("ZWJ 不应被裁剪: got %q want %q", gotZWJ.DeviceHint, zwj)
 	}
 
-	// 超长截断到 deviceHintMaxLen 个字符（不按字节截断）。
 	created2, _ := m.CreateSession(uid, "old-mac-2")
 	long := strings.Repeat("设", deviceHintMaxLen+10)
 	if _, err := m.RequestKnock(created2.SessionID, long); err != nil {

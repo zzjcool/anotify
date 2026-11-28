@@ -104,10 +104,8 @@ func hookWindowOrNil(limit int, dimension, envKey string) *fixedWindow {
 
 // 限速阈值常量（见 cli-auth-plan §0）.
 const (
-	rlCreatePerMin = 10 // 建会话：10/min/IP
-	rlByCodePerMin = 20 // by-code lookup：20/min/user
-	// by-code 的第二维（IP）：会话是匿名创建的，没有属主可校验，
-	// 所以短码枚举只能靠限流拦——只按 uid 限的话，换个账号就能接着刷同一台机器（#625）。
+	rlCreatePerMin   = 10 // 建会话：10/min/IP
+	rlByCodePerMin   = 20 // by-code lookup：20/min/user
 	rlByCodeIPPerMin = 20 // by-code lookup：20/min/IP
 	rlQRPerMin       = 30 // qr.txt：30/min/IP
 	pollInterval     = 2  // 轮询最小间隔（秒）
@@ -171,9 +169,8 @@ func (rl *fixedWindow) pruneLocked(now time.Time) {
 
 // 全局限速器实例（进程级）。
 var (
-	rlCreate = newFixedWindow(rlCreatePerMin, time.Minute)
-	rlByCode = newFixedWindow(rlByCodePerMin, time.Minute)
-	// 第二维：同一出口 IP 换账号也不能绕过（见 rlByCodeIPPerMin 注释）。
+	rlCreate   = newFixedWindow(rlCreatePerMin, time.Minute)
+	rlByCode   = newFixedWindow(rlByCodePerMin, time.Minute)
 	rlByCodeIP = newFixedWindow(rlByCodeIPPerMin, time.Minute)
 	rlQR       = newFixedWindow(rlQRPerMin, time.Minute)
 )

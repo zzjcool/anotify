@@ -479,14 +479,7 @@ func TestCliAuth_UserCodeRetryExhausted(t *testing.T) {
 	}
 }
 
-// TestUserCodeAlphabetIsUnbiased 短码采样无取模偏差（#625）。
-//
-// 两层证据：
-//  1. 确定性：给 0..247 的字节流（31 的倍数），每个字符必须正好出现 8 次——
-//     旧实现用 int(b)%31 会对 0..247 同样均匀，所以这一步只钉住映射本身；
-//  2. 拒绝采样：248..255 的字节必须被丢弃（旧实现会把它们压到前 8 个字符上）。
 func TestUserCodeAlphabetIsUnbiased(t *testing.T) {
-	// 1. 确定性均匀映射：248 = 31*8 个字节 → 31 个码 × 8 字符，每个字符正好 8 次。
 	raw := make([]byte, 0, 248)
 	for i := 0; i < 248; i++ {
 		raw = append(raw, byte(i))
@@ -514,7 +507,6 @@ func TestUserCodeAlphabetIsUnbiased(t *testing.T) {
 		}
 	}
 
-	// 2. 拒绝采样：≥248 的字节被丢弃，不参与取模。
 	biased := []byte{248, 0, 249, 1, 250, 2, 251, 3, 252, 4, 253, 5, 254, 6, 255, 7}
 	code, err := generateUserCodeFrom(bytes.NewReader(biased))
 	if err != nil {
@@ -524,14 +516,12 @@ func TestUserCodeAlphabetIsUnbiased(t *testing.T) {
 		t.Errorf("拒绝采样 got %q want %q", code, want)
 	}
 
-	// 全是应丢弃的字节 → 读尽后报错（不返回有偏短码、不死循环）。
 	drained := bytes.Repeat([]byte{248}, 64)
 	if _, err := generateUserCodeFrom(bytes.NewReader(drained)); err == nil {
 		t.Fatal("输入全是应丢弃字节时应报错")
 	}
 }
 
-// TestGenerateUserCode_Statistical 真实熵源下的频率落在宽松置信区间内。
 func TestGenerateUserCode_Statistical(t *testing.T) {
 	const draws = 31 * 2000 // 期望每个字符 2000 次
 	counts := map[rune]int{}
@@ -544,8 +534,6 @@ func TestGenerateUserCode_Statistical(t *testing.T) {
 			counts[c]++
 		}
 	}
-	// 二项分布 σ≈44，±300 已是 6.8σ；偏差 1/32（旧实现约 +62/-2）必然落入带内，
-	// 所以这条只防「采样整体崩坏」，精确的无偏性由上面的确定性用例钉住。
 	for _, c := range userCodeCharset {
 		if n := counts[c]; n < 1700 || n > 2300 {
 			t.Errorf("字符 %q 出现 %d 次，超出 [1700,2300]（期望 %d）", c, n, draws/len(userCodeCharset))
