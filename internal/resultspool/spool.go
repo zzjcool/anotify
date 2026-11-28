@@ -1,12 +1,9 @@
 // Package resultspool 实现中枢自有的托管字节池：节点上传的产物字节在中枢侧的**唯一**落地副本。
 //
-// 这个包只做一件事——把「一次上传的字节」安全落到中枢自己的 root 下，再交给元数据登记去引用。
-// 它不认识任务、attempt、数据库，也不读用户的 workDir、节点上的原文件或任何宿主路径：
-// 托管副本是**中枢自己的字节**，只能从这里进出（下载只按对象 id 读回，绝不 fallback 到宿主文件）。
-//
-// 硬不变量（违反即安全事件）：root/objects/tmp 一律 0700、所有文件一律 0600（显式 Chmod 修 umask）；
-// 写入顺序是「临时写（root/tmp，0600）→ 校验 → 原子 rename 到 objects/<id>」，中途任何失败只清自己
-// root 内的临时文件。其余边界（文件名白名单、符号链接、own temp）见对应方法的注释。
+// 它只把「一次上传的字节」安全落到中枢自己的 root 下：不认识任务/attempt/数据库，不读用户 workDir
+// 或节点原文件（下载只按对象 id 读回，绝不 fallback 到宿主文件）。硬不变量（违反即安全事件）：
+// root/objects/tmp 一律 0700、文件一律 0600（显式 Chmod 修 umask）；写入顺序是「临时写 → 校验 →
+// 原子 rename」，中途失败只清自己 root 内的临时文件。
 package resultspool
 
 import (
@@ -33,16 +30,14 @@ const (
 
 // 导出错误（调用方用 errors.Is 判定，不比较错误字符串）。
 var (
-	// ErrInvalidObjectID 表示 id 不合白名单规则（长度 3..64、首字符字母、只含 [A-Za-z0-9_]）。
-	// 这是**安全边界**：id 是唯一会拼进文件名的外部输入，先校验再落盘，
-	// 任何 `..`、`/`、`\`、`.`、空白、控制字符、NUL 都在这里被拦住。
+	// ErrInvalidObjectID 表示 id 不合白名单（长度 3..64、首字符字母、只含 [A-Za-z0-9_]）：这是安全边界，
+	// id 是唯一拼进文件名的外部输入，`..`、`/`、`\`、`.`、空白、控制字符、NUL 都在这里拦住。
 	ErrInvalidObjectID = errors.New("resultspool: invalid object id")
 	// ErrTooLarge 表示写入超过本次草稿的字节上限（不写超限的部分）。
 	ErrTooLarge = errors.New("resultspool: write exceeds limit")
 	// ErrNotCommitted 表示草稿已经发布（或已清理）却又被要求发布：二次 Finalize 一律拒绝。
 	ErrNotCommitted = errors.New("resultspool: draft not committed")
-	// ErrNoSuchObject 表示托管副本不可用（不存在、符号链接、非普通文件——后果相同，下载端统一当
-	// 410 artifact_expired，真实原因留在消息里由调用方 log.Warn 告警）。
+	// ErrNoSuchObject 表示托管副本不可用（不存在/符号链接/非普通文件同后果）：下载端统一 410 artifact_expired。
 	ErrNoSuchObject = errors.New("resultspool: object missing")
 )
 
@@ -56,12 +51,11 @@ type Store struct {
 
 // New 校验并建出 root/objects/tmp 三级目录（都是 0700），返回可用的 Store。
 //
-// root 为空 → 报错（**不猜默认路径**：托管池的位置必须是显式配置的事实，
-// 猜一个默认值会在部署时把产物写到意料之外的盘上）。
+// root 为空 → 报错（**不猜默认路径**：位置必须是显式配置的事实，否则部署时产物会落到意外的盘上）。
 //
-// 建完目录后清一遍 tmp/ 下**上一次进程**遗留的草稿（kill -9 / OOM / 容器重启时 handler 的
-// defer Discard 不会运行）；GC 每轮也会再扫一次（sweepTmpDrafts），所以清理时机不取决于重启。
-// 只有列目录失败才让 New 失败；单个文件删不掉只记进 sweepWarn（见 SweepWarning）。
+// 建完目录后清一遍 tmp/ 下**上一次进程**遗留的草稿（kill -9/OOM/重启时 defer Discard 不运行）；
+// GC 每轮也会再扫（sweepTmpDrafts），清理时机不取决于重启。只有列目录失败才让 New 失败，
+// 单个文件删不掉只记进 sweepWarn（见 SweepWarning）。
 func New(root string) (*Store, error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, errors.New("resultspool: root 为空（不猜默认路径）")
