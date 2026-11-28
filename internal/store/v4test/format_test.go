@@ -27,9 +27,9 @@ func TestFormatNewDatabaseWritesLayoutMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open fresh: %v", err)
 	}
-	// 记账 = headVersion：baseline（1）之后还有增量块（2 release、3 卸载标记、4 包版本历史、5 router 结局表/判决凭据、6 轮询状态、7 依赖索引、8 安装时快照、9 凭据审计、10 手动拉取审计、11 复原审计、12 保留期表达式索引、13 能力引用列索引）。
-	if v, err := db.SchemaVersion(); err != nil || v != 13 {
-		t.Fatalf("SchemaVersion = %d, %v; want 13", v, err)
+	// 记账 = headVersion：baseline（1）之后还有增量块（2 release、3 卸载标记、4 包版本历史、5 router 结局表/判决凭据、6 轮询状态、7 依赖索引、8 安装时快照、9 凭据审计、10 手动拉取审计、11 复原审计、12 保留期表达式索引、13 能力引用列索引、14 产物对象回收索引、15 上传任务索引）。
+	if v, err := db.SchemaVersion(); err != nil || v != 15 {
+		t.Fatalf("SchemaVersion = %d, %v; want 15", v, err)
 	}
 	// 布局标记是**独立**的另一件事。
 	if got := rawUserVersion(t, path); got != 4 {
@@ -49,8 +49,8 @@ func TestFormatNewDatabaseWritesLayoutMarker(t *testing.T) {
 	if got := rawUserVersion(t, path); got != 4 {
 		t.Fatalf("重开后 PRAGMA user_version = %d, want 4", got)
 	}
-	if v, err := db2.SchemaVersion(); err != nil || v != 13 {
-		t.Fatalf("重开后 SchemaVersion = %d, %v; want 13", v, err)
+	if v, err := db2.SchemaVersion(); err != nil || v != 15 {
+		t.Fatalf("重开后 SchemaVersion = %d, %v; want 15", v, err)
 	}
 	var name, digest, foldKey string
 	if err := db2.QueryRow(
@@ -281,8 +281,8 @@ func TestFormatMarkerContradictoryLedgerRejected(t *testing.T) {
 			name: "ledger_ahead_of_head",
 			stmts: []string{
 				`CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`,
-				// 1..14：第 14 块比本版本代码认识的 headVersion（= schema.sql 的块数，当前 13）更高。
-				`INSERT INTO schema_version (version, applied_at) VALUES (1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1), (7, 1), (8, 1), (9, 1), (10, 1), (11, 1), (12, 1), (13, 1), (14, 1)`,
+				// 1..16：第 16 块比本版本代码认识的 headVersion（= schema.sql 的块数，当前 15）更高。
+				`INSERT INTO schema_version (version, applied_at) VALUES (1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1), (7, 1), (8, 1), (9, 1), (10, 1), (11, 1), (12, 1), (13, 1), (14, 1), (15, 1), (16, 1)`,
 			},
 			wantHint: "高于",
 		},

@@ -22,17 +22,14 @@ var (
 	ErrArtifactUploadExpired = errors.New("artifact_upload_expired")
 )
 
-// ArtifactObjectID is minted by the store, never from a caller path/hash. G3 uses
-// String ONLY beneath its private system root. There is no string-to-ID constructor.
+// ArtifactObjectID is minted by the store, never from a caller path/hash; there is no string-to-ID constructor, and G3 uses String ONLY beneath its private system root.
 type ArtifactObjectID struct{ id string }
 
 func (id ArtifactObjectID) String() string { return id.id }
 
-// ArtifactUpload is a bounded in-progress publication. The opaque ticket and
-// object identity survive network I/O, but no DB transaction does. G3 must verify
-// the actual stream, atomically publish this object, then RegisterArtifactUpload;
-// on rejection, abort the ticket and collect only revoked IDs via GC (never
-// blindly unlink a previously accepted object on retry). Store does no I/O.
+// ArtifactUpload is a bounded in-progress publication: the opaque ticket and object identity survive network
+// I/O, no DB transaction does. G3 verifies the stream, publishes this object, then RegisterArtifactUpload; on
+// rejection it aborts the ticket and GCs only revoked IDs. Store does no I/O.
 type ArtifactUpload struct {
 	id       string
 	object   ArtifactObjectID
@@ -42,8 +39,7 @@ type ArtifactUpload struct {
 func (u *ArtifactUpload) ObjectID() ArtifactObjectID                { return u.object }
 func (u *ArtifactUpload) Response() protocol.ArtifactUploadResponse { return u.response }
 
-// ArtifactManifestEntry is persisted metadata, including expiry after bytes GC.
-// ObjectID is internal system identity; never expose it in task JSON.
+// ArtifactManifestEntry is persisted metadata, including expiry after bytes GC. ObjectID is internal system identity; never expose it in task JSON.
 type ArtifactManifestEntry struct {
 	TaskID       string           `json:"taskId"`
 	Attempt      int              `json:"attempt"`
@@ -85,9 +81,7 @@ func uploadAuthOn(ctx context.Context, ex queryExec, auth EmitAuth, in protocol.
 	return authorizeEmitOn(ctx, ex, auth)
 }
 
-// BeginArtifactUpload prechecks current credential, namespace, lease and token,
-// then records a 30s active ticket protecting staging/metadata from GC. Final
-// registration repeats ALL authorization in its own writer transaction.
+// BeginArtifactUpload prechecks current credential, namespace, lease and token, then records a 30s active ticket protecting staging/metadata from GC; final registration repeats ALL authorization in its own writer transaction.
 func (d *DB) BeginArtifactUpload(ctx context.Context, auth EmitAuth, in protocol.ArtifactUploadResponse) (*ArtifactUpload, error) {
 	if err := validateArtifactInput(in); err != nil {
 		return nil, err
@@ -120,8 +114,7 @@ func (d *DB) BeginArtifactUpload(ctx context.Context, auth EmitAuth, in protocol
 	return u, nil
 }
 
-// registeredArtifactOn checks an exact logical key; identical bytes/size are
-// idempotent, all other reuse conflicts. Authorization MUST run before this.
+// registeredArtifactOn checks an exact logical key; identical bytes/size are idempotent, all other reuse conflicts. Authorization MUST run before this.
 func registeredArtifactOn(ctx context.Context, ex queryExec, in protocol.ArtifactUploadResponse) (ArtifactObjectID, bool, error) {
 	var hash, id string
 	var size int64
@@ -138,9 +131,7 @@ func registeredArtifactOn(ctx context.Context, ex queryExec, in protocol.Artifac
 	return ArtifactObjectID{id: id}, true, nil
 }
 
-// ArtifactUploadRegistration gives G3 the actual owner identity from the SAME
-// registration transaction. A duplicate spool is not necessarily the winner;
-// never blindly remove u.ObjectID on 200 or on a late authorization failure.
+// ArtifactUploadRegistration gives G3 the actual owner identity from the SAME registration transaction: a duplicate spool is not necessarily the winner, so never blindly remove u.ObjectID on 200 or on a late authorization failure.
 type ArtifactUploadRegistration struct {
 	Response          protocol.ArtifactUploadResponse
 	Status            int
@@ -155,10 +146,7 @@ func (d *DB) RegisterArtifactUploadClassified(ctx context.Context, auth EmitAuth
 	return out, err
 }
 
-// RegisterArtifactUpload accepts ONLY a ticket minted by Begin, actual verified
-// size/hash, and CURRENT session+token authorization. First acceptance is 201;
-// exact same task/attempt/path/hash/size is 200 without charging quota twice.
-// Quota counts all registered logical items inside the same writer transaction.
+// RegisterArtifactUpload accepts ONLY a ticket minted by Begin, actual verified size/hash, and CURRENT session+token authorization. First acceptance is 201; the exact same task/attempt/path/hash/size is 200 without charging quota twice. Quota counts all registered logical items inside the same writer transaction.
 func (d *DB) RegisterArtifactUpload(ctx context.Context, auth EmitAuth, u *ArtifactUpload, actualSHA256 string, actualSize int64) (protocol.ArtifactUploadResponse, int, error) {
 	out, err := d.RegisterArtifactUploadClassified(ctx, auth, u, actualSHA256, actualSize)
 	return out.Response, out.Status, err
@@ -247,8 +235,7 @@ func (d *DB) registerArtifactUpload(ctx context.Context, auth EmitAuth, u *Artif
 	return in, protocol.ArtifactUploadStatusCreated, nil
 }
 
-// AbortArtifactUpload relinquishes this ticket only; any registered manifest
-// remains untouched. Its orphan system object is returned by the bounded GC.
+// AbortArtifactUpload relinquishes this ticket only; any registered manifest remains untouched, and its orphan system object is returned by the bounded GC.
 func (d *DB) AbortArtifactUpload(ctx context.Context, u *ArtifactUpload) error {
 	if u == nil || u.id == "" {
 		return ErrArtifactUploadExpired
@@ -330,8 +317,7 @@ func validateResultManifestOn(ctx context.Context, ex queryExec, taskID string, 
 	return result, nil
 }
 
-// ListArtifactManifest reads exact retained attempt metadata including expired
-// copies. Empty lists are real [], not a fabricated success from missing bytes.
+// ListArtifactManifest reads exact retained attempt metadata including expired copies. Empty lists are real [], not a fabricated success from missing bytes.
 func (d *DB) ListArtifactManifest(ctx context.Context, namespaceID, taskID string, attempt int) ([]ArtifactManifestEntry, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -356,20 +342,12 @@ func (d *DB) ListArtifactManifest(ctx context.Context, namespaceID, taskID strin
 	return out, rows.Err()
 }
 
-// GetTaskArtifactDownload checks the TASK RESULT reference, not a global digest.
-// Caller supplies an already user-authorized immutable namespace ID. 404 means
-// no result ref; ErrArtifactExpired means retained metadata with no system copy.
-// G3 must open only the returned opaque system object (never node fallback).
+// GetTaskArtifactDownload checks the TASK RESULT reference, not a global digest: 404 means no result ref, ErrArtifactExpired means retained metadata with no system copy. G3 must open only the returned opaque system object (never node fallback).
 //
-// Selection (G3-D4): the SAME sha256 may be referenced by several logical paths of
-// the current reported result. Any still-live copy wins — the first live entry in
-// canonical path order (ListArtifactManifest is ORDER BY path) is returned so the
-// download can hand out a deterministic safe basename. Only when every matching
-// result reference is expired does this report ErrArtifactExpired. A leading
-// expired row must never mask a later live one (that was the pre-#332 defect).
-// Borrowed bytes are impossible: the scan is restricted to this taskId + its
-// current reported attempt + result_ref rows, so another task/namespace/attempt
-// holding a live copy of the same hash is invisible here.
+// Selection (G3-D4): the SAME sha256 may be referenced by several logical paths of the current reported
+// result; any still-live copy wins — the first live entry in canonical path order is returned, so the
+// download hands out a deterministic safe basename and a leading expired row never masks a later live one.
+// Borrowed bytes are impossible: the scan is restricted to this taskId + its current reported attempt.
 func (d *DB) GetTaskArtifactDownload(ctx context.Context, namespaceID, taskID, sha256 string, now int64) (*ArtifactManifestEntry, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -407,11 +385,29 @@ func (d *DB) GetTaskArtifactDownload(ctx context.Context, namespaceID, taskID, s
 	return nil, ErrNotFound
 }
 
-// ExpireArtifactObjects atomically revokes system byte identities and retains
-// manifest metadata for 410. No active ticket or unreaped/running attempt may be
-// collected. Registration cannot attach an expired identity: only a live ticket
-// minted for a new object can publish. Returned IDs are retryable purge work;
-// G3 removes those private system files outside the transaction, then acknowledges.
+// artifactObjectsExpireSQL 是「到期候选集」：只列还没回执清理（purged_at IS NULL）、没有活动 ticket、
+// 也没有仍在保护期内的 manifest/任务/attempt 引用的对象。已 expired 但还没 ack 的行**仍在**候选集里
+// （字节可能还在盘上，每轮都要重试）；谓词与 ORDER BY 与部分索引 idx_task_artifact_objects_live 逐字对应（schema.sql 块 13）。
+const artifactObjectsExpireSQL = `SELECT o.id FROM task_artifact_objects o WHERE o.purged_at IS NULL AND
+ NOT EXISTS(SELECT 1 FROM task_artifact_uploads u WHERE u.object_id=o.id) AND
+ NOT EXISTS(SELECT 1 FROM task_artifact_manifests m JOIN tasks t ON t.id=m.task_id WHERE m.object_id=o.id AND (m.expires_at=0 OR m.expires_at>? OR t.phase IN ('pending','running') OR EXISTS(SELECT 1 FROM task_artifact_uploads u WHERE u.task_id=t.id) OR EXISTS(SELECT 1 FROM task_attempts a WHERE a.task_id=t.id AND a.reaped_at IS NULL)))
+ ORDER BY o.created_at,o.id LIMIT ?`
+
+// artifactObjectsReclaimSQL 物理删除「字节已删（purged_at 非空）且再无 manifest/upload 引用」的对象行：
+// manifest 随保留期被级联删除后它只剩「这个 id 曾经存在过」，留着就让每轮 GC 在写锁里扫过的历史行随
+// **历史上传总数**单调增长（违背 V4-D6）。删除安全：object id 永不复用、两处引用列都是 ON DELETE
+// RESTRICT，两个 NOT EXISTS 在同一写事务快照内复核，并发插引用者被写锁排在后面；删除量走 purged 索引前缀。
+const artifactObjectsReclaimSQL = `DELETE FROM task_artifact_objects WHERE id IN (
+ SELECT o.id FROM task_artifact_objects o
+  WHERE o.purged_at IS NOT NULL
+    AND NOT EXISTS(SELECT 1 FROM task_artifact_manifests m WHERE m.object_id=o.id)
+    AND NOT EXISTS(SELECT 1 FROM task_artifact_uploads u WHERE u.object_id=o.id)
+  ORDER BY o.purged_at,o.id LIMIT ?)`
+
+// ExpireArtifactObjects atomically revokes system byte identities and retains manifest metadata for 410; no
+// active ticket or unreaped/running attempt may be collected, and only a live ticket minted for a new object
+// can publish. Returned IDs are retryable purge work (G3 deletes those files outside the transaction, then
+// acks), so an expired-but-unacked row returns every round. Same pass reclaims purged, unreferenced rows.
 func (d *DB) ExpireArtifactObjects(ctx context.Context, now int64, limit int) ([]ArtifactObjectID, error) {
 	out := []ArtifactObjectID{}
 	if limit <= 0 {
@@ -428,10 +424,11 @@ func (d *DB) ExpireArtifactObjects(ctx context.Context, now int64, limit int) ([
 	if _, err := tx.ExecContext(ctx, `DELETE FROM task_artifact_uploads WHERE id IN (SELECT id FROM task_artifact_uploads WHERE expires_at<=? ORDER BY expires_at,id LIMIT ?)`, now, limit); err != nil {
 		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT o.id FROM task_artifact_objects o WHERE o.purged_at IS NULL AND
- NOT EXISTS(SELECT 1 FROM task_artifact_uploads u WHERE u.object_id=o.id) AND
- NOT EXISTS(SELECT 1 FROM task_artifact_manifests m JOIN tasks t ON t.id=m.task_id WHERE m.object_id=o.id AND (m.expires_at=0 OR m.expires_at>? OR t.phase IN ('pending','running') OR EXISTS(SELECT 1 FROM task_artifact_uploads u WHERE u.task_id=t.id) OR EXISTS(SELECT 1 FROM task_attempts a WHERE a.task_id=t.id AND a.reaped_at IS NULL)))
- ORDER BY o.created_at,o.id LIMIT ?`, now, limit)
+	// 回收放在清 ticket 之后：「最后一份引用刚过期」的对象行同一轮就能删掉（见 artifactObjectsReclaimSQL）。
+	if _, err := tx.ExecContext(ctx, artifactObjectsReclaimSQL, limit); err != nil {
+		return nil, fmt.Errorf("reclaim artifact objects: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, artifactObjectsExpireSQL, now, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -462,7 +459,7 @@ func (d *DB) ExpireArtifactObjects(ctx context.Context, now int64, limit int) ([
 	return out, nil
 }
 
-// AckArtifactObjectPurged records completion only for already-revoked IDs.
+// AckArtifactObjectPurged records completion only for already-revoked IDs. purged_at is not the end of the row's life: artifactObjectsReclaimSQL deletes it once nothing references it; while the row exists a retried ack is an idempotent no-op (COALESCE keeps the first purged_at), and ErrInvalidTransition appears only after reclaim removed it.
 func (d *DB) AckArtifactObjectPurged(ctx context.Context, id ArtifactObjectID, now int64) error {
 	if id.id == "" {
 		return ErrNotFound

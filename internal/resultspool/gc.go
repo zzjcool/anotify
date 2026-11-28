@@ -92,9 +92,9 @@ func NewGC(st PurgeStore, spool *Store, opts GCOptions) (*GC, error) {
 	return g, nil
 }
 
-// RunOnce 跑一轮清理，顺序固定（先列举、再删字节、最后回执）：
+// RunOnce 跑一轮清理，顺序固定（**先扫 tmp/ 的遗留草稿**——不看元数据，所以元数据不可用也照扫；再列举、删字节、回执）：
 //
-//  1. ExpireObjects 报错 → 直接返回，**一个文件都不动**（元数据不可信时不动字节）；
+//  1. ExpireObjects 报错 → 立即返回，**一个对象字节都不动**（元数据不可信时不动已登记的字节）；
 //  2. 逐个 id Remove 字节：失败 → Failed++ 且**不 Ack**（下一轮还能再试），继续下一个；
 //  3. Remove 成功 → AckPurged；失败 → Failed++，继续；
 //  4. 只有「删字节 + 回执」都成功才进 Purged；有任何失败 → errors.Join 返回非 nil；
@@ -105,13 +105,17 @@ func (g *GC) RunOnce(ctx context.Context) (GCReport, error) {
 	if err := ctx.Err(); err != nil {
 		return rep, err
 	}
+	var errs []error
+	if err := g.spool.sweepTmpDrafts(); err != nil {
+		errs = append(errs, err)
+	}
 	now := g.now()
 	ids, err := g.store.ExpireObjects(ctx, now, g.limit)
 	if err != nil {
-		return rep, fmt.Errorf("resultspool: 列举过期对象: %w", err)
+		errs = append(errs, fmt.Errorf("resultspool: 列举过期对象: %w", err))
+		return rep, errors.Join(errs...)
 	}
 	rep.Expired = len(ids)
-	var errs []error
 	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
 			errs = append(errs, fmt.Errorf("resultspool: GC 被中断，剩余 %d 个对象未处理: %w", rep.Expired-rep.Purged-rep.Failed, err))
