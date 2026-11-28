@@ -18,27 +18,26 @@ const configNudgeInterval = 10 * time.Second
 
 // NotifyConfigChanged 把「这台的默认值变了」推给它当前的会话：已对齐/离线都是 no-op。
 func (h *Hub) NotifyConfigChanged(ctx context.Context, nodeID string) error {
-	_, err := h.pushConfigChanged(ctx, nodeID)
-	return err
+	return h.pushConfigChanged(ctx, nodeID)
 }
 
-func (h *Hub) pushConfigChanged(ctx context.Context, nodeID string) (sent bool, err error) {
+func (h *Hub) pushConfigChanged(ctx context.Context, nodeID string) error {
 	if nodeID == "" {
-		return false, nil
+		return nil
 	}
 	cfg, err := h.db.GetNodeConfig(ctx, nodeID)
 	if errors.Is(err, store.ErrNotFound) {
-		return false, nil // 节点已被删除：没有可应用的事实
+		return nil // 节点已被删除：没有可应用的事实
 	}
 	if err != nil {
-		return false, fmt.Errorf("notify config changed: read node config: %w", err)
+		return fmt.Errorf("notify config changed: read node config: %w", err)
 	}
 	if cfg.Revision == cfg.AppliedRevision {
-		return false, nil // 没有待应用的变更（含「从来没有配置行」）
+		return nil // 没有待应用的变更（含「从来没有配置行」）
 	}
 	sess := h.session(nodeID)
 	if sess == nil {
-		return false, nil // 离线：下次 hello 会对齐
+		return nil // 离线：下次 hello 会对齐
 	}
 	frame := &protocol.ConfigChangedFrame{
 		Type:     protocol.FrameConfigChanged,
@@ -46,9 +45,9 @@ func (h *Hub) pushConfigChanged(ctx context.Context, nodeID string) (sent bool, 
 	}
 	if err := sess.Send(ctx, frame); err != nil {
 		h.detachSessionOnWriteFailure(sess, err)
-		return true, fmt.Errorf("notify config changed: node %s: %w", nodeID, err)
+		return fmt.Errorf("notify config changed: node %s: %w", nodeID, err)
 	}
-	return true, nil
+	return nil
 }
 
 func (h *Hub) nudgeStaleConfigs(ctx context.Context) {
@@ -62,7 +61,7 @@ func (h *Hub) nudgeStaleConfigs(ctx context.Context) {
 	h.cfgNudgeMu.Unlock()
 
 	for _, nodeID := range h.onlineNodeIDs() {
-		if _, err := h.pushConfigChanged(ctx, nodeID); err != nil {
+		if err := h.pushConfigChanged(ctx, nodeID); err != nil {
 			h.log.Warn("config.changed nudge failed", "node_id", nodeID, "err", err)
 		}
 	}
