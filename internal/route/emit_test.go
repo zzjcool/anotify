@@ -292,6 +292,41 @@ func TestEmitMissingTargetRejected(t *testing.T) {
 	}
 }
 
+// TestEmitParamsTooLargeIsDeterministicReject 130 KiB data ⇒ 可判别拒绝（413、零写入），#571。
+func TestEmitParamsTooLargeIsDeterministicReject(t *testing.T) {
+	f := newEmitFixture(t)
+	data := json.RawMessage(`{"file":"` + strings.Repeat("a", store.MaxTaskParamsBytes+8*1024) + `"}`)
+	_, err := f.router.Emit(testCtx(), EmitInput{Auth: f.auth, To: "consumer", Data: data})
+	var emitErr *EmitError
+	if !errors.As(err, &emitErr) {
+		t.Fatalf("超限 data 必须回可判别拒绝，得到 %v", err)
+	}
+	if emitErr.Reason != protocol.ReasonParamsTooLarge {
+		t.Fatalf("拒绝码 = %q，期望 %q", emitErr.Reason, protocol.ReasonParamsTooLarge)
+	}
+	if got := emitErr.HTTPStatus(); got != 413 {
+		t.Fatalf("HTTP 状态 = %d，期望 413", got)
+	}
+	if got := emitErr.ExitCode(); got != protocol.EmitExitBadRequest || got == protocol.EmitExitUnknown {
+		t.Fatalf("CLI 退出码 = %d，期望确定性失败 %d（绝不能是 %d「结果未知」）",
+			got, protocol.EmitExitBadRequest, protocol.EmitExitUnknown)
+	}
+	if !errors.Is(err, store.ErrParamsTooLarge) {
+		t.Fatal("拒绝必须能 Unwrap 到 store.ErrParamsTooLarge")
+	}
+	// 零写入：既不建子任务，也不留 emits 行。
+	if got := f.childCount(t); got != 0 {
+		t.Fatalf("超限 emit 不得建子任务，得到 %d", got)
+	}
+	emits, lerr := f.db.ListEmits(testCtx(), f.parent.ID)
+	if lerr != nil {
+		t.Fatalf("列 emit 事实: %v", lerr)
+	}
+	if len(emits) != 0 {
+		t.Fatalf("超限 emit 不得留下 emit 行，得到 %d", len(emits))
+	}
+}
+
 func TestEmitPruneReceiptAndTrace(t *testing.T) {
 	f := newEmitFixture(t)
 	result, err := f.router.Emit(testCtx(), EmitInput{Auth: f.auth, To: "consumer", Data: json.RawMessage(`{}`)})

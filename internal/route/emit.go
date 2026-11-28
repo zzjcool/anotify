@@ -11,13 +11,11 @@ import (
 )
 
 // 能力 emit（capability.md §4.1 / §8.5、V4-D4）。
-//
 // 授权/幂等的顺序与理由只有一份（store.EmitAuthorized 的事务步骤），这里不复述；
 // requestId 只属于 RPC 关联，业务幂等域是 (逻辑 task, 显式 id)。本文件不发明第二份
 // wire DTO：回执/错误直接复用 protocol.EmitResponse / EmitError。
 
 // EmitError 是 emit 通道的可判别拒绝（reason 取 capability.md §6.2 封闭词表）。
-//
 // 它同时带 HTTP 状态与 CLI 退出码（protocol 的同一份映射），让 WS 回包与 G3 的
 // HTTP 网关不可能各算一套。
 type EmitError struct {
@@ -236,6 +234,8 @@ func mapEmitStoreError(err error) error {
 		return &EmitError{Reason: protocol.ReasonTokenInvalid, Err: err}
 	case errors.Is(err, store.ErrInvalidTransition):
 		return &EmitError{Reason: protocol.ReasonTaskNotRunning, Err: err}
+	case errors.Is(err, store.ErrParamsTooLarge): // 确定性拒绝：漏在表外只能不回 ack 等超时（#571）
+		return &EmitError{Reason: protocol.ReasonParamsTooLarge, Err: err}
 	}
 	return err
 }
