@@ -309,6 +309,10 @@ func TestSchemaBaselineIndexes(t *testing.T) {
 		{name: "idx_tasks_capability_id", table: "tasks", cols: []string{"capability_id"}},
 		{name: "idx_task_attempts_capability", table: "task_attempts", cols: []string{"capability_id"}},
 		{name: "idx_task_artifact_manifests_capability", table: "task_artifact_manifests", cols: []string{"capability_id"}},
+		// 迁移块 14：对象行两段扫描（到期 / 物理回收）各配一个部分索引。
+		{name: "idx_task_artifact_objects_live", table: "task_artifact_objects", cols: []string{"created_at", "id"}, predicate: "purged_at is null"},
+		{name: "idx_task_artifact_objects_purged", table: "task_artifact_objects", cols: []string{"purged_at", "id"}, predicate: "purged_at is not null"},
+		{name: "idx_task_artifact_uploads_object", table: "task_artifact_uploads", cols: []string{"object_id"}},
 	}
 	for _, want := range indexes {
 		t.Run(want.name, func(t *testing.T) {
@@ -622,6 +626,7 @@ func TestSchemaBaselineLayoutMarkerIsSeparateFromLedger(t *testing.T) {
 	}
 	if n != 13 {
 		t.Fatalf("schema_version 行数 = %d, want 13（baseline + release + 卸载标记 + 包版本历史 + router 结局表 + 轮询状态 + 依赖索引 + 安装时快照 + 凭据审计 + 手动拉取审计 + 复原审计 + 保留期表达式索引 + 能力引用列索引）", n)
+		t.Fatalf("schema_version 行数 = %d, want 13（baseline + release + 卸载标记 + 包版本历史 + router 结局表 + 轮询状态 + 依赖索引 + 安装时快照 + 凭据审计 + 手动拉取审计 + 复原审计 + 保留期表达式索引 + 产物对象回收索引）", n)
 	}
 }
 

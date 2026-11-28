@@ -25,6 +25,7 @@ import (
 	"hash"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -67,6 +68,11 @@ type Store struct {
 //
 // root 为空 → 报错（**不猜默认路径**：托管池的位置必须是显式配置的事实，
 // 猜一个默认值会在部署时把产物写到意料之外的盘上）。
+//
+// 建完目录后会清掉 tmp/ 下**上一次进程**遗留的草稿：上传中途被 kill / OOM / 容器重启时
+// handler 的 defer Discard 没机会运行，不在这里收就会永久漏一个文件（每份最大
+// protocol.MaxArtifactTransferBytes）。单进程独占 spool 目录是 New 的使用约定，所以此刻
+// 不可能有正在写的草稿。
 func New(root string) (*Store, error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, errors.New("resultspool: root 为空（不猜默认路径）")
@@ -83,7 +89,53 @@ func New(root string) (*Store, error) {
 			return nil, err
 		}
 	}
+	if err := s.sweepLeftoverDrafts(); err != nil {
+		return nil, err
+	}
 	return s, nil
+}
+
+// draftNameRE 是 tmp/ 下临时文件的唯一合法形状（名字只由 newTempFile 铸造：
+// `draft-` + 32 位小写十六进制）。启动清理只认这个形状——不匹配的文件一律不碰，
+// 宁可留着也不会把别人的东西当草稿删掉。
+var draftNameRE = regexp.MustCompile(`^draft-[0-9a-f]{32}$`)
+
+// sweepLeftoverDrafts 删掉 root/tmp 下上一次进程遗留的草稿。
+//
+// 只处置「名字匹配 draftNameRE 的**普通文件**」：符号链接、子目录、其它名字全部跳过
+// （不跟着链接去删 root 外的 inode）；删除前再用 under 复核一次路径确实在 tmp/ 之下。
+// 单个文件删不掉（不是「已经不存在」）→ 汇总返回错误：静默留着会让泄漏不可见。
+func (s *Store) sweepLeftoverDrafts() error {
+	entries, err := os.ReadDir(s.tmp)
+	if err != nil {
+		return fmt.Errorf("resultspool: 扫描临时目录 %s: %w", s.tmp, err)
+	}
+	var errs []error
+	for _, e := range entries {
+		if !draftNameRE.MatchString(e.Name()) {
+			continue
+		}
+		path := filepath.Join(s.tmp, e.Name())
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue // 已经没了（没有并发写者，这里只是防御）
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("resultspool: 检查遗留草稿 %s: %w", path, err))
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		if !under(s.tmp, path) {
+			errs = append(errs, fmt.Errorf("resultspool: 拒绝删除 %s（不在 %s 之下）", path, s.tmp))
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("resultspool: 删除遗留草稿 %s: %w", path, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // ensurePrivateDir 建目录并把权限显式收紧到 0700。

@@ -63,7 +63,7 @@
 - **v4 开发期全量切换（用户已批准）**：以 `docs/contracts/v4/CONTRACT.md`（含 V4-D1～D6 决策索引）为本轮契约；不保留 v3 API/协议/旧数据库迁移兼容层。允许把 `schema.sql` 直接重建为 v4 baseline、移除旧迁移 hooks/专属测试；仍须保留新库结构、重开幂等、错误拒绝和字段往返测试。旧库不可用时明确报错，禁止自动删除用户数据。此例外**只属于 v4 开发期，已随 v4 发布（tag）结束**；现状是 baseline 冻结、只追加迁移块（见下一条）。
 - **store 层**：新增字段必加"往返一致性"单测（存什么读什么）。schema 变更的当前规则见
   [`internal/store/AGENTS.md §3.2`](internal/store/AGENTS.md)：**baseline 冻结，只追加迁移块**——
-  `schema.sql` 现在是 `-- +migration 1 baseline` + 增量块（当前到 11），`migrate.go:35` 的
+  `schema.sql` 现在是 `-- +migration 1 baseline` + 增量块（当前到 13），`migrate.go:35` 的
   `headVersion` 必须等于最后一块；加表/加列 = 追加 `-- +migration N` 块（`ALTER TABLE … ADD COLUMN`
   + 回填 + 索引）并把 `headVersion` +1，**禁止原地改 baseline**（已记账到旧版本的库会缺列）。
   参照结构按「已记账到的版本」重放（`schemaLayoutAt`，`migrate.go:494`），所以记着 1..k 的 v4 库
