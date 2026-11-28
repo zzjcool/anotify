@@ -106,26 +106,24 @@ web/yamldoc.js:1
 e2e 的判据取**服务端两次 `GET …/yaml` 的原文**（不是页面发出的文本）：前端重排缩进或换引号会被
 服务端归一化掉，这里钉的是「事实没被表单路径改掉」，而不是排版细节。
 
-## 5. 边界：`total: null` 原样贴回仍是 400（没有放宽）
+## 5. 边界：显式 `total: null` 原样贴回是 200（#570）
 
-> **已变更（issue #570）**：本节记录的是当时的边界。现在写面把显式 `null` 当「本层没设这一项」
-> 接住（`internal/store` 的 `NormalizeLimits`：`total: null` / `perCapability` 的 nil 叶子在
-> 校验前就被丢掉），所以「取 → 原样贴回」是 200；`scripts/e2e/suites/vars_ui.mjs` 的同名
-> 边界用例已随之改为断言 200 + 文档除 `resourceVersion` 外逐字不变。0 / 负数 / 字符串仍 400。
+读面用显式 `total: null` 表达「本层不压住下层」。写面现在把已知维度的显式 null（`total`、
+`perCapability`、`perCapability.X`）按「没设这一项」接住：值不进库，`GET …/yaml` 可以原样贴回；
+`perCapability: {}` 也与「没设」同义（丢掉该键，写回后的行与写前逐字相同）。
 
 ```
 GET  /v1/nodes/{name}/yaml   →   limits:\n    total: null      （读面语义：不压住下层）
-PUT  /v1/nodes/{name}/yaml   ←   原样贴回                     →  400 value_invalid
+PUT  /v1/nodes/{name}/yaml   ←   原样贴回                     →  200（除 resourceVersion 外逐字不变）
 ```
 
-两条断言把这条不对称钉住：`scripts/e2e/suites/vars_ui.mjs:483`（前提：读面确实写出 `total: null`）、
-`:487`（原样贴回 → 400）、`:488`（原因码是 `value_invalid`）、`:490`（被拒的写没有落库）。
-前端因此把「模型里 total 为 null」翻译成**省略这一键**（`web/yamldoc.js` 的 `project()`：值为
-null/undefined 的键一律跳过，kind 表里标成 `omit: 'missing'`），表格保存照常 200 —— 这是
-「省略 = 不动」，不是把 null 洗成 0。
+e2e `scripts/e2e/suites/vars_ui.mjs` 的同一个边界用例钉住 200、文档除 `resourceVersion` 外逐字
+不变、读面仍写 `total: null`、以及 config 的 limits 不含 `total` 键。`0` / 负数 / 字符串仍是
+400 `value_invalid`；非法 `perCapability` 键写成 null 也一样被拒（先校验再归一，不能借 null
+绕过键名校验）。前端 `web/yamldoc.js` 的表格路径仍把 `total: null` 翻译成省略该键 —— 两种写法
+现在都表示「不设置」，不再是一个 200 一个 400。
 
-另一条边界：文档里**完全没有** `limits` 键时，本层不补一个空 `limits`（`scripts/yamldoc.test.mjs:138`
-的第二个用例），所以「原样贴回被服务端拒」的语义一点没变。
+文档里完全没有 `limits` 键时，本层仍不凭空补空 `limits`（`scripts/yamldoc.test.mjs:138`）。
 
 ## 6. 前后端同一套规则
 
@@ -137,8 +135,8 @@ null/undefined 的键一律跳过，kind 表里标成 `omit: 'missing'`），表
 两边顺序不同 ⇒ 红。
 
 **刻意不做**的是逐字节相等：服务端 `yaml.v3` 对 `'*'` 用单引号、对 `/opt/go1.25` 裸写，前端更保守
-一律加双引号（`"*"` / `"/opt/go1.25"`）。两者都是合法 YAML 且解析等价；而读面的 `total: null`
-与写面不允许 null 本身就不对称（§5），逐字节相等既不可能也不该是判据。
+一律加双引号（`"*"` / `"/opt/go1.25"`）。两者都是合法 YAML 且解析等价；读面写 `total: null`、
+写面把它当「不设置」是同一语义的两种表示（§5），逐字节相等既不可能也不该是判据。
 
 ## 7. 变异自证（换回旧实现 → 保真判据必红）
 

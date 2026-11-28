@@ -104,7 +104,6 @@ func TestNodeYAMLPutRoundTripIsIdempotent(t *testing.T) {
 	}
 }
 
-// stripNodeRV 把 resourceVersion 那一行抹平（每次成功写入都会 bump 它）。
 func stripNodeRV(s string) string {
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {
@@ -115,7 +114,6 @@ func stripNodeRV(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// getNodeYAML 读一台节点的规范化文档（断言 200 + 正文非空）。
 func getNodeYAML(t *testing.T, env *nodeTestEnv, name string) string {
 	t.Helper()
 	rr := env.do(http.MethodGet, "/v1/nodes/"+name+"/yaml", nil)
@@ -129,14 +127,10 @@ func getNodeYAML(t *testing.T, env *nodeTestEnv, name string) string {
 	return text
 }
 
-// TestNodeYAMLRoundTripWithoutTotal 是 issue #570 的回归：控制台「登记节点」出来的节点都没有
-// 设 limits.total，读面因此给出显式 `total: null`。这份正文必须能原样贴回（200），
-// 而不是 400 `limits.total 必须是 ≥1 的整数，实际 <nil>`。
 func TestNodeYAMLRoundTripWithoutTotal(t *testing.T) {
 	env := newNodeTestEnv(t)
 	env.createNode("hw", map[string]any{"namespaces": []string{"default"}})
 	text := getNodeYAML(t, env, "hw")
-	// 读面语义不变：显式 null = 「本层不压住下层」，所以文档里要有这一行。
 	if !strings.Contains(text, "    total: null\n") {
 		t.Fatalf("未设 total 的节点，文档里应是显式 total: null：\n%s", text)
 	}
@@ -148,14 +142,12 @@ func TestNodeYAMLRoundTripWithoutTotal(t *testing.T) {
 	if stripNodeRV(got) != stripNodeRV(text) {
 		t.Fatalf("回写后的文档与读面不一致：\n--- 读 ---\n%s\n--- 写回 ---\n%s", text, got)
 	}
-	// 读回配置：null 不该被写成一个 total 键（= 不压住下层）。
 	cfg := decodeNodeDoc(t, env.do(http.MethodGet, "/v1/nodes/hw/config", nil))
 	if limits := nodeObject(t, cfg, "limits"); len(limits) != 0 {
 		t.Fatalf("显式 null 不该落成 limits 的键: %v", limits)
 	}
 }
 
-// TestNodeYAMLPutNullTotalClearsBudget 显式 total: null = 清掉这一维度，其余维度保持原值。
 func TestNodeYAMLPutNullTotalClearsBudget(t *testing.T) {
 	env := newNodeTestEnv(t)
 	text, _ := nodeYAMLFixture(t, env, "hw")
@@ -172,12 +164,10 @@ func TestNodeYAMLPutNullTotalClearsBudget(t *testing.T) {
 	if _, has := limits["total"]; has {
 		t.Fatalf("total: null 之后 limits 不该还有 total 键: %v", limits)
 	}
-	// 同一个 limits 对象里的其他维度不受影响（PUT 是整份 limits 替换，不是只改 total）。
 	per, _ := limits["perCapability"].(map[string]any)
 	if per["*"] != float64(2) || per["fixer"] != float64(1) {
 		t.Fatalf("total: null 不该动 perCapability: %v", limits)
 	}
-	// 回读文档仍是显式 null（读面形状不变），且可以再贴回。
 	again := getNodeYAML(t, env, "hw")
 	if !strings.Contains(again, "    total: null\n") {
 		t.Fatalf("写回后文档里应是显式 total: null：\n%s", again)
@@ -187,7 +177,6 @@ func TestNodeYAMLPutNullTotalClearsBudget(t *testing.T) {
 	}
 }
 
-// TestNodeYAMLPutNullPerCapabilityMeansUnset perCapability 本身为 null 同样等于「没设」。
 func TestNodeYAMLPutNullPerCapabilityMeansUnset(t *testing.T) {
 	env := newNodeTestEnv(t)
 	env.createNode("hw", map[string]any{"namespaces": []string{"default"}})
@@ -204,7 +193,6 @@ func TestNodeYAMLPutNullPerCapabilityMeansUnset(t *testing.T) {
 	}
 }
 
-// TestNodeYAMLPutRejectsNonPositiveLimits null 被接受不等于放松校验：0 / 负数 / 字符串仍是 400。
 func TestNodeYAMLPutRejectsNonPositiveLimits(t *testing.T) {
 	env := newNodeTestEnv(t)
 	text, _ := nodeYAMLFixture(t, env, "hw")
@@ -216,6 +204,109 @@ func TestNodeYAMLPutRejectsNonPositiveLimits(t *testing.T) {
 		wantStatus(t, env.do(http.MethodPut, "/v1/nodes/hw/yaml", map[string]any{"yaml": doc}),
 			http.StatusBadRequest, reasonValueInvalid)
 	}
+}
+
+func TestNodeLimitsNullCannotBypassPerCapabilityKeyValidation(t *testing.T) {
+	bad := map[string]any{"perCapability": map[string]any{"bad key": nil}}
+	t.Run("POST create", func(t *testing.T) {
+		env := newNodeTestEnv(t)
+		rr := env.do(http.MethodPost, "/v1/nodes", map[string]any{
+			"apiVersion": "anotify/v1", "kind": "Node",
+			"metadata": map[string]any{"name": "bad-null"},
+			"spec":     map[string]any{"limits": bad},
+		})
+		wantStatus(t, rr, http.StatusBadRequest, reasonValueInvalid)
+	})
+	t.Run("PATCH", func(t *testing.T) {
+		env := newNodeTestEnv(t)
+		env.createNode("hw", nil)
+		_, rv := env.nodeRV("hw")
+		rr := env.do(http.MethodPatch, "/v1/nodes/hw", map[string]any{
+			"metadata": map[string]any{"resourceVersion": rv},
+			"spec":     map[string]any{"limits": bad},
+		})
+		wantStatus(t, rr, http.StatusBadRequest, reasonValueInvalid)
+	})
+	t.Run("PUT config", func(t *testing.T) {
+		env := newNodeTestEnv(t)
+		env.createNode("hw", nil)
+		rr := env.do(http.MethodPut, "/v1/nodes/hw/config", map[string]any{
+			"metadata":   map[string]any{"resourceVersion": env.configRV("hw")},
+			"namespaces": []string{"*"},
+			"vars":       map[string]string{},
+			"limits":     bad,
+		})
+		wantStatus(t, rr, http.StatusBadRequest, reasonValueInvalid)
+	})
+	t.Run("PUT yaml", func(t *testing.T) {
+		env := newNodeTestEnv(t)
+		env.createNode("hw", nil)
+		doc := "apiVersion: anotify/v1\nkind: Node\nmetadata:\n  name: hw\n  resourceVersion: " + env.configRV("hw") +
+			"\nspec:\n  limits:\n    perCapability:\n      bad key: null\n"
+		rr := env.do(http.MethodPut, "/v1/nodes/hw/yaml", map[string]any{"yaml": doc})
+		wantStatus(t, rr, http.StatusBadRequest, reasonValueInvalid)
+	})
+}
+
+func TestNodeLimitsNullAcceptedAcrossJSONWriteEntries(t *testing.T) {
+	t.Run("POST create", func(t *testing.T) {
+		env := newNodeTestEnv(t)
+		rr := env.do(http.MethodPost, "/v1/nodes", map[string]any{
+			"apiVersion": "anotify/v1", "kind": "Node",
+			"metadata": map[string]any{"name": "null-limits"},
+			"spec": map[string]any{"limits": map[string]any{
+				"total":         nil,
+				"perCapability": map[string]any{"*": nil, "fixer": nil},
+			}},
+		})
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("POST create = %d, want 201 (body=%s)", rr.Code, rr.Body.String())
+		}
+		cfg := decodeNodeDoc(t, env.do(http.MethodGet, "/v1/nodes/null-limits/config", nil))
+		if limits := nodeObject(t, cfg, "limits"); len(limits) != 0 {
+			t.Fatalf("null 不该落成 limits 键: %v", limits)
+		}
+	})
+	t.Run("PATCH", func(t *testing.T) {
+		env := newNodeTestEnv(t)
+		env.createNode("hw", map[string]any{
+			"limits": map[string]any{"total": 4, "perCapability": map[string]any{"*": 2}},
+		})
+		_, rv := env.nodeRV("hw")
+		rr := env.do(http.MethodPatch, "/v1/nodes/hw", map[string]any{
+			"metadata": map[string]any{"resourceVersion": rv},
+			"spec":     map[string]any{"limits": map[string]any{"total": nil, "perCapability": map[string]any{"*": 2}}},
+		})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("PATCH = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
+		}
+		cfg := decodeNodeDoc(t, env.do(http.MethodGet, "/v1/nodes/hw/config", nil))
+		limits := nodeObject(t, cfg, "limits")
+		if _, has := limits["total"]; has {
+			t.Fatalf("total: null 应清掉该维度: %v", limits)
+		}
+		per, _ := limits["perCapability"].(map[string]any)
+		if per["*"] != float64(2) {
+			t.Fatalf("perCapability 不该被顺手改掉: %v", limits)
+		}
+	})
+	t.Run("PUT config", func(t *testing.T) {
+		env := newNodeTestEnv(t)
+		env.createNode("hw", nil)
+		rr := env.do(http.MethodPut, "/v1/nodes/hw/config", map[string]any{
+			"metadata":   map[string]any{"resourceVersion": env.configRV("hw")},
+			"namespaces": []string{"*"},
+			"vars":       map[string]string{},
+			"limits":     map[string]any{"total": nil, "perCapability": nil},
+		})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("PUT config = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
+		}
+		cfg := decodeNodeDoc(t, env.do(http.MethodGet, "/v1/nodes/hw/config", nil))
+		if limits := nodeObject(t, cfg, "limits"); len(limits) != 0 {
+			t.Fatalf("null 不该落成 limits 键: %v", limits)
+		}
+	})
 }
 
 // TestNodeYAMLPutAppliesAndBumpsRevision 改 vars/namespaces：spec 与 config revision 真的变了。

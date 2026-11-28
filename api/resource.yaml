@@ -4338,6 +4338,7 @@ components:
         limits:
           type: object
           additionalProperties: true
+          description: "显式 null（total / perCapability / 能力项）= 该项不设置；0 / 负数 / 字符串仍 400"
         tags:
           type: array
           items: {type: string}
@@ -4465,6 +4466,7 @@ components:
             limits:
               type: object
               additionalProperties: true
+              description: "显式 null（total / perCapability / 能力项）= 该项不设置；0 / 负数 / 字符串仍 400"
             tags:
               type: array
               items: {type: string}
@@ -4487,6 +4489,7 @@ components:
         limits:
           type: object
           additionalProperties: true
+          description: "显式 null（total / perCapability / 能力项）= 该项不设置；0 / 负数 / 字符串仍 400"
         configRevision:
           type: string
           description: "只读（UI 不提交，也不当 CAS 令牌）"
@@ -4506,6 +4509,7 @@ components:
         limits:
           type: object
           additionalProperties: true
+          description: "显式 null（total / perCapability / 能力项）= 该项不设置；0 / 负数 / 字符串仍 400"
       additionalProperties: false
     NodeToken:
       type: object
@@ -4543,6 +4547,7 @@ components:
         limits:
           type: object
           additionalProperties: true
+          description: "显式 null（total / perCapability / 能力项）= 该项不设置；0 / 负数 / 字符串仍 400"
         namespaces:
           type: array
           items: {type: string}

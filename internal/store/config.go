@@ -124,10 +124,8 @@ type NodeConfigFailure struct {
 	Err    error  `json:"-"`
 }
 
-// NodeCapabilityReport 是 RecordHello 的 capabilities[] 参数（一帧多条）。
-//
-// 元素形状复用协议唯一源（internal/protocol，D-I13）：store 不再定义第二份
-// 「能力名 + 命令探测结果」的形状，避免中枢侧两份字段名漂移。
+// NodeCapabilityReport 是 RecordHello 的 capabilities[] 参数（一帧多条）；元素形状复用
+// internal/protocol 的唯一源（D-I13），store 不再定义第二份。
 type NodeCapabilityReport = []DeclaredCapability
 
 // DeclaredCapability 是 hello.capabilities[] 的一条（能力名 + 命令探测结果）。
@@ -185,14 +183,8 @@ func ValidateConfigNamespaces(list []string) error {
 
 // ValidateLimits 校验节点 limits 的形状（anode.md §2）。
 //
-// 只认两个维度：total（≥1）与 perCapability（能力名 / "*" → ≥1）。
-// limits 只有本机 + 节点两层；它没有 ns 级配额，也不接受未知维度。
-//
-// 显式 null（`total: null` / `perCapability: {cap: null}`）是「本层没设这一项」，不是坏
-// 形状 —— 读面 GET /v1/nodes/{name}/yaml 就是这么写「不压住下层」的（issue #570）。这里
-// 放行 null 是为了让所有写入口对同一份文档口径一致；**落库前**由 NormalizeLimits 把这个
-// 键丢掉（nil 进库会让 TypedMachineLimits / protocol.Limits 把它当坏数据）。0 / 负数 /
-// 字符串等非正整数仍然拒绝。
+// 只认 total（≥1）与 perCapability（能力名 / "*" → ≥1），不接受未知维度；
+// 显式 null 表示「本层没设这一项」（读面就这么写），0 / 负数 / 字符串仍然拒绝。
 func ValidateLimits(limits map[string]any) error {
 	for k, v := range limits {
 		switch k {
@@ -221,7 +213,7 @@ func ValidateLimits(limits map[string]any) error {
 					return fmt.Errorf("%w: limits.perCapability 键 %q 不是能力名也不是 \"*\"", ErrConfigInvalid, name)
 				}
 				if obj[name] == nil {
-					continue // nil = 这个能力没设上限（同上，由 NormalizeLimits 丢弃）
+					continue
 				}
 				if _, ok := positiveInt(obj[name]); !ok {
 					return fmt.Errorf("%w: limits.perCapability.%s 必须是 ≥1 的整数", ErrConfigInvalid, name)
@@ -234,24 +226,8 @@ func ValidateLimits(limits map[string]any) error {
 	return nil
 }
 
-// NormalizeLimits 把 limits 里的「显式空值」归一成「这一项没设置」（issue #570）。
-//
-// 读面用显式 `total: null` 表达「本层不压住下层」，写面把 YAML 解成 map[string]any 之后
-// null 就是一个 nil 叶子：直接落库的话，强类型读取（TypedMachineLimits → protocol.Limits）
-// 只认正整数，会把 nil 当坏数据。于是「取 → 贴回」就撞在一次用户没动过的 null 上。
-// 归一放在 store 这一处，所有写入口（YAML 文档 / PATCH / config 子资源 / hello 本机值）
-// 共用同一份规则，不各写一遍。
-//
-// 规则（只为 total / perCapability 这两个**已知**维度生效；未知维度的 nil 原样留着，交给
-// ValidateLimits 照旧拒绝 —— 不能靠写 null 绕过未知维度的校验）：
-//
-//	total: null            → 丢掉 total 键（本层不设总量）
-//	perCapability: null    → 丢掉 perCapability 键
-//	perCapability.X: null  → 丢掉该能力键
-//	perCapability: {}      → 丢掉 perCapability 键（空对象不收紧任何能力，与「没设」同义；
-//	                         丢掉它还能让「取 → 贴回」后的行与写前逐字相同）
-//
-// 返回新映射，不改入参（调用方可能还要用原始输入报错）。nil 入参返回空映射。
+// NormalizeLimits 丢掉显式 null 叶子（total / perCapability / 能力项），返回新映射；
+// 未知维度与坏形状原样留给 ValidateLimits 拒绝。
 func NormalizeLimits(limits map[string]any) map[string]any {
 	out := make(map[string]any, len(limits))
 	for k, v := range limits {
@@ -263,16 +239,17 @@ func NormalizeLimits(limits map[string]any) map[string]any {
 		case "perCapability":
 			obj, ok := v.(map[string]any)
 			if !ok {
-				if v != nil { // 形状错误（不是对象）交给 ValidateLimits 报，不静默丢
+				if v != nil {
 					out[k] = v
 				}
 				continue
 			}
 			leaves := make(map[string]any, len(obj))
 			for name, leaf := range obj {
-				if leaf != nil {
-					leaves[name] = leaf
+				if leaf == nil && (name == NamespaceWildcard || configNamespacePattern.MatchString(name)) {
+					continue
 				}
+				leaves[name] = leaf
 			}
 			if len(leaves) > 0 {
 				out[k] = leaves
@@ -860,11 +837,10 @@ func putNodeConfigOn(ctx context.Context, ex queryExec, cfg *NodeConfig, configC
 	if cfg.Limits == nil {
 		cfg.Limits = map[string]any{}
 	}
-	// 显式 null = 本层没设这一项：先归一（丢掉空叶子）再校验 / 落库，库里绝不留 nil。
-	cfg.Limits = NormalizeLimits(cfg.Limits)
 	if err := ValidateLimits(cfg.Limits); err != nil {
 		return err
 	}
+	cfg.Limits = NormalizeLimits(cfg.Limits)
 	namespacesJSON, err := marshalStringList(namespaces)
 	if err != nil {
 		return err
@@ -1005,11 +981,10 @@ func (d *DB) RecordHello(ctx context.Context, nodeID string, facts NodeFacts,
 	if localLimits == nil {
 		localLimits = map[string]any{}
 	}
-	// 本机上报的 limits 同样可能带显式 null（anode 抄自己的 yaml）→ 同一份归一规则。
-	localLimits = NormalizeLimits(localLimits)
 	if err := ValidateLimits(localLimits); err != nil {
 		return err
 	}
+	localLimits = NormalizeLimits(localLimits)
 	if capabilities == nil {
 		capabilities = NodeCapabilityReport{}
 	}

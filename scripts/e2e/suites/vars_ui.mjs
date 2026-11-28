@@ -605,8 +605,6 @@ async function main() {
 	H.check("边界前提：没有 limits.total 的节点，读面写成显式 total: null",
 		bareBefore.includes("total: null"), bareBefore);
 	const barePut = await H.req(server.base, barePath, { session: s.session, method: "PUT", body: { yaml: bareBefore } });
-	// #570：读面用显式 null 表达「本层不压住下层」，写面必须按「没设这一项」接住；
-	// 之前这里 400 value_invalid，用户只改一个 var 也会失败，报错还指向没动过的字段。
 	V.expectStatus("边界：把 total: null 的原文原样贴回 → 200", barePut, 200);
 	const bareAfter = (await H.req(server.base, barePath, { session: s.session })).json?.yaml || "";
 	H.check("边界：回写后文档除 resourceVersion 外逐字不变",
