@@ -46,7 +46,7 @@ var (
 	ErrNoSuchObject = errors.New("resultspool: object missing")
 )
 
-// Store 是一个已初始化好的托管字节池。零值不可用：必须用 New 建（root/objects/tmp 的 0700 与存在性由 New 保证）。
+// Store 是一个已初始化好的托管字节池。零值不可用：必须用 New 建（root/objects/tmp 的 0700 与存在性由 New 建立）。
 type Store struct {
 	root      string
 	objects   string
@@ -110,7 +110,7 @@ func (s *Store) sweepTmpDrafts() error {
 }
 
 // sweepLeftoverDrafts 删掉 entries 里遗留的草稿，返回删不掉的那些（汇总，非致命）。
-// 名字/普通文件/mtime 三道守卫见条件本身：符号链接、子目录、活进程的新草稿一律不碰；remove 是参数。
+// 名字/普通文件/mtime 三道判断见条件本身：符号链接、子目录、活进程的新草稿一律不碰；remove 是参数。
 func (s *Store) sweepLeftoverDrafts(entries []os.DirEntry, remove func(string) error) error {
 	cutoff := time.Now().Add(-draftSweepGrace)
 	var errs []error

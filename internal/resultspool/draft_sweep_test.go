@@ -65,7 +65,7 @@ func TestNew_SweepsLeftoverDrafts(t *testing.T) {
 	if err := os.Mkdir(dirPath, 0o700); err != nil {
 		t.Fatalf("建同名目录: %v", err)
 	}
-	// 目录 mtime 也回拨：否则时间护栏先挡住「不是普通文件」，IsRegular 守卫没人钉（空目录能被 os.Remove 删掉）。
+	// 目录 mtime 也回拨：否则时间护栏先挡住「不是普通文件」，IsRegular 那段判断没人钉（空目录能被 os.Remove 删掉）。
 	if err := os.Chtimes(dirPath, old, old); err != nil {
 		t.Fatalf("回拨目录 mtime: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestNew_SweepsLeftoverDrafts(t *testing.T) {
 	}
 }
 
-// TestSweepLeftoverDrafts_NonRegularEntriesNeverRemoved 单独钉 IsRegular 守卫：真符号链接回拨不了自身
+// TestSweepLeftoverDrafts_NonRegularEntriesNeverRemoved 单独钉 IsRegular 那段判断：真符号链接回拨不了自身
 // mtime（标准库没有 lchtimes），所以注入 DirEntry（它本来就是参数）。三条只差「是不是普通文件」。
 func TestSweepLeftoverDrafts_NonRegularEntriesNeverRemoved(t *testing.T) {
 	s := newSpool(t)
