@@ -574,6 +574,59 @@ func TestPasskeyEnrollDeny_NonInitiator_Returns404(t *testing.T) {
 	}
 }
 
+// TestPasskeyEnrollNonInitiator_ExpiredSessionStill404 api/auth.yaml 的契约（#625 review r1）：
+// 非发起者对过期会话也必须 404，且不能因为会话是否被别人的请求先惰性过期过而漂移成 409。
+func TestPasskeyEnrollNonInitiator_ExpiredSessionStill404(t *testing.T) {
+	env := newEnrollTestEnv(t)
+	other := env.addUser(t, "bob")
+
+	for _, action := range []string{"approve", "deny"} {
+		t.Run(action, func(t *testing.T) {
+			created := enrollCreateHelper(t, env)
+			base := "/v1/passkey-enroll/sessions/" + created.sessionID
+			if rr := enrollDoReq(t, env, "POST", base+"/request", map[string]any{"deviceHint": "Chrome"}, false); rr.Code != 200 {
+				t.Fatalf("knock: %d %s", rr.Code, rr.Body.String())
+			}
+
+			// 让会话在 manager 的时钟上过期（TTL 默认 10 分钟）。
+			env.mgr.SetClock(func() time.Time { return time.Now().Add(11 * time.Minute) })
+			t.Cleanup(func() { env.mgr.SetClock(time.Now) })
+
+			// 1) 没有任何请求碰过 → 非发起者 404（修复前 lazyExpire 会给出 409）。
+			rr := enrollDoReqAs(t, env, "POST", base+"/"+action, nil, other)
+			if rr.Code != 404 {
+				t.Fatalf("非发起者操作未迁移的过期会话应 404, got %d body=%s", rr.Code, rr.Body.String())
+			}
+			// 越权请求不得推进状态（过期是惰性迁移，此时尚未发生）。
+			got, err := env.db.GetCliAuthSession(created.sessionID)
+			if err != nil {
+				t.Fatalf("get session: %v", err)
+			}
+			if got.Status != store.CliAuthRequested || got.UserID != env.userID {
+				t.Fatalf("越权请求改动了会话: status=%q userID=%q", got.Status, got.UserID)
+			}
+
+			// 2) 属主 watch 触发惰性过期后 → 同一非发起者请求仍 404（修复前会从 409 变成 404）。
+			if rrw := enrollDoReq(t, env, "GET", base+"/watch", nil, true); rrw.Code != 200 {
+				t.Fatalf("属主 watch 过期会话应 200, got %d body=%s", rrw.Code, rrw.Body.String())
+			}
+			rr2 := enrollDoReqAs(t, env, "POST", base+"/"+action, nil, other)
+			if rr2.Code != 404 {
+				t.Fatalf("会话已惰性过期后非发起者仍应 404, got %d body=%s", rr2.Code, rr2.Body.String())
+			}
+
+			// 对照：属主操作过期会话 → 409 + status=expired。
+			rro := enrollDoReq(t, env, "POST", base+"/"+action, nil, true)
+			if rro.Code != 409 {
+				t.Fatalf("属主操作过期会话应 409, got %d body=%s", rro.Code, rro.Body.String())
+			}
+			if m := enrollDecodeBody(t, rro); m["status"] != store.CliAuthExpired {
+				t.Errorf("409 body status=%v want expired", m["status"])
+			}
+		})
+	}
+}
+
 // TestPasskeyEnrollWatch_InitiatorStillSeesAfterApprove 批准不会把发起者挤出去（#625）：
 // approve 不再覆盖 user_id，发起者批准后仍能 watch，状态为 approved。
 func TestPasskeyEnrollWatch_InitiatorStillSeesAfterApprove(t *testing.T) {

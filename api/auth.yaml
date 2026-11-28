@@ -999,10 +999,13 @@ paths:
         新设备自报设备信息（`deviceHint`）并进入 `requested`，等旧设备批准。返回的 `secret`
         供后续 `poll` 使用。限速 10/min/IP。
 
-        敲门只能一次：会话进入 `requested` 后再次敲门回 `409`，且**不重发 secret**
-        （`secret_hash` 不变），避免已知 sessionId 的第三方抢换轮询凭证。
-        `deviceHint` 由客户端自报：服务端裁剪控制字符/双向控制符并按字符截断到 64，
-        它只是展示给发起者核对的参考信息，不参与任何授权判断。
+        敲门只接受一次（`pending` → `requested` 是既有状态机行为）：会话进入 `requested`
+        后再次敲门回 `409`，且**不重发 secret**（`secret_hash` 不变），第三方无法在合法
+        新设备敲门后替换其轮询凭证。注意：首次敲门仍是匿名的，`pending` 窗口内的抢占
+        需要一次性 nonce/SAS 才能防（#625 未完成项，本轮未实现）。
+        `deviceHint` 由客户端自报：服务端剔除 Unicode 控制字符（含换行/制表）、
+        行/段分隔符与双向文本控制符，并按字符截断到 64；它只是展示给发起者核对的
+        参考信息，不参与任何授权判断。
 
         错误：body 解析失败 `400`；会话不存在 `404`；状态不对（已 approved/denied/expired）
         `409`（body `{"status":"<当前状态>"}`）。
@@ -1171,7 +1174,9 @@ paths:
       description: |
         只有会话发起者（建会话时写入的 `user_id`）可以批准；`user_id` 不会被批准者覆盖，
         批准后新设备的 `poll` 才能拿到归属发起者的 attestation options。
-        非发起者回 `404`（与 `watch` 一致，不泄露会话是否存在）。
+        非发起者一律回 `404`（与 `watch` 一致，不泄露会话是否存在）——属主校验先于
+        惰性过期迁移，因此会话即使已过期也同样是 `404`，不会变成 `409`。
+        发起者操作过期会话则回 `409`（body `{"status":"expired"}`）。
         错误：参数不合法 `400`；会话不存在或不是发起者 `404`；状态不对 `409`
         （body `{"status":"<当前状态>"}`）；其它 `500`。
       operationId: approvePasskeyEnrollment
@@ -1199,8 +1204,9 @@ paths:
       tags: [passkey-enroll]
       summary: 旧设备拒绝补建（→ denied，只有发起者可拒绝）
       description: |
-        只有会话发起者（`user_id`）可以拒绝。非发起者回 `404`（否则任何登录用户都能
-        拒掉别人的授权，形成 DoS）。
+        只有会话发起者（`user_id`）可以拒绝。非发起者一律回 `404`（否则任何登录用户都能
+        拒掉别人的授权，形成 DoS；属主校验先于惰性过期迁移，过期会话也不会变成 `409`）。
+        发起者操作过期会话回 `409`（body `{"status":"expired"}`）。
         错误：参数不合法 `400`；会话不存在或不是发起者 `404`；状态不对 `409`
         （body `{"status":"<当前状态>"}`）；其它 `500`。
       operationId: denyPasskeyEnrollment
@@ -2009,7 +2015,8 @@ components:
           maxLength: 64
           description: |
             新设备自报的设备信息（如「iPhone · Safari」），展示给旧设备核对。
-            服务端会剔除控制字符与双向文本控制符，并按字符截断到 64；不可信，只用于展示。
+            服务端会剔除 Unicode 控制字符（Cc，含换行/制表）、行/段分隔符（U+2028/U+2029）
+            与双向文本控制符（Bidi_Control），并按字符截断到 64；不可信，只用于展示。
 
     PasskeyEnrollKnockResult:
       type: object

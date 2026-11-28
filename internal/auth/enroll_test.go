@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/zzjcool/anotify/internal/store"
 )
@@ -513,6 +514,58 @@ func TestEnroll_Delete_NonInitiator(t *testing.T) {
 	}
 }
 
+// TestEnroll_NonInitiator_ExpiredSession_StillNotOwner 属主校验必须先于惰性过期
+// （#625 review r1）：非发起者面对过期会话也必须得到 ErrNotOwner（handler 投影 404），
+// 不能因为会话刚被 lazyExpire 迁移成 expired 就变成 ErrAlreadyTerminal（409）；
+// 同一请求的响应也不得取决于这行是否已被别人的请求先惰性过期过。
+func TestEnroll_NonInitiator_ExpiredSession_StillNotOwner(t *testing.T) {
+	db, svc, uid := newEnrollTestDB(t)
+	clock := &fakeClock{t: time.Unix(1000000, 0)}
+	m := newEnrollMgrWithClock(db, svc, clock)
+
+	cases := []struct {
+		name   string
+		byUser func(id string) error
+	}{
+		{"approve", func(id string) error { return m.Approve(id, "usr_attacker") }},
+		{"deny", func(id string) error { return m.Deny(id, "usr_attacker") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			created, err := m.CreateSession(uid, "old-mac")
+			if err != nil {
+				t.Fatalf("create session: %v", err)
+			}
+			if _, err := m.RequestKnock(created.SessionID, "Chrome"); err != nil {
+				t.Fatalf("request knock: %v", err)
+			}
+
+			// 墙钟过期，但还没有任何请求触发惰性迁移。
+			clock.advance(11 * time.Minute)
+			if err := tc.byUser(created.SessionID); !errors.Is(err, ErrNotOwner) {
+				t.Fatalf("非发起者操作未迁移的过期会话应 ErrNotOwner, got %v", err)
+			}
+
+			// 属主读一次 → lazyExpire 把状态迁移成 expired；非发起者仍应是 ErrNotOwner。
+			if _, err := m.GetByID(created.SessionID); err != nil {
+				t.Fatalf("owner get: %v", err)
+			}
+			if err := tc.byUser(created.SessionID); !errors.Is(err, ErrNotOwner) {
+				t.Fatalf("会话已被惰性过期后，非发起者仍应 ErrNotOwner, got %v", err)
+			}
+
+			// 对照：属主自己操作过期会话才是 409 语义（ErrAlreadyTerminal）。
+			ownerErr := m.Approve(created.SessionID, uid)
+			if tc.name == "deny" {
+				ownerErr = m.Deny(created.SessionID, uid)
+			}
+			if !errors.Is(ownerErr, ErrAlreadyTerminal) {
+				t.Fatalf("属主操作过期会话应 ErrAlreadyTerminal, got %v", ownerErr)
+			}
+		})
+	}
+}
+
 // TestEnroll_RequestKnock_SanitizesDeviceHint deviceHint 由匿名客户端自报，
 // 落库前剔除控制字符（含换行）并截断长度，否则可伪造日志行（#625）。
 func TestEnroll_RequestKnock_SanitizesDeviceHint(t *testing.T) {
@@ -521,18 +574,29 @@ func TestEnroll_RequestKnock_SanitizesDeviceHint(t *testing.T) {
 	m := newEnrollMgrWithClock(db, svc, clock)
 
 	created, _ := m.CreateSession(uid, "old-mac")
-	hint := " Chrome\n\t· macOS\x7f \u202e "
+	hint := " Chrome\n\t· macOS\x7f\u0085 \u202e\u200f\u200e\u061c\u2028\u2029 "
 	if _, err := m.RequestKnock(created.SessionID, hint); err != nil {
 		t.Fatalf("request knock: %v", err)
 	}
 	got, _ := db.GetCliAuthSession(created.SessionID)
 	for _, r := range got.DeviceHint {
-		if r < 0x20 || r == 0x7f || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) || r == '\u2028' || r == '\u2029' {
 			t.Fatalf("deviceHint 含不该落库的字符 %U: %q", r, got.DeviceHint)
 		}
 	}
 	if got.DeviceHint != "Chrome· macOS" {
 		t.Errorf("deviceHint got %q", got.DeviceHint)
+	}
+
+	// 零宽连接符（ZWJ）不是双向控制符，应保留（emoji 序列不被拆散）。
+	createdZWJ, _ := m.CreateSession(uid, "old-mac-zwj")
+	zwj := "\U0001f468\u200d\U0001f469"
+	if _, err := m.RequestKnock(createdZWJ.SessionID, zwj); err != nil {
+		t.Fatalf("request knock zwj: %v", err)
+	}
+	gotZWJ, _ := db.GetCliAuthSession(createdZWJ.SessionID)
+	if gotZWJ.DeviceHint != zwj {
+		t.Errorf("ZWJ 不应被裁剪: got %q want %q", gotZWJ.DeviceHint, zwj)
 	}
 
 	// 超长截断到 deviceHintMaxLen 个字符（不按字节截断）。

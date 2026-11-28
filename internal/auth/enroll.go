@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/zzjcool/anotify/internal/store"
 )
@@ -16,17 +17,13 @@ import (
 // 该字段完全由新设备自报，只是批准页给发起者看的参考信息。
 const deviceHintMaxLen = 64
 
-// SanitizeDeviceHint 归一化新设备自报的设备信息：剔除控制字符与双向文本控制符
-// （防日志注入 / 显示伪装），去首尾空白，并按字符截断到 deviceHintMaxLen。
+// SanitizeDeviceHint 归一化新设备自报的设备信息：剔除 Unicode 控制字符（Cc，含换行/制表）、
+// 行/段分隔符（U+2028/U+2029，同样能断开日志行）与双向文本控制符（Bidi_Control，防显示伪装），
+// 去首尾空白，并按字符截断到 deviceHintMaxLen。
 // 该字段仍然不可信：批准页只当文本展示，不做任何授权判断。
 func SanitizeDeviceHint(hint string) string {
 	hint = strings.Map(func(r rune) rune {
-		switch {
-		case r < 0x20, r == 0x7f: // 控制字符（含 \n / \t）
-			return -1
-		case r >= 0x202a && r <= 0x202e: // LRE/RLE/PDF/LRO/RLO
-			return -1
-		case r >= 0x2066 && r <= 0x2069: // LRI/RLI/FSI/PDI
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) || r == '\u2028' || r == '\u2029' {
 			return -1
 		}
 		return r
@@ -219,14 +216,18 @@ func (m *PasskeyEnrollManager) Approve(id, userID string) error {
 	if err != nil {
 		return err
 	}
-	if m.lazyExpire(s) {
-		return fmt.Errorf("%w: 会话已过期", ErrAlreadyTerminal)
+	// 属主校验必须先于 kind 与 lazyExpire：否则过期会话会先被迁移成 expired，
+	// 非发起者拿到的是 409（ErrAlreadyTerminal），既与「非发起者一律 404」的契约
+	// 不一致，响应还会取决于这行是否被别人的请求先惰性过期过（#625 review r1）。
+	// 属主判断放在 kind 之前：非发起者无论会话是什么类型都只能看到 404。
+	if userID == "" || s.UserID != userID {
+		return fmt.Errorf("%w: 批准者必须是会话发起者", ErrNotOwner)
 	}
 	if s.Kind != store.CliAuthKindPasskey {
 		return fmt.Errorf("%w: 非 passkey 类型会话", ErrInvalidParam)
 	}
-	if userID == "" || s.UserID != userID {
-		return fmt.Errorf("%w: 批准者必须是会话发起者", ErrNotOwner)
+	if m.lazyExpire(s) {
+		return fmt.Errorf("%w: 会话已过期", ErrAlreadyTerminal)
 	}
 	if s.Status != store.CliAuthRequested {
 		return fmt.Errorf("%w: 当前状态 %s 不可批准", ErrAlreadyTerminal, s.Status)
@@ -248,14 +249,15 @@ func (m *PasskeyEnrollManager) Deny(id, userID string) error {
 	if err != nil {
 		return err
 	}
-	if m.lazyExpire(s) {
-		return fmt.Errorf("%w: 会话已过期", ErrAlreadyTerminal)
+	// 同 Approve：属主判断先于 kind 与 lazyExpire，保证非发起者恒为 404（#625 review r1）。
+	if userID == "" || s.UserID != userID {
+		return fmt.Errorf("%w: 拒绝者必须是会话发起者", ErrNotOwner)
 	}
 	if s.Kind != store.CliAuthKindPasskey {
 		return fmt.Errorf("%w: 非 passkey 类型会话", ErrInvalidParam)
 	}
-	if userID == "" || s.UserID != userID {
-		return fmt.Errorf("%w: 拒绝者必须是会话发起者", ErrNotOwner)
+	if m.lazyExpire(s) {
+		return fmt.Errorf("%w: 会话已过期", ErrAlreadyTerminal)
 	}
 	if s.Status != store.CliAuthRequested {
 		return fmt.Errorf("%w: 当前状态 %s 不可拒绝", ErrAlreadyTerminal, s.Status)
@@ -420,11 +422,12 @@ func (m *PasskeyEnrollManager) Delete(id, userID string) error {
 	if err != nil {
 		return err
 	}
-	if s.Kind != store.CliAuthKindPasskey {
-		return fmt.Errorf("%w: 非 passkey 类型会话", ErrInvalidParam)
-	}
+	// 属主优先：非发起者即使会话类型不匹配也只能看到 404（#625 review r1）。
 	if userID == "" || s.UserID != userID {
 		return fmt.Errorf("%w: 只有会话发起者可以取消", ErrNotOwner)
+	}
+	if s.Kind != store.CliAuthKindPasskey {
+		return fmt.Errorf("%w: 非 passkey 类型会话", ErrInvalidParam)
 	}
 	return m.db.DeleteCliAuthSession(id)
 }
