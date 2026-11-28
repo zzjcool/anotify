@@ -818,3 +818,6 @@ CREATE INDEX IF NOT EXISTS idx_playbook_install_audit_release
 -- +migration 12 task_retention_index
 CREATE INDEX IF NOT EXISTS idx_tasks_retain_from
     ON tasks(COALESCE(result_accepted_at, CASE WHEN reported=0 THEN finished_at END));
+
+-- +migration 13 task_rerun
+ALTER TABLE tasks ADD COLUMN rerun_of TEXT NOT NULL DEFAULT ''; -- 重跑（#605）：非空 = 输入取自那条任务（不是 parent_task_id）

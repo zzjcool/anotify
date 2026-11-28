@@ -353,6 +353,23 @@ message:
     attempt: "Attempt / maximum"
     cancel: "Cancel task"
     abandon: "Abandon task"
+    rerun: "Run again"
+    rerun_edit: "Edit params and run again"
+    rerun_title: "Run {name} again"
+    rerun_version: "Version"
+    rerun_version_live: "Current v{n} (your latest edit)"
+    rerun_version_live_unknown: "Current version"
+    rerun_version_original: "Original v{n}"
+    rerun_note: "This creates a new task; the original stays unchanged."
+    rerun_params_hint: "Parameters are copied from the original task and aligned to the selected version's params contract (defaults filled, fields outside the contract ignored); a violation is rejected — use \"Edit params and run again\"."
+    rerun_running: "Starting re-run…"
+    rerun_gone: "This capability was deleted or renamed, so it cannot be re-run."
+    rerun_prefill_unavailable: "The browser refused to stash the parameters (storage unavailable); re-enter them on the capability page."
+    rerun_of_prefix: "This is a re-run of "
+    rerun_of_suffix: "."
+    no_retry_attempt: "Attempt {n} · no automatic retry"
+    retry_note: "No automatic retry: \"Allow automatic retries\" is off for this capability."
+    no_retry_none: "No automatic retry"
     confirm_cancel: "Cancel this task? Execution authorization will be revoked and the current execution stopped."
     confirm_abandon: "Abandon this task? Execution stops without an automatic retry."
     params: "Task input parameters"
@@ -1356,6 +1373,7 @@ caps:
   test:
     title: 'Test run'
     title_named: 'Test capability {name}'
+    rerun_from: "Loaded the parameters of task {task}; the version defaults to the current one."
     hint: 'A test run really creates and dispatches a task (it is not a preview): the event is marked origin=test and excluded from statistics.'
     version: 'Version'
     version_hint: 'Defaults to the current live version; an explicit version must already exist.'

@@ -353,6 +353,23 @@ message:
     attempt: "試行 / 上限"
     cancel: "タスクを取消"
     abandon: "タスクを放棄"
+    rerun: "再実行"
+    rerun_edit: "パラメータを編集して再実行"
+    rerun_title: "{name} を再実行"
+    rerun_version: "バージョン"
+    rerun_version_live: "現在の v{n}（最新の編集）"
+    rerun_version_live_unknown: "現在のバージョン"
+    rerun_version_original: "元の v{n}"
+    rerun_note: "新しいタスクを作成します。元のタスクは変更されません。"
+    rerun_params_hint: "パラメータは元のタスクからコピーし、選択したバージョンのパラメータ契約に合わせて正規化します（既定値の補完、契約外フィールドの無視）。契約に合わない場合は拒否されるため「パラメータを編集して再実行」を使ってください。"
+    rerun_running: "再実行中…"
+    rerun_gone: "この能力は削除または名前変更されたため、再実行できません。"
+    rerun_prefill_unavailable: "ブラウザがパラメータを保存できませんでした（ストレージ利用不可）。能力ページで入力し直してください。"
+    rerun_of_prefix: "これは "
+    rerun_of_suffix: " の再実行です。"
+    no_retry_attempt: "{n} 回目の実行 · 自動再試行なし"
+    retry_note: "自動再試行はありません：この能力では「自動再試行を許可」がオフです。"
+    no_retry_none: "自動再試行なし"
     confirm_cancel: "タスクを取り消しますか？実行権限を失効し、現在の実行を停止します。"
     confirm_abandon: "タスクを放棄しますか？自動再試行せずに停止します。"
     params: "タスク入力パラメータ"
@@ -1356,6 +1373,7 @@ caps:
   test:
     title: 'テスト実行'
     title_named: '能力 {name} をテスト実行'
+    rerun_from: "タスク {task} のパラメータを読み込みました。バージョンは既定で現在のものです。"
     hint: 'テスト実行は実際にタスクを作成して配信します（プレビューではありません）。イベントには origin=test が付き、統計には含まれません。'
     version: 'バージョン'
     version_hint: '既定は現在の live バージョン。明示する場合は既存のバージョンである必要があります。'

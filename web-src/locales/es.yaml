@@ -353,6 +353,23 @@ message:
     attempt: "Intento / máximo"
     cancel: "Cancelar tarea"
     abandon: "Abandonar tarea"
+    rerun: "Ejecutar de nuevo"
+    rerun_edit: "Editar parámetros y ejecutar"
+    rerun_title: "Ejecutar {name} de nuevo"
+    rerun_version: "Versión"
+    rerun_version_live: "Actual v{n} (tu última edición)"
+    rerun_version_live_unknown: "Versión actual"
+    rerun_version_original: "Original v{n}"
+    rerun_note: "Esto crea una tarea nueva; la original no cambia."
+    rerun_params_hint: "Los parámetros se copian de la tarea original y se ajustan al contrato de la versión elegida (se rellenan los valores por defecto y se ignoran los campos fuera del contrato); si no cumple se rechaza: usa «Editar parámetros y ejecutar»."
+    rerun_running: "Ejecutando de nuevo…"
+    rerun_gone: "Esta capacidad se eliminó o cambió de nombre; no se puede ejecutar de nuevo."
+    rerun_prefill_unavailable: "El navegador no permitió guardar los parámetros (almacenamiento no disponible); vuelve a escribirlos en la página de la capacidad."
+    rerun_of_prefix: "Esta es una reejecución de "
+    rerun_of_suffix: "."
+    no_retry_attempt: "Intento {n} · sin reintento automático"
+    retry_note: "Sin reintento automático: «Permitir reintentos automáticos» está desactivado en esta capacidad."
+    no_retry_none: "Sin reintento automático"
     confirm_cancel: "¿Cancelar esta tarea? Se revoca la autorización y se detiene la ejecución."
     confirm_abandon: "¿Abandonar esta tarea? Se detiene sin reintento automático."
     params: "Parámetros de entrada"
@@ -1356,6 +1373,7 @@ caps:
   test:
     title: 'Ejecución de prueba'
     title_named: 'Probar la capacidad {name}'
+    rerun_from: "Se cargaron los parámetros de la tarea {task}; la versión es la actual por defecto."
     hint: 'Una ejecución de prueba crea y despacha una tarea de verdad (no es una vista previa): el evento se marca origin=test y queda fuera de las estadísticas.'
     version: 'Versión'
     version_hint: 'Por defecto la versión live actual; una versión explícita debe existir.'

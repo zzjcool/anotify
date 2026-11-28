@@ -6,6 +6,32 @@
      「未设置」注脚；② 空态/错误态统一骨架（MSG-2 / CP-4）。
      颜色只取 tokens。 */
 
+  .msg-rerun-note {
+    margin-bottom: 12px;
+  }
+  .msg-rerun-field + .msg-rerun-field {
+    margin-top: 12px;
+  }
+  .msg-rerun-choices {
+    display: grid;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .msg-rerun-choice {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+  .msg-rerun-params {
+    max-height: 220px;
+    overflow: auto;
+    overflow-wrap: anywhere;
+  }
+
   /* ---------- 字段空值注脚 ---------- */
   .msg-unset {
     font-size: 11.5px;
@@ -202,6 +228,31 @@
     </div>
   </div>
 </div>
+<div id="rerun-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="rerun-title">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h3 id="rerun-title">{{t "message.v4.rerun"}}</h3>
+      <button id="rerun-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.close"}}">×</button>
+    </div>
+    <div class="modal-body">
+      <p class="field-hint msg-rerun-note">{{t "message.v4.rerun_note"}}</p>
+      <fieldset class="field msg-rerun-field">
+        <legend class="field-label">{{t "message.v4.rerun_version"}}</legend>
+        <div id="rerun-versions" class="msg-rerun-choices"></div>
+      </fieldset>
+      <div class="field msg-rerun-field">
+        <span class="field-label">{{t "message.v4.params"}}</span>
+        <div id="rerun-params" class="msg-rerun-params"></div>
+        <p class="field-hint">{{t "message.v4.rerun_params_hint"}}</p>
+      </div>
+      <div id="rerun-error" role="status"></div>
+    </div>
+    <div class="modal-foot">
+      <button id="rerun-cancel" type="button" class="btn btn-ghost">{{t "caps.form.cancel"}}</button>
+      <button id="rerun-submit" type="button" class="btn">{{t "message.v4.rerun"}}</button>
+    </div>
+  </div>
+</div>
 {{end}}
 {{define "script"}}
 <script>
@@ -223,6 +274,10 @@
     let loading = false;
     let revision = 0;
     const terminal = new Set(["succeeded", "failed", "cancelled", "abandoned"]);
+    let rerunChoice = 0;
+    let rerunBusy = false;
+    let rerunLive = null;
+    let rerunHasOptions = false;
 
     function field(label, value) {
       return el("div", {}, el("dt", { class: "card-sub", text: label }),
@@ -412,6 +467,106 @@
         if (node("task-abandon")) node("task-abandon").disabled = terminal.has(task.phase);
       }
     }
+    const RERUN_PREFILL_KEY = "anotify:rerun-prefill";
+    function rerunWithEdits() {
+      if (!task) return;
+      try {
+        sessionStorage.setItem(RERUN_PREFILL_KEY, JSON.stringify({
+          namespace: task.namespace,
+          name: task.capability.name,
+          params: task.params || {},
+          fromTask: task.name,
+        }));
+      } catch (error) {
+        node("task-action-error").replaceChildren(el("p", { class: "card-sub b2-wrap",
+          text: t("message.v4.rerun_prefill_unavailable") }));
+        return;
+      }
+      location.href = "capability.html?namespace=" + encodeURIComponent(task.namespace) +
+        "&name=" + encodeURIComponent(task.capability.name) + "&rerun=1";
+    }
+    function rerunChoiceRow(value, text, checked) {
+      const input = el("input", { type: "radio", name: "rerun-version", value: String(value) });
+      input.checked = !!checked;
+      input.addEventListener("change", () => { if (input.checked) rerunChoice = value; });
+      return el("label", { class: "msg-rerun-choice" }, input, el("span", { text }));
+    }
+    function renderRerunChoices() {
+      const host = node("rerun-versions");
+      host.replaceChildren();
+      const original = task.capability.version;
+      const liveText = rerunLive == null
+        ? t("message.v4.rerun_version_live_unknown")
+        : t("message.v4.rerun_version_live", "当前 v{n}（你修改后的版本）").replace("{n}", String(rerunLive));
+      host.append(rerunChoiceRow(0, liveText, true));
+      if (original && original !== rerunLive) {
+        host.append(rerunChoiceRow(original,
+          t("message.v4.rerun_version_original", "原版本 v{n}").replace("{n}", String(original))));
+      }
+      node("rerun-submit").disabled = false;
+    }
+    async function openRerun() {
+      if (!task || rerunBusy) return;
+      rerunChoice = 0;
+      rerunLive = null;
+      rerunHasOptions = false;
+      node("rerun-title").textContent = t("message.v4.rerun_title", "重跑 {name}")
+        .replace("{name}", task.capability.name);
+      node("rerun-error").replaceChildren();
+      node("rerun-versions").replaceChildren(el("p", { class: "field-hint", text: t("events.v4.loading") }));
+      node("rerun-params").replaceChildren(json(task.params == null ? {} : task.params, "JSON"));
+      node("rerun-submit").disabled = true;
+      A.openModal(node("rerun-modal"));
+      try {
+        const resource = await api(nsPath("capabilities", task.capability.name));
+        const live = Number(resource && resource.status ? resource.status.version : NaN);
+        rerunLive = Number.isInteger(live) && live > 0 ? live : null;
+        rerunHasOptions = true;
+        renderRerunChoices();
+      } catch (error) {
+        node("rerun-versions").replaceChildren();
+        node("rerun-error").replaceChildren(el("p", { class: "card-sub b2-wrap",
+          text: t("message.v4.rerun_gone", "这个能力已删除或已改名，无法重跑。") }));
+      }
+    }
+    function closeRerun() {
+      A.closeModal(node("rerun-modal"));
+    }
+    async function submitRerun() {
+      if (rerunBusy || !task || !rerunHasOptions) return;
+      rerunBusy = true;
+      const submit = node("rerun-submit");
+      submit.disabled = true;
+      submit.textContent = t("message.v4.rerun_running", "重跑中…");
+      node("rerun-error").replaceChildren();
+      try {
+        const body = rerunChoice > 0 ? JSON.stringify({ version: rerunChoice }) : "{}";
+        const doc = await api(nsPath("tasks", task.name) + "/rerun", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: body,
+        });
+        const created = doc && doc.metadata ? doc.metadata.name : "";
+        if (!created) throw new Error("malformed Task");
+        location.href = "message.html?namespace=" + encodeURIComponent(task.namespace) +
+          "&id=" + encodeURIComponent(created);
+        return;
+      } catch (error) {
+        const box = node("rerun-error");
+        const paramRejected = !!error && error.status === 400 &&
+          ["param_missing", "param_type", "param_schema"].indexOf(error.reason) >= 0;
+        box.replaceChildren(inlineFailure(error, paramRejected ? undefined : submitRerun));
+        if (paramRejected) {
+          const go = el("button", { type: "button", class: "btn mt-2", text: t("message.v4.rerun_edit", "修改参数后重跑") });
+          go.addEventListener("click", rerunWithEdits);
+          box.append(go);
+        }
+      } finally {
+        rerunBusy = false;
+        submit.disabled = false;
+        submit.textContent = t("message.v4.rerun");
+      }
+    }
     function artifactRow(artifact) {
       const row = el("div", { class: "grid gap-2" });
       const safePath = typeof artifact.path === "string" &&
@@ -468,6 +623,17 @@
     function render() {
       content.replaceChildren();
       node("msg-title").textContent = task.capability.name + "@" + task.capability.version;
+      if (task.rerunOf) {
+        content.append(el("p", { id: "task-rerun-of", class: "card-sub b2-wrap" },
+          el("span", { text: t("message.v4.rerun_of_prefix", "这是") }),
+          el("a", {
+            class: "mono",
+            href: "message.html?namespace=" + encodeURIComponent(task.namespace) +
+              "&id=" + encodeURIComponent(task.rerunOf),
+            text: task.rerunOf,
+          }),
+          el("span", { text: t("message.v4.rerun_of_suffix", "的重跑。") })));
+      }
       node("msg-sub").textContent = task.namespace + " · " + task.name;
       const trace = node("msg-trace");
       trace.hidden = !task.traceUID;
@@ -479,7 +645,11 @@
       const entries = [
         ["waitingReason", task.waitingReason],
         ["nextAttemptAt", task.nextAttemptAt],
-        [t("message.v4.attempt"), task.attempt + "/" + task.maxAttempts],
+        [t("message.v4.attempt"), terminal.has(task.phase) && task.idempotent === false
+          ? (task.attempt > 0
+            ? t("message.v4.no_retry_attempt", "第 {n} 次执行 · 不会自动重试").replace("{n}", String(task.attempt))
+            : t("message.v4.no_retry_none", "不会自动重试"))
+          : task.attempt + "/" + task.maxAttempts],
         ["nodeName", task.nodeName],
         ["leaseExpiresAt", task.leaseExpiresAt],
         ["parentTaskId", task.parentTaskId],
@@ -512,6 +682,13 @@
       }
       facts.append(devFold(devEntries));
       const actions = el("div", { class: "flex flex-wrap gap-2" });
+      if (terminal.has(task.phase)) {
+        const rerun = el("button", { id: "task-rerun", class: "btn", type: "button", text: t("message.v4.rerun") });
+        rerun.addEventListener("click", () => openRerun());
+        const rerunEdit = el("button", { id: "task-rerun-edit", class: "btn btn-ghost", type: "button", text: t("message.v4.rerun_edit") });
+        rerunEdit.addEventListener("click", () => rerunWithEdits());
+        actions.append(rerun, rerunEdit);
+      }
       for (const kind of ["cancel", "abandon"]) {
         const button = el("button", { id: "task-" + kind, class: "btn btn-ghost", type: "button", text: t("message.v4." + kind) });
         button.disabled = terminal.has(task.phase);
@@ -519,6 +696,9 @@
         actions.append(button);
       }
       facts.append(actions, el("div", { id: "task-action-error", role: "status" }));
+      if (terminal.has(task.phase) && task.idempotent === false) {
+        facts.append(el("p", { id: "task-no-retry", class: "card-sub b2-wrap", text: t("message.v4.retry_note") }));
+      }
       const params = section(t("message.v4.params"), "task-params");
       params.append(kvList(task.params, t("uxaudit.dev.none"), ""), rawFold(t("message.v4.params"), task.params));
       /* C-4：没有数据的块整块不占版面 —— 标题与空态都不渲染，只留真有的内容。 */
@@ -688,6 +868,12 @@
       }
     }
     node("msg-refresh").addEventListener("click", load);
+    node("rerun-submit").addEventListener("click", submitRerun);
+    node("rerun-close").addEventListener("click", closeRerun);
+    node("rerun-cancel").addEventListener("click", closeRerun);
+    node("rerun-modal").addEventListener("click", event => {
+      if (event.target === event.currentTarget) closeRerun();
+    });
     A.mountPullRefresh(load);
     load();
   })();

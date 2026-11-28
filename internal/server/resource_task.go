@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/zzjcool/anotify/internal/protocol"
+	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/store"
 	"github.com/zzjcool/anotify/internal/ws"
 )
@@ -23,10 +24,9 @@ import (
 //
 // 分工与纪律（api-conventions §7.6 / §7.7、W6、A1/G3-D3）：
 //
-//   - Task 是**系统对象**：只有 dispatcher / ingress 建行，HTTP 面没有 POST / DELETE，
-//     `spec` 不可变（没有 PATCH）。所以本文件不出现 decodeWriteEnvelope / CAS 令牌：
-//     没有可写面就没有并发控制问题。`metadata.resourceVersion` **刻意不下发**——
-//     tasks 表没有 resource_version 列，编一个假令牌会让客户端以为可以拿它做 CAS。
+//   - Task 是**系统对象**：只有 dispatcher / ingress 建行；唯一的写入口是
+//     `POST …/tasks/{id}/rerun`（建**新**行，原行不变），没有 PATCH / DELETE / CAS 令牌
+//     （`metadata.resourceVersion` 也刻意不下发：tasks 没有该列，假令牌会被当成 CAS 用）。
 //   - status **从事实派生**（S2）：全部来自 tasks 行的投影，不落库、不需要 reconciler。
 //     没事实的字段一律 null / 省略（S1/E1：未声明 version 不公开 0，不造 digest）。
 //   - 日志的真相在**节点**上（A1/G3-D3）：中枢只转发一次 logs_request，不落库、不缓存。
@@ -83,6 +83,7 @@ func (a *taskAPI) register(mux *http.ServeMux) {
 	route("GET "+tasksPath+"/{taskId}", a.get)
 	route("POST "+tasksPath+"/{taskId}/cancel", a.cancel)
 	route("POST "+tasksPath+"/{taskId}/abandon", a.abandon)
+	route("POST "+tasksPath+"/{taskId}/rerun", a.rerun)
 	route("GET "+tasksPath+"/{taskId}/logs", a.logs)
 	route("GET "+tasksPath+"/{taskId}/emissions", a.emissions)
 	// 运行产物下载（#332 / A1 §4）：Task 子资源，仍走会话鉴权 + no-store；
@@ -257,6 +258,99 @@ func (a *taskAPI) requestStop(w http.ResponseWriter, r *http.Request, intent sto
 		}
 	}
 	writeEnvelope(w, http.StatusOK, taskEnvelope(updated, a.d.namespaceDisplay(r.Context(), ns)))
+}
+
+type taskRerunRequest struct {
+	Version int `json:"version,omitempty"`
+}
+
+func (a *taskAPI) rerun(w http.ResponseWriter, r *http.Request) {
+	ns, err := a.d.authorizePathNamespace(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	id, err := taskPathID(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	var body taskRerunRequest
+	if err := decodeActionBody(r, &body); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if body.Version < 0 {
+		writeAPIError(w, errStatus(http.StatusBadRequest, reasonBadRequest,
+			"version must be ≥ 0 (0 = live version)"))
+		return
+	}
+	orig, err := a.d.DB.GetTask(r.Context(), ns, id)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	name := strings.TrimSpace(orig.Capability)
+	if name == "" {
+		writeAPIError(w, errStatus(http.StatusConflict, reasonConflict,
+			fmt.Sprintf("%s: 任务 %s 没有能力名，无法确定要重跑什么", store.ErrTaskNotRerunnable, orig.ID)))
+		return
+	}
+	target, err := a.rerunTargetVersion(r.Context(), ns, name, body.Version)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	input, err := rerunParamInput(orig)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	// 输入只有一份（原任务钉住的那份），但要按**目标版本**的契约归一：不合契约 → 400 + causes。
+	params, prune := route.PrepareParams(target.Spec.Params, input)
+	if prune != nil {
+		writeAPIError(w, capabilityParamError(prune))
+		return
+	}
+	created, err := a.d.DB.CreateRerunTask(r.Context(), store.RerunInputs{
+		NamespaceID:    ns,
+		TaskID:         id,
+		Version:        target.Version,
+		PreparedParams: params,
+		Now:            taskNowSeconds(a.d),
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrTaskNotRerunnable) {
+			writeAPIError(w, errStatus(http.StatusConflict, reasonConflict, err.Error()))
+			return
+		}
+		writeAPIError(w, err)
+		return
+	}
+	writeEnvelope(w, http.StatusOK, taskEnvelope(created, a.d.namespaceDisplay(r.Context(), ns)))
+}
+
+func (a *taskAPI) rerunTargetVersion(ctx context.Context, ns, name string, version int) (*store.CapabilityVersion, error) {
+	if version > 0 {
+		return a.d.DB.GetCapability(ctx, ns, name, version)
+	}
+	return a.d.DB.ResolveRef(ctx, ns, name)
+}
+
+func rerunParamInput(orig *store.Task) (map[string]any, error) {
+	input := map[string]any{}
+	trimmed := strings.TrimSpace(string(orig.Params))
+	if trimmed == "" || trimmed == "null" {
+		return input, nil
+	}
+	if err := json.Unmarshal(orig.Params, &input); err != nil || input == nil {
+		return nil, capabilityParamError(&route.Prune{
+			Reason: protocol.ReasonParamType,
+			Detail: "原任务的 params 不是 JSON 对象，无法对齐参数契约",
+			Field:  "params",
+		})
+	}
+	return input, nil
 }
 
 // stopStore 按意图把取消/放弃意图落库（两路共用同一个线性化点，只差终态相位）。
@@ -775,6 +869,7 @@ type taskSpecDoc struct {
 	TraceUID     string             `json:"traceUID"`
 	ParentRef    *taskRefDoc        `json:"parentRef"`
 	ParentTaskID *string            `json:"parentTaskId"`
+	RerunOf      *string            `json:"rerunOf"`
 	Capability   *taskCapabilityRef `json:"capability"`
 	Params       json.RawMessage    `json:"params"`
 }
@@ -800,12 +895,15 @@ type taskCapabilityRef struct {
 // configRevision / namespaceVarsRevision 是**配置生效版本**（字符串，按 §7.6），
 // 与 metadata.resourceVersion（写并发令牌）是两件事，不能混用——而 Task 没有后者。
 type taskStatusDoc struct {
-	Phase                 string              `json:"phase"`
-	WaitingReason         *string             `json:"waitingReason"`
-	NextAttemptAt         *string             `json:"nextAttemptAt"`
-	NodeName              *string             `json:"nodeName"`
-	Attempt               int                 `json:"attempt"`
-	MaxAttempts           int                 `json:"maxAttempts"`
+	Phase         string  `json:"phase"`
+	WaitingReason *string `json:"waitingReason"`
+	NextAttemptAt *string `json:"nextAttemptAt"`
+	NodeName      *string `json:"nodeName"`
+	Attempt       int     `json:"attempt"`
+	MaxAttempts   int     `json:"maxAttempts"`
+
+	Idempotent bool `json:"idempotent"`
+
 	LeaseExpiresAt        *string             `json:"leaseExpiresAt"`
 	StartedAt             *string             `json:"startedAt"`
 	FinishedAt            *string             `json:"finishedAt"`
@@ -858,6 +956,10 @@ func taskSpecOf(t *store.Task) taskSpecDoc {
 		params = json.RawMessage("{}")
 	}
 	doc := taskSpecDoc{TraceUID: t.TraceID, Params: params}
+	if t.RerunOf != "" {
+		rerunOf := t.RerunOf
+		doc.RerunOf = &rerunOf
+	}
 	if t.ParentTaskID != nil && *t.ParentTaskID != "" {
 		parent := *t.ParentTaskID
 		doc.ParentTaskID = &parent
@@ -893,6 +995,7 @@ func taskStatusOf(t *store.Task) taskStatusDoc {
 	}
 	status := taskStatusDoc{
 		Phase:                 t.Phase,
+		Idempotent:            t.Idempotent,
 		WaitingReason:         taskOptionalString(t.WaitingReason),
 		NextAttemptAt:         taskTimestampPtr(t.NextAttemptAt),
 		NodeName:              taskOptionalString(t.NodeName),

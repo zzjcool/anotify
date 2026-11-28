@@ -353,6 +353,23 @@ message:
     attempt: "尝试 / 上限"
     cancel: "取消任务"
     abandon: "放弃任务"
+    rerun: "重跑"
+    rerun_edit: "修改参数后重跑"
+    rerun_title: "重跑 {name}"
+    rerun_version: "版本"
+    rerun_version_live: "当前 v{n}（你修改后的版本）"
+    rerun_version_live_unknown: "当前版本"
+    rerun_version_original: "原版本 v{n}"
+    rerun_note: "这会新建一个任务，原任务保持不变。"
+    rerun_params_hint: "参数复制自原任务，并按所选版本的参数契约归一（补默认值、忽略契约外的字段）；不合契约会被拒绝，改用「修改参数后重跑」。"
+    rerun_running: "重跑中…"
+    rerun_gone: "这个能力已删除或已改名，无法重跑。"
+    rerun_prefill_unavailable: "浏览器不允许暂存参数（存储不可用），请到能力页手动重填。"
+    rerun_of_prefix: "这是"
+    rerun_of_suffix: "的重跑。"
+    no_retry_attempt: "第 {n} 次执行 · 不会自动重试"
+    retry_note: "不会自动重试：这个能力没有勾选「允许自动重试」。"
+    no_retry_none: "不会自动重试"
     confirm_cancel: "确认取消此任务？将撤销执行授权并停止当前执行。"
     confirm_abandon: "确认放弃此任务？停止执行且不自动重试。"
     params: "任务输入参数"
@@ -1356,6 +1373,7 @@ caps:
   test:
     title: '试跑一次'
     title_named: '试跑能力 {name}'
+    rerun_from: "已带入任务 {task} 的参数；版本默认当前版本。"
     hint: '试跑会真的建任务并派发（不是预览）：事件带 origin=test 标记，统计口径不计入。'
     version: '版本'
     version_hint: '默认当前 live 版本；显式版本必须已存在。'
