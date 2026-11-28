@@ -124,10 +124,8 @@ type NodeConfigFailure struct {
 	Err    error  `json:"-"`
 }
 
-// NodeCapabilityReport 是 RecordHello 的 capabilities[] 参数（一帧多条）。
-//
-// 元素形状复用协议唯一源（internal/protocol，D-I13）：store 不再定义第二份
-// 「能力名 + 命令探测结果」的形状，避免中枢侧两份字段名漂移。
+// NodeCapabilityReport 是 RecordHello 的 capabilities[] 参数（一帧多条）；元素形状复用
+// internal/protocol 的唯一源（D-I13），store 不再定义第二份。
 type NodeCapabilityReport = []DeclaredCapability
 
 // DeclaredCapability 是 hello.capabilities[] 的一条（能力名 + 命令探测结果）。
@@ -185,16 +183,22 @@ func ValidateConfigNamespaces(list []string) error {
 
 // ValidateLimits 校验节点 limits 的形状（anode.md §2）。
 //
-// 只认两个维度：total（≥1）与 perCapability（能力名 / "*" → ≥1）。
-// limits 只有本机 + 节点两层；它没有 ns 级配额，也不接受未知维度。
+// 只认 total（≥1）与 perCapability（能力名 / "*" → ≥1），不接受未知维度；
+// 显式 null 表示「本层没设这一项」（读面就这么写），0 / 负数 / 字符串仍然拒绝。
 func ValidateLimits(limits map[string]any) error {
 	for k, v := range limits {
 		switch k {
 		case "total":
+			if v == nil {
+				continue
+			}
 			if _, ok := positiveInt(v); !ok {
 				return fmt.Errorf("%w: limits.total 必须是 ≥1 的整数，实际 %v", ErrConfigInvalid, v)
 			}
 		case "perCapability":
+			if v == nil {
+				continue
+			}
 			obj, ok := v.(map[string]any)
 			if !ok {
 				return fmt.Errorf("%w: limits.perCapability 必须是对象", ErrConfigInvalid)
@@ -208,6 +212,9 @@ func ValidateLimits(limits map[string]any) error {
 				if name != NamespaceWildcard && !configNamespacePattern.MatchString(name) {
 					return fmt.Errorf("%w: limits.perCapability 键 %q 不是能力名也不是 \"*\"", ErrConfigInvalid, name)
 				}
+				if obj[name] == nil {
+					continue
+				}
 				if _, ok := positiveInt(obj[name]); !ok {
 					return fmt.Errorf("%w: limits.perCapability.%s 必须是 ≥1 的整数", ErrConfigInvalid, name)
 				}
@@ -217,6 +224,41 @@ func ValidateLimits(limits map[string]any) error {
 		}
 	}
 	return nil
+}
+
+// NormalizeLimits 丢掉显式 null 叶子（total / perCapability / 能力项），返回新映射；
+// 未知维度与坏形状原样留给 ValidateLimits 拒绝。
+func NormalizeLimits(limits map[string]any) map[string]any {
+	out := make(map[string]any, len(limits))
+	for k, v := range limits {
+		switch k {
+		case "total":
+			if v != nil {
+				out[k] = v
+			}
+		case "perCapability":
+			obj, ok := v.(map[string]any)
+			if !ok {
+				if v != nil {
+					out[k] = v
+				}
+				continue
+			}
+			leaves := make(map[string]any, len(obj))
+			for name, leaf := range obj {
+				if leaf == nil && (name == NamespaceWildcard || configNamespacePattern.MatchString(name)) {
+					continue
+				}
+				leaves[name] = leaf
+			}
+			if len(leaves) > 0 {
+				out[k] = leaves
+			}
+		default:
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // positiveInt 把 JSON 解出来的数值归一成正整数；bool=false 表示不是正整数。
@@ -798,6 +840,7 @@ func putNodeConfigOn(ctx context.Context, ex queryExec, cfg *NodeConfig, configC
 	if err := ValidateLimits(cfg.Limits); err != nil {
 		return err
 	}
+	cfg.Limits = NormalizeLimits(cfg.Limits)
 	namespacesJSON, err := marshalStringList(namespaces)
 	if err != nil {
 		return err
@@ -941,6 +984,7 @@ func (d *DB) RecordHello(ctx context.Context, nodeID string, facts NodeFacts,
 	if err := ValidateLimits(localLimits); err != nil {
 		return err
 	}
+	localLimits = NormalizeLimits(localLimits)
 	if capabilities == nil {
 		capabilities = NodeCapabilityReport{}
 	}

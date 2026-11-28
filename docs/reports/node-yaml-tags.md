@@ -227,6 +227,9 @@ $ node --test scripts/v4-frontend.test.mjs      # 本 worktree，基线 = origin
 
 ## 7. 相邻问题（已登记，本 PR 不改）
 
+> **已修复（#570）**：以下第 1 条记录的是当时的边界。写面现在把显式 `total: null` 当
+> 「本层没设这一项」接住，`GET …/yaml` → 原样 `PUT` 是 200；`0` / 负数 / 字符串仍 400。
+
 1. **`limits.total: null` 的「取 → 贴回」不幂等**（P2，真实复现于本次 e2e）：节点没有
    `limits.total`（合法状态，`{}`）时，服务端 YAML 读面按设计写 `total: null`
    （`internal/server/resource_node_yaml.go:80` 的注释：「未写 → 显式 `total: null`」），
