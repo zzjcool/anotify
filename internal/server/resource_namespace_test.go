@@ -57,7 +57,7 @@ func newNamespaceTestEnv(t *testing.T) *nsTestEnv {
 
 	return &nsTestEnv{
 		t: t, db: db, mux: mux, sm: sm, userID: user.ID, nsID: ns.ID,
-		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
+		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token},
 	}
 }
 
@@ -662,7 +662,7 @@ func (e *nsTestEnv) memberCookie(t *testing.T) *http.Cookie {
 	if err != nil {
 		t.Fatalf("create member session: %v", err)
 	}
-	return &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID}
+	return &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token}
 }
 
 // TestNamespaceResourceRequiresSession cluster 级资源也要登录（未登录 401，不是 404）。

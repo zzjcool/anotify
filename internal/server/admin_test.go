@@ -71,8 +71,8 @@ func newAdminTestEnv(t *testing.T) *adminTestEnv {
 
 	return &adminTestEnv{
 		mux: mux, db: db, adminID: adminU.ID, memberID: memberU.ID, adminNSID: adminNS.ID,
-		adminCookie:  &http.Cookie{Name: auth.SessionCookieName, Value: adminSess.ID},
-		memberCookie: &http.Cookie{Name: auth.SessionCookieName, Value: memberSess.ID},
+		adminCookie:  &http.Cookie{Name: auth.SessionCookieName, Value: adminSess.Token},
+		memberCookie: &http.Cookie{Name: auth.SessionCookieName, Value: memberSess.Token},
 	}
 }
 

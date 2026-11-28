@@ -49,7 +49,7 @@ func prodClockSession(t *testing.T, app *App) (*http.Cookie, string) {
 	}
 	for _, ns := range nss {
 		if ns.Slug == "default" {
-			return &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID}, ns.ID
+			return &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token}, ns.ID
 		}
 	}
 	t.Fatalf("注册后没有 default 命名空间（namespaces=%d）", len(nss))

@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS passkeys (
     last_used_at    INTEGER
 );
 
--- 登录会话（id 就是下发给浏览器的 token）。
+-- 登录会话。id 是**可公开**的会话标识（列表/吊销路径/日志都允许出现）；
+-- 凭据角色由迁移块 16 加的 token_hash 承担 —— 令牌原文只在 Set-Cookie 里出现过一次。
 CREATE TABLE IF NOT EXISTS sessions (
     id          TEXT PRIMARY KEY,
     user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -842,3 +843,13 @@ CREATE INDEX IF NOT EXISTS idx_task_artifact_uploads_object
 -- 到期扫描里还有一个按 task 的 EXISTS（u.task_id=t.id）：没有它同样是每行一次 uploads 全表扫（顺带覆盖 tasks 级联删除的子表查找）。
 CREATE INDEX IF NOT EXISTS idx_task_artifact_uploads_task
     ON task_artifact_uploads(task_id);
+
+-- +migration 16 session_token_hash
+-- #589：会话令牌（Cookie anotify_session 的值）只存 sha256 十六进制，库里不再有可直接使用的凭据。
+-- id 承担「可公开标识」的角色（列表接口、吊销路径、访问日志都能出现）；令牌原文只在 Set-Cookie 里。
+-- 旧行一律作废（全部会话失效、重新登录）：SQL 里没有 sha256 可用，无法把「明文 id」
+-- 反推成哈希，留着只会变成一张无法校验、却仍是明文的令牌表。
+ALTER TABLE sessions ADD COLUMN token_hash TEXT NOT NULL DEFAULT '';
+DELETE FROM sessions;
+-- 鉴权热路径按 token_hash 取行，每个已登录请求一次，必须有索引。
+CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);

@@ -105,7 +105,7 @@ func main() {
 
 	fmt.Printf("UID=%s\n", uid)
 	fmt.Printf("SEND_KEY=%s\n", sendPlain)
-	fmt.Printf("SESSION=%s\n", sess.ID)
+	fmt.Printf("SESSION=%s\n", sess.Token) // 令牌原文只在这里交给开发工具；库里只存哈希
 	if u, err := db.GetUserByID(uid); err == nil {
 		fmt.Printf("ROLE=%s\n", u.Role)
 	}
@@ -118,7 +118,7 @@ func main() {
 	}
 
 	if *autoLoginFile != "" {
-		if err := writeAutoLoginPage(*autoLoginFile, sess.ID, *username); err != nil {
+		if err := writeAutoLoginPage(*autoLoginFile, sess.Token, *username); err != nil {
 			log.Fatalf("写自动登录页失败: %v", err)
 		}
 		log.Printf("自动登录页已写入: %s", *autoLoginFile)

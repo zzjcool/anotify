@@ -169,7 +169,7 @@ func TestProductionMuxBootsAndServesRetainedDomains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	cookie := &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID}
+	cookie := &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token}
 
 	// ④ 关键保留域（§8.3/§8.4/§8.5）在真实 mux 上都必须是 200——
 	// 这一串是 review 抓过的「被顺手删/改名」清单，整机层再钉一次。
@@ -244,7 +244,7 @@ func TestProductionMuxRetiredWritesAre405(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	cookie := &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID}
+	cookie := &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token}
 
 	countDeployments := func() int {
 		t.Helper()

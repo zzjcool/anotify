@@ -109,7 +109,7 @@ func newArtifactEnv(t *testing.T) *artifactEnv {
 
 	env := &artifactEnv{
 		t: t, ctx: ctx, db: db, spool: spool,
-		userID: user.ID, cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
+		userID: user.ID, cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token},
 		ns: ns, nsOther: nsOther, cap: capDef,
 	}
 	env.deps = &serverDeps{

@@ -252,7 +252,7 @@ func newTaskOutEnv(t *testing.T) *taskOutEnv {
 
 	return &taskOutEnv{
 		db: db, mux: mux, nsID: ns.ID, nsSlug: ns.Slug, capability: capDef,
-		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
+		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token},
 	}
 }
 

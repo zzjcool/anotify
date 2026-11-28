@@ -58,7 +58,7 @@ func newEnrollE2EEnv(t *testing.T) *enrollE2EEnv {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	cookie := &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID}
+	cookie := &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token}
 
 	enrollH := &passkeyEnrollHandler{mgr: mgr, db: db}
 	authH := &authHandler{svc: svc, db: db}

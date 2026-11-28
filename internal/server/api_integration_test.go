@@ -101,7 +101,7 @@ func newITEnv(t *testing.T) *itEnv {
 	return &itEnv{
 		db:     db,
 		mux:    mux,
-		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
+		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token},
 		nsA:    defaultNS.ID,
 		nsB:    second.ID,
 		slugA:  defaultNS.Slug,

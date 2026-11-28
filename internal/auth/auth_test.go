@@ -257,7 +257,14 @@ func TestSession_CreateValidateRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	got, err := svc.Sessions().Validate(sess.ID)
+	if sess.Token == "" || sess.TokenHash != HashSessionToken(sess.Token) {
+		t.Fatalf("Create 必须同时给出明文令牌（只进 Cookie）与它的哈希（落库），got token=%q hash=%q", sess.Token, sess.TokenHash)
+	}
+	// #589：拿公开 id 当 Cookie 必须无效——它不是凭据。
+	if _, err := svc.Sessions().Validate(sess.ID); err == nil {
+		t.Errorf("公开 id 不能当会话令牌用")
+	}
+	got, err := svc.Sessions().Validate(sess.Token)
 	if err != nil {
 		t.Fatalf("validate session: %v", err)
 	}
@@ -266,10 +273,10 @@ func TestSession_CreateValidateRevoke(t *testing.T) {
 	}
 
 	// 吊销后失效。
-	if err := svc.Sessions().Revoke(sess.ID); err != nil {
+	if err := svc.Sessions().Revoke(sess.Token); err != nil {
 		t.Fatalf("revoke session: %v", err)
 	}
-	if _, err := svc.Sessions().Validate(sess.ID); err == nil {
+	if _, err := svc.Sessions().Validate(sess.Token); err == nil {
 		t.Errorf("已吊销会话应无效")
 	}
 }
@@ -289,8 +296,11 @@ func TestSession_Expiry(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 	// 负 TTL 会被 NewSessionManager 归一化为默认，改为手动构造一个过期会话直接入库。
+	expiredTok := "tok_expired_" + store.NewUserID()
 	expired := &store.Session{
-		ID:        store.NewSessionID() + ".tok",
+		ID:        store.NewSessionID(),
+		Token:     expiredTok,
+		TokenHash: HashSessionToken(expiredTok),
 		UserID:    user.ID,
 		CreatedAt: store.Now() - 7200,
 		ExpiresAt: store.Now() - 3600, // 1 小时前过期
@@ -299,7 +309,7 @@ func TestSession_Expiry(t *testing.T) {
 	if err := db.CreateSession(expired); err != nil {
 		t.Fatalf("create expired session: %v", err)
 	}
-	if _, err := svc.Sessions().Validate(expired.ID); err == nil {
+	if _, err := svc.Sessions().Validate(expired.Token); err == nil {
 		t.Errorf("过期会话应无效")
 	}
 }
@@ -331,7 +341,7 @@ func TestSession_Middleware(t *testing.T) {
 
 	// 有效 Cookie → 200 且注入 userID。
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: sess.ID})
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: sess.Token})
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

@@ -65,7 +65,7 @@ func newRecoveryTestEnv(t *testing.T) *recoveryTestEnv {
 
 	return &recoveryTestEnv{
 		mux: mux, db: db, svc: svc, userID: uid, username: "recuser",
-		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
+		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token},
 	}
 }
 

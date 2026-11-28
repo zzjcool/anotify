@@ -3,7 +3,9 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -105,7 +107,23 @@ func NewSessionManagerTuned(db *store.DB, ttl time.Duration, secure bool, cacheT
 	return m
 }
 
+// HashSessionToken 返回会话令牌的十六进制 sha256。
+//
+// 这是库里保存、缓存里当 key、日志里允许出现前缀的**唯一**形式（#589）：
+// 32 字节随机令牌不需要慢哈希（没有可被枚举的候选集），sha256 足够；
+// 反过来，只要把明文写进数据库/缓存/日志，就等于多一份可用凭据。
+func HashSessionToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
 // Create 为某用户签发一个新会话。deviceName 从 UA 推断（如「Chrome · macOS」）。
+//
+// 返回值里有两件不同的东西：
+//   - s.Token 是**凭据原文**，只应进 Set-Cookie（不落库、不记日志、不出 JSON）；
+//   - s.ID 是可公开的会话标识（sess_…），列表接口/吊销路径/日志都可以出现。
+//
+// 两者拆开是 #589 的核心：会话 id 不再是令牌，于是「把列表 id 当 Cookie」不再能用。
 func (m *SessionManager) Create(userID, deviceName string) (*store.Session, error) {
 	tok, err := randomToken(32)
 	if err != nil {
@@ -113,7 +131,9 @@ func (m *SessionManager) Create(userID, deviceName string) (*store.Session, erro
 	}
 	now := time.Now()
 	s := &store.Session{
-		ID:         store.NewSessionID() + "." + tok, // 加随机后缀，避免 ID 可枚举
+		ID:         store.NewSessionID(),  // 不透明公开 id；与令牌无关，猜不出也推算不出令牌
+		Token:      tok,                   // 明文：仅用于 SetCookie
+		TokenHash:  HashSessionToken(tok), // 落库的只有它
 		UserID:     userID,
 		DeviceName: deviceName,
 		CreatedAt:  now.Unix(),
@@ -131,12 +151,14 @@ func (m *SessionManager) ListByUser(userID string) ([]*store.Session, error) {
 	return m.db.ListSessionsByUser(userID)
 }
 
-// Validate 校验会话 ID，返回会话（过期视为无效）。
+// Validate 校验会话令牌，返回会话（过期视为无效）。
+//
+// 参数是 Cookie 原文（不是公开 id）：先算哈希再按 token_hash 查行，库里没有明文可比。
 //
 // 注意：Validate 直接查库、不走会话缓存——它要返回完整 Session，而缓存只存 userID/expiresAt。
 // 需要缓存加速的是中间件热路径（见 Middleware/authSession）。
-func (m *SessionManager) Validate(sessionID string) (*store.Session, error) {
-	s, err := m.db.GetSession(sessionID)
+func (m *SessionManager) Validate(token string) (*store.Session, error) {
+	s, err := m.db.GetSessionByTokenHash(HashSessionToken(token))
 	if err != nil {
 		return nil, errSessionInvalid
 	}
@@ -146,23 +168,27 @@ func (m *SessionManager) Validate(sessionID string) (*store.Session, error) {
 	return s, nil
 }
 
-// Revoke 吊销一个会话，并同步失效其缓存条目。
+// Revoke 吊销一个会话（参数是 Cookie 原文），并同步失效其缓存条目。
 //
 // 顺序有讲究：必须 DB 删除成功之后才删缓存。DB 删除失败时会话仍然有效，
 // 此时清缓存只会白丢性能（下一次请求照样能查回这个会话）。
-func (m *SessionManager) Revoke(sessionID string) error {
-	if err := m.db.DeleteSession(sessionID); err != nil {
+func (m *SessionManager) Revoke(token string) error {
+	key := HashSessionToken(token)
+	if err := m.db.DeleteSessionByTokenHash(key); err != nil {
 		return err
 	}
-	m.InvalidateSession(sessionID)
+	m.InvalidateSession(key)
 	return nil
 }
 
-// SetCookie 把会话 ID 写入 httpOnly Cookie。
-func (m *SessionManager) SetCookie(w http.ResponseWriter, sessionID string) {
+// SetCookie 把会话令牌原文写入 httpOnly Cookie。
+//
+// 这是令牌唯一离开服务端的地方（#589）：数据库只存哈希、列表接口只回公开 id、
+// 日志只记公开 id 或哈希前缀。
+func (m *SessionManager) SetCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
-		Value:    sessionID,
+		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   m.secure,
@@ -219,9 +245,9 @@ func (m *SessionManager) Middleware(next http.Handler) http.Handler {
 			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusUnauthorized)
 			return
 		}
-		// 刷新活跃时间：touchInterval 内（默认 60s 窗口）最多落库一次，且是异步写，
-		// 不再让每个请求都背一个同步 UPDATE 写事务。
-		m.touchSession(c.Value, entry)
+		// 刷新活跃时间：touchInterval 内（默认 60s 窗口）最多落库一次，
+		// 不再让每个请求都背一个同步 UPDATE 写事务。条件键是令牌的哈希（见 touchSession）。
+		m.touchSession(HashSessionToken(c.Value), entry)
 		next.ServeHTTP(w, r.WithContext(withUserID(r.Context(), userID)))
 	})
 }

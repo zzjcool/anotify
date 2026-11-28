@@ -90,8 +90,12 @@ func seedSession(t *testing.T, db *store.DB, username string, disabled bool, exp
 	if err := db.CreateUser(u); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	// #589：ID 是可公开标识，Token 才是 Cookie 值；落库的只有 TokenHash。
+	tok := "tok_" + store.NewUserID()
 	s := &store.Session{
-		ID:         store.NewSessionID() + ".tok",
+		ID:         store.NewSessionID(),
+		Token:      tok,
+		TokenHash:  HashSessionToken(tok),
 		UserID:     u.ID,
 		DeviceName: "Test · macOS",
 		CreatedAt:  store.Now(),
@@ -184,8 +188,8 @@ func TestSessionCacheHitSkipsDB(t *testing.T) {
 	// 不用 50ms 这种量级：CI/race 下有偶发卡顿，几百微秒的停顿就会让「命中」变成假故障。
 	m := NewSessionManagerTuned(db, time.Hour, false, 500*time.Millisecond)
 
-	// 第一次：未命中 → GetSession + GetUserByID 两次往返，然后写缓存。
-	got := runSessionMW(m, s.ID)
+	// 第一次：未命中 → GetSessionByTokenHash + GetUserByID 两次往返，然后写缓存。
+	got := runSessionMW(m, s.Token)
 	if got.code != http.StatusOK || got.userID != u.ID {
 		t.Fatalf("首次请求应放行: code=%d uid=%q want %q", got.code, got.userID, u.ID)
 	}
@@ -200,7 +204,7 @@ func TestSessionCacheHitSkipsDB(t *testing.T) {
 	// 这一次是缓存命中 ⇒ 一个 DB 都不碰。注意：会话路径把 DB 错误映射成
 	// 「auth: 会话无效」，所以「退化成回源」不会在日志里留下 database is closed——
 	// 这条断言（仍然 200）本身就是证据；关库后的可见性由 closeDBForTempDir 兜住。
-	got = runSessionMW(m, s.ID)
+	got = runSessionMW(m, s.Token)
 	if got.code != http.StatusOK || got.userID != u.ID {
 		t.Fatalf("缓存热时 DB 关闭仍应放行（证明 0 次 DB 往返）: code=%d uid=%q body=%s", got.code, got.userID, got.body)
 	}
@@ -210,7 +214,7 @@ func TestSessionCacheHitSkipsDB(t *testing.T) {
 
 	// TTL 边界：过期后必须重新查库，DB 已关 → fail-closed 401（缓存不是永久放行）。
 	time.Sleep(600 * time.Millisecond)
-	got = runSessionMW(m, s.ID)
+	got = runSessionMW(m, s.Token)
 	if got.code != http.StatusUnauthorized {
 		t.Fatalf("缓存 TTL 过后应重新查库并因 DB 关闭而 401, got code=%d body=%s", got.code, got.body)
 	}
@@ -226,20 +230,20 @@ func TestSessionRevokeInvalidatesCache(t *testing.T) {
 	_, s := seedSession(t, db, "revoke-me", false, store.Now()+3600)
 	m := NewSessionManager(db, time.Hour, false) // 默认 10s 缓存
 
-	if got := runSessionMW(m, s.ID); got.code != http.StatusOK {
+	if got := runSessionMW(m, s.Token); got.code != http.StatusOK {
 		t.Fatalf("预热请求应放行, got %d", got.code)
 	}
 	if entries, _, _ := m.CacheStats(); entries != 1 {
 		t.Fatalf("预热后应缓存 1 条, got %d", entries)
 	}
 
-	if err := m.Revoke(s.ID); err != nil {
+	if err := m.Revoke(s.Token); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 	if entries, _, _ := m.CacheStats(); entries != 0 {
 		t.Fatalf("Revoke 后必须同步清缓存, got entries=%d", entries)
 	}
-	got := runSessionMW(m, s.ID)
+	got := runSessionMW(m, s.Token)
 	if got.code != http.StatusUnauthorized {
 		t.Fatalf("Revoke 后应立即 401（不等 TTL）, got code=%d body=%s", got.code, got.body)
 	}
@@ -255,7 +259,7 @@ func TestSessionExpiredRejected(t *testing.T) {
 	_, s := seedSession(t, db, "expired", false, store.Now()-3600) // 1 小时前过期
 	m := NewSessionManager(db, time.Hour, false)
 
-	got := runSessionMW(m, s.ID)
+	got := runSessionMW(m, s.Token)
 	if got.code != http.StatusUnauthorized {
 		t.Fatalf("过期会话应 401, got %d", got.code)
 	}
@@ -274,7 +278,7 @@ func TestSessionDisabledUserRejected(t *testing.T) {
 	_, s := seedSession(t, db, "disabled", true, store.Now()+3600)
 	m := NewSessionManager(db, time.Hour, false)
 
-	got := runSessionMW(m, s.ID)
+	got := runSessionMW(m, s.Token)
 	if got.code != http.StatusUnauthorized {
 		t.Fatalf("禁用用户应 401, got %d", got.code)
 	}
@@ -304,7 +308,7 @@ func TestSessionUserLookupErrorFailsClosed(t *testing.T) {
 		seedSession(t, db, "no-session", false, store.Now()+3600)
 		m := NewSessionManager(db, time.Hour, false)
 		m.InvalidateAll() // 防御：确保没有任何缓存条目（新管理器本来就是空）
-		got := runSessionMW(m, "sess_does_not_exist.tok")
+		got := runSessionMW(m, "tok_does_not_exist")
 		if got.code != http.StatusUnauthorized || got.reached {
 			t.Fatalf("不存在的会话应 401 且不进下游, got code=%d reached=%v", got.code, got.reached)
 		}
@@ -321,8 +325,11 @@ func TestSessionUserLookupErrorFailsClosed(t *testing.T) {
 		if _, err := db.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
 			t.Fatalf("pragma off: %v", err)
 		}
+		orphanTok := "tok_orphan_" + store.NewUserID()
 		orphan := &store.Session{
-			ID:         store.NewSessionID() + ".orphan",
+			ID:         store.NewSessionID(),
+			Token:      orphanTok,
+			TokenHash:  HashSessionToken(orphanTok),
 			UserID:     "usr_missing_" + store.NewUserID(),
 			DeviceName: "Test · Orphan",
 			CreatedAt:  store.Now(),
@@ -337,7 +344,7 @@ func TestSessionUserLookupErrorFailsClosed(t *testing.T) {
 		}
 
 		m := NewSessionManager(db, time.Hour, false)
-		got := runSessionMW(m, orphan.ID)
+		got := runSessionMW(m, orphan.Token)
 		if got.code != http.StatusUnauthorized {
 			t.Fatalf("GetUserByID 失败必须 401（不许静默放行）, got code=%d body=%s", got.code, got.body)
 		}
@@ -371,7 +378,7 @@ func TestTouchSessionThrottleAndNoLostUpdate(t *testing.T) {
 
 		initial := lastSeenOf(t, db, s.ID)
 		// 预热：未命中请求负责写缓存并抢到第一次 touch 写权。
-		if got := runSessionMW(m, s.ID); got.code != http.StatusOK {
+		if got := runSessionMW(m, s.Token); got.code != http.StatusOK {
 			t.Fatalf("预热请求应放行, got %d", got.code)
 		}
 		// initial 是「1 小时前」的旧值，所以 initial+1 只有真的写进去才会满足。
@@ -418,7 +425,7 @@ func TestTouchSessionThrottleAndNoLostUpdate(t *testing.T) {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					if got := runSessionMW(m, s.ID); got.code != http.StatusOK {
+					if got := runSessionMW(m, s.Token); got.code != http.StatusOK {
 						failsMu.Lock()
 						failures = append(failures, got.code)
 						failsMu.Unlock()
@@ -485,14 +492,14 @@ func TestTouchSessionThrottleAndNoLostUpdate(t *testing.T) {
 		m.touchInterval = 60 * time.Millisecond
 
 		prev := lastSeenOf(t, db, s.ID)
-		if got := runSessionMW(m, s.ID); got.code != http.StatusOK {
+		if got := runSessionMW(m, s.Token); got.code != http.StatusOK {
 			t.Fatalf("预热请求应放行, got %d", got.code)
 		}
 		prev = waitLastSeen(t, db, s.ID, prev+1)
 
 		for round := 1; round <= 3; round++ {
 			sleepToNextSecond()
-			if got := runSessionMW(m, s.ID); got.code != http.StatusOK {
+			if got := runSessionMW(m, s.Token); got.code != http.StatusOK {
 				t.Fatalf("第 %d 轮请求应放行, got %d", round, got.code)
 			}
 			cur := waitLastSeen(t, db, s.ID, prev+1)
@@ -513,7 +520,7 @@ func TestTouchSessionThrottleAndNoLostUpdate(t *testing.T) {
 		m.touchInterval = time.Hour // 节流窗口远大于测试时长
 
 		initial := lastSeenOf(t, db, s.ID)
-		if got := runSessionMW(m, s.ID); got.code != http.StatusOK {
+		if got := runSessionMW(m, s.Token); got.code != http.StatusOK {
 			t.Fatalf("预热请求应放行, got %d", got.code)
 		}
 		waitLastSeen(t, db, s.ID, initial+1) // 等第一次 touch 落地
@@ -522,7 +529,7 @@ func TestTouchSessionThrottleAndNoLostUpdate(t *testing.T) {
 		// 会漏计（见 concurrent 子用例顶部的注释）。这里断言的是精确的 0，比原来更严。
 		beforeWrites := m.TouchWriteCount()
 		time.Sleep(150 * time.Millisecond) // 缓存已过 TTL，但节流窗口远未到
-		if got := runSessionMW(m, s.ID); got.code != http.StatusOK {
+		if got := runSessionMW(m, s.Token); got.code != http.StatusOK {
 			t.Fatalf("TTL 过期后的请求应放行, got %d body=%s", got.code, got.body)
 		}
 		if writes := m.TouchWriteCount() - beforeWrites; writes != 0 {
@@ -543,7 +550,7 @@ func TestSessionCacheDisabled(t *testing.T) {
 
 	// 让「旧的 last_seen」可观察，好证明缓存关闭时仍保持旧行为：每请求同步刷新。
 	setLastSeen(t, db, s.ID, store.Now()-3600)
-	if got := runSessionMW(m, s.ID); got.code != http.StatusOK {
+	if got := runSessionMW(m, s.Token); got.code != http.StatusOK {
 		t.Fatalf("首个请求应放行, got %d", got.code)
 	}
 	if v := lastSeenOf(t, db, s.ID); v < store.Now()-1 {
@@ -557,7 +564,7 @@ func TestSessionCacheDisabled(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatalf("close db: %v", err)
 	}
-	got := runSessionMW(m, s.ID)
+	got := runSessionMW(m, s.Token)
 	if got.code != http.StatusUnauthorized {
 		t.Fatalf("缓存关闭时 DB 不可用必须 401, got code=%d body=%s", got.code, got.body)
 	}
@@ -572,8 +579,11 @@ func TestSessionInvalidateUser(t *testing.T) {
 	db := newSessionTestDB(t)
 	u1, s1 := seedSession(t, db, "multi-device", false, store.Now()+3600)
 	// 同一用户的第二个设备/会话。
+	s2Tok := "tok2_" + store.NewUserID()
 	s2 := &store.Session{
-		ID:         store.NewSessionID() + ".tok2",
+		ID:         store.NewSessionID(),
+		Token:      s2Tok,
+		TokenHash:  HashSessionToken(s2Tok),
 		UserID:     u1.ID,
 		DeviceName: "Test · iPhone",
 		CreatedAt:  store.Now(),
@@ -587,7 +597,7 @@ func TestSessionInvalidateUser(t *testing.T) {
 	_, other := seedSession(t, db, "bystander", false, store.Now()+3600)
 
 	m := NewSessionManager(db, time.Hour, false)
-	for _, id := range []string{s1.ID, s2.ID, other.ID} {
+	for _, id := range []string{s1.Token, s2.Token, other.Token} {
 		if got := runSessionMW(m, id); got.code != http.StatusOK {
 			t.Fatalf("预热请求应放行 (session %s), got %d", id, got.code)
 		}
@@ -612,7 +622,7 @@ func TestSessionInvalidateUser(t *testing.T) {
 	}
 	// 别人的缓存条目还在 → 仍然放行（证明失效范围正确）。
 	// 缓存命中不碰 DB ⇒ 故意不划窗口：真的回源（=真的误伤）时护栏会直接咬住。
-	if got := runSessionMW(m, other.ID); got.code != http.StatusOK {
+	if got := runSessionMW(m, other.Token); got.code != http.StatusOK {
 		t.Fatalf("其它用户不该被误伤, got code=%d body=%s", got.code, got.body)
 	}
 }

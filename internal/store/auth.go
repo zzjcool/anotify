@@ -40,8 +40,17 @@ type Passkey struct {
 }
 
 // Session 是 sessions 表的一行。
+//
+// #589 把「可公开的会话标识」与「凭据」拆开了：
+//   - ID 是**可公开**的不透明标识（sess_…）：列表接口、吊销路径、访问日志都允许出现；
+//   - TokenHash 是 Cookie 令牌的 sha256 十六进制，只用于「按令牌查行」，不落任何 JSON/日志；
+//   - Token 是令牌原文，只在签发那一刻存在（Create 填它 → SetCookie 写它），从不落库、不序列化。
+//
+// 所以列表接口把整行投出去也只有公开字段，不可能带出一条可直接使用的登录凭证。
 type Session struct {
 	ID         string `json:"id"`
+	TokenHash  string `json:"-"`
+	Token      string `json:"-"`
 	UserID     string `json:"userId"`
 	DeviceName string `json:"deviceName"` // 登录设备名（UA 推断）
 	CreatedAt  int64  `json:"createdAt"`
@@ -299,10 +308,12 @@ func (d *DB) UpdatePasskeySignCount(id string, signCount int64, lastUsedAt int64
 // ---------- Session ----------
 
 // CreateSession 插入一个会话。
+//
+// 写入的是 TokenHash（服务端只保存哈希），明文沿用 Session.Token 留在调用方手里。
 func (d *DB) CreateSession(s *Session) error {
 	_, err := d.Exec(
-		`INSERT INTO sessions (id, user_id, device_name, created_at, expires_at, last_seen) VALUES (?,?,?,?,?,?)`,
-		s.ID, s.UserID, s.DeviceName, s.CreatedAt, s.ExpiresAt, s.LastSeen,
+		`INSERT INTO sessions (id, user_id, token_hash, device_name, created_at, expires_at, last_seen) VALUES (?,?,?,?,?,?,?)`,
+		s.ID, s.UserID, s.TokenHash, s.DeviceName, s.CreatedAt, s.ExpiresAt, s.LastSeen,
 	)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -310,11 +321,32 @@ func (d *DB) CreateSession(s *Session) error {
 	return nil
 }
 
-// GetSession 按 ID 查会话。
+// GetSessionByTokenHash 按令牌哈希查会话——鉴权热路径**唯一**的会话读入口。
 //
-// 走语句缓存（#242）：这是每个已登录请求都要打的点，SQL 文本恒定，
-// 复用一个 *sql.Stmt 就不必每次重新 `newStmt`（见 stmt.go 的实测结论：
-// v1.34.5 上 parse 本身仍会发生，收益要等驱动升到 ≥v1.45.0）。
+// 查哈希而不是令牌原文：库里根本没有原文（#589），于是「读库/读备份」拿不到可用凭据，
+// 也不存在「拿 Cookie 值当主键去查」那条会让列表 id 变成凭据的路径。
+// 走语句缓存（#242），理由同 GetSession。
+func (d *DB) GetSessionByTokenHash(tokenHash string) (*Session, error) {
+	var s Session
+	err := d.cachedQueryRowContext(context.Background(),
+		`SELECT id, user_id, token_hash, device_name, created_at, expires_at, last_seen FROM sessions WHERE token_hash = ?`, tokenHash,
+	).Scan(&s.ID, &s.UserID, &s.TokenHash, &s.DeviceName, &s.CreatedAt, &s.ExpiresAt, &s.LastSeen)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get session by token hash: %w", err)
+	}
+	return &s, nil
+}
+
+// GetSession 按公开 id 查会话。
+//
+// 公开 id **不是**凭据：它出现在列表接口/吊销路径/日志里。鉴权必须走
+// GetSessionByTokenHash（拿着 Cookie 原文算哈希），别用本函数去认定「已登录」。
+//
+// 走语句缓存（#242）：SQL 文本恒定，复用一个 *sql.Stmt 就不必每次重新 `newStmt`
+// （见 stmt.go 的实测结论：v1.34.5 上 parse 本身仍会发生，收益要等驱动升到 ≥v1.45.0）。
 // 本函数没有 ctx 参数（public 签名不动），用 Background。
 func (d *DB) GetSession(id string) (*Session, error) {
 	var s Session
@@ -339,11 +371,32 @@ func (d *DB) TouchSession(id string, lastSeen int64) error {
 	return nil
 }
 
-// DeleteSession 吊销一个会话。
+// TouchSessionByTokenHash 按令牌哈希刷新 last_seen（鉴权热路径的节流写）。
+//
+// 用哈希做条件而不是公开 id：节流器手里只有 Cookie 原文（它的缓存 key 就是哈希），
+// 这样不必为了写个活跃时间先把整行读回来。
+func (d *DB) TouchSessionByTokenHash(tokenHash string, lastSeen int64) error {
+	_, err := d.Exec(`UPDATE sessions SET last_seen = ? WHERE token_hash = ?`, lastSeen, tokenHash)
+	if err != nil {
+		return fmt.Errorf("touch session by token hash: %w", err)
+	}
+	return nil
+}
+
+// DeleteSession 按公开 id 吊销一个会话（管理/踢人路径）。
 func (d *DB) DeleteSession(id string) error {
 	_, err := d.Exec(`DELETE FROM sessions WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)
+	}
+	return nil
+}
+
+// DeleteSessionByTokenHash 按令牌哈希吊销会话（登出路径：手上只有 Cookie 原文）。
+func (d *DB) DeleteSessionByTokenHash(tokenHash string) error {
+	_, err := d.Exec(`DELETE FROM sessions WHERE token_hash = ?`, tokenHash)
+	if err != nil {
+		return fmt.Errorf("delete session by token hash: %w", err)
 	}
 	return nil
 }

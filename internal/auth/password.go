@@ -234,7 +234,7 @@ func (s *Service) LoginWithPassword(username, password, deviceName string) (sess
 	if err != nil {
 		return "", err
 	}
-	return sess.ID, nil
+	return sess.Token, nil // 交给 handler 写 Cookie 的必须是**令牌原文**（id 只是公开标识）
 }
 
 // RegisterWithPassword 用用户名 + 密码注册（不创建 Passkey）。
@@ -324,5 +324,5 @@ func (s *Service) RegisterWithPassword(
 	if serr != nil {
 		return "", nil, serr
 	}
-	return sess.ID, codes, nil
+	return sess.Token, codes, nil // 交给 handler 写 Cookie 的必须是**令牌原文**（id 只是公开标识）
 }

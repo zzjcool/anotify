@@ -154,6 +154,10 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 			"id", "namespace_id", "name", "display_name", "version", "spec", "digest",
 			"fold_key", "installed_from", "resource_version", "created_at", "deleted_at",
 		},
+		// 会话：#589 起 id 是**可公开**标识，凭据派生值只有 token_hash（列表/管理接口都不读它）。
+		"sessions": {
+			"id", "user_id", "token_hash", "device_name", "created_at", "expires_at", "last_seen",
+		},
 		"edges": {"namespace_id", "from_is_source", "from_ref", "to_ref", "created_at"},
 		"node_configs": {
 			"node_id", "namespaces", "vars", "limits", "local_vars", "local_limits",
@@ -269,6 +273,7 @@ func TestSchemaBaselineIndexes(t *testing.T) {
 	}{
 		{name: "idx_users_role", table: "users", cols: []string{"role"}},
 		{name: "idx_sessions_user", table: "sessions", cols: []string{"user_id"}},
+		{name: "idx_sessions_token_hash", table: "sessions", cols: []string{"token_hash"}},
 		{name: "idx_apikeys_user", table: "api_keys", cols: []string{"user_id"}},
 		{name: "idx_cli_auth_expires", table: "cli_auth_sessions", cols: []string{"expires_at"}},
 		{name: "idx_recovery_codes_user", table: "recovery_codes", cols: []string{"user_id"}},
@@ -618,15 +623,15 @@ func TestSchemaBaselineLayoutMarkerIsSeparateFromLedger(t *testing.T) {
 	if got := rawUserVersion(t, path); got != 4 {
 		t.Fatalf("新库 PRAGMA user_version = %d, want 4（v4 布局格式标记）", got)
 	}
-	if v, err := db.SchemaVersion(); err != nil || v != 15 {
-		t.Fatalf("SchemaVersion = %d, %v; want 15（记账 = 块数，不是布局标记）", v, err)
+	if v, err := db.SchemaVersion(); err != nil || v != 16 {
+		t.Fatalf("SchemaVersion = %d, %v; want 16（记账 = 块数，不是布局标记）", v, err)
 	}
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&n); err != nil {
 		t.Fatalf("count schema_version: %v", err)
 	}
-	if n != 15 {
-		t.Fatalf("schema_version 行数 = %d, want 15（每块一行账：baseline、release、卸载标记、包版本历史、router 结局表、轮询状态、依赖索引、安装时快照、凭据审计、手动拉取审计、复原审计、保留期表达式索引、能力引用列索引、产物对象回收索引、产物上传按 task 索引）", n)
+	if n != 16 {
+		t.Fatalf("schema_version 行数 = %d, want 16（每块一行账：baseline、release、卸载标记、包版本历史、router 结局表、轮询状态、依赖索引、安装时快照、凭据审计、手动拉取审计、复原审计、保留期表达式索引、能力引用列索引、产物对象回收索引、产物上传按 task 索引、会话令牌哈希）", n)
 	}
 }
 

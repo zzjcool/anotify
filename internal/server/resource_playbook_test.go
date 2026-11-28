@@ -65,7 +65,7 @@ func newPlaybookTestEnv(t *testing.T) *playbookTestEnv {
 		db:     db,
 		nsID:   ns.ID,
 		nsSlug: ns.Slug,
-		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
+		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.Token},
 	}
 }
 
