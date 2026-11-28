@@ -566,6 +566,41 @@ func TestEnroll_NonInitiator_ExpiredSession_StillNotOwner(t *testing.T) {
 	}
 }
 
+// TestEnroll_GetByIDAsOwner_ExpiredSession 属主校验先于惰性过期（#625 review r1）：
+// 非发起者读取过期会话得到 ErrNotOwner，且不会替别人的会话推进状态机；
+// 属主读取才触发惰性过期。
+func TestEnroll_GetByIDAsOwner_ExpiredSession(t *testing.T) {
+	db, svc, uid := newEnrollTestDB(t)
+	clock := &fakeClock{t: time.Unix(1000000, 0)}
+	m := newEnrollMgrWithClock(db, svc, clock)
+
+	created, err := m.CreateSession(uid, "old-mac")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := m.RequestKnock(created.SessionID, "Chrome"); err != nil {
+		t.Fatalf("request knock: %v", err)
+	}
+	clock.advance(11 * time.Minute)
+
+	if _, err := m.GetByIDAsOwner(created.SessionID, "usr_attacker"); !errors.Is(err, ErrNotOwner) {
+		t.Fatalf("非发起者读取过期会话应 ErrNotOwner, got %v", err)
+	}
+	// 越权读取是只读的：状态仍是 requested，没有被替别人惰性过期。
+	if got, _ := db.GetCliAuthSession(created.SessionID); got.Status != store.CliAuthRequested {
+		t.Fatalf("越权读取不得推进状态机: status=%q", got.Status)
+	}
+
+	// 属主读取触发惰性过期，返回 expired。
+	s, err := m.GetByIDAsOwner(created.SessionID, uid)
+	if err != nil {
+		t.Fatalf("属主读取应成功: %v", err)
+	}
+	if s.Status != store.CliAuthExpired {
+		t.Errorf("属主读取过期会话 status=%q want %q", s.Status, store.CliAuthExpired)
+	}
+}
+
 // TestEnroll_RequestKnock_SanitizesDeviceHint deviceHint 由匿名客户端自报，
 // 落库前剔除控制字符（含换行）并截断长度，否则可伪造日志行（#625）。
 func TestEnroll_RequestKnock_SanitizesDeviceHint(t *testing.T) {

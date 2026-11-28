@@ -973,6 +973,7 @@ paths:
       description: |
         旧设备取消：删除会话行，回 `{"status":"deleted"}`。只有会话发起者（`user_id`）能取消，
         非发起者、属主为空与 kind guard 失败都是 `404`；删库失败 `500`。
+        属主校验先于惰性过期迁移：非发起者不会替发起者的会话推进状态机。
       operationId: cancelPasskeyEnrollment
       security: [{ session: [] }]
       parameters:
@@ -1148,6 +1149,7 @@ paths:
       description: |
         旧设备侧展示「新设备是否已敲门」。属主校验：`user_id` 不是当前用户 → `404`
         （`user_id` 在 pending/requested 阶段就是发起者，批准不会改写它）。
+        属主校验先于惰性过期迁移：非发起者的请求恒为 `404`，也不会替发起者的会话推进状态机。
 
         `deviceHint` 在该会话进入 requested 之后才有值。kind 不匹配也是 `404`。
       operationId: watchPasskeyEnrollSession

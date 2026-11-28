@@ -627,6 +627,59 @@ func TestPasskeyEnrollNonInitiator_ExpiredSessionStill404(t *testing.T) {
 	}
 }
 
+// TestPasskeyEnrollNonInitiator_ExpiredSession_NoStateChange 非发起者的 watch/cancel
+// 也必须在惰性过期之前被属主校验拦住（#625 review r1）：响应恒 404，且不替别人的
+// 会话推进状态机（status 仍是 requested）。
+func TestPasskeyEnrollNonInitiator_ExpiredSession_NoStateChange(t *testing.T) {
+	env := newEnrollTestEnv(t)
+	other := env.addUser(t, "bob")
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		suffix string
+	}{
+		{"watch", "GET", "/watch"},
+		{"cancel", "DELETE", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			created := enrollCreateHelper(t, env)
+			base := "/v1/passkey-enroll/sessions/" + created.sessionID
+			if rr := enrollDoReq(t, env, "POST", base+"/request", map[string]any{"deviceHint": "Chrome"}, false); rr.Code != 200 {
+				t.Fatalf("knock: %d %s", rr.Code, rr.Body.String())
+			}
+
+			env.mgr.SetClock(func() time.Time { return time.Now().Add(11 * time.Minute) })
+			t.Cleanup(func() { env.mgr.SetClock(time.Now) })
+
+			rr := enrollDoReqAs(t, env, tc.method, base+tc.suffix, nil, other)
+			if rr.Code != 404 {
+				t.Fatalf("非发起者 %s 过期会话应 404, got %d body=%s", tc.name, rr.Code, rr.Body.String())
+			}
+			got, err := env.db.GetCliAuthSession(created.sessionID)
+			if err != nil {
+				t.Fatalf("get session: %v", err)
+			}
+			if got.Status != store.CliAuthRequested {
+				t.Fatalf("越权 %s 不得推进状态机: status=%q", tc.name, got.Status)
+			}
+
+			// 属主读取/取消仍正常：watch 看到 expired，cancel 能删掉。
+			if tc.name == "watch" {
+				rro := enrollDoReq(t, env, "GET", base+"/watch", nil, true)
+				if rro.Code != 200 || enrollDecodeBody(t, rro)["status"] != store.CliAuthExpired {
+					t.Fatalf("属主 watch 过期会话应 200/expired, got %d body=%s", rro.Code, rro.Body.String())
+				}
+			} else {
+				rro := enrollDoReq(t, env, "DELETE", base, nil, true)
+				if rro.Code != 200 {
+					t.Fatalf("属主 cancel 应 200, got %d body=%s", rro.Code, rro.Body.String())
+				}
+			}
+		})
+	}
+}
+
 // TestPasskeyEnrollWatch_InitiatorStillSeesAfterApprove 批准不会把发起者挤出去（#625）：
 // approve 不再覆盖 user_id，发起者批准后仍能 watch，状态为 approved。
 func TestPasskeyEnrollWatch_InitiatorStillSeesAfterApprove(t *testing.T) {

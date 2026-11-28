@@ -172,14 +172,9 @@ func (h *passkeyEnrollHandler) knock(w http.ResponseWriter, r *http.Request, id 
 // watch 旧设备轮询（需登录 Cookie，属主校验）。
 func (h *passkeyEnrollHandler) watch(w http.ResponseWriter, r *http.Request, id string) {
 	uid := auth.UserIDFromContext(r.Context())
-	s, err := h.mgr.GetByID(id)
+	// 属主校验先于惰性过期迁移：非发起者一律 404，且不会替别人的会话推进状态机。
+	s, err := h.mgr.GetByIDAsOwner(id, uid)
 	if err != nil {
-		writeErr(w, 404, "授权会话不存在或已过期")
-		return
-	}
-	// 属主校验：user_id 只表示发起者（建会话时写入），批准不会改写它。
-	// 不是发起者一律 404（与 lookup 一致，不泄露会话是否存在）。
-	if s.UserID == "" || s.UserID != uid {
 		writeErr(w, 404, "授权会话不存在或已过期")
 		return
 	}
@@ -325,13 +320,9 @@ func (h *passkeyEnrollHandler) complete(w http.ResponseWriter, r *http.Request, 
 // cancel 旧设备取消会话（需登录 Cookie，属主校验）。
 func (h *passkeyEnrollHandler) cancel(w http.ResponseWriter, r *http.Request, id string) {
 	uid := auth.UserIDFromContext(r.Context())
-	s, err := h.mgr.GetByID(id)
+	// 属主校验先于惰性过期迁移：非发起者一律 404，且不会替别人的会话推进状态机。
+	s, err := h.mgr.GetByIDAsOwner(id, uid)
 	if err != nil {
-		writeErr(w, 404, "授权会话不存在或已过期")
-		return
-	}
-	// 属主校验：只有发起者可以取消（#625）
-	if s.UserID == "" || s.UserID != uid {
 		writeErr(w, 404, "授权会话不存在或已过期")
 		return
 	}

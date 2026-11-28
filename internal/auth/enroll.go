@@ -160,6 +160,23 @@ func (m *PasskeyEnrollManager) GetByID(id string) (*store.CliAuthSession, error)
 	return s, nil
 }
 
+// GetByIDAsOwner 按 sessionId 查会话，并要求 userID 是会话发起者。
+//
+// 属主校验先于惰性过期迁移：非发起者的请求既不会因为「这行是否已被别人惰性
+// 过期过」而看到不同结果，也不会替别人的会话推进状态机（#625 review r1）。
+// 返回 ErrNotOwner 表示不是发起者；handler 统一投影成 404。
+func (m *PasskeyEnrollManager) GetByIDAsOwner(id, userID string) (*store.CliAuthSession, error) {
+	s, err := m.db.GetCliAuthSession(id)
+	if err != nil {
+		return nil, err
+	}
+	if userID == "" || s.UserID != userID {
+		return nil, fmt.Errorf("%w: 只有会话发起者可以查看", ErrNotOwner)
+	}
+	m.lazyExpire(s)
+	return s, nil
+}
+
 // GetByCode 按短码查会话。code 归一化（去连字符、大写）。读取时执行惰性过期迁移。
 func (m *PasskeyEnrollManager) GetByCode(code string) (*store.CliAuthSession, error) {
 	normalized := NormalizeUserCode(code)
