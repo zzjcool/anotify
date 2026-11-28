@@ -3337,6 +3337,12 @@
 		 * bead 同步循环；终点相位与起点一致，不会跳到中间。
 		 */
 		function startFlow(e, len, drawMs) {
+			/* 减少动效下**不建**这条无限动画：`iterations: Infinity` 的 shim 会一直被
+			 * 浏览器跑（合成线程 + 电池），而且它永远不进终态 —— 用户说了「别动」。
+			 * 提前返回就够了：`is-flow` 的两个 CSS 消费方（`.sl-shim` / `.sl-bead`）
+			 * 在 reduce 下本来就是 display:none，终态由 showFinal/drawEdge 的其余
+			 * 语句（is-on、marker-end、label）保证，跳过零视觉损失。 */
+			if (reduceNow()) return;
 			if (!e.g || !e.core) return;
 			// shim 的循环速度跟着拍长走（0.5× 更慢），但 loop 本身是**无缝**的：
 			// @keyframes 每次正好位移一个 dash 周期 168px，终点相位 = 起点相位。
@@ -3360,6 +3366,32 @@
 				e.motion.setAttribute("dur", (flowMs / 1000).toFixed(3) + "s");
 				if (e.motion.beginElement) e.motion.beginElement();
 			}
+		}
+
+		/* 系统在**运行中**切到「减少动效」时，把已经跑起来的无限流光停掉：
+		 * startFlow 的守卫只管「新建」，管不了切走之前就在跑的那些 shim。
+		 *
+		 * 取舍：切回 no-preference 时**故意不重建** —— 重建得从当前拍号反推每条边
+		 * 走到了哪个相位，容易闪一下，反而更吵；下一次 reveal/replay 会走新的
+		 * startFlow 自然恢复。MQ 拿不到（老浏览器 / 测试桩）时整段降级成
+		 * 「只有新建守卫」，不抛错。 */
+		const reduceMq = window.matchMedia
+			? window.matchMedia("(prefers-reduced-motion: reduce)")
+			: null;
+
+		function onReduceMotionChange() {
+			if (!reduceNow()) return;
+			for (const e of edgeItems) {
+				if (e.shimAnim) {
+					e.shimAnim.cancel();
+					e.shimAnim = null;
+				}
+				e.g.classList.remove("is-flow");
+			}
+		}
+
+		if (reduceMq && reduceMq.addEventListener) {
+			reduceMq.addEventListener("change", onReduceMotionChange);
 		}
 
 		function resetReveal() {
@@ -3671,6 +3703,9 @@
 				overflowRaf = 0;
 				document.removeEventListener("click", onLegendDocClick, true);
 				document.removeEventListener("keydown", onLegendKey);
+				if (reduceMq && reduceMq.removeEventListener) {
+					reduceMq.removeEventListener("change", onReduceMotionChange);
+				}
 				if (ro) ro.disconnect();
 				container.replaceChildren();
 				container.classList.remove("flograph", "flograph--silk", "is-playing", "is-vertical");
