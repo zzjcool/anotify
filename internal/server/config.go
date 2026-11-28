@@ -192,10 +192,10 @@ type Config struct {
 	//   - "0" / 负数     → **禁用**周期回收（显式运维选择：tombstone 会一直留着）；
 	//   - 正数           → 原值（上限 1 天）。
 	//
-	// 为什么默认 1 小时而不是照抄产物 GC 的 5 分钟：purge 的判据是 `capability_versions`
-	// 全扫 + `json_tree` + 临时 B 树排序，全程持 `BEGIN IMMEDIATE` 写锁（见
-	// store.PurgeDeletedCapabilities）；按分钟级跑等于持续与事件入口抢写锁，而 tombstone
-	// 是「个位数/天」量级。判据事实全在 store 侧，这里只是驱动器。
+	// 为什么默认 1 小时而不是照抄产物 GC 的 5 分钟：purge 仍要扫 `capability_versions`
+	// 的全部 tombstone、按安装数扫回执的 `json_tree` 并临时 B 树排序，全程持
+	// `BEGIN IMMEDIATE` 写锁（引用列已走索引，#628；剩下的扫描归 #551）：按分钟级跑等于
+	// 持续与事件入口抢写锁，而 tombstone 是「个位数/天」量级。
 	CapabilityGCIntervalSec int
 
 	// LeaseTTL 是中枢授予/续租的租约时长（#661）。

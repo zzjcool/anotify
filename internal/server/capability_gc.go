@@ -16,9 +16,9 @@ import (
 // deployments / playbook_installs 任一引用即不删）。这里负责三件事：
 //
 //  1. **限速**：单条 DELETE 最多 batch 行、单轮最多 maxBatches 批（约 20000 行），
-//     因为 purge 的判据是 `capability_versions` 全扫 + 三次相关全扫 + `json_tree` +
-//     临时 B 树排序，全程持 `BEGIN IMMEDIATE` 写锁——不设上限就是让一次启动补扫
-//     把写锁攥到事件入口开始 503。
+//     因为 purge 仍在 `BEGIN IMMEDIATE` 里扫 `capability_versions` 的全部 tombstone、
+//     按安装数扫回执的 `json_tree` 并临时 B 树排序（三个 capability_id 引用列已走索引，
+//     #628；剩下的扫描归 #551）——不设上限就是让一次启动补扫把写锁攥到事件入口开始 503。
 //  2. **不丢账**：单批失败返回「已删数量 + 包装错误」。吞掉已删数会让运维在
 //     「这轮到底删了没有」上只能猜（同 lease.RunOnce / retention.drainRetention 的约定）。
 //  3. **干净收尾**：Run 挂在 App.runBackgroundLoop 上，ctx 取消即返回 nil，

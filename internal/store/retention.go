@@ -280,10 +280,8 @@ func (d *DB) DeleteExpiredPlaybookInstalls(ctx context.Context, cutoff int64, li
 	return n, nil
 }
 
-// drainRetention 按批调用 one，返回删掉的总行数与「预算是否用尽」。
-//
-// saturated=true 表示每批都删满（limit 行），即该范围**可能**还有积压——置 Truncated
-// 让运维知道下一轮还得跑。某批没删满（含 0）即视为清干净。
+// drainRetention 按批调用 one，返回删掉的总行数与「预算是否用尽」：每批都删满
+// （limit 行）即可能还有积压（置 Truncated），某批没删满（含 0）即视为清干净。
 func drainRetention(ctx context.Context, one func(limit int) (int64, error)) (deleted int64, saturated bool, err error) {
 	for i := 0; i < DefaultRetentionBatches; i++ {
 		if err := ctx.Err(); err != nil {
@@ -314,10 +312,20 @@ func terminalPhaseIn() (string, []any) {
 	return strings.Join(ph, ","), args
 }
 
-// PurgeDeletedCapabilities physically deletes only immutable tombstone IDs with
-// no task, attempt, manifest, deployment, or retained install-receipt reference.
-// All predicates and deletion execute as one writer statement/transaction;
-// this operation never deletes by name/digest or touches system/user files.
+// 生产语句的唯一来源：DELETE 与 EXPLAIN 断言（retention_purge_index_test.go）跑同一条候选集；
+// 三个 capability_id 引用列走 migration 13 的索引（#628）。
+func purgeDeletedCapabilitiesCandidateSQL() string {
+	return `SELECT c.id FROM capability_versions c WHERE c.deleted_at IS NOT NULL
+ AND NOT EXISTS(SELECT 1 FROM tasks t WHERE t.capability_id=c.id)
+ AND NOT EXISTS(SELECT 1 FROM task_attempts a WHERE a.capability_id=c.id)
+ AND NOT EXISTS(SELECT 1 FROM task_artifact_manifests m WHERE m.capability_id=c.id)
+ AND NOT EXISTS(SELECT 1 FROM deployments d WHERE d.capability_id=c.id)
+ AND NOT EXISTS(SELECT 1 FROM playbook_installs p WHERE p.id=c.installed_from OR EXISTS(SELECT 1 FROM json_tree(p.receipt) j WHERE j.type='text' AND j.value=c.id))
+ ORDER BY c.deleted_at,c.id LIMIT ?`
+}
+
+// PurgeDeletedCapabilities deletes immutable tombstone IDs whose candidate set
+// (purgeDeletedCapabilitiesCandidateSQL) has no live reference. It never touches files.
 func (d *DB) PurgeDeletedCapabilities(ctx context.Context, limit int) (int64, error) {
 	if limit <= 0 {
 		return 0, nil
@@ -327,14 +335,8 @@ func (d *DB) PurgeDeletedCapabilities(ctx context.Context, limit int) (int64, er
 		return 0, err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `DELETE FROM capability_versions WHERE id IN (
- SELECT c.id FROM capability_versions c WHERE c.deleted_at IS NOT NULL
- AND NOT EXISTS(SELECT 1 FROM tasks t WHERE t.capability_id=c.id)
- AND NOT EXISTS(SELECT 1 FROM task_attempts a WHERE a.capability_id=c.id)
- AND NOT EXISTS(SELECT 1 FROM task_artifact_manifests m WHERE m.capability_id=c.id)
- AND NOT EXISTS(SELECT 1 FROM deployments d WHERE d.capability_id=c.id)
- AND NOT EXISTS(SELECT 1 FROM playbook_installs p WHERE p.id=c.installed_from OR EXISTS(SELECT 1 FROM json_tree(p.receipt) j WHERE j.type='text' AND j.value=c.id))
- ORDER BY c.deleted_at,c.id LIMIT ?)`, limit)
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM capability_versions WHERE id IN (`+purgeDeletedCapabilitiesCandidateSQL()+`)`, limit)
 	if err != nil {
 		return 0, fmt.Errorf("purge capability references: %w", err)
 	}

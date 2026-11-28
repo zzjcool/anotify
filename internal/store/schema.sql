@@ -818,3 +818,11 @@ CREATE INDEX IF NOT EXISTS idx_playbook_install_audit_release
 -- +migration 12 task_retention_index
 CREATE INDEX IF NOT EXISTS idx_tasks_retain_from
     ON tasks(COALESCE(result_accepted_at, CASE WHEN reported=0 THEN finished_at END));
+
+-- +migration 13 capability_ref_indexes
+-- #628：tombstone 回收判据与外键 RESTRICT 检查的三个引用列；计划断言见 retention_purge_index_test.go。
+-- 不做部分索引：外键检查那条语句没有谓词，部分索引用不上。
+CREATE INDEX IF NOT EXISTS idx_tasks_capability_id ON tasks(capability_id);
+CREATE INDEX IF NOT EXISTS idx_task_attempts_capability ON task_attempts(capability_id);
+CREATE INDEX IF NOT EXISTS idx_task_artifact_manifests_capability
+    ON task_artifact_manifests(capability_id);
