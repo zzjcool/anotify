@@ -25,6 +25,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -60,6 +61,7 @@ var (
 	ErrSendCanceled = errors.New("ws: 调用方在写帧前已取消")
 	// errProtocolViolation 表示对端发了方向错误的帧（断开连接）。
 	errProtocolViolation = errors.New("ws: 协议违例")
+	errIdentityRejected  = errors.New("ws: 节点身份被拒") // 只有它和 store.ErrNotFound 配 1008
 )
 
 // Option 是 Hub 的可选配置。
@@ -179,8 +181,10 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	sess := &Session{hub: h, conn: conn}
 	if err := h.handshake(r.Context(), sess); err != nil {
-		h.log.Warn("node handshake failed", "err", err)
-		_ = conn.Close(websocket.StatusPolicyViolation, "handshake failed")
+		code, reason := handshakeClose(err)
+		h.log.Warn("node handshake failed", "err", err, "close_code", int(code),
+			"retryable", code != websocket.StatusPolicyViolation)
+		_ = conn.Close(code, reason)
 		return
 	}
 	h.attach(sess)
@@ -239,6 +243,22 @@ func (h *Hub) session(nodeID string) *Session {
 // Online 报告节点当前是否有已认证连接。
 func (h *Hub) Online(nodeID string) bool { return h.session(nodeID) != nil }
 
+// handshakeClose 把握手期错误翻成 (close code, reason)：close code 是节点唯一看得到的判据，
+// 而节点侧只把 welcome 之前的 1008 当身份被拒的**终态**（#323 的登录风暴取向）。所以 1008 只给
+// 身份错误；中枢自己的暂时性故障（单写者 SQLite 的 `database is locked`、写 welcome 失败）回
+// 1013——否则一次 5s 的写锁等待就把节点永久踢下线（#590）；首帧不是 hello/解码失败回 1002。
+// store.ErrNotFound 同样算身份类：握手路径上它只来自「节点行不在了」，锁等待/IO 不是它。
+func handshakeClose(err error) (websocket.StatusCode, string) {
+	switch {
+	case errors.Is(err, errIdentityRejected), errors.Is(err, store.ErrNotFound):
+		return websocket.StatusPolicyViolation, "handshake failed"
+	case errors.Is(err, errProtocolViolation):
+		return websocket.StatusProtocolError, "handshake failed: protocol"
+	default:
+		return websocket.StatusTryAgainLater, "handshake failed: retry"
+	}
+}
+
 // handshake 完成首帧 hello 的认证与状态落库，然后回 welcome。
 func (h *Hub) handshake(ctx context.Context, sess *Session) error {
 	readCtx, cancel := context.WithTimeout(ctx, h.helloTimeout)
@@ -249,11 +269,11 @@ func (h *Hub) handshake(ctx context.Context, sess *Session) error {
 	}
 	frame, err := protocol.Decode(data)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: 首帧解码: %v", errProtocolViolation, err)
 	}
 	hello, ok := frame.(*protocol.HelloFrame)
 	if !ok {
-		return errors.New("首帧必须是 hello")
+		return fmt.Errorf("%w: 首帧必须是 hello", errProtocolViolation)
 	}
 	if err := h.authenticate(ctx, sess, hello); err != nil {
 		return err
@@ -274,10 +294,10 @@ func (h *Hub) handshake(ctx context.Context, sess *Session) error {
 // 不允许「拿 A 的 token 报 B 的名字」。
 func (h *Hub) authenticate(ctx context.Context, sess *Session, hello *protocol.HelloFrame) error {
 	if strings.TrimSpace(hello.Token) == "" {
-		return errors.New("hello 缺少 token")
+		return fmt.Errorf("%w: hello 缺少 token", errIdentityRejected)
 	}
 	if strings.TrimSpace(hello.Name) == "" {
-		return errors.New("hello 缺少 name")
+		return fmt.Errorf("%w: hello 缺少 name", errIdentityRejected)
 	}
 	tokenHash := store.HashNodeToken(hello.Token)
 	node, err := h.db.GetNodeByTokenHash(ctx, tokenHash)
@@ -285,7 +305,7 @@ func (h *Hub) authenticate(ctx context.Context, sess *Session, hello *protocol.H
 		return err
 	}
 	if node.Name != hello.Name {
-		return errors.New("hello.name 与 token 所属节点不一致")
+		return fmt.Errorf("%w: hello.name 与 token 所属节点不一致", errIdentityRejected)
 	}
 	sess.nodeID = node.ID
 	sess.nodeName = node.Name
