@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -275,6 +276,131 @@ func TestLeaseTTLValidate(t *testing.T) {
 			}
 			if got := cfg.LeaseGrantTTL(); got != c.want {
 				t.Fatalf("LeaseGrantTTL() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestConfig_Pprof_OnlyExplicitTrue 钉住 ANOTIFY_PPROF 的**严格**解析（#624）。
+//
+// 旧实现是 `get("ANOTIFY_PPROF", "") != ""`：`=0` / `=false` / `=" "` 全都开 ——
+// 一心想关掉 pprof 的运维反而把它打开了。现在的语义：
+//
+//	未设置 / 空 / 0 / false / no / off（大小写与首尾空白不敏感）→ 关
+//	1 / true / yes / on                                       → 开
+//	其它值                                                     → 启动即拒（Validate 报错带原值）
+func TestConfig_Pprof_OnlyExplicitTrue(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"未设置 = 关", "", false},
+		{"显式 0 = 关", "0", false},
+		{"false = 关", "false", false},
+		{"no = 关", "no", false},
+		{"off = 关", "off", false},
+		{"1 = 开", "1", true},
+		{"true = 开", "true", true},
+		{"大写 YES = 开", "YES", true},
+		{"前导空白的 on = 开", " on", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("ANOTIFY_PPROF", c.raw)
+			pinValidateNeutralEnv(t)
+			cfg := FromEnv()
+			if cfg.Pprof != c.want {
+				t.Errorf("ANOTIFY_PPROF=%q → Pprof=%v, want %v", c.raw, cfg.Pprof, c.want)
+			}
+			// 合法取值不能被 Validate 拒（否则合法配置起不来）。
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("ANOTIFY_PPROF=%q 是合法取值，Validate 却报错：%v", c.raw, err)
+			}
+		})
+	}
+
+	// 非法值：不静默当关，启动即拒，且报错里带 env 原值（否则运维只看得到"非法"）。
+	for _, raw := range []string{"2", "enable"} {
+		t.Run("非法值 "+raw+" 启动即拒", func(t *testing.T) {
+			t.Setenv("ANOTIFY_PPROF", raw)
+			pinValidateNeutralEnv(t)
+			cfg := FromEnv()
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("ANOTIFY_PPROF=%q 必须被 Validate 拒绝", raw)
+			}
+			if !strings.Contains(err.Error(), raw) {
+				t.Errorf("报错必须带 env 原值 %q，得到：%v", raw, err)
+			}
+		})
+	}
+
+	// 监听地址默认值也是一条验收（默认只绑回环：pprof 无鉴权，不能默认全接口）。
+	t.Run("监听地址默认 127.0.0.1:6060", func(t *testing.T) {
+		t.Setenv("ANOTIFY_PPROF_ADDR", "")
+		if got := FromEnv().PprofAddr; got != "127.0.0.1:6060" {
+			t.Errorf("ANOTIFY_PPROF_ADDR 未设置时默认值 = %q, want %q", got, "127.0.0.1:6060")
+		}
+	})
+}
+
+// pinValidateNeutralEnv 把 Validate 会看、但本条测试不关心的 env 钉成「未设置」。
+//
+// 为什么需要：FromEnv 会读一堆别的 env（预算 / 租约），外部环境里若有非法值，
+// Validate 会先因它们报错，把这些用例变成"与本次改动无关的红"。
+func pinValidateNeutralEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("ANOTIFY_MAX_HOPS", "")
+	t.Setenv("ANOTIFY_TRACE_TASK_BUDGET", "")
+	t.Setenv("ANOTIFY_LEASE_TTL", "")
+}
+
+// TestSecureCookieDerivation 钉住「会话 Cookie 带不带 Secure」的推导（#624）。
+//
+// 判据只有一条：RP_ORIGIN 是显式的 https:// 且后面真有主机名。旧实现是
+// `len(origin) > 8 && origin[:5] == "https"`：不 trim、不忽略大小写（`HTTPS://…`
+// 反而拿不到 Secure），却会放 `httpsfoo.example` 这种非 URL 前缀过。
+func TestSecureCookieDerivation(t *testing.T) {
+	cases := []struct {
+		name   string
+		origin string
+		want   bool
+	}{
+		{"https + 主机名", "https://example.com", true},
+		{"大写 HTTPS 也算", "HTTPS://Example.com", true},
+		{"首尾空白被 trim", "  https://x  ", true},
+		{"http 明文", "http://example.com", false},
+		{"空串", "", false},
+		{"只有协议头（https:// 本身 8 字符）", "https://", false},
+	}
+	for _, c := range cases {
+		t.Run("origin "+c.name, func(t *testing.T) {
+			if got := secureCookieFromOrigin(c.origin); got != c.want {
+				t.Errorf("secureCookieFromOrigin(%q) = %v, want %v", c.origin, got, c.want)
+			}
+		})
+	}
+
+	// 回环判定：只在「非回环监听 + 非 https」时打 WARN，判反了会要么静默漏警、
+	// 要么在开发机上天天吵。
+	loopbackCases := []struct {
+		name string
+		addr string
+		want bool
+	}{
+		{"127.0.0.1", "127.0.0.1:8080", true},
+		{"127.0.0.0/8 里的其它地址", "127.1.2.3:8080", true},
+		{"localhost", "localhost:8080", true},
+		{"IPv6 回环", "[::1]:8080", true},
+		{"空 host = 全接口", ":8080", false},
+		{"0.0.0.0 = 全接口", "0.0.0.0:8080", false},
+		{"IPv6 通配", "[::]:8080", false},
+	}
+	for _, c := range loopbackCases {
+		t.Run("回环判定 "+c.name, func(t *testing.T) {
+			if got := addrIsLoopback(c.addr); got != c.want {
+				t.Errorf("addrIsLoopback(%q) = %v, want %v", c.addr, got, c.want)
 			}
 		})
 	}
