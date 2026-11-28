@@ -35,7 +35,10 @@ import (
 //   - Pprof 关闭。
 //
 // 这三条正是「不带可选配置也要能起来」的验收；把它们配齐再测反而掩盖启动期分支。
-func newProductionAppForTest(t *testing.T) *App {
+//
+// mutate（可选，变参：#624）让调用方在 NewApp 之前改一个旋钮 —— 例如 pprof 隔离用例需要
+// cfg.Pprof=true 的真实装配。默认（不传）保持上面的「都不提供」形态。
+func newProductionAppForTest(t *testing.T, mutate ...func(*Config)) *App {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := FromEnv()
@@ -45,6 +48,11 @@ func newProductionAppForTest(t *testing.T) *App {
 	cfg.RPID = "localhost"
 	cfg.RPOrigin = "http://localhost"
 	cfg.Pprof = false
+	for _, m := range mutate {
+		if m != nil {
+			m(&cfg)
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	app := NewApp(ctx, cfg)
