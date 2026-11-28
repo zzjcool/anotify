@@ -227,6 +227,35 @@ func sessionIDPrefix(id string) string {
 	return id
 }
 
+type sessionOut struct { // 会话列表的对外投影（#587）：id 是公开 id，不是 Cookie 原文
+	ID         string `json:"id"`
+	UserID     string `json:"userId"`
+	DeviceName string `json:"deviceName"`
+	CreatedAt  int64  `json:"createdAt"`
+	ExpiresAt  int64  `json:"expiresAt"`
+	LastSeen   int64  `json:"lastSeen"`
+	Current    bool   `json:"current"`
+}
+
+func toSessionOut(s *store.Session, cookieID string) sessionOut {
+	return sessionOut{
+		ID:         auth.SessionPublicID(s.ID),
+		UserID:     s.UserID,
+		DeviceName: s.DeviceName,
+		CreatedAt:  s.CreatedAt,
+		ExpiresAt:  s.ExpiresAt,
+		LastSeen:   s.LastSeen,
+		Current:    cookieID != "" && s.ID == cookieID,
+	}
+}
+
+func sessionCookieID(r *http.Request) string {
+	if c, err := r.Cookie(auth.SessionCookieName); err == nil {
+		return c.Value
+	}
+	return ""
+}
+
 func (h *authHandler) sessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeErr(w, 405, "method not allowed")
@@ -248,24 +277,78 @@ func (h *authHandler) sessions(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, pageCursorMessage(err))
 		return
 	}
-	afterAt, afterID := int64(0), ""
+	afterAt, afterRowID := int64(0), int64(0)
 	if len(keys) == 2 {
 		if afterAt, err = pageCursorInt64(keys[0]); err != nil {
 			writeErr(w, 400, pageCursorMessage(err))
 			return
 		}
-		afterID = keys[1]
+		if afterRowID, err = pageCursorInt64(keys[1]); err != nil {
+			writeErr(w, 400, pageCursorMessage(err))
+			return
+		}
 	}
-	list, err := h.db.ListSessionsByUserPage(r.Context(), uid, afterAt, afterID, limit+1)
+	list, err := h.db.ListSessionsByUserPage(r.Context(), uid, afterAt, afterRowID, limit+1)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	list, cont := pageCut(list, limit, binding, func(s *store.Session) []string {
-		return []string{pageKeyInt64(s.CreatedAt), s.ID}
+	list, cont := pageCut(list, limit, binding, func(row store.SessionPageRow) []string {
+		return []string{pageKeyInt64(row.CreatedAt), pageKeyInt64(row.RowID)} // 破局键 rowid，理由见 store.SessionPageRow
 	})
+	cookieID := sessionCookieID(r)
+	out := make([]sessionOut, 0, len(list))
+	for i := range list {
+		out = append(out, toSessionOut(&list[i].Session, cookieID))
+	}
 	// count 是**本页**条数；`continue` 非空表示还有下一页（末页回 ""）。
-	writeJSON(w, 200, map[string]any{"sessions": list, "count": len(list), "continue": cont})
+	writeJSON(w, 200, map[string]any{"sessions": out, "count": len(out), "continue": cont})
+}
+
+func (h *authHandler) sessionsItem(w http.ResponseWriter, r *http.Request) { // DELETE /v1/auth/sessions/{id}（#587）
+	if r.Method != http.MethodDelete {
+		writeErr(w, 405, "method not allowed")
+		return
+	}
+	uid := auth.UserIDFromContext(r.Context())
+	if uid == "" {
+		writeErr(w, 401, "未登录")
+		return
+	}
+	pub := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/auth/sessions/"), "/")
+	if pub == "" || strings.Contains(pub, "/") {
+		writeErr(w, 404, "会话不存在")
+		return
+	}
+	list, err := h.svc.Sessions().ListByUser(uid)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	var target *store.Session
+	for _, s := range list {
+		if auth.SessionPublicID(s.ID) == pub {
+			target = s
+			break
+		}
+	}
+	if target == nil {
+		writeErr(w, 404, "会话不存在")
+		return
+	}
+	if err := h.svc.Sessions().Revoke(target.ID); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if sessionCookieID(r) == target.ID {
+		h.svc.Sessions().ClearCookie(w)
+	}
+	slog.Info("session revoked",
+		"event", "auth.session.revoked",
+		"user_id", uid,
+		"session_prefix", sessionIDPrefix(target.ID),
+	)
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 // passkeysRoot 路由 /v1/auth/passkeys（无尾斜杠）：GET 列表 / POST 补建凭证完成。

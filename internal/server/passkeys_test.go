@@ -59,6 +59,7 @@ func newPasskeysTestEnv(t *testing.T) *passkeysTestEnv {
 	// 与生产 mux.go 路由一致：me/sessions/passkeys 需登录优先匹配，/v1/auth/ 兜底。
 	mux.Handle("/v1/auth/me", noStore(sessMW(http.HandlerFunc(authH.me))))
 	mux.Handle("/v1/auth/sessions", noStore(sessMW(http.HandlerFunc(authH.sessions))))
+	mux.Handle("/v1/auth/sessions/", noStore(sessMW(http.HandlerFunc(authH.sessionsItem))))
 	mux.Handle("/v1/auth/passkeys", noStore(sessMW(http.HandlerFunc(authH.passkeysRoot))))
 	mux.Handle("/v1/auth/passkeys/", noStore(sessMW(http.HandlerFunc(authH.passkeysItem))))
 	mux.Handle("/v1/auth/", noStore(http.HandlerFunc(authH.ServeHTTP)))

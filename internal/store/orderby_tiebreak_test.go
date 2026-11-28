@@ -1808,7 +1808,7 @@ var orderByKnownGaps = []orderByKnownGap{
 		File:   "auth.go",
 		Clause: "order by created_at desc",
 		Risk: "ListSessionsByUser（auth.go:355，sessions）与 ListAPIKeysByUser（auth.go:531，api_keys）：同秒并列 → 列表顺序不确定" +
-			"（分页版 auth.go:421/382 已用 `created_at, id` 破平局，非分页版漏了）",
+			"（分页版已用 `created_at, id` / `created_at, rowid` 破平局，非分页版漏了；#587 把会话分页的破局键从 id 改成 rowid——会话 id 是 Cookie 原文，进游标就是泄露）",
 		Fix: "两条都补唯一列：ORDER BY created_at DESC, id DESC",
 	},
 	{

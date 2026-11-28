@@ -301,12 +301,19 @@ paths:
       summary: 列出当前用户的登录会话
       description: |
         列出 `sessions` 表里属于当前用户、**未过期**（`expiresAt > now`）的会话，
-        按 `createdAt` 倒序（`id` 破平局）。空时为 `[]`。
+        按 `createdAt` 倒序（同秒并列按插入序稳定）。空时为 `[]`。
+
+        `id` 是**不透明的公开 id**（会话令牌的 SHA-256 前缀）：它只用来在本组端点里
+        指认一条会话（`DELETE /v1/auth/sessions/{id}`），**不可用来登录**，也不等于
+        任何 Cookie 值（#587：旧实现直接回 Cookie 原文，等于绕过 httpOnly 把 bearer
+        凭据交给页面脚本）。
+
+        `current: true` 标记的就是发起本次请求的这一条（按 Cookie 比对）；它不能自己
+        吊销自己（想退出请走 `POST /v1/auth/logout`）。
 
         分页：`limit` 缺省 50（`<=0` 按 50，`>500` 钳到 500），`continue` 是绑定当前
-        用户的不透明游标；末页回 `continue: ""`。坏游标 / 别人的游标 → `400`。
-
-        注意 `id` 本身是一条 bearer 凭据（`<sessionID>.<随机后缀>`），不要当无害日志字段。
+        用户的不透明游标（内含 SQLite 行号，不含会话 id）；末页回 `continue: ""`。
+        坏游标 / 别人的游标 → `400`。
       operationId: listAuthSessions
       security: [{ session: [] }]
       parameters:
@@ -320,6 +327,35 @@ paths:
               schema: { $ref: "#/components/schemas/SessionList" }
         "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
+
+  /v1/auth/sessions/{id}:
+    delete:
+      tags: [auth]
+      summary: 吊销（删除）自己的一条登录会话
+      description: |
+        `{id}` 是 `GET /v1/auth/sessions` 返回的**不透明公开 id**（不是 Cookie 原文）。
+        只能吊销本人的会话：**别人的会话一律 `404`**，不泄露存在性。
+
+        吊销当前会话等同 logout：会话行删除的同时清掉 `anotify_session` Cookie。
+        吊销后目标 Cookie 立刻不可用（会话缓存同步失效），下一次 `/v1/auth/me` → `401`。
+      operationId: revokeAuthSession
+      security: [{ session: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 会话的公开 id（`GET /v1/auth/sessions` 的 `id`，16 位十六进制）
+      responses:
+        "200":
+          description: 已吊销
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
         "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
         "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
@@ -1634,12 +1670,14 @@ components:
 
     Session:
       type: object
-      description: 登录会话（`sessions` 表一行）。`id` 本身是一条 bearer 凭据。
-      required: [id, userId, deviceName, createdAt, expiresAt, lastSeen]
+      description: |
+        登录会话（`sessions` 表一行）的对外投影。`id` 是**不透明公开 id**
+        （会话令牌的 SHA-256 前缀，16 位十六进制），不是 Cookie 值也不是登录凭据（#587）。
+      required: [id, userId, deviceName, createdAt, expiresAt, lastSeen, current]
       properties:
         id:
           type: string
-          description: 会话 id（`<sessionID>.<随机后缀>`，即 Cookie `anotify_session` 的值）
+          description: 不透明公开 id（会话令牌的哈希前缀），只用于 `DELETE /v1/auth/sessions/{id}`
         userId: { type: string }
         deviceName:
           type: string
@@ -1647,6 +1685,9 @@ components:
         createdAt: { type: integer, format: int64 }
         expiresAt: { type: integer, format: int64, description: 过期时刻（unix 秒；默认 TTL 7 天） }
         lastSeen: { type: integer, format: int64, description: 最近活跃时刻（落库有 60s 节流） }
+        current:
+          type: boolean
+          description: 是否就是发起本次请求的那条会话（按 Cookie 比对）；列表里至多一条为 `true`
 
     SessionList:
       type: object

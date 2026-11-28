@@ -967,15 +967,8 @@
             { method: "POST", credentials: "same-origin" },
           );
           if (!res.ok) {
-            // 把服务端的校验信息带出来，别让用户只看到 "HTTP 400"
-            let msg = "HTTP " + res.status;
-            try {
-              const b = await res.json();
-              if (b && b.message) msg = b.message;
-            } catch (e) {
-              /* 非 JSON 响应，保留状态码 */
-            }
-            throw new Error(msg);
+            // 服务端文案优先；认证/Key 域回 `{error}`（#587）
+            throw new Error(await window.Anotify.errorMessage(res));
           }
           k.enabled = false;
           renderKeys();
@@ -1097,8 +1090,7 @@
             body: JSON.stringify({ name: name, scopes: scopes }),
           });
           if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            throw new Error(data.message || "HTTP " + res.status);
+            throw new Error(await window.Anotify.errorMessage(res));
           }
           const data = await res.json();
           NEW_KEY_PLAIN = data.key || data.plaintext || "";

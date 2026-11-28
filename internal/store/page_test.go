@@ -507,12 +507,12 @@ func TestListUsersKeysPasskeysSessionsPage(t *testing.T) {
 	}
 
 	var gotSessions []string
-	afterAt, afterID = 0, ""
+	afterAt, afterRowID := int64(0), int64(0)
 	for page := 0; ; page++ {
 		if page > 50 {
 			t.Fatal("session 翻页不收敛")
 		}
-		rows, err := db.ListSessionsByUserPage(ctx, uid, afterAt, afterID, 2)
+		rows, err := db.ListSessionsByUserPage(ctx, uid, afterAt, afterRowID, 2)
 		if err != nil {
 			t.Fatalf("sessions page %d: %v", page, err)
 		}
@@ -526,7 +526,7 @@ func TestListUsersKeysPasskeysSessionsPage(t *testing.T) {
 			}
 		}
 		last := rows[len(rows)-1]
-		afterAt, afterID = last.CreatedAt, last.ID
+		afterAt, afterRowID = last.CreatedAt, last.RowID
 	}
 	// DESC：createdAt 大的在前。
 	wantSessions := []string{liveIDs[4], liveIDs[3], liveIDs[2], liveIDs[1], liveIDs[0]}
@@ -564,5 +564,52 @@ func TestPageLimitNormalization(t *testing.T) {
 	}
 	if pageDefaultLimit != 50 || pageFetchCap != 501 {
 		t.Fatalf("默认/多取一行的上限被改了：%d/%d（handler 的 50/500 与它耦合）", pageDefaultLimit, pageFetchCap)
+	}
+}
+
+func TestListSessionsByUserPageTieByRowID(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	uid, err := db.InsertUser(ctx, "", "sesspageuser", "Sess Page")
+	if err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	now := Now()
+	var inserted []string
+	for i := 0; i < 6; i++ {
+		s := &Session{ID: NewSessionID(), UserID: uid, DeviceName: "same-second",
+			CreatedAt: 9000, ExpiresAt: now + 3600, LastSeen: now}
+		if err := db.CreateSession(s); err != nil {
+			t.Fatalf("create session %d: %v", i, err)
+		}
+		inserted = append(inserted, s.ID)
+	}
+
+	var got []string
+	afterAt, afterRowID := int64(0), int64(0)
+	for page := 0; page < 20; page++ {
+		rows, err := db.ListSessionsByUserPage(ctx, uid, afterAt, afterRowID, 1)
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, row := range rows {
+			got = append(got, row.ID)
+			if row.RowID == 0 {
+				t.Fatalf("分页行没带 rowid：%+v", row)
+			}
+		}
+		last := rows[len(rows)-1]
+		afterAt, afterRowID = last.CreatedAt, last.RowID
+	}
+
+	want := make([]string, 0, len(inserted)) // created_at 全同 → 插入序倒过来
+	for i := len(inserted) - 1; i >= 0; i-- {
+		want = append(want, inserted[i])
+	}
+	if !pageTestEqualStrings(got, want) {
+		t.Fatalf("同秒会话翻页应不重不漏、按插入序倒排\n got=%v\nwant=%v", got, want)
 	}
 }

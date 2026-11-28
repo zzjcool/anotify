@@ -122,9 +122,9 @@ const (
 	// parityPairsFloor 是 parityPairs() 的对数（历史区间见 git log）。
 	parityPairsFloor = 224
 	// bareMountFloor 是 bareMountSpec() 的条目数。
-	bareMountFloor = 24
+	bareMountFloor = 25
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底），历史见提交信息。
-	muxPatternCount = 137
+	muxPatternCount = 138
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 34
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数（历史区间见 git log）。
@@ -160,9 +160,9 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 	fatalIfProblems(t, "解析 $ref（含跨文件）", refIntegrityProblems(docs))
 
 	ops, _ := collectSpecOps(docs)
-	// 快照逐次只增（历次增量见 git log）：#554 的凭据 CRUD 四条 + #555 的立即拉取 + #561 的按快照重装。
-	if len(ops) != 146 {
-		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 146（143 + 凭据 CRUD 四条 + 立即拉取 + 审计两条 + 按快照重装 − 推送域退役五条）", len(ops))
+	// 快照逐次只增（历次增量见 git log）：#554 凭据 CRUD 四条 + #555 立即拉取 + #561 按快照重装 + #587 会话吊销。
+	if len(ops) != 147 {
+		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 147（143 + 凭据 CRUD 四条 + 立即拉取 + 审计两条 + 按快照重装 + 会话吊销 − 推送域退役五条）", len(ops))
 	}
 	// 至少一条来自 components.pathItems（agent.yaml 四条 + events/ingress 的共享 pathItem）。
 	fromPathItems := 0
@@ -2266,6 +2266,13 @@ func bareMountSpec() []bareMountEntry {
 			},
 		},
 		{
+			Pattern:     "/v1/auth/sessions/",
+			HandlerFile: "auth_handlers.go",
+			Ops: []bareOp{
+				{"DELETE", "/v1/auth/sessions/{id}", `if r.Method != http.MethodDelete`, "", `func (h *authHandler) sessionsItem(w http.ResponseWriter`},
+			},
+		},
+		{
 			Pattern:     "/v1/auth/passkeys",
 			HandlerFile: "auth_handlers.go",
 			Ops: []bareOp{
@@ -3120,7 +3127,7 @@ func parityPairs() []parityPair {
 			Wire: &goWire{File: "handlers.go", Func: "keysHandler.list", Kind: "response", Select: -1}},
 		{GoLabel: "cliAuthHandler.keysSelf", File: "auth.yaml", Schema: "KeySelf",
 			Wire: &goWire{File: "cli_auth_handlers.go", Func: "cliAuthHandler.keysSelf", Kind: "response", Select: -1}},
-		{GoLabel: "store.Session", File: "auth.yaml", Schema: "Session", Sample: store.Session{}},
+		{GoLabel: "sessionOut", File: "auth.yaml", Schema: "Session", Sample: sessionOut{}},
 		{GoLabel: "authHandler.sessions", File: "auth.yaml", Schema: "SessionList",
 			Wire: &goWire{File: "auth_handlers.go", Func: "authHandler.sessions", Kind: "response", Select: -1}},
 		{GoLabel: "passkeyOut", File: "auth.yaml", Schema: "Passkey", Sample: passkeyOut{}},

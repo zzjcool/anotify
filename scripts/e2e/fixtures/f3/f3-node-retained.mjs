@@ -383,12 +383,14 @@ export async function nodeRetained(d,mode){
     if (d.mock) {
       await page.waitForFunction(() => document.getElementById('password-modal').textContent.includes('Current password is incorrect'));
     } else {
-      // 真实的 DELETE /v1/auth/password 带错当前密码必须 400，页面必须把失败显示出来
-      // （auth 的失败体是 {error} 而不是 Status.message，页面按 HTTP 码兜底 —— 见报告）。
+      // 真实的 DELETE /v1/auth/password 带错当前密码必须 400；#587 之后页面展示的是
+      // 服务端可读文案（认证域回 {error}），不再只剩「HTTP 400」。
       await page.waitForFunction(() => {
         const modal = document.getElementById('password-modal');
-        return !!modal && /HTTP 400|400/.test(modal.textContent);
+        return !!modal && modal.textContent.includes('当前密码不正确');
       });
+      const modalText = await page.locator('#password-modal').innerText();
+      assert.ok(!/HTTP 400/.test(modalText), "错误弹层不该只剩状态码（#587 已改成展示服务端文案）");
       const rejected = (await calls()).findLast(c => c.url === '/v1/auth/password' && c.method === 'DELETE');
       assert.equal(rejected.status, 400);
       assert.equal((await d.api('/v1/auth/password')).body.hasPassword, true, '错误的当前密码不得改动密码');

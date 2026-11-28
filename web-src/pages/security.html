@@ -1425,7 +1425,6 @@
           ? new Date(p.createdAt * 1000).toISOString().slice(0, 10)
           : "",
         lastUsed: fmtTime(p.lastUsedAt),
-        current: !!p.current,
       }));
       loadFailed.passkeys = false;
     } else {
@@ -1536,12 +1535,9 @@
               { class: "sec-row-head" },
               el("span", { class: "sec-row-title", text: p.name }),
               el("span", { class: "badge badge-neutral", text: p.type }),
-              p.current
-                ? el("span", {
-                    class: "status-badge status-on",
-                    text: t("security.in_use", "本机在用"),
-                  })
-                : null,
+              // #587：不渲染「本机在用」——会话不记录是哪个凭证签进来的，
+              // 服务端的 Passkey.current 永远 false（api/auth.yaml 自己写了）。
+              // 拿它当真只会让每一行都没有标识，反而更贵。
             ),
             p.devices
               ? el("div", { class: "sec-row-sub", text: p.devices })
@@ -1576,23 +1572,17 @@
               },
               t("security.rename", "重命名"),
             ),
-            p.current
-              ? el("span", {
-                  class: "sec-row-note",
-                  text: t(
-                    "security.current_credential_no_delete",
-                    "当前设备的凭证，不可删除",
-                  ),
-                })
-              : el(
-                  "button",
-                  {
-                    type: "button",
-                    class: "btn btn-danger btn-sm",
-                    onclick: () => deletePasskey(p),
-                  },
-                  t("security.delete", "删除"),
-                ),
+            // 删除按钮常驻：「至少保留一种登录方式」的护栏在服务端（409 + 可读文案），
+            // 前端不靠一个永远为 false 的 current 去猜该不该画它（#587）。
+            el(
+              "button",
+              {
+                type: "button",
+                class: "btn btn-danger btn-sm",
+                onclick: () => deletePasskey(p),
+              },
+              t("security.delete", "删除"),
+            ),
           ),
         ),
       ),
@@ -1617,15 +1607,8 @@
         },
       );
       if (!res.ok) {
-        // 把服务端的校验信息带出来，别让用户只看到 "HTTP 400"
-        let msg = "HTTP " + res.status;
-        try {
-          const b = await res.json();
-          if (b && b.message) msg = b.message;
-        } catch (e) {
-          /* 非 JSON 响应，保留状态码 */
-        }
-        throw new Error(msg);
+        // 服务端文案优先（auth 域回 `{error}`，见 Anotify.errorMessage）
+        throw new Error(await Anotify.errorMessage(res));
       }
       p.name = newName;
       renderPasskeys();
@@ -1661,15 +1644,9 @@
         },
       );
       if (!res.ok) {
-        // 后端可能返回 409（至少保留一个）等业务错误，优先展示其 message
-        let msg = "HTTP " + res.status;
-        try {
-          const body = await res.json();
-          if (body?.message) msg = body.message;
-        } catch {
-          /* 非 JSON，用默认 msg */
-        }
-        throw new Error(msg);
+        // 后端可能返回 409（至少保留一种登录方式）等业务错误：原文照显示，
+        // 用户要的就是「先设置密码」这句。
+        throw new Error(await Anotify.errorMessage(res));
       }
       PASSKEYS = PASSKEYS.filter((x) => x.id !== p.id);
       renderPasskeys();
@@ -1764,14 +1741,7 @@
         },
       );
       if (!regRes.ok) {
-        let msg = "HTTP " + regRes.status;
-        try {
-          const body = await regRes.json();
-          if (body?.message) msg = body.message;
-        } catch {
-          /* 非 JSON */
-        }
-        throw new Error(msg);
+        throw new Error(await Anotify.errorMessage(regRes));
       }
       toast(t("security.toast.add_success", "Passkey 添加成功"));
       loadPasskeys();
@@ -1906,15 +1876,9 @@
         },
       );
       if (!res.ok) {
-        // 把服务端的校验信息带出来，别让用户只看到 "HTTP 400"
-        let msg = "HTTP " + res.status;
-        try {
-          const b = await res.json();
-          if (b && b.message) msg = b.message;
-        } catch (e) {
-          /* 非 JSON 响应，保留状态码 */
-        }
-        throw new Error(msg);
+        // #587：服务端回 `{error}`（新增的单会话吊销也是这个形状）——
+        // 只读 `.message` 会令每次失败都变成「吊销失败：HTTP 4xx」。
+        throw new Error(await Anotify.errorMessage(res));
       }
       SESSIONS = SESSIONS.filter((x) => x.id !== s.id);
       renderSessions();
@@ -2065,12 +2029,7 @@
         body: "{}",
       });
       if (!res.ok) {
-        let msg = "HTTP " + res.status;
-        try {
-          const body = await res.json();
-          if (body && body.message) msg = body.message;
-        } catch (_) {}
-        throw new Error(msg);
+        throw new Error(await Anotify.errorMessage(res));
       }
       const data = await res.json();
       const codes = Array.isArray(data.recoveryCodes)
@@ -2348,15 +2307,8 @@
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        // 后端文案优先（例：409 的「至少保留一种登录方式：…」）
-        let msg = "HTTP " + res.status;
-        try {
-          const data = await res.json();
-          if (data && data.message) msg = data.message;
-        } catch (_) {
-          /* 非 JSON 响应：保留状态码 */
-        }
-        const err = new Error(msg);
+        // 后端文案优先（例：400 的「当前密码不正确」、409 的「至少保留一种登录方式：…」）
+        const err = new Error(await Anotify.errorMessage(res));
         err.status = res.status;
         throw err;
       }
@@ -2517,15 +2469,7 @@
         body: JSON.stringify({ deviceName: deviceName }),
       });
       if (!res.ok) {
-        // 把服务端的校验信息带出来，别让用户只看到 "HTTP 400"
-        let msg = "HTTP " + res.status;
-        try {
-          const b = await res.json();
-          if (b && b.message) msg = b.message;
-        } catch (e) {
-          /* 非 JSON 响应，保留状态码 */
-        }
-        throw new Error(msg);
+        throw new Error(await Anotify.errorMessage(res));
       }
       const data = await res.json();
       enrollSession = {
@@ -2770,15 +2714,7 @@
         { credentials: "same-origin" },
       );
       if (!res.ok) {
-        // 把服务端的校验信息带出来，别让用户只看到 "HTTP 400"
-        let msg = "HTTP " + res.status;
-        try {
-          const b = await res.json();
-          if (b && b.message) msg = b.message;
-        } catch (e) {
-          /* 非 JSON 响应，保留状态码 */
-        }
-        throw new Error(msg);
+        throw new Error(await Anotify.errorMessage(res));
       }
       const data = await res.json();
       enrollErrorCount = 0;
@@ -2884,15 +2820,7 @@
         return;
       }
       if (!res.ok) {
-        // 把服务端的校验信息带出来，别让用户只看到 "HTTP 400"
-        let msg = "HTTP " + res.status;
-        try {
-          const b = await res.json();
-          if (b && b.message) msg = b.message;
-        } catch (e) {
-          /* 非 JSON 响应，保留状态码 */
-        }
-        throw new Error(msg);
+        throw new Error(await Anotify.errorMessage(res));
       }
       // approved → 切 approved_waiting 变体
       const btnArea = document.getElementById("enroll-confirm-buttons");
@@ -2929,15 +2857,7 @@
         return;
       }
       if (!res.ok) {
-        // 把服务端的校验信息带出来，别让用户只看到 "HTTP 400"
-        let msg = "HTTP " + res.status;
-        try {
-          const b = await res.json();
-          if (b && b.message) msg = b.message;
-        } catch (e) {
-          /* 非 JSON 响应，保留状态码 */
-        }
-        throw new Error(msg);
+        throw new Error(await Anotify.errorMessage(res));
       }
       stopEnrollWatch();
       stopEnrollCountdown();
