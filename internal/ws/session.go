@@ -31,7 +31,6 @@ type Session struct {
 	isClosed bool
 }
 
-// NodeID 返回认证后的 nodes.id。
 func (s *Session) NodeID() string { return s.nodeID }
 
 // NodeName 返回已登记节点名（wire 上的 node 字段必须与它一致）。

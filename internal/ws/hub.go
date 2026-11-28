@@ -40,7 +40,6 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// Clock 是秒级时钟（测试注入）。
 type Clock func() int64
 
 // 会话层错误（供 G3 的 HTTP 层翻成 4xx/5xx；不冒充 store 哨兵）。
@@ -62,7 +61,6 @@ var (
 	errProtocolViolation = errors.New("ws: 协议违例")
 )
 
-// Option 是 Hub 的可选配置。
 type Option func(*Hub)
 
 // WithLogger 注入结构化 logger（默认 slog.Default()）。
@@ -131,6 +129,10 @@ type Hub struct {
 	sessions map[string]*Session // nodeID → session（同一节点只保留最新连接）
 	logs     map[string]*logRequest
 
+	// cfgNudgeMu 保护 lastCfgNudge（config.changed 兜底补推的节流时刻）。
+	cfgNudgeMu   sync.Mutex
+	lastCfgNudge time.Time
+
 	steer slotSteer // 「这台节点刚说过这个能力没槽」的调度建议（#681，见 steer.go）
 }
 
@@ -150,13 +152,10 @@ func NewHub(db *store.DB, router *route.Router, opts ...Option) *Hub {
 	return h
 }
 
-// DB 返回底层 store。
 func (h *Hub) DB() *store.DB { return h.db }
 
-// Router 返回共享路由器。
 func (h *Hub) Router() *route.Router { return h.router }
 
-// Now 返回当前秒级时刻。
 func (h *Hub) Now() int64 {
 	if h.now == nil {
 		return store.Now()
@@ -236,7 +235,6 @@ func (h *Hub) session(nodeID string) *Session {
 	return h.sessions[nodeID]
 }
 
-// Online 报告节点当前是否有已认证连接。
 func (h *Hub) Online(nodeID string) bool { return h.session(nodeID) != nil }
 
 // handshake 完成首帧 hello 的认证与状态落库，然后回 welcome。
@@ -557,6 +555,8 @@ func (h *Hub) RunDispatchLoop(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// 兜底补推 config.changed（#569）：写入口负责即时推送，这里补通知丢了的节点。
+			h.nudgeStaleConfigs(ctx)
 			if _, err := h.DispatchOnce(ctx, 100); err != nil {
 				h.log.Warn("dispatch sweep failed", "err", err)
 			}

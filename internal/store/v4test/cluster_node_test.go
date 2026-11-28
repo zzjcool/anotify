@@ -396,12 +396,48 @@ func TestEligibleNodesReasons(t *testing.T) {
 	if got := store.NodeAvailabilityReason(map[string]string{"n1": "NotAReason"}); got != protocol.ConditionReasonNoMatchingNode {
 		t.Errorf("未知 reason 汇总 = %q, want NoMatchingNode", got)
 	}
-	// 混合优先级：离线压住缺值。
-	if got := store.NodeAvailabilityReason(map[string]string{
-		"n1": protocol.ConditionReasonValueMissing,
-		"n2": protocol.ConditionReasonNodeOffline,
-	}); got != protocol.ConditionReasonNodeOffline {
-		t.Fatalf("混合原因汇总 = %q, want NodeOffline", got)
+	// 混合优先级（#569 审计）：还有在线节点时，汇总报在线节点的具体原因而不是离线。
+	for _, tc := range []struct {
+		name    string
+		reasons map[string]string
+		want    string
+	}{
+		{
+			name: "离线 + ConfigPending（#569：改完配置等 apply）",
+			reasons: map[string]string{
+				"n1": protocol.ConditionReasonNodeOffline,
+				"n2": protocol.ConditionReasonConfigPending,
+			},
+			want: protocol.ConditionReasonConfigPending,
+		},
+		{
+			name: "离线 + NotDeployed（#569 评论：保存了新版本没部署）",
+			reasons: map[string]string{
+				"n1": protocol.ConditionReasonNodeOffline,
+				"n2": protocol.ConditionReasonNotDeployed,
+			},
+			want: protocol.ConditionReasonNotDeployed,
+		},
+		{
+			name: "只有离线",
+			reasons: map[string]string{
+				"n1": protocol.ConditionReasonNodeOffline,
+				"n2": protocol.ConditionReasonNodeOffline,
+			},
+			want: protocol.ConditionReasonNodeOffline,
+		},
+		{
+			name: "离线 + 缺值",
+			reasons: map[string]string{
+				"n1": protocol.ConditionReasonValueMissing,
+				"n2": protocol.ConditionReasonNodeOffline,
+			},
+			want: protocol.ConditionReasonValueMissing,
+		},
+	} {
+		if got := store.NodeAvailabilityReason(tc.reasons); got != tc.want {
+			t.Fatalf("%s：汇总原因 = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 	// 有可用节点时汇总为 ""（Valid）。
 	if got := store.NodeAvailabilityReason(map[string]string{

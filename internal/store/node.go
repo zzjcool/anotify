@@ -1596,13 +1596,11 @@ func commandMissing(declared []DeclaredCapability, capName string, capVersion in
 
 // NodeAvailabilityReason 把 EligibleNodes 的逐节点原因汇总成 NodesAvailable condition 的 reason。
 //
-// 返回 "" = 至少一台可用（condition True / reason Valid）；
-// 否则取**最具体**的那一个（anode.md §6：同时存在离线与解析不出值时先报 NodeOffline）：
-// NodeOffline > NamespaceUnauthorized > ConfigPending > NotDeployed > CommandMissing > ValueMissing。
-// 一个节点都没有（reasons 为空）→ NoMatchingNode（capability.md §2.4 的兜底 reason）。
+// 返回 "" = 至少一台可用；否则取**在线节点**里最难绕过的那一个（NamespaceUnauthorized >
+// ConfigPending > NotDeployed > CommandMissing > ValueMissing）；全部离线才报 NodeOffline
+// ——它只对单台节点最具体，混进汇总会把「1 台离线 + 1 台在线待应用」说成「没有在线节点」。
 func NodeAvailabilityReason(reasons map[string]string) string {
 	precedence := []string{
-		protocol.ConditionReasonNodeOffline,
 		protocol.ConditionReasonNamespaceUnauthorized,
 		protocol.ConditionReasonConfigPending,
 		protocol.ConditionReasonNotDeployed,
@@ -1610,21 +1608,33 @@ func NodeAvailabilityReason(reasons map[string]string) string {
 		protocol.ConditionReasonValueMissing,
 	}
 	sawEligible := false
-	seen := make(map[string]bool, len(precedence))
+	seenOnline := make(map[string]bool, len(precedence))
+	offline := 0
 	for _, reason := range reasons {
 		if reason == "" {
 			sawEligible = true
 			continue
 		}
-		seen[reason] = true
+		if reason == protocol.ConditionReasonNodeOffline {
+			offline++
+			continue
+		}
+		seenOnline[reason] = true
 	}
 	if sawEligible {
 		return ""
 	}
-	for _, reason := range precedence {
-		if seen[reason] {
-			return reason
+	if len(seenOnline) > 0 {
+		for _, reason := range precedence {
+			if seenOnline[reason] {
+				return reason
+			}
 		}
+		// 在线节点的原因不在封闭集合里（脏数据）：不伪造具体原因。
+		return protocol.ConditionReasonNoMatchingNode
+	}
+	if offline > 0 {
+		return protocol.ConditionReasonNodeOffline
 	}
 	return protocol.ConditionReasonNoMatchingNode
 }

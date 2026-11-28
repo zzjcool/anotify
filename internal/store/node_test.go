@@ -240,8 +240,8 @@ func TestNodesForCapability(t *testing.T) {
 	if reasons[n1.ID] != protocol.ConditionReasonNodeOffline {
 		t.Fatalf("具体原因应为 %s, 实际 %s", protocol.ConditionReasonNodeOffline, reasons[n1.ID])
 	}
-	if got := NodeAvailabilityReason(reasons); got != protocol.ConditionReasonNodeOffline {
-		t.Fatalf("汇总原因应优先报离线, 实际 %s", got)
+	if got := NodeAvailabilityReason(reasons); got != protocol.ConditionReasonConfigPending {
+		t.Fatalf("汇总原因应报在线节点里的具体原因 %s, 实际 %s", protocol.ConditionReasonConfigPending, got)
 	}
 }
 
