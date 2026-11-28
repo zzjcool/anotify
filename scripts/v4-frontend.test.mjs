@@ -6822,3 +6822,163 @@ test('TRACE-ARCHIVE: observer preserves original return Promise, this, arguments
 /* #454 的三个「表单→YAML 草稿」用例已删除：唯一写入口改成 YAML 后，表单序列化路径不复存在，
    这三条测的机制已被设计移除（不是放宽断言）。新路径由 F2c2 的 YAML 保存断言覆盖。 */
 
+/* ------------------------------------------------------------------ *
+ * #588 · a11y 第 6 项（减少动效）/ 弹层焦点 / skip-link 顺序
+ *
+ * 缺陷一（本文件主项，契约 D4）：`startFlow` 给每条走完的边建一条
+ * `iterations: Infinity` 的 WAAPI 流光。系统开着「减少动效」时这条动画照样
+ * 24×7 跑 —— 用户说了「别动」，页面还在闪，而且它永远不进终态。
+ *
+ * 缺陷二/三（跨 worker，契约 D2/D3）：弹层打开不接管焦点、不把外壳置 inert、
+ * 不锁 Tab；`mountLayout` 把 `#app-shell` prepend 到 body 最前，把布局里的
+ * `.skip-link` 挤到外壳后面，Tab 第一下先落到侧边栏。
+ *
+ * 这里对 flograph 的两条是**行为**断言（把源码切片塞进 vm 真跑），对
+ * partials 的三条是源码结构断言（函数体切片里的调用/顺序）——因为那部分
+ * 由 W1 在 web/partials.js 里实现，契约把函数名冻结成了 `focusModalEntry` /
+ * `syncModalInert` / `bindModalTrap`。
+ * ------------------------------------------------------------------ */
+
+/**
+ * 从 IIFE 里的一个顶层（或 mount 内）函数声明切出函数体。
+ *
+ * @param {string} source 源码全文
+ * @param {string} signature 带缩进的起始片段，如 `'\tfunction openModal(backdrop) {'`
+ * @param {string} [close] 收尾片段（默认 IIFE 顶层函数的 `'\n\t}'`）
+ */
+function sliceFnBody(source, signature, close = '\n\t}') {
+  const start = source.indexOf(signature);
+  assert.ok(start >= 0, `#588: 源码里找不到 \`${signature.trim()}\`（切片起点消失，说明这段代码被改名/删掉了）`);
+  const end = source.indexOf(close, start);
+  assert.ok(end > start, `#588: \`${signature.trim()}\` 的收尾括号没找到（切片失败）`);
+  /* 带上收尾括号：切片要能被 vm 当作完整函数声明执行 */
+  return source.slice(start, end + close.length);
+}
+
+test('#588 D4: 减少动效下 startFlow 不建无限 WAAPI，且守卫在 shim.animate 之前', () => {
+  const source = readFileSync(path.join(ROOT, 'web/flograph.js'), 'utf8');
+  const body = sliceFnBody(source, '\t\tfunction startFlow(', '\n\t\t}');
+
+  const guardAt = body.indexOf('if (reduceNow()) return;');
+  const animateAt = body.indexOf('.animate(');
+  assert.ok(guardAt > 0, '#588: startFlow 缺少 `if (reduceNow()) return;` 守卫 —— reduce 下仍会建 iterations:Infinity 的流光');
+  assert.ok(animateAt > guardAt, '#588: reduceNow() 守卫必须出现在 shim.animate 之前，否则无限动画照样被建出来');
+  assert.ok(body.includes('iterations: Infinity'), '#588: 切片里没找到 iterations: Infinity（被切的不是流光那段，断言失去意义）');
+
+  /* 行为复核：同一段源码在 reduce=true 下不该有任何动效副作用。 */
+  const makeEdge = () => {
+    const calls = { animate: 0, isFlow: 0, silkFlow: 0, began: 0 };
+    return {
+      calls,
+      edge: {
+        g: {
+          style: { setProperty: (k) => { if (k === '--silk-flow') calls.silkFlow += 1; } },
+          classList: { add: (c) => { if (c === 'is-flow') calls.isFlow += 1; } },
+          querySelector: () => ({
+            style: {},
+            animate: () => { calls.animate += 1; return { cancel() {} }; },
+          }),
+        },
+        core: {},
+        motion: { setAttribute() {}, beginElement: () => { calls.began += 1; } },
+      },
+    };
+  };
+
+  const ctx = vm.createContext({ lastStepMs: 900, reduceNow: () => true });
+  vm.runInContext(`${body}\n globalThis.startFlow = startFlow;`, ctx);
+
+  const reduced = makeEdge();
+  ctx.startFlow(reduced.edge, 400, 0);
+  assert.deepEqual(reduced.calls, { animate: 0, isFlow: 0, silkFlow: 0, began: 0 },
+    '#588: reduce 下 startFlow 仍建了 WAAPI / 加了 is-flow / 写了 --silk-flow / 触发了 SMIL');
+  assert.equal(reduced.edge.shimAnim, undefined,
+    '#588: reduce 下 shimAnim 被挂到了边上（要等 resetReveal 才取消，等于一直在跑）');
+
+  /* 对照：no-preference 必须照旧建一条，守卫不能误伤正常路径。 */
+  ctx.reduceNow = () => false;
+  const normal = makeEdge();
+  ctx.startFlow(normal.edge, 400, 0);
+  assert.deepEqual(normal.calls, { animate: 1, isFlow: 1, silkFlow: 1, began: 1 },
+    '#588: no-preference 下 startFlow 应照旧建无限流光（守卫把正常路径也挡掉了）');
+  assert.ok(normal.edge.shimAnim, '#588: no-preference 下 shimAnim 要挂到边上，供 resetReveal / MQ change 取消');
+});
+
+test('#588 D4: 运行中切到 reduce 会取消已建成的无限 WAAPI 并摘掉 is-flow，切回不重建', () => {
+  const source = readFileSync(path.join(ROOT, 'web/flograph.js'), 'utf8');
+  const body = sliceFnBody(source, '\t\tfunction onReduceMotionChange(', '\n\t\t}');
+  assert.ok(/reduceNow\(\)/.test(body), '#588: onReduceMotionChange 没有再看 reduceNow()，切回 no-preference 时也会去动动画');
+
+  const mk = () => {
+    const state = { cancelled: 0, removed: [] };
+    return {
+      state,
+      edge: {
+        shimAnim: { cancel: () => { state.cancelled += 1; } },
+        g: { classList: { remove: (c) => state.removed.push(c) } },
+      },
+    };
+  };
+  const a = mk(), b = mk();
+  const ctx = vm.createContext({ reduceNow: () => true, edgeItems: [a.edge, b.edge] });
+  vm.runInContext(`${body}\n globalThis.onReduceMotionChange = onReduceMotionChange;`, ctx);
+
+  ctx.onReduceMotionChange();
+  for (const { state, edge } of [a, b]) {
+    assert.equal(state.cancelled, 1, '#588: MQ 切到 reduce 时没有 cancel() 已建成的无限动画（iterations:Infinity 不会自己停）');
+    assert.ok(state.removed.includes('is-flow'), '#588: MQ 切到 reduce 时没有移除 is-flow');
+    assert.equal(edge.shimAnim, null, '#588: cancel() 之后 shimAnim 要置 null，否则 resetReveal 会去 cancel 一个已取消的动画');
+  }
+
+  /* 取舍：切回 no-preference 不重建（等下次 reveal/replay 自然恢复）。 */
+  ctx.reduceNow = () => false;
+  ctx.onReduceMotionChange();
+  assert.equal(a.state.cancelled, 1, '#588: 切回 no-preference 不该再动已停止的动画');
+  assert.deepEqual(a.state.removed, ['is-flow'], '#588: 切回 no-preference 不该重建/重放（契约取舍：由下次 reveal 恢复）');
+
+  /* 监听必须挂在 MQ 的 change 上，并随 destroy() 一起解绑（对齐现有清理习惯）。 */
+  assert.ok(/reduceMq\.addEventListener\(\s*"change",\s*onReduceMotionChange\s*\)/.test(source),
+    '#588: 没有注册 reduce MQ 的 change 监听 —— 运行中切成减少动效时没人收尾');
+  const destroyAt = source.indexOf('destroy() {');
+  assert.ok(destroyAt > 0, '#588: 找不到 mount() 返回的 destroy()（无法确认监听被解绑）');
+  assert.ok(source.slice(destroyAt).includes('removeEventListener("change", onReduceMotionChange)'),
+    '#588: destroy() 没有解绑 reduce MQ 监听（图卸载后 MQ 还攥着整个 mount 闭包）');
+});
+
+test('#588 D2: openModal 接管焦点/外壳惰性/键盘陷阱，closeModal 先还焦点再撤 inert', () => {
+  const source = readFileSync(path.join(ROOT, 'web/partials.js'), 'utf8');
+  const open = sliceFnBody(source, '\tfunction openModal(backdrop) {');
+  for (const call of ['bindModalTrap(', 'syncModalInert(', 'focusModalEntry(']) {
+    assert.ok(open.includes(call),
+      `#588: openModal 没有调用 ${call} —— 弹层打开后${call === 'focusModalEntry(' ? '焦点还留在背景里' : call === 'syncModalInert(' ? '外壳没有退出无障碍树' : 'Tab 会跑到背景里'}`);
+  }
+
+  const close = sliceFnBody(source, '\tfunction closeModal(backdrop) {');
+  const returnAt = close.indexOf('returnModalFocus(');
+  const inertAt = close.indexOf('syncModalInert(');
+  assert.ok(returnAt > 0, '#588: closeModal 里没有 returnModalFocus()（焦点没还回触发它的控件）');
+  assert.ok(inertAt > 0, '#588: closeModal 里没有 syncModalInert()（关闭后外壳的 inert / aria-hidden 撤不掉）');
+  assert.ok(returnAt < inertAt,
+    '#588: closeModal 里 syncModalInert() 必须排在 returnModalFocus() 之后（契约 D2 固定顺序，反了会先动外壳再动焦点）');
+});
+
+test('#588 D2: syncModalInert 同时处理 inert 与 #app-shell', () => {
+  const source = readFileSync(path.join(ROOT, 'web/partials.js'), 'utf8');
+  const body = sliceFnBody(source, '\tfunction syncModalInert(');
+  assert.ok(/inert/.test(body), '#588: syncModalInert 函数体没有碰 inert（外壳没退出无障碍树，读屏仍能走到背景）');
+  const shell = /#app-shell/.test(body) || /getElementById\(\s*["']app-shell["']\s*\)/.test(body);
+  assert.ok(shell, '#588: syncModalInert 没有定位 #app-shell（惰性没挂到弹层所在的外壳上）');
+  assert.ok(/aria-hidden/.test(body), '#588: syncModalInert 没有同步 aria-hidden（只靠 inert 时老读屏仍能念到外壳）');
+});
+
+test('#588 D3: mountLayout 把 .skip-link 再 prepend 到 body 最前，Tab 第一下才落在跳转链接', () => {
+  const source = readFileSync(path.join(ROOT, 'web/partials.js'), 'utf8');
+  const body = sliceFnBody(source, '\tfunction mountLayout(');
+  const rootAt = body.indexOf('document.body.prepend(root)');
+  assert.ok(rootAt > 0, '#588: mountLayout 里找不到 document.body.prepend(root)（切片起点失效）');
+  assert.ok(/querySelector\(\s*["']\.skip-link["']\s*\)/.test(body), '#588: mountLayout 没有查找 .skip-link');
+  const prepends = [...body.matchAll(/document\.body\.prepend\([^;]*\);/g)];
+  const skipPrepended = prepends.some((m) => m.index > rootAt && /skip/i.test(m[0]));
+  assert.ok(skipPrepended,
+    '#588: mountLayout 在 document.body.prepend(root) 之后没有把 .skip-link 再 prepend 到最前（跳转链接被外壳挤到后面，Tab 先到侧边栏）');
+});
