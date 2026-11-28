@@ -2142,6 +2142,46 @@ paths:
         '409': {$ref: '#/components/responses/Status409'}
         '500': {$ref: '#/components/responses/Status500'}
 
+  /v1/namespaces/{namespace}/tasks/{taskId}/rerun:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/TaskIDPath'
+    post:
+      operationId: rerunTask
+      tags: [tasks]
+      security: [{session: []}]
+      summary: "用相同输入新建一条任务（原任务不变）"
+      description: |
+        以原任务钉住的 `capability` + `params` 建一条**新**任务（新 trace、新 taskId，
+        `spec.rerunOf` 指向原任务），原任务的任何字段都不变——重跑不是「让同一条任务
+        再跑一次」，事件与任务行仍然不可改写。
+
+        `params` **不接受入参**：webhook 派生的参数（`$(payload.number)` 等）在任务页只
+        能看、带不走，所以重跑一律复制原任务钉住的那一份。要改参数请用能力页的试跑
+        （`POST …/capabilities/{name}/test`，前端会用原参数预填）。
+
+        `version` 省略 / 0 = 该能力**当前 live 版本**（「脚本修好后再跑一次」正是这个
+        用途）；显式给版本时必须是仍然活着的那个版本——已删除的版本不会被静默换成最新版。
+
+        能力已删除 / 从未存在 → 404（与「任务不存在」同一个回答，不泄露存在性）。
+        任务存在但没有能力名（无法复现输入）→ 409。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TaskRerunRequest'}
+      responses:
+        '200':
+          description: "新建的任务（`spec.rerunOf` 指向原任务）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Task'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
   /v1/namespaces/{namespace}/tasks/{taskId}/logs:
     parameters:
       - $ref: '#/components/parameters/NamespacePath'
@@ -4605,6 +4645,13 @@ components:
         parentTaskId:
           type: string
           nullable: true
+        rerunOf:
+          type: string
+          nullable: true
+          description: |
+            这条任务是哪条任务的**重跑**（`POST …/tasks/{taskId}/rerun` 建的行）。
+            与 `parentTaskId` 是两件事：后者是业务 emit 的父子关系（路由链的一环），
+            重跑不改链路。null = 不是重跑。
         capability:
           allOf: [{$ref: '#/components/schemas/TaskCapabilityRef'}]
           nullable: true
@@ -4695,6 +4742,11 @@ components:
           type: integer
           description: "只有 lease.grant 生效才递增；未派发即失败的任务恒为 0"
         maxAttempts: {type: integer}
+        idempotent:
+          type: boolean
+          description: |
+            派发时钉住的幂等声明（`spec.lifecycle.idempotent`）。控制台据此解释「会不会
+            自动重试」：非幂等能力不再显示「尝试 1/3」这种看起来还能再试的数字。
         leaseExpiresAt:
           type: string
           format: date-time
@@ -4739,6 +4791,17 @@ components:
         reason:
           type: string
           description: "人话原因（可选；写进 cancel_requested 事实）"
+      additionalProperties: false
+    TaskRerunRequest:
+      type: object
+      description: |
+        重跑的动作 body。`params` 刻意**不**在这里：重跑 = 复制原任务钉住的输入，
+        改参数走能力页的试跑（前端用原参数预填）。
+      properties:
+        version:
+          type: integer
+          minimum: 0
+          description: "0 / 省略 = 当前 live 版本；> 0 = 明确点名的活版本"
       additionalProperties: false
     TaskLogLine:
       type: object

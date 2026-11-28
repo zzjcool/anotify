@@ -2591,10 +2591,30 @@
           box.append(txt("p", "cap-detail-empty", t("caps.test.nodes_none", "没有部署候选节点（留空 = 服务端按 digest 选）。")));
         }
       }
-      function openTest() {
+      const RERUN_PREFILL_KEY = "anotify:rerun-prefill";
+      function takeRerunPrefill() {
+        let raw = null;
+        try {
+          raw = sessionStorage.getItem(RERUN_PREFILL_KEY);
+          if (raw) sessionStorage.removeItem(RERUN_PREFILL_KEY);
+        } catch (e) {
+          return null;
+        }
+        if (!raw) return null;
+        try {
+          const seen = JSON.parse(raw);
+          if (!isObj(seen)) return null;
+          if (!META || seen.name !== META.name) return null;
+          return isObj(seen.params) ? seen : null;
+        } catch (e) {
+          return null;
+        }
+      }
+      function openTest(prefill) {
         if (!META) return;
         const m = META;
         const schema = isObj(m.spec) && isObj(m.spec.params) ? m.spec.params : {};
+        const initial = prefill && isObj(prefill.params) ? prefill.params : {};
         TEST = { schema: schema, form: null, selected: new Set() };
         $("test-title").textContent = sub(t("caps.test.title_named", "试跑能力 {name}"), { name: m.name });
         $("test-result").replaceChildren();
@@ -2602,10 +2622,15 @@
         $("test-params-json").value = "";
         const live = liveVersionNum();
         $("test-version").value = live == null ? "" : String(live);
+        if (prefill) {
+          const hint = $("test-version-hint");
+          if (hint) hint.textContent = t("caps.test.rerun_from", "已带入任务 {task} 的参数；版本默认当前版本。")
+            .replace("{task}", String(prefill.fromTask || ""));
+        }
         const host = $("test-params");
         host.replaceChildren();
         /* 参数控件走共享的 schemaForm（渲染策略与 playbook 的 valuesForm 同源）。 */
-        const form = A.schemaForm(schema, { values: {}, onChange: () => clearTestParamErrors() });
+        const form = A.schemaForm(schema, { values: initial, onChange: () => clearTestParamErrors() });
         TEST.form = form;
         const wrap = $("test-params-wrap");
         if (form.supported) {
@@ -2617,6 +2642,7 @@
         } else {
           /* 抽不出表单：只留 JSON textarea（展开），服务端仍是最终判据。 */
           if (wrap) wrap.open = true;
+          if (prefill) $("test-params-json").value = JSON.stringify(initial, null, 2);
           host.append(
             txt("p", "field-hint", t("caps.test.params_degraded", "这份参数契约（oneOf / allOf / $ref 等）抽不出表单，直接填 JSON。")),
           );
@@ -2878,6 +2904,13 @@
           }
           const res = await nsApi("capabilities", name);
           render(res);
+          const params = new URLSearchParams(location.search);
+          if (params.get("rerun") === "1") {
+            openTest(takeRerunPrefill());
+              params.delete("rerun");
+            const qs = params.toString();
+            history.replaceState(null, "", location.pathname + (qs ? "?" + qs : ""));
+          }
         } catch (err) {
           // 404 与其它失败都落到同一套错误态：只给中文说明 + 「重试 / 返回列表」。
           // 服务端的 reason / message 是英文协议串，不拼进页面文案（排查看请求 ID 与日志）。

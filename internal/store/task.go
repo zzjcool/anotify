@@ -60,7 +60,6 @@ const (
 	WaitingForConfig    = string(protocol.WaitingForConfig)
 )
 
-// 任务相关的哨兵错误。
 var (
 	// ErrInvalidTransition 表示状态机拒绝该迁移（或该行已不在期望相位）。
 	ErrInvalidTransition = errors.New("invalid_transition")
@@ -191,6 +190,7 @@ type Task struct {
 	CreatedAt         int64           `json:"createdAt"`
 	StartedAt         *int64          `json:"startedAt"`
 	FinishedAt        *int64          `json:"finishedAt"`
+	RerunOf           string          `json:"-"` // 「谁的重跑」（#605，不是 parent_task_id）
 }
 
 // taskColumns 是统一的列顺序，scanTask 依赖它。
@@ -200,7 +200,7 @@ const taskColumns = `id, namespace_id, trace_id, parent_task_id, capability_id, 
 	lease_id, lease_until, lease_instance_id, attempt_token_hash, waiting_reason, next_attempt_at,
 	cancel_reason, cancel_requested_at, stop_intent, reported, summary, artifacts, error,
 	created_at, started_at, finished_at, namespace_vars, namespace_vars_revision, result_json, result_accepted_at,
-	outcomes, decision, decision_at, decision_token_hash, decision_expires_at`
+	outcomes, decision, decision_at, decision_token_hash, decision_expires_at, rerun_of`
 
 // scanTask 从一行结果解析 Task（三处 JSON 列在这里一次解完）。
 func scanTask(rows *sql.Rows) (*Task, error) {
@@ -223,7 +223,7 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 		&t.LeaseID, &t.LeaseUntil, &t.LeaseInstanceID, &t.AttemptTokenHash, &t.WaitingReason, &t.NextAttemptAt,
 		&t.CancelReason, &t.CancelRequestedAt, &t.StopIntent, &reported, &t.Summary, &artifacts, &t.Error,
 		&t.CreatedAt, &t.StartedAt, &t.FinishedAt, &nsVars, &t.NamespaceVarsRevision, &rawResult, &t.ResultAcceptedAt,
-		&outcomes, &decision, &t.DecisionAt, &t.DecisionTokenHash, &t.DecisionExpiresAt,
+		&outcomes, &decision, &t.DecisionAt, &t.DecisionTokenHash, &t.DecisionExpiresAt, &t.RerunOf,
 	); err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)
 	}
@@ -379,11 +379,11 @@ func (d *DB) createTasksTx(ctx context.Context, tx *sql.Tx, ts []*Task) error {
 			`INSERT INTO tasks
 			   (id, namespace_id, trace_id, parent_task_id, capability_id, capability,
 			    version, digest, params, phase, max_attempts, idempotent, created_at, artifacts,
-			    namespace_vars, namespace_vars_revision, outcomes)
-			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			    namespace_vars, namespace_vars_revision, outcomes, rerun_of)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			t.ID, t.NamespaceID, t.TraceID, t.ParentTaskID, t.CapabilityID, t.Capability,
 			t.Version, t.Digest, string(t.Params), t.Phase, t.MaxAttempts, boolToInt(t.Idempotent),
-			t.CreatedAt, string(artifactsJSON), nsVarsJSON, pin.revision, string(t.Outcomes),
+			t.CreatedAt, string(artifactsJSON), nsVarsJSON, pin.revision, string(t.Outcomes), t.RerunOf,
 		); err != nil {
 			return fmt.Errorf("insert task %d (%s): %w", i, t.Capability, err)
 		}

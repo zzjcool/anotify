@@ -760,7 +760,7 @@ func (a *capabilityAPI) setEnabled(w http.ResponseWriter, r *http.Request, enabl
 	body := capabilitySwitchRequest{}
 	if !enabled {
 		// enable 没有可写字段（body 忽略）；disable 的 reason 走严格解码。
-		if err := decodeCapabilityActionBody(r, &body); err != nil {
+		if err := decodeActionBody(r, &body); err != nil {
 			writeAPIError(w, err)
 			return
 		}
@@ -813,7 +813,7 @@ func (a *capabilityAPI) testRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body capabilityTestRequest
-	if err := decodeCapabilityActionBody(r, &body); err != nil {
+	if err := decodeActionBody(r, &body); err != nil {
 		writeAPIError(w, err)
 		return
 	}
@@ -1031,12 +1031,12 @@ func capabilityNameOrBadRequest(r *http.Request) (string, error) {
 	return name, nil
 }
 
-// decodeCapabilityActionBody 严格解码动作 POST 的可选 body（未知字段 → 400，空 body = 全部省略）。
+// decodeActionBody 严格解码动作 POST 的可选 body（未知字段 → 400，空 body = 全部省略）。
 //
 // 与 `decodeCapabilityDeployBody` 同一套判据（空 / `null` = 省略、未知字段 = 400、上限 1 MiB），
 // 只是目标类型不同：把 deploy 那一份抄成三份迟早「有的动作用空 body 合法、有的不合法」。
 // `UseNumber` 让 `params` 里的数字**原样**透传（试跑参数要逐字进任务行，不能被 float64 改写）。
-func decodeCapabilityActionBody(r *http.Request, dst any) error {
+func decodeActionBody(r *http.Request, dst any) error {
 	if r.Body == nil {
 		return nil
 	}

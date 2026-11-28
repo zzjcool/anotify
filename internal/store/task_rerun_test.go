@@ -1,0 +1,188 @@
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"reflect"
+	"strconv"
+	"testing"
+)
+
+func seedRerunCapability(t *testing.T, db *DB, ns, name string, version int, digest string) string {
+	t.Helper()
+	id := "capv_" + name + "_" + digest + "_" + strconv.Itoa(version)
+	if _, err := db.Exec(
+		`INSERT INTO capability_versions (id, namespace_id, name, version, spec, digest, fold_key, created_at)
+		 VALUES (?,?,?,?,?,?,?,?)`,
+		id, ns, name, version, `{"lifecycle":{"idempotent":false}}`, digest, "fold_"+id, Now()); err != nil {
+		t.Fatalf("seed capability %s@%d: %v", name, version, err)
+	}
+	return id
+}
+
+func TestCreateRerun_DefaultsToLiveVersionAndCopiesParams(t *testing.T) {
+	ctx := context.Background()
+	db, _ := newTestDBFile(t)
+	ns, _ := newTestNS(t, db)
+
+	v1 := seedRerunCapability(t, db, ns, "pr-check", 1, "sha256:rerun-v1")
+	seedRerunCapability(t, db, ns, "pr-check", 2, "sha256:rerun-v2")
+
+	params := json.RawMessage(`{"repo":"acme/api","number":99,"fail":"yes","nested":{"k":[1,2]}}`)
+	orig := &Task{
+		NamespaceID:  ns,
+		TraceID:      NewEventID(),
+		CapabilityID: v1,
+		Capability:   "pr-check",
+		Version:      1,
+		Digest:       "sha256:rerun-v1",
+		Params:       append(json.RawMessage(nil), params...),
+		Phase:        TaskPending,
+	}
+	if err := db.CreateTasks(ctx, []*Task{orig}); err != nil {
+		t.Fatalf("create original task: %v", err)
+	}
+	// 原任务走到终态失败（#605 里「脚本 exit 1」的形状）。
+	if _, err := db.Exec(
+		`UPDATE tasks SET phase = ?, attempt = 1, error = ?, summary = ?, finished_at = ?
+		  WHERE id = ?`,
+		TaskFailed, "script_failed", "pr-check 执行失败", Now(), orig.ID); err != nil {
+		t.Fatalf("finish original task: %v", err)
+	}
+	before, err := db.GetTask(ctx, ns, orig.ID)
+	if err != nil {
+		t.Fatalf("read original before rerun: %v", err)
+	}
+
+	// 默认（version=0）= 当前 live 版本 v2，不是原任务的 v1。
+	created, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID})
+	if err != nil {
+		t.Fatalf("create rerun task: %v", err)
+	}
+	if created.ID == "" || created.ID == orig.ID {
+		t.Fatalf("rerun task id = %q（必须是一条新任务）", created.ID)
+	}
+	if created.TraceID == orig.TraceID {
+		t.Fatalf("rerun trace = %q（必须是新 trace，原任务的事件不可改写）", created.TraceID)
+	}
+	if created.Version != 2 || created.Digest != "sha256:rerun-v2" {
+		t.Fatalf("rerun 钉住 %d/%s, want 2/sha256:rerun-v2（默认 live）", created.Version, created.Digest)
+	}
+	if created.RerunOf != orig.ID {
+		t.Fatalf("rerunOf = %q, want %q", created.RerunOf, orig.ID)
+	}
+	if created.Phase != TaskPending {
+		t.Fatalf("rerun phase = %q, want %q", created.Phase, TaskPending)
+	}
+	var gotP, wantP any
+	if err := json.Unmarshal(created.Params, &gotP); err != nil {
+		t.Fatalf("decode rerun params: %v", err)
+	}
+	if err := json.Unmarshal(params, &wantP); err != nil {
+		t.Fatalf("decode want params: %v", err)
+	}
+	if !reflect.DeepEqual(gotP, wantP) {
+		t.Fatalf("rerun params = %s, want %s", created.Params, params)
+	}
+	// rerun_of 往返一致。
+	reread, err := db.GetTask(ctx, ns, created.ID)
+	if err != nil {
+		t.Fatalf("read rerun task: %v", err)
+	}
+	if reread.RerunOf != orig.ID {
+		t.Fatalf("读回的 rerunOf = %q, want %q", reread.RerunOf, orig.ID)
+	}
+	if !reflect.DeepEqual(reread.Params, created.Params) {
+		t.Fatalf("读回的 params = %s, want %s", reread.Params, created.Params)
+	}
+
+	// 原任务一个字段都没变。
+	after, err := db.GetTask(ctx, ns, orig.ID)
+	if err != nil {
+		t.Fatalf("read original after rerun: %v", err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("原任务被改动了:\n before = %+v\n after  = %+v", before, after)
+	}
+}
+
+func TestCreateRerun_ExplicitVersionAndRejections(t *testing.T) {
+	ctx := context.Background()
+	db, _ := newTestDBFile(t)
+	ns, _ := newTestNS(t, db)
+	other := newTestExtraNS(t, db, "rerun-other")
+
+	v1 := seedRerunCapability(t, db, ns, "pr-check", 1, "sha256:pin-v1")
+	seedRerunCapability(t, db, ns, "pr-check", 2, "sha256:pin-v2")
+
+	orig := &Task{
+		NamespaceID:  ns,
+		TraceID:      NewEventID(),
+		CapabilityID: v1,
+		Capability:   "pr-check",
+		Version:      1,
+		Digest:       "sha256:pin-v1",
+		Params:       json.RawMessage(`{"number":99}`),
+		Phase:        TaskPending,
+	}
+	if err := db.CreateTasks(ctx, []*Task{orig}); err != nil {
+		t.Fatalf("create original task: %v", err)
+	}
+
+	// 显式版本 = 原版本 v1。
+	pinned, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID, Version: 1})
+	if err != nil {
+		t.Fatalf("create rerun @1: %v", err)
+	}
+	if pinned.Version != 1 || pinned.Digest != "sha256:pin-v1" {
+		t.Fatalf("显式版本重跑钉住 %d/%s, want 1/sha256:pin-v1", pinned.Version, pinned.Digest)
+	}
+
+	// 不存在的版本 / 已删除的版本 / 看不见的任务：一律 404（不回退成 live）。
+	if _, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID, Version: 9}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("version=9 err = %v, want ErrNotFound", err)
+	}
+	if _, err := db.Exec(`UPDATE capability_versions SET deleted_at = ? WHERE id = ?`, Now(), v1); err != nil {
+		t.Fatalf("soft-delete v1: %v", err)
+	}
+	if _, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID, Version: 1}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("已删除版本 err = %v, want ErrNotFound", err)
+	}
+	// 跨命名空间：任务不可见 → 404（不泄露存在性）。
+	if _, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: other, TaskID: orig.ID}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("跨 ns err = %v, want ErrNotFound", err)
+	}
+	if _, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: "tsk_missing"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("不存在的任务 err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestCreateRerun_UnresolvedFailureUsesRequestedName(t *testing.T) {
+	ctx := context.Background()
+	db, _ := newTestDBFile(t)
+	ns, _ := newTestNS(t, db)
+	seedRerunCapability(t, db, ns, "late-capability", 1, "sha256:late-v1")
+
+	// tasks_unresolved_failure_shape 那条 CHECK 的唯一合法形状。
+	now := Now()
+	id := NewTaskID()
+	if _, err := db.Exec(
+		`INSERT INTO tasks (id, namespace_id, trace_id, capability_id, capability, version, digest,
+		                    params, phase, attempt, error, finished_at, created_at)
+		 VALUES (?,?,?,NULL,?,?,?,?,?,0,?,?,?)`,
+		id, ns, NewEventID(), "late-capability", 0, "", `{"a":1}`, TaskFailed, "downstream_missing", now, now); err != nil {
+		t.Fatalf("seed unresolved task: %v", err)
+	}
+
+	created, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: id})
+	if err != nil {
+		t.Fatalf("rerun unresolved task: %v", err)
+	}
+	if created.CapabilityID == "" || created.Version != 1 {
+		t.Fatalf("rerun 未解析任务 = %q@%d, want 真实 capability@1", created.CapabilityID, created.Version)
+	}
+	if created.RerunOf != id {
+		t.Fatalf("rerunOf = %q, want %q", created.RerunOf, id)
+	}
+}

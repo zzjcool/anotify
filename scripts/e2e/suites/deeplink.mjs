@@ -167,6 +167,74 @@ async function main() {
 		JSON.stringify(emptyTrace.json),
 	);
 
+	console.log("--- 重跑：用原任务的输入再跑一次 ---");
+	const origBefore = await H.req(server.base, V.P.tasks(NS) + "/" + taskId, {
+		session: s.session,
+	});
+	V.expectStatus("读原任务 → 200", origBefore, 200);
+	V.assertEnvelope("原任务是 Task 信封", origBefore.json, "Task");
+	const rerun = await H.req(server.base, V.P.tasks(NS) + "/" + taskId + "/rerun", {
+		method: "POST",
+		session: s.session,
+		body: {},
+	});
+	V.expectStatus("重跑 → 200", rerun, 200);
+	V.assertEnvelope("重跑回执是**新任务**信封", rerun.json, "Task");
+	const rerunId = rerun.json?.metadata?.name;
+	H.check(
+		"重跑建的是新任务（新 taskId）",
+		typeof rerunId === "string" && rerunId.length > 0 && rerunId !== taskId,
+		String(rerunId),
+	);
+	H.eq("新任务 spec.rerunOf 指回原任务", rerun.json?.spec?.rerunOf, taskId);
+	H.check(
+		"新任务 params 与原任务深度相等",
+		JSON.stringify(rerun.json?.spec?.params) === JSON.stringify(origBefore.json?.spec?.params),
+		`new=${JSON.stringify(rerun.json?.spec?.params)} orig=${JSON.stringify(origBefore.json?.spec?.params)}`,
+	);
+	H.eq(
+		"重跑默认钉住当前 live 版本",
+		rerun.json?.spec?.capability?.version,
+		origBefore.json?.spec?.capability?.version,
+	);
+	const origAfter = await H.req(server.base, V.P.tasks(NS) + "/" + taskId, {
+		session: s.session,
+	});
+	V.expectStatus("重跑后读原任务 → 200", origAfter, 200);
+	H.eq("原任务 phase 不变", origAfter.json?.status?.phase, origBefore.json?.status?.phase);
+	H.check(
+		"原任务 params 不变",
+		JSON.stringify(origAfter.json?.spec?.params) === JSON.stringify(origBefore.json?.spec?.params),
+		JSON.stringify(origAfter.json?.spec?.params),
+	);
+	H.check("原任务没有 rerunOf（重跑不改原任务）", !origAfter.json?.spec?.rerunOf, JSON.stringify(origAfter.json?.spec));
+	V.expectReason(
+		"重跑未知字段 → 400 unknown_field（参数域封闭）",
+		await H.req(server.base, V.P.tasks(NS) + "/" + taskId + "/rerun", {
+			method: "POST",
+			session: s.session,
+			body: { verison: 1 },
+		}),
+		400,
+		"unknown_field",
+	);
+	V.expectStatus(
+		"重跑不存在的任务 → 404",
+		await H.req(server.base, V.P.tasks(NS) + "/tsk_missing/rerun", {
+			method: "POST",
+			session: s.session,
+			body: {},
+		}),
+		404,
+	);
+	const cancelled = await H.req(server.base, V.P.tasks(NS) + "/" + rerunId + "/cancel", {
+		method: "POST",
+		session: s.session,
+		body: {},
+	});
+	V.expectStatus("取消重跑出来的任务 → 200", cancelled, 200);
+	H.eq("取消后是终态 cancelled", cancelled.json?.status?.phase, "cancelled");
+
 	browser = await chromium.launch({ channel: "chrome", headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
 
 	// ---------- A/B/C. 详情页完整展示 ----------
@@ -272,6 +340,62 @@ async function main() {
 			traceHref,
 		);
 		H.check("详情页无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 120));
+		await page.close();
+		await ctx.close();
+	}
+
+	console.log("--- 重跑入口（终态页） ---");
+	{
+		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
+		await injectSession(ctx, s.session, server.base);
+		const page = await ctx.newPage();
+		const errs = [];
+		page.on("pageerror", (e) => errs.push(String(e)));
+		await page.goto(server.base + "/message.html?id=" + rerunId, {
+			waitUntil: "load",
+			timeout: 15000,
+		});
+		await H.waitForAppReady(page, "workspace");
+		await page.waitForFunction(() => {
+			const el = document.getElementById("task-phase");
+			return !!el && el.getAttribute("data-phase") === "cancelled";
+		}, { timeout: 10000 });
+		const ui = await page.evaluate(() => ({
+			banner: (document.getElementById("task-rerun-of") || {}).textContent || "",
+			rerun: !!document.getElementById("task-rerun"),
+			rerunEdit: !!document.getElementById("task-rerun-edit"),
+			noRetry: (document.getElementById("task-no-retry") || {}).textContent || "",
+			facts: (document.getElementById("task-facts") || {}).textContent || "",
+		}));
+		H.check("重跑出来的任务首屏注明「是谁的重跑」", ui.banner.includes(taskId), ui.banner);
+		H.check("终态任务有「重跑」按钮", ui.rerun, JSON.stringify(ui));
+		H.check("终态任务有「修改参数后重跑」按钮", ui.rerunEdit, JSON.stringify(ui));
+		H.check("非幂等终态任务说明「不会自动重试」", ui.noRetry.includes("不会自动重试"), ui.noRetry);
+		H.check(
+			"非幂等终态任务不再显示「N/M」的剩余次数",
+			!/[0-9]+\/[0-9]+/.test(ui.facts),
+			ui.facts.slice(0, 240),
+		);
+		await page.click("#task-rerun");
+		await page.waitForFunction(() => {
+			const box = document.getElementById("rerun-modal");
+			return !!box && !box.classList.contains("hidden") &&
+				document.querySelectorAll("#rerun-versions .msg-rerun-choice").length >= 1;
+		}, { timeout: 10000 });
+		const modal = await page.evaluate(() => {
+			const box = document.getElementById("rerun-modal");
+			const versions = Array.from(document.querySelectorAll("#rerun-versions .msg-rerun-choice")).map((n) => n.textContent.trim());
+			return {
+				open: !!box && !box.classList.contains("hidden"),
+				versions,
+				submitDisabled: document.getElementById("rerun-submit").disabled,
+			};
+		});
+		H.check("点「重跑」打开版本选择弹层", modal.open, JSON.stringify(modal));
+		H.check("弹层里有一个可选的版本", modal.versions.length >= 1 && modal.versions[0].includes(`v${cap.version}`), JSON.stringify(modal.versions));
+		H.check("弹层可以提交", modal.submitDisabled === false, JSON.stringify(modal));
+		H.check("重跑入口无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 120));
 		await page.close();
 		await ctx.close();
 	}

@@ -1973,6 +1973,7 @@
 			instanceId: row.instanceId == null ? null : row.instanceId,
 			attempt: row.attempt == null ? 1 : row.attempt,
 			maxAttempts: row.maxAttempts == null ? 3 : row.maxAttempts,
+			idempotent: row.idempotent === true,
 			leaseExpiresAt: row.leaseExpiresAt || null,
 			startedAt: row.startedAt || null,
 			finishedAt: row.finishedAt || null,
@@ -2011,6 +2012,7 @@
 				sourceRef: row.sourceRef || null,
 				parentRef: row.parentRef || null,
 				parentTaskId: row.parentTaskId || null,
+				rerunOf: row.rerunOf || null,
 				capability: {
 					name: row.capability,
 					version: row.capabilityVersion,

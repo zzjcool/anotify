@@ -4508,6 +4508,7 @@
 			 * 免得以后有人拿它们当真实字段用。 */
 			parentRef: spec.parentRef == null ? null : spec.parentRef,
 			parentTaskId: spec.parentTaskId == null ? null : spec.parentTaskId,
+			rerunOf: spec.rerunOf == null ? null : spec.rerunOf,
 			capability: cap
 				? {
 						name: cap.name == null ? null : cap.name,
@@ -4523,6 +4524,7 @@
 			instanceId: st.instanceId == null ? null : st.instanceId,
 			attempt: st.attempt == null ? null : st.attempt,
 			maxAttempts: st.maxAttempts == null ? null : st.maxAttempts,
+			idempotent: st.idempotent === true,
 			leaseExpiresAt: st.leaseExpiresAt == null ? null : st.leaseExpiresAt,
 			startedAt: st.startedAt == null ? null : st.startedAt,
 			finishedAt: st.finishedAt == null ? null : st.finishedAt,

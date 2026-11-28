@@ -83,6 +83,7 @@ func (a *taskAPI) register(mux *http.ServeMux) {
 	route("GET "+tasksPath+"/{taskId}", a.get)
 	route("POST "+tasksPath+"/{taskId}/cancel", a.cancel)
 	route("POST "+tasksPath+"/{taskId}/abandon", a.abandon)
+	route("POST "+tasksPath+"/{taskId}/rerun", a.rerun)
 	route("GET "+tasksPath+"/{taskId}/logs", a.logs)
 	route("GET "+tasksPath+"/{taskId}/emissions", a.emissions)
 	// 运行产物下载（#332 / A1 §4）：Task 子资源，仍走会话鉴权 + no-store；
@@ -257,6 +258,48 @@ func (a *taskAPI) requestStop(w http.ResponseWriter, r *http.Request, intent sto
 		}
 	}
 	writeEnvelope(w, http.StatusOK, taskEnvelope(updated, a.d.namespaceDisplay(r.Context(), ns)))
+}
+
+type taskRerunRequest struct {
+	Version int `json:"version,omitempty"`
+}
+
+func (a *taskAPI) rerun(w http.ResponseWriter, r *http.Request) {
+	ns, err := a.d.authorizePathNamespace(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	id, err := taskPathID(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	var body taskRerunRequest
+	if err := decodeActionBody(r, &body); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if body.Version < 0 {
+		writeAPIError(w, errStatus(http.StatusBadRequest, reasonBadRequest,
+			"version must be ≥ 0 (0 = live version)"))
+		return
+	}
+	created, err := a.d.DB.CreateRerunTask(r.Context(), store.RerunInputs{
+		NamespaceID: ns,
+		TaskID:      id,
+		Version:     body.Version,
+		Now:         taskNowSeconds(a.d),
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrTaskNotRerunnable) {
+			writeAPIError(w, errStatus(http.StatusConflict, reasonConflict, err.Error()))
+			return
+		}
+		writeAPIError(w, err)
+		return
+	}
+	writeEnvelope(w, http.StatusOK, taskEnvelope(created, a.d.namespaceDisplay(r.Context(), ns)))
 }
 
 // stopStore 按意图把取消/放弃意图落库（两路共用同一个线性化点，只差终态相位）。
@@ -775,6 +818,7 @@ type taskSpecDoc struct {
 	TraceUID     string             `json:"traceUID"`
 	ParentRef    *taskRefDoc        `json:"parentRef"`
 	ParentTaskID *string            `json:"parentTaskId"`
+	RerunOf      *string            `json:"rerunOf"`
 	Capability   *taskCapabilityRef `json:"capability"`
 	Params       json.RawMessage    `json:"params"`
 }
@@ -800,12 +844,15 @@ type taskCapabilityRef struct {
 // configRevision / namespaceVarsRevision 是**配置生效版本**（字符串，按 §7.6），
 // 与 metadata.resourceVersion（写并发令牌）是两件事，不能混用——而 Task 没有后者。
 type taskStatusDoc struct {
-	Phase                 string              `json:"phase"`
-	WaitingReason         *string             `json:"waitingReason"`
-	NextAttemptAt         *string             `json:"nextAttemptAt"`
-	NodeName              *string             `json:"nodeName"`
-	Attempt               int                 `json:"attempt"`
-	MaxAttempts           int                 `json:"maxAttempts"`
+	Phase         string  `json:"phase"`
+	WaitingReason *string `json:"waitingReason"`
+	NextAttemptAt *string `json:"nextAttemptAt"`
+	NodeName      *string `json:"nodeName"`
+	Attempt       int     `json:"attempt"`
+	MaxAttempts   int     `json:"maxAttempts"`
+
+	Idempotent bool `json:"idempotent"`
+
 	LeaseExpiresAt        *string             `json:"leaseExpiresAt"`
 	StartedAt             *string             `json:"startedAt"`
 	FinishedAt            *string             `json:"finishedAt"`
@@ -858,6 +905,10 @@ func taskSpecOf(t *store.Task) taskSpecDoc {
 		params = json.RawMessage("{}")
 	}
 	doc := taskSpecDoc{TraceUID: t.TraceID, Params: params}
+	if t.RerunOf != "" {
+		rerunOf := t.RerunOf
+		doc.RerunOf = &rerunOf
+	}
 	if t.ParentTaskID != nil && *t.ParentTaskID != "" {
 		parent := *t.ParentTaskID
 		doc.ParentTaskID = &parent
@@ -893,6 +944,7 @@ func taskStatusOf(t *store.Task) taskStatusDoc {
 	}
 	status := taskStatusDoc{
 		Phase:                 t.Phase,
+		Idempotent:            t.Idempotent,
 		WaitingReason:         taskOptionalString(t.WaitingReason),
 		NextAttemptAt:         taskTimestampPtr(t.NextAttemptAt),
 		NodeName:              taskOptionalString(t.NodeName),
