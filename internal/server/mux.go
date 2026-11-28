@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,13 +69,76 @@ func NewMux(cfg Config) http.Handler {
 	return NewApp(context.Background(), cfg).Handler
 }
 
+// NewPprofMux 构造 pprof 的**独立**监听 handler（#624）。
+//
+// 为什么与业务 mux 分离：旧实现把 5 条 /debug/pprof/* 挂在业务 mux 上，而 ANOTIFY_ADDR
+// 默认 `:8080`（全接口）—— 「打开开关」就等于「把 goroutine 栈与堆分布暴露到业务监听面」，
+// 且 pprof 端点没有任何鉴权。现在改成独立 listener（默认 127.0.0.1:6060，见
+// Config.PprofAddr），暴露面由 ANOTIFY_PPROF_ADDR 单独决定：默认只绑回环，
+// 需要从别的机器采样就自己显式改地址或走 ssh 隧道。
+//
+// 手动挂载而不是 `import _ "net/http/pprof"`：后者注册到 DefaultServeMux，而本服务
+// 与 pprof 监听都用自建 mux —— 那样打开开关也采不到任何东西。
+//
+// 这个 mux **不得**加到业务监听上（隔离的整个意义就在于此）；它的行为由
+// pprof_test.go 的 TestPprof_NotOnPublicMux 钉住。
+func NewPprofMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	return mux
+}
+
+// secureCookieFromOrigin 推导「会话 Cookie 要不要带 Secure」（#624）。
+//
+// 规则只有一条：RP_ORIGIN 是**显式的 https:// 且后面真有主机名**。
+//
+//   - 首尾空白 / 大小写不敏感（`HTTPS://Example.com`、`  https://x  ` 都算 https）；
+//   - `https://` 本身（8 字符，后面什么都没有）**不算** —— 它不是合法 origin；
+//   - 空串、`http://…`、任何非 https 协议都不算。
+//
+// 旧实现是 `len(origin) > 8 && origin[:5] == "https"`：它只看前 5 个字符，于是
+// `httpsfoo.example` 也能通过；又不 trim / 不忽略大小写，于是 `HTTPS://…` 反而得到
+// 不带 Secure 的 Cookie（两类误判方向相反，都很容易在反代部署里静默存在）。
+func secureCookieFromOrigin(origin string) bool {
+	o := strings.ToLower(strings.TrimSpace(origin))
+	return strings.HasPrefix(o, "https://") && len(o) > len("https://")
+}
+
+// addrIsLoopback 判断监听地址是不是回环（`127.0.0.0/8`、`::1`、`localhost`）。
+//
+// 判据用于 #624 的「Cookie 无 Secure」启动 WARN：回环监听时 http 不可达于外部网卡，
+// 缺 Secure 不是部署问题，不该吵；**空 host（`:8080`）与 `0.0.0.0` / `::` 都是全接口
+// 监听**，按非回环处理。其它主机名无法判定回环 —— 也按非回环（宁可多一条 WARN）。
+func addrIsLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// 没带端口（如 "localhost"）时把整串当主机名；空串保持空 → 全接口。
+		host = strings.Trim(addr, "[]")
+	}
+	switch host {
+	case "":
+		return false
+	case "localhost":
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 // NewApp 装配完整应用（含后台派发 / cron / 租约三条循环）。
 //
 // v4 的装配顺序（本文件是唯一的 mux 写入者，别在别处再挂路由）：
 //
 //	store → auth → cli-auth / passkey-enroll → 保留域 handler →
 //	背压 → 会话中间件 → 限流 → route.Router / ws.Hub / source.Service / trigger / lease.Sweeper
-//	→ 资源域 register(mux) → 节点协议 → 健康检查 / pprof / 静态兜底
+//	→ 资源域 register(mux) → 节点协议 → 健康检查 → 静态兜底
+//	（pprof **不在**这条链上：#624 起它走独立监听，见 NewPprofMux）
 //
 // 刻意**不**再装配的东西（v4 退役，见 331 卡 D0.2 / D0.3）：旧中枢执行器包（连带
 // notify.phone 的接线）、`ws.NewNodeHandler`（hub 自己
@@ -131,7 +196,11 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		RPID:          cfg.RPID,
 		RPOrigins:     []string{cfg.RPOrigin},
 		SessionTTL:    7 * 24 * time.Hour,
-		SecureCookie:  cfg.RPOrigin != "" && len(cfg.RPOrigin) > 8 && cfg.RPOrigin[:5] == "https",
+		// 会话 Cookie 的 Secure 属性**只看 RP_ORIGIN 是不是显式 https://**（#624）：
+		// 反向代理终止 TLS 时浏览器看到的是 https、而这里看到的是 http，所以运维必须
+		// 把 RP_ORIGIN 写成 https://… —— 推导规则与回环警告见 secureCookieFromOrigin /
+		// addrIsLoopback，误配时启动日志会有一条 WARN。
+		SecureCookie: secureCookieFromOrigin(cfg.RPOrigin),
 		// 鉴权热路径缓存（#227 / #241）：额度由 env 决定，0=默认、负数=关闭。
 		// 两条缓存必须分开传入（失效策略不同，见各自构造器注释）。
 		SessionCacheTTL: cfg.SessionCacheTTL,
@@ -144,6 +213,19 @@ func NewApp(ctx context.Context, cfg Config) *App {
 			"error", err.Error(),
 		)
 		os.Exit(1)
+	}
+	// 非回环监听 + 非 https 的 RP_ORIGIN = 会话 Cookie 没有 Secure（#624）。
+	//
+	// 这不是启动失败（开发机、内网 HTTP 部署都合法），但它在生产上确实是一个缺陷：
+	// 任何一次 http 请求都可能把会话 Cookie 明文带出去。所以留一条可搜索的 WARN 而不是静默：
+	// event=server.cookie.insecure，运维 grep 一下就知道自己有没有踩到。
+	if !secureCookieFromOrigin(cfg.RPOrigin) && !addrIsLoopback(cfg.Addr) {
+		slog.Warn("会话 Cookie 不带 Secure（RP_ORIGIN 非 https）",
+			"event", "server.cookie.insecure",
+			"rp_origin", cfg.RPOrigin,
+			"addr", cfg.Addr,
+			"hint", "反代终止 TLS 时请把 ANOTIFY_RP_ORIGIN 写成 https://…",
+		)
 	}
 	keyValidator := asKeyValidator(authSvc.Keys())
 
@@ -535,18 +617,14 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		_, _ = w.Write(healthBody)
 	})
 
-	// 性能评估（ANOTIFY_PPROF=1）：/debug/pprof/*
+	// 性能评估（ANOTIFY_PPROF=1）：/debug/pprof/* **不在这里**（#624）。
 	//
-	// 手动挂载而不是 `import _ "net/http/pprof"`：后者会注册到 DefaultServeMux，
-	// 而本服务的请求根本不走 DefaultServeMux —— 那样打开开关也采不到任何东西。
-	if cfg.Pprof {
-		mux.HandleFunc("/debug/pprof/", pprof.Index)
-		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
-		slog.Warn("pprof 已开启（性能评估用）", "event", "server.pprof.enabled")
-	}
+	// 旧实现把 5 条 pprof 路由挂在这个 mux 上，于是「打开开关」= 「把 goroutine 栈与
+	// 堆分布暴露到 ANOTIFY_ADDR 的监听面」—— 而 ANOTIFY_ADDR 默认 `:8080`（全接口），
+	// pprof 本身又没有任何鉴权。现在 pprof 走**独立监听**（见 NewPprofMux，由
+	// cmd/server 按 ANOTIFY_PPROF_ADDR 启动，默认 127.0.0.1:6060）。
+	//
+	// 这条注释是有用的：有人想「顺手把 pprof 加回来」时，先读到它。
 
 	// --- 静态资源（CDN 缓存分级）---
 	mux.Handle("/", resolveStatic(cfg))

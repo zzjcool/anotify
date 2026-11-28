@@ -16,23 +16,32 @@ go run ./scripts/perf/loadgen -url .../v1/hooks/<token> -method POST \
 输出：总请求 / RPS / 状态码分布 / 失败按类别归并 / 延迟 p50-p90-p95-p99-max。
 零依赖（只用标准库），所以数字可复现、可对比。
 
-### 2. 采样：`/debug/pprof`（`ANOTIFY_PPROF=1` 打开）
+### 2. 采样：`/debug/pprof`（`ANOTIFY_PPROF=1` 打开，**独立监听** `ANOTIFY_PPROF_ADDR`）
+
+pprof 不再挂在业务端口上（#624）：`ANOTIFY_ADDR` 只跑业务 API，采样走
+`ANOTIFY_PPROF_ADDR`（默认 `127.0.0.1:6060`）。
 
 ```bash
-ANOTIFY_PPROF=1 ANOTIFY_ADDR=:7900 ANOTIFY_DB=/tmp/perf.db ./anotify &
+ANOTIFY_PPROF=1 ANOTIFY_PPROF_ADDR=127.0.0.1:6060 \
+    ANOTIFY_ADDR=:7900 ANOTIFY_DB=/tmp/perf.db ./anotify &
 
 # CPU 30s
-curl -s -o /tmp/cpu.pprof "http://127.0.0.1:7900/debug/pprof/profile?seconds=30"
+curl -s -o /tmp/cpu.pprof "http://127.0.0.1:6060/debug/pprof/profile?seconds=30"
 go tool pprof -top -nodecount=25 /tmp/cpu.pprof
 go tool pprof -list='<函数名>' /tmp/cpu.pprof
 
 # 堆 / goroutine / 锁
-curl -s -o /tmp/heap.pprof http://127.0.0.1:7900/debug/pprof/heap
-curl -s "http://127.0.0.1:7900/debug/pprof/goroutine?debug=1" | head -40
-curl -s -o /tmp/mutex.pprof http://127.0.0.1:7900/debug/pprof/mutex
+curl -s -o /tmp/heap.pprof http://127.0.0.1:6060/debug/pprof/heap
+curl -s "http://127.0.0.1:6060/debug/pprof/goroutine?debug=1" | head -40
+curl -s -o /tmp/mutex.pprof http://127.0.0.1:6060/debug/pprof/mutex
 ```
 
-默认关闭（pprof 会泄露栈与堆分布，且 CPU 采样本身有 ~5% 开销）。
+默认关闭（pprof 会泄露栈与堆分布，且 CPU 采样本身有 ~5% 开销）；`ANOTIFY_PPROF`
+只有 `1`/`true`/`yes`/`on` 才算打开（`=0`、`=false` 都是关，其它值是启动错误）。
+
+> 注意：本目录下的历史场景脚本（`3a/`、`3b/`、`b/`、`c/`）仍按「pprof 在业务端口」
+> 拼接 `$BASE/debug/pprof/...`，需要把采样 URL 改成 `http://127.0.0.1:6060/debug/pprof/...`
+> 才能拿到数据 —— 改脚本不在 #624 的改动面内。
 
 ## 三路并行时的测量纪律
 

@@ -2343,12 +2343,12 @@ func bareMountSpec() []bareMountEntry {
 		},
 		{
 			Pattern: "/debug/pprof/",
-			Reason:  "显式排除（g3c §5.5）：pprof 只在 ANOTIFY_PPROF=1 时存在，不是 API",
+			Reason:  "显式排除（g3c §5.5 / #624）：pprof 由独立监听 ANOTIFY_PPROF_ADDR（默认 127.0.0.1:6060）提供，不挂在业务 mux 上，不是 API",
 		},
-		{Pattern: "/debug/pprof/cmdline", Reason: "显式排除（g3c §5.5）：pprof"},
-		{Pattern: "/debug/pprof/profile", Reason: "显式排除（g3c §5.5）：pprof"},
-		{Pattern: "/debug/pprof/symbol", Reason: "显式排除（g3c §5.5）：pprof"},
-		{Pattern: "/debug/pprof/trace", Reason: "显式排除（g3c §5.5）：pprof"},
+		{Pattern: "/debug/pprof/cmdline", Reason: "显式排除（g3c §5.5 / #624）：pprof 独立监听，不在业务 mux 上"},
+		{Pattern: "/debug/pprof/profile", Reason: "显式排除（g3c §5.5 / #624）：pprof 独立监听，不在业务 mux 上"},
+		{Pattern: "/debug/pprof/symbol", Reason: "显式排除（g3c §5.5 / #624）：pprof 独立监听，不在业务 mux 上"},
+		{Pattern: "/debug/pprof/trace", Reason: "显式排除（g3c §5.5 / #624）：pprof 独立监听，不在业务 mux 上"},
 		{
 			Pattern: "/",
 			Reason:  "显式排除（g3c §5.5）：静态资源兜底（SPA/内嵌资产），不是 API；它接住一切未注册路径，所以不参与前缀覆盖判定",

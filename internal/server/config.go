@@ -66,7 +66,26 @@ type Config struct {
 	// 为什么要有开关而不是始终开：pprof 端点会泄露 goroutine 栈与堆分布，
 	// 生产环境不该默认暴露。评估/排障时用 ANOTIFY_PPROF=1 打开，
 	// 采样完就关（pprof 的 CPU 采样本身有 ~5% 开销）。
+	//
+	// 取值是**严格解析**的（#624）：只有 1/true/yes/on 才开，0/false/no/off 与未设置
+	// 都是关，其它值启动即失败（见 Validate）。旧实现是「非空即开」，于是 =0 / =false /
+	// =" " 全都把 pprof 打开 —— 一个想关掉它的人反而把它打开了。
 	Pprof bool
+
+	// PprofAddr 是 pprof 的**独立**监听地址（ANOTIFY_PPROF_ADDR，默认 127.0.0.1:6060）。
+	//
+	// 为什么与业务端口分离（#624）：旧实现把 /debug/pprof/* 挂在业务 mux 上，而
+	// ANOTIFY_ADDR 默认 `:8080`（全接口）——「打开开关」等于「把 goroutine 栈与堆分布
+	// 暴露到业务监听面」，且 pprof 端点没有任何鉴权。现在暴露面由本字段单独决定：
+	// 默认只绑回环，需要从别的机器采样就自己显式改成 `:6060` 或走 ssh 隧道。
+	PprofAddr string
+
+	// pprofInvalid 是 ANOTIFY_PPROF 非法时的**哨兵**（非空 = 配置非法）。
+	//
+	// 为什么要这个未导出字段而不是直接报错：FromEnv 的签名是「只读 env，不返回错误」
+	// （同 positiveIntFromEnv 的 0 哨兵），校验失败由 Validate 在进程启动时**一次说清**。
+	// 未导出 = 不影响包外 `Config{...}` 字面量（它们也不会误报，见 Validate）。
+	pprofInvalid string
 
 	// BootID 是**本次进程启动**的标识，由 /health 回显。
 	//
@@ -547,7 +566,7 @@ func cacheTTLFromEnv(key string, def time.Duration) time.Duration {
 
 // FromEnv 从环境变量加载配置。
 func FromEnv() Config {
-	return Config{
+	cfg := Config{
 		Addr:      get("ANOTIFY_ADDR", ":8080"),
 		DBPath:    get("ANOTIFY_DB", "./anotify.db"),
 		CDNPrefix: get("ANOTIFY_CDN_PREFIX", ""),
@@ -561,7 +580,7 @@ func FromEnv() Config {
 		LogLevel:   get("ANOTIFY_LOG_LEVEL", "info"),
 		LogFormat:  get("ANOTIFY_LOG_FORMAT", "json"),
 		BootID:     bootIDFromEnv(),
-		Pprof:      get("ANOTIFY_PPROF", "") != "",
+		PprofAddr:  get("ANOTIFY_PPROF_ADDR", "127.0.0.1:6060"),
 
 		// hooks 入口双维度限流（issue #245）：每 token 600/min、每 IP 1200/min 为默认。
 		HookRatePerMin:      hookRateFromEnv("ANOTIFY_HOOK_RATE_PER_MIN", defaultHookRatePerMin),
@@ -602,6 +621,28 @@ func FromEnv() Config {
 		MaxHops:         positiveIntFromEnv("ANOTIFY_MAX_HOPS", defaultMaxHops),
 		TraceTaskBudget: positiveIntFromEnv("ANOTIFY_TRACE_TASK_BUDGET", defaultTraceTaskBudget),
 	}
+	// pprof 开关（#624）要在字面量之外赋值：它有两个出口（开/关 + 非法哨兵）。
+	cfg.Pprof, cfg.pprofInvalid = pprofFromEnv()
+	return cfg
+}
+
+// pprofFromEnv 严格解析 ANOTIFY_PPROF（#624），返回「开不开」与「非法输入」（原值，非空 = 非法）。
+//
+//	未设置 / 空 / 0 / false / no / off（大小写与首尾空白不敏感）→ 关
+//	1 / true / yes / on                                    → 开
+//	其它任何值                                              → 非法（交给 Validate 启动即拒）
+//
+// 为什么要严格而不是「非空即开」：旧实现把 =0 / =false / =" " 全当开，一心想关掉 pprof
+// 的运维反而把它打开了，而 pprof 端点无鉴权、且会泄露 goroutine 栈与堆分布。
+func pprofFromEnv() (on bool, invalid string) {
+	raw := os.Getenv("ANOTIFY_PPROF")
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "0", "false", "no", "off":
+		return false, ""
+	case "1", "true", "yes", "on":
+		return true, ""
+	}
+	return false, raw
 }
 
 // positiveIntFromEnv 读一个**必须为正整数**的额度环境变量。
@@ -641,6 +682,15 @@ func bootIDFromEnv() string {
 
 // Validate 校验关键配置。
 func (c Config) Validate() error {
+	// pprof 开关（#624）：看不懂的取值**启动即拒**，不静默当关。
+	//
+	// 为什么不能静默：`ANOTIFY_PPROF=ture` 这种手误下服务能起来，运维却以为采样窗口
+	// 已打开 —— 直到发现 /debug/pprof 一直 404。带上原值才能一眼看到自己配了什么。
+	//
+	// 注意：pprofInvalid 只由 FromEnv 填，所以测试里手写的 Config{...} 字面量不会误报。
+	if c.pprofInvalid != "" {
+		return fmt.Errorf("ANOTIFY_PPROF 取值非法（当前 %q）：只接受 1/true/yes/on 或 0/false/no/off", c.pprofInvalid)
+	}
 	// 派发预算必须是正整数（契约 §2）：非法值**启动即失败**，不静默用默认。
 	// 报错带上 env 里的原值，否则运维只会看到「必须是正整数」却不知道自己配了什么。
 	for _, it := range []struct {
