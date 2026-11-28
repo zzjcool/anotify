@@ -24,6 +24,8 @@ const internalErrMsg = "服务内部错误，请带上 requestId 联系管理员
 
 const requestIDHeader = "X-Request-Id"
 
+// logInternal 记一条 500 的原始错误。request_id 从**响应头**回读而不是 r.Context()：
+// writeAPIError 的签名里没有 *http.Request，而 accessLog 进 handler 前已把它写进响应头。
 func logInternal(w http.ResponseWriter, err error) {
 	slog.Error("internal error",
 		"event", "server.internal_error",
@@ -41,8 +43,6 @@ func readJSON(r *http.Request, v any) error {
 	return json.NewDecoder(r.Body).Decode(v)
 }
 
-// ---------- Keys ----------
-
 type keysHandler struct {
 	keys *auth.KeyManager
 	db   *store.DB
@@ -55,7 +55,6 @@ type keyCreateReq struct {
 
 func (h *keysHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/keys"), "/")
-	// /v1/keys/{id}/revoke
 	if rest != "" && strings.HasSuffix(rest, "/revoke") {
 		id := strings.TrimSuffix(rest, "/revoke")
 		id = strings.Trim(id, "/")
