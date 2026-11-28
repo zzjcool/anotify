@@ -7,16 +7,17 @@
  * 打印矩阵；任一 REQUIRED 项低于阈值 → process.exit(1)。
  *
  * 用法：
- *   node scripts/check-contrast.mjs            # 门禁
- *   node scripts/check-contrast.mjs --verbose  # 额外打印参考配对（不参与判定）
- *
+ *   node scripts/check-contrast.mjs              # 门禁：tokens 矩阵 + 页面私有样式
+ *   node scripts/check-contrast.mjs --verbose    # 额外打印参考配对（不参与判定）
+ *   node scripts/check-contrast.mjs --self-test  # 本守卫的红/绿自证（纯内存，不读盘）
  * 约定：
- * - 只读 tokens.css，不校验页面；改 token 后必须跑本脚本。
- * - 半透明色（--*-soft / --line / color-mix(… transparent)）一律先与所在底色
- *   合成（alpha compositing）再算对比度，这是浏览器实际渲染的像素。
+ * - 除 tokens.css 的双主题判定外，还扫 web-src/pages/*.html 的 <style> 块（#588 D8）：页面私有样式
+ *   拿状态原色（--success/--warn/--error/--info）当 color 判红 —— 亮色对任何 surface 都 < 4.5:1；
+ *   改 token 或页面样式后都要重跑本脚本。
+ * - 半透明色（--*-soft / --line / color-mix(… transparent)）先与所在底色合成再算对比度（浏览器实际像素）。
  * ============================================================ */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -157,10 +158,7 @@ const hex = (rgb) => "#" + rgb.map((c) => c.toString(16).padStart(2, "0")).join(
 
 /* ---------- 配对定义 ---------- */
 
-/**
- * 每项：{ id, theme, label, fg, bg, min }
- * fg/bg 是 (t) => rgb；t 是 theme() 返回的封装。
- */
+/** 每项：{ id, theme, label, fg, bg, min }；fg/bg 是 (t) => rgb，t 是 theme() 返回的封装。 */
 function buildCases(dark, light) {
 	const PILLS = [
 		// [语义, 文字色 token, 底色 token]
@@ -386,6 +384,155 @@ function referenceCases(dark, light) {
 	return refs;
 }
 
+/* ---------- 页面私有样式（#588 D8）：状态原色当前景 ---------- */
+
+const PAGE_DIR = resolvePath(HERE, "..", "web-src", "pages"); // 真源不是生成物 web/*.html：make fe 里本脚本早于 sitegen，读产物会读到陈旧输出
+const STYLE_TAG = /<style\b[^>]*>([\s\S]*?)<\/style>/gi;
+const STATUS_COLOR = /^var\(\s*--(success|warn|error|info)\s*(?:,[\s\S]*)?\)$/i;
+
+function lineAt(text, index) { // 1 基行号（index 之前的 `\n` 个数 + 1）
+	let n = 1;
+	for (let i = 0; i < index; i++) if (text.charCodeAt(i) === 10) n++;
+	return n;
+}
+
+function styleBlocks(html) { // html → [{ css（已去注释、保留换行）, line（块内第 1 行在 html 里的行号） }]
+	const out = [];
+	let m;
+	STYLE_TAG.lastIndex = 0;
+	while ((m = STYLE_TAG.exec(html))) {
+		const start = m.index + m[0].indexOf(">") + 1; // 只留 `<style ...>` 与 `</style>` 之间的内容
+		out.push({ css: stripComments(m[1]), line: lineAt(html, start) });
+	}
+	return out;
+}
+
+function ruleBlocks(css) { // 切 selector { decls }；at-rule（@media/@keyframes）只当容器透传，里面的规则照样收
+	const blocks = [];
+	const stack = [];
+	let line = 1;
+	let start = -1;
+	let startLine = 0;
+	const flush = (end) => { // 一条 `prop: value`；挂到最近的规则块（at-rule 容器上的裸声明不收）
+		const top = stack[stack.length - 1];
+		const from = start;
+		const at = startLine;
+		start = -1;
+		if (!top || top.atRule || from < 0) return;
+		const raw = css.slice(from, end);
+		const sep = raw.indexOf(":");
+		if (sep <= 0) return;
+		const prop = raw.slice(0, sep).trim().toLowerCase();
+		if (!/^-{0,2}[a-z][-a-z0-9]*$/.test(prop)) return; // `--x:` 自定义属性也进 decls：选 `color` 时天然不会被挑中
+		top.decls.push({ prop, value: raw.slice(sep + 1).trim(), line: at });
+	};
+	for (let i = 0; i < css.length; i++) {
+		const ch = css[i];
+		if (ch === "\n") {
+			line++;
+			continue;
+		}
+		if (ch === ";") {
+			flush(i);
+			continue;
+		}
+		if (ch === "}") {
+			flush(i);
+			stack.pop();
+			continue;
+		}
+		if (ch === "{") {
+			const prelude = start < 0 ? "" : css.slice(start, i).replace(/\s+/g, " ").trim();
+			const block = { selector: prelude, atRule: prelude.startsWith("@"), decls: [] };
+			stack.push(block);
+			if (!block.atRule) blocks.push(block);
+			start = -1;
+			continue;
+		}
+		if (start < 0) {
+			if (/\s/.test(ch)) continue;
+			start = i;
+			startLine = line;
+		}
+	}
+	return blocks;
+}
+
+function sameFamilyBackdrop(value, family) { // 同族淡底：`--<族>-soft`，或 color-mix 里拿本族本色兑透明
+	if (new RegExp(`\\(\\s*--${family}-soft\\b`).test(value)) return true;
+	if (!/color-mix\(/i.test(value)) return false;
+	return new RegExp(`\\(\\s*--${family}\\s*[,)]`).test(value);
+}
+
+function pageStyleViolations(css) { // 规则 A（同族软底 + 状态原色前景）/ 规则 B（--success 无条件）；一个规则块最多报一条
+	const out = [];
+	for (const block of ruleBlocks(css)) {
+		const bgs = block.decls.filter((d) => d.prop === "background" || d.prop === "background-color");
+		for (const decl of block.decls) {
+			if (decl.prop !== "color") continue; // border-color / --x: 因为 prop 名不等于 color 而天然排除
+			const m = STATUS_COLOR.exec(decl.value);
+			if (!m) continue;
+			const family = m[1].toLowerCase();
+			const soft = bgs.find((b) => sameFamilyBackdrop(b.value, family));
+			if (soft) {
+				out.push({ rule: "A", selector: block.selector, line: decl.line, color: decl.value, background: soft.value });
+				break; // A 命中就不再落 B
+			}
+			if (family === "success") { // #059669 对任何 surface 都只有 3.25–3.77:1，与底色无关
+				out.push({ rule: "B", selector: block.selector, line: decl.line, color: decl.value, background: "（无同族底）" });
+				break;
+			}
+		}
+	}
+	return out;
+}
+
+/* ---------- 自测：证明「错的判红、对的判绿」（纯内存，不读盘） ---------- */
+function selfTest() {
+	const cases = [
+		["A/success：状态原色前景 + 同族 --success-soft 底", ".a { color: var(--success); background: var(--success-soft); }", ["A@1 .a"]],
+		["A/warn：background-color 同族软底", ".b { color: var(--warn); background-color: var(--warn-soft); }", ["A@1 .b"]],
+		["A/error：多行格式仍保行号", ".c {\n  color: var(--error);\n  background: var(--error-soft);\n}", ["A@2 .c"]],
+		["A/info：--info 对同族淡底", ".d { color: var(--info); background: var(--info-soft); }", ["A@1 .d"]],
+		[
+			"A/color-mix 同族淡底",
+			".e { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }",
+			["A@1 .e"],
+		],
+		["绿/--pill-*-fg 当前景（同族软底）", ".f { color: var(--pill-warn-fg); background: var(--warn-soft); }", []],
+		["绿/--pill-*-fg 当前景（无底）", ".g { color: var(--pill-success-fg); }", []],
+		["绿/bare --warn（暗色可读，无同族底）", ".h { color: var(--warn); }", []],
+		["红/bare --success（规则 B 无条件）", ".i { color: var(--success); }", ["B@1 .i"]],
+		["绿/只有 border-color", ".j { border-color: var(--success); }", []],
+		["绿/--muted 当前景（即便同族软底）", ".k { color: var(--muted); background: var(--success-soft); }", []],
+		["绿/--xxx: 自定义属性行不算 color", ".l { --warn: var(--warn); color: var(--text); background: var(--warn-soft); }", []],
+		["绿/异族底不误报", ".m { color: var(--warn); background: var(--success-soft); }", []],
+		["一个规则块只报一条（A 命中后不再落 B）", ".n { color: var(--warn); color: var(--success); background: var(--warn-soft); }", ["A@1 .n"]],
+		[
+			"一行/多行格式结果一致（同规则同判定，只有行号随格式走）",
+			".o { color: var(--error); background: var(--error-soft); }\n.p {\n  color: var(--error);\n  background: var(--error-soft);\n}",
+			["A@1 .o", "A@3 .p"],
+		],
+	];
+	let failed = 0;
+	for (const [name, css, want] of cases) {
+		const got = pageStyleViolations(css).map((v) => `${v.rule}@${v.line} ${v.selector}`);
+		if (JSON.stringify(got) !== JSON.stringify(want)) {
+			failed++;
+			console.error(`  ❌ ${name}\n     期望 [${want.join(" | ") || "无违规"}]，实际 [${got.join(" | ") || "无违规"}]`);
+		} else {
+			console.log(`  ✅ ${name}`);
+		}
+	}
+	const ok = failed === 0;
+	console.log(
+		ok ? `✔ check-contrast self-test: ${cases.length}/${cases.length}` : `✗ check-contrast self-test: ${cases.length - failed}/${cases.length}`,
+	);
+	return ok;
+}
+
+if (process.argv.includes("--self-test")) process.exit(selfTest() ? 0 : 1); // 放在读盘之前：自测只证明判据本身会红会绿
+
 /* ---------- 主流程 ---------- */
 
 const css = stripComments(readFileSync(TOKENS, "utf8"));
@@ -456,3 +603,34 @@ if (failed.length) {
 	process.exit(1);
 }
 console.log("✔ 全部通过与 #370 / #371 的验收阈值\n");
+
+let pages;
+try {
+	pages = readdirSync(PAGE_DIR).filter((f) => f.endsWith(".html")).sort();
+} catch (e) {
+	console.error(`✖ 读不到 ${PAGE_DIR}：${e.message}`);
+	process.exit(2);
+}
+if (pages.length === 0) {
+	console.error(`✖ ${PAGE_DIR} 下一个 .html 都没扫到 —— 环境问题，不是通过`);
+	process.exit(2);
+}
+const privateStyle = [];
+for (const name of pages) {
+	const html = readFileSync(resolvePath(PAGE_DIR, name), "utf8");
+	for (const block of styleBlocks(html)) {
+		for (const v of pageStyleViolations(block.css)) {
+			privateStyle.push({ ...v, file: `web-src/pages/${name}`, line: v.line + block.line - 1 });
+		}
+	}
+}
+if (privateStyle.length === 0) {
+	console.log(`✔ 页面私有样式未拿状态原色当前景（web-src/pages/*.html 共 ${pages.length} 页）\n`);
+} else {
+	console.error("✖ 页面私有样式用状态原色当前景（亮色达不到 4.5:1）");
+	for (const v of privateStyle) {
+		console.error(`  - ${v.file}:${v.line} ${v.selector} → color: ${v.color} / background: ${v.background}`);
+	}
+	console.error(`  共 ${privateStyle.length} 条；改用 --pill-*-fg（--info → --accent-strong），见 docs/contracts/v4/CONTRACT.md\n`);
+	process.exit(1);
+}
