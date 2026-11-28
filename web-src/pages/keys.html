@@ -691,24 +691,7 @@
       let KEYS_MORE = false;
       let KEYS_QUERY = "";
 
-      function fmtTime(ts) {
-        if (!ts) return t("common.time.never", "从未使用");
-        const d = new Date(ts * 1000 || ts);
-        if (isNaN(d.getTime())) return String(ts);
-        const diff = Date.now() - d.getTime();
-        if (diff < 60e3) return t("common.time.just_now", "刚刚");
-        if (diff < 3600e3)
-          return t("common.time.minutes_ago", "{n} 分钟前").replace(
-            "{n}",
-            Math.floor(diff / 60e3),
-          );
-        if (diff < 86400e3)
-          return t("common.time.hours_ago", "{n} 小时前").replace(
-            "{n}",
-            Math.floor(diff / 3600e3),
-          );
-        return d.toISOString().slice(0, 10);
-      }
+      const fmt = window.Anotify.fmt; // 展示层唯一时间实现；模型里存原始时间（不存显示串）
 
       // 401 委托给 Anotify.api（内置路由守卫会跳登录页）；
       // 其他失败记下原因，由 renderKeys 渲染「载入失败 + 重试」——不伪造数据（#273）。
@@ -754,19 +737,9 @@
           name: k.name || t("keys.unnamed", "未命名"),
           prefix: k.prefix || "ant_????",
           scopes: k.scopes || [],
-          lastUsed: fmtTime(k.lastUsedAt || k.last_used_at),
+          lastUsedAt: k.lastUsedAt || k.last_used_at || null,
           enabled: k.enabled !== false && k.enabled !== 0,
-          created:
-            k.createdAt || k.created_at
-              ? new Date(
-                  (k.createdAt || k.created_at) *
-                    (typeof (k.createdAt || k.created_at) === "number"
-                      ? 1000
-                      : 1),
-                )
-                  .toISOString()
-                  .slice(0, 10)
-              : "",
+          createdAt: k.createdAt || k.created_at || null,
         };
       }
 
@@ -845,6 +818,11 @@
         });
       }
 
+      function stampSentence(key, fallback, value) { // 「创建于 {date}」：{date} 换成 <time>，语序不动
+        const parts = t(key, fallback).split("{date}");
+        return el("span", {}, parts[0], fmt.time(value, { mode: "date" }), parts[1] || "");
+      }
+
       function keyRow(k) {
         return el(
           "tr",
@@ -856,10 +834,9 @@
               el("span", { "data-raw-content": "", text: k.name })),
             el("div", {
               class: "kx-cell-sub",
-              text: k.created
-                ? t("keys.created_at", "创建于 {date}").replace("{date}", k.created)
-                : "",
-            }),
+            }, k.createdAt
+              ? stampSentence("keys.created_at", "创建于 {date}", k.createdAt)
+              : null),
           ),
           el(
             "td",
@@ -874,7 +851,8 @@
           el(
             "td",
             { class: "num", "data-label": t("keys.col.last_used", "最近使用") },
-            el("span", { class: "kx-cell-time", text: k.lastUsed }),
+            el("span", { class: "kx-cell-time" },
+              fmt.time(k.lastUsedAt, { empty: t("common.time.never", "从未使用") })),
           ),
           el(
             "td",

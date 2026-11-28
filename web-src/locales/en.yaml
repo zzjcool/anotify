@@ -114,11 +114,13 @@ common:
     login_copyright: © 2026 Anotify · MIT License · Passkey-only
   time:
     just_now: just now
-    minutes_ago: '{n} min ago'
-    hours_ago: '{n} h ago'
-    days_ago: '{n} d ago'
     never: Never used
-    weeks_ago: '{n} w ago'
+    tz_hint: '(local time {tz})'
+    unparsable: Unparsable time
+    field:
+      created: Created
+      started: Started
+      finished: Finished
   ttl:
     day: '{n} d'
     hour: '{n} h'
@@ -350,6 +352,7 @@ message:
     current: Current
   v4:
     diagnostics: "Execution diagnostics"
+    elapsed_ms: "Took {ms} ms"
     attempt: "Attempt / maximum"
     cancel: "Cancel task"
     abandon: "Abandon task"

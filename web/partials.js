@@ -2873,28 +2873,154 @@
 		return "other";
 	}
 
-	function timeAgo(isoOrSec) {
-		if (!isoOrSec) return "—";
-		/* NOTE: local must not be named `t` — it would shadow the i18n t(). */
-		const ts =
-			typeof isoOrSec === "number" ? isoOrSec * 1000 : Date.parse(isoOrSec);
-		if (Number.isNaN(ts)) return "—";
-		const diff = Date.now() - ts;
-		if (diff < 60e3) return t("common.time.just_now", "刚刚");
-		if (diff < 3600e3)
-			return t("common.time.minutes_ago", "{n} 分钟前").replace(
-				"{n}",
-				Math.floor(diff / 60e3),
-			);
-		if (diff < 86400e3)
-			return t("common.time.hours_ago", "{n} 小时前").replace(
-				"{n}",
-				Math.floor(diff / 3600e3),
-			);
-		return t("common.time.days_ago", "{n} 天前").replace(
-			"{n}",
-			Math.floor(diff / 86400e3),
+	/* 时间格式化：全站唯一实现（#604）—— 列表走相对、详情走本地绝对、日期取本地、节点带 datetime/title */
+	const MS_THRESHOLD = 1e11; // 秒 vs 毫秒：本仓 API 给秒，1e11 秒 = 5138 年，两个方向都不误判
+	const RELATIVE_MAX_MS = 7 * 86400e3; // 相对时间上限：超过 7 天只说日期，「37 天前」既不准也没人读
+
+	function pad2(n) {
+		return (n < 10 ? "0" : "") + n;
+	}
+
+	function pageLang() { // 页面语言（<html lang>，用户主动选的），不是浏览器语言
+		const root = typeof document === "undefined" ? null : document.documentElement;
+		const lang = root && root.lang ? String(root.lang).trim() : "";
+		return lang || "zh-CN";
+	}
+
+	function timeMs(value) { // 归一化到毫秒；解析不出来给 NaN（调用方原样显示，不静默吞掉）
+		if (value == null || value === "") return NaN;
+		if (Object.prototype.toString.call(value) === "[object Date]")
+			return value.getTime();
+		if (typeof value === "number")
+			return Math.abs(value) >= MS_THRESHOLD ? value : value * 1000;
+		return Date.parse(String(value));
+	}
+
+	function localParts(ms) {
+		const d = new Date(ms);
+		return {
+			y: d.getFullYear(),
+			mo: pad2(d.getMonth() + 1),
+			d: pad2(d.getDate()),
+			h: pad2(d.getHours()),
+			mi: pad2(d.getMinutes()),
+			s: pad2(d.getSeconds()),
+		};
+	}
+
+	function localAbsolute(ms) { // 不调 toLocaleString：那是**浏览器** locale 的格式，/en/ + 中文浏览器会漂
+		const p = localParts(ms);
+		return p.y + "-" + p.mo + "-" + p.d + " " + p.h + ":" + p.mi + ":" + p.s;
+	}
+
+	function localDate(ms) { // 本地时区取年月日：切 ISO 串取的是 UTC 的日期（东八区早上 8 点前差一天）
+		const p = localParts(ms);
+		return p.y + "-" + p.mo + "-" + p.d;
+	}
+
+	function tzLabel(ms) { // 偏移按**那个时刻**算（夏令时不同），输出 UTC+08:00 这种固定宽度
+		const off = -new Date(ms).getTimezoneOffset();
+		const abs = Math.abs(off);
+		return (
+			"UTC" +
+			(off < 0 ? "-" : "+") +
+			pad2(Math.floor(abs / 60)) +
+			":" +
+			pad2(abs % 60)
 		);
+	}
+
+	function isoUtc(ms) {
+		return new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+	}
+
+	function timeTitle(ms) { // 悬停的一句话：本地时间 + 时区 + UTC 原文
+		const hint = t("common.time.tz_hint", "（本地时间 {tz}）").replace(
+			"{tz}",
+			tzLabel(ms),
+		);
+		return localAbsolute(ms) + " " + hint + " · " + isoUtc(ms);
+	}
+
+	let RELATIVE_FMT = null;
+	function relativeFormat() {
+		const lang = pageLang();
+		if (RELATIVE_FMT && RELATIVE_FMT.lang === lang) return RELATIVE_FMT.fmt;
+		let fmt;
+		try {
+			fmt = new Intl.RelativeTimeFormat(lang, { numeric: "auto" }); // 单复数与未来时态由它给
+		} catch (e) {
+			fmt = new Intl.RelativeTimeFormat("en", { numeric: "auto" }); // 老浏览器：退回英文，不炸整页
+		}
+		RELATIVE_FMT = { lang, fmt };
+		return fmt;
+	}
+
+	function relativeText(ms) {
+		const diff = Date.now() - ms; // >0 = 过去，<0 = 未来
+		if (Math.abs(diff) < 60e3) return t("common.time.just_now", "刚刚");
+		if (diff > RELATIVE_MAX_MS) return localDate(ms);
+		const rtf = relativeFormat();
+		const abs = Math.abs(diff);
+		if (abs < 3600e3) return rtf.format(Math.round(-diff / 60e3), "minute");
+		if (abs < 86400e3) return rtf.format(Math.round(-diff / 3600e3), "hour");
+		return rtf.format(Math.round(-diff / 86400e3), "day");
+	}
+
+	function timeNode(value, opts) { // mode: relative（列表，默认）| absolute（详情字段）| date（只要日期）
+		const o = opts || {};
+		const empty = o.empty == null ? "—" : o.empty;
+		const cls = o.class ? { class: o.class } : null;
+		if (value == null || value === "") return el("span", Object.assign({ text: empty }, cls || {}));
+		const ms = timeMs(value);
+		if (Number.isNaN(ms))
+			return el(
+				"span",
+				Object.assign(
+					{
+						title: t("common.time.unparsable", "无法解析的时间"),
+						text: String(value),
+					},
+					cls || {},
+				),
+			);
+		const node = el("time", cls);
+		node.setAttribute("datetime", isoUtc(ms));
+		node.setAttribute("title", timeTitle(ms));
+		node.textContent =
+			o.mode === "date"
+				? localDate(ms)
+				: o.mode === "absolute"
+					? localAbsolute(ms)
+					: relativeText(ms);
+		return node;
+	}
+
+	function timeText(value, mode, empty) { // 字符串形态给 i18n 句子；能收节点的位置用 fmt.time
+		if (value == null || value === "") return empty == null ? "—" : empty;
+		const ms = timeMs(value);
+		if (Number.isNaN(ms)) return String(value);
+		if (mode === "date") return localDate(ms);
+		if (mode === "relative") return relativeText(ms);
+		return localAbsolute(ms);
+	}
+
+	const fmt = {
+		time: timeNode,
+		text: timeText,
+		date: (value) => timeText(value, "date"),
+		absolute: (value) => timeText(value, "absolute"),
+		relative: (value) => timeText(value, "relative"),
+		title: (value) => {
+			const ms = timeMs(value);
+			return Number.isNaN(ms) ? "" : timeTitle(ms);
+		},
+		ms: timeMs,
+		tz: tzLabel,
+	};
+
+	function timeAgo(isoOrSec) { // 旧名字：调用点太多，语义没变（相对时间）
+		return timeText(isoOrSec, "relative");
 	}
 
 	/* ---------- 下拉刷新（触屏 / standalone PWA 公共能力） ----------
@@ -4997,6 +5123,7 @@
 		PLATFORM_META,
 		detectPlatform,
 		timeAgo,
+		fmt,
 		loadMe,
 		logout,
 		mountLoginLangSwitcher,

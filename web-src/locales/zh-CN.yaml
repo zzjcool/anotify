@@ -114,11 +114,13 @@ common:
     login_copyright: © 2026 Anotify · MIT License · Passkey 免密
   time:
     just_now: 刚刚
-    minutes_ago: '{n} 分钟前'
-    hours_ago: '{n} 小时前'
-    days_ago: '{n} 天前'
     never: 从未使用
-    weeks_ago: '{n} 周前'
+    tz_hint: '（本地时间 {tz}）'
+    unparsable: 无法解析的时间
+    field:
+      created: 创建
+      started: 开始
+      finished: 结束
   ttl:
     day: '{n} 天'
     hour: '{n} 小时'
@@ -350,6 +352,7 @@ message:
     current: 当前
   v4:
     diagnostics: "执行诊断"
+    elapsed_ms: "耗时 {ms} ms"
     attempt: "尝试 / 上限"
     cancel: "取消任务"
     abandon: "放弃任务"

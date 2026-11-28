@@ -6822,3 +6822,59 @@ test('TRACE-ARCHIVE: observer preserves original return Promise, this, arguments
 /* #454 的三个「表单→YAML 草稿」用例已删除：唯一写入口改成 YAML 后，表单序列化路径不复存在，
    这三条测的机制已被设计移除（不是放宽断言）。新路径由 F2c2 的 YAML 保存断言覆盖。 */
 
+
+
+test("#604 fmt.time：落成 <time datetime title>，datetime 归一化、title 带时区与 UTC 原文", () => {
+	const { A } = loadAnotify();
+	const iso = "2026-11-24T22:15:16Z";
+	const node = A.fmt.time(iso, { mode: "absolute" });
+	assert.equal(node.tagName, "TIME", "能解析的时间必须是 <time>（悬停才拿得到完整信息）");
+	assert.equal(node.getAttribute("datetime"), iso, "datetime 用归一化 ISO（去掉毫秒）");
+	assert.match(node.textContent, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/, "字段口径：本地绝对时间，24h 补零");
+	assert.equal(A.fmt.time(iso).tagName, "TIME", "默认 mode 是 relative（列表口径）");
+	assert.match(A.fmt.time(iso).textContent, /前|ago/, "默认模式给相对时间");
+	assert.equal(node.textContent, A.fmt.absolute(iso), "节点文本与 fmt.absolute 必须同一套规则");
+	const title = node.getAttribute("title");
+	assert.ok(title.startsWith(node.textContent), "title 以本地时间开头：" + title);
+	assert.ok(title.includes(iso), "title 必须带 UTC 原文：" + title);
+	assert.match(title, /UTC[+-]\d{2}:\d{2}/, "title 必须带时区偏移：" + title);
+});
+
+test("#604 fmt：绝对时间/日期不跟页面语言漂移，相对时间才跟", () => {
+	const { A, sandbox } = loadAnotify();
+	const iso = "2026-11-24T22:15:16Z";
+	const ago = Date.now() - 3 * 3600e3;
+	sandbox.document.documentElement.lang = "zh-CN";
+	const zh = { abs: A.fmt.absolute(iso), date: A.fmt.date(iso), rel: A.fmt.relative(ago) };
+	sandbox.document.documentElement.lang = "en";
+	const en = { abs: A.fmt.absolute(iso), date: A.fmt.date(iso), rel: A.fmt.relative(ago) };
+	assert.equal(en.abs, zh.abs, "英文页的绝对时间必须是同一串字符：旧实现走 toLocaleString()，跟的是**浏览器** locale");
+	assert.equal(en.date, zh.date);
+	assert.match(zh.rel, /3\s*小时前/, "中文页相对时间：" + zh.rel);
+	assert.match(en.rel, /3 hours ago/, "英文页是完整句式，不是 `3 h ago` 缩写：" + en.rel);
+});
+
+test("#604 fmt.relative：7 天内说相对，超过 7 天退成本地日期，未来时间也说相对", () => {
+	const { A } = loadAnotify();
+	const now = Date.now();
+	assert.equal(A.fmt.relative(now - 30e3), "刚刚");
+	assert.match(A.fmt.relative(now - 90e3), /分钟前|minute/, "1 分半前不能说成日期");
+	const old = now - 40 * 86400e3;
+	assert.equal(A.fmt.relative(old), A.fmt.date(old), "超过 7 天收敛成本地日期（「37 天前」没人读）");
+	assert.notEqual(A.fmt.relative(now + 2 * 86400e3), A.fmt.date(now + 2 * 86400e3), "未来时间（下次触发）也要说相对");
+});
+
+test("#604 fmt：unix 秒与毫秒归一到同一时刻，空值/非法值不编造", () => {
+	const { A } = loadAnotify();
+	assert.equal(A.fmt.ms(1750000000), A.fmt.ms(1750000000000), "各页混着传秒和毫秒，必须归一");
+	assert.equal(
+		A.fmt.time(1750000000).getAttribute("datetime"),
+		A.fmt.time(1750000000000).getAttribute("datetime"),
+	);
+	assert.equal(A.fmt.time(null).textContent, "—");
+	assert.equal(A.fmt.time("", { empty: "从未使用" }).textContent, "从未使用", "空值文案可由调用页覆盖");
+	const bad = A.fmt.time("not-a-time");
+	assert.equal(bad.textContent, "not-a-time", "非法串原样显示，不吞掉");
+	assert.equal(bad.getAttribute("datetime"), null, "解析不出来就不能编一个 datetime");
+	assert.ok((bad.getAttribute("title") || "").length > 0, "非法串要有解释性 title");
+});

@@ -389,7 +389,7 @@ document.addEventListener("transitionend",event=>{
   if(target instanceof Element && target.closest(".act-menu"))return;
   scheduleReflow();
 },true);
-const fmt = value => value ? new Date(value).toLocaleString() : "—";
+const fmt = value => A.fmt.text(value, "relative"); // 列表口径相对时间；本页 el() 只收文本
 const json = (box, optional=false) => {
   const raw=box.value.trim();
   if(!raw)return optional ? undefined : {

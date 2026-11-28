@@ -224,9 +224,12 @@
     let revision = 0;
     const terminal = new Set(["succeeded", "failed", "cancelled", "abandoned"]);
 
+    // value 可以是节点：时间字段传 <time datetime title>，只有节点才能带悬停信息
     function field(label, value) {
-      return el("div", {}, el("dt", { class: "card-sub", text: label }),
-        el("dd", { class: "mono b2-wrap", text: String(value) }));
+      const dd = el("dd", { class: "mono b2-wrap" });
+      if (value && value.nodeType) dd.append(value);
+      else dd.textContent = String(value);
+      return el("div", {}, el("dt", { class: "card-sub", text: label }), dd);
     }
     /* #379：参数值是**用户数据**（能力自己的 params），不是界面文案。
        按仓里既有约定用 data-raw-content 的纯文本 SPAN 标出来，多语言
@@ -483,10 +486,29 @@
         ["nodeName", task.nodeName],
         ["leaseExpiresAt", task.leaseExpiresAt],
         ["parentTaskId", task.parentTaskId],
-        ["createdAt", task.creationTimestamp],
-        ["startedAt", task.startedAt],
-        ["finishedAt", task.finishedAt],
       ];
+      const TIME_FIELD = { // 显示名 + i18n key 成对：key 写死，别拼字符串
+        created: ["common.time.field.created", "创建"],
+        started: ["common.time.field.started", "开始"],
+        finished: ["common.time.field.finished", "结束"],
+      };
+      const timeEntries = [
+        ["created", task.creationTimestamp, true],
+        ["started", task.startedAt, false],
+        ["finished", task.finishedAt, false],
+      ];
+      const timeField = (key, value, withRelative) => {
+        const box = el("span", {});
+        box.append(A.fmt.time(value, { mode: "absolute" }));
+        if (withRelative) box.append(" · ", A.fmt.time(value, { mode: "relative" }));
+        if (key === "finished" && task.startedAt) { // 耗时（wireframe「结束 … · 耗时 0 ms」）
+          const spent = Date.parse(value) - Date.parse(task.startedAt);
+          if (Number.isFinite(spent) && spent >= 0)
+            box.append(" · ", t("message.v4.elapsed_ms", "耗时 {ms} ms").replace("{ms}", String(Math.round(spent))));
+        }
+        return box;
+      };
+      const timeLabel = (key) => t(TIME_FIELD[key][0], TIME_FIELD[key][1]);
       /* #374：configRevision / namespaceVarsRevision / capability.digest / instanceId
          是协议内部字段（sha256 摘要、nins_* 实例号），移到开发者信息折叠；
          首屏只留人能直接用的等待/尝试/时间线。 */
@@ -494,9 +516,22 @@
         ["configRevision", task.configRevision],
         ["namespaceVarsRevision", task.namespaceVarsRevision],
         ["capability.digest", task.capability.digest],
+        // #604 规则 5：原始 ISO 只活在开发者信息里
+        ["createdAt", task.creationTimestamp],
+        ["startedAt", task.startedAt],
+        ["finishedAt", task.finishedAt],
       ];
-      const filled = entries.filter(([, value]) => value != null && value !== "");
-      const unset = entries.filter(([, value]) => value == null || value === "").map(([label]) => label);
+      const filled = entries
+        .filter(([, value]) => value != null && value !== "")
+        .concat(
+          timeEntries
+            .filter(([, value]) => value != null && value !== "")
+            .map(([key, value, withRelative]) => [timeLabel(key), timeField(key, value, withRelative)]),
+        );
+      const unset = entries
+        .filter(([, value]) => value == null || value === "")
+        .map(([label]) => label)
+        .concat(timeEntries.filter(([, value]) => value == null || value === "").map(([key]) => timeLabel(key)));
       /* #379：相位徽章只说当前语言的一种话。原始协议 token 不丢：它仍在
          data-phase（机器读）、title 与 aria-label（读屏/悬停）里。 */
       const phaseLabel = t("message.v4.phase." + task.phase);

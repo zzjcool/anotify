@@ -130,11 +130,15 @@
       const text = String(digest || "");
       return (text.startsWith("sha256:") ? text.slice("sha256:".length) : text).slice(0, 12);
     }
-    function fmtTime(iso) {
-      if (!iso) return "—";
-      const at = new Date(iso);
-      if (Number.isNaN(at.getTime())) return String(iso);
-      try { return at.toLocaleString(); } catch (e) { return String(iso); }
+    const fmtText = (value) => Anotify.fmt.text(value, "absolute"); // title 属性只能收字符串
+    function stampHint(tag, cls, key, value) {
+      const parts = t(key).split("{at}");
+      const box = el(tag, cls);
+      box.append(parts[0]);
+      if (parts.length === 1) box.append(" "); // 句子本身没有占位符（如 installed_at）
+      box.append(Anotify.fmt.time(value, { mode: "absolute" }));
+      if (parts[1]) box.append(parts[1]);
+      return box;
     }
     function facts(group) {
       const host = $("rd-summary");
@@ -156,7 +160,7 @@
       const paramRow = el("span", "rd-object");
       paramRow.append(digest, copy);
       add("params", paramRow);
-      add("installed", el("span", null, t("release.installed_at") + " " + fmtTime(group.installedAt)));
+      add("installed", stampHint("span", null, "release.installed_at", group.installedAt));
       add("install", el("span", "mono field-hint", group.lastInstallId || "—"));
     }
     function objectRow(kind, object) {
@@ -182,7 +186,7 @@
       const host = $("rd-objects");
       host.replaceChildren();
       if (detail.objectsGone) {
-        host.append(el("p", "field-hint", t("release.objects_gone", { at: fmtTime(detail.uninstalledAt) })));
+        host.append(stampHint("p", "field-hint", "release.objects_gone", detail.uninstalledAt));
         return;
       }
       const caps = group.objects.capabilities || [];
@@ -216,7 +220,7 @@
         button.title = [
           t("release.group_current", { n: String(index + 1) }),
           t("release.attempts", { n: String(group.attempts) }),
-          fmtTime(group.installedAt),
+          fmtText(group.installedAt),
         ].join(" · ");
         if (group.valuesDigest === current().valuesDigest) button.className = "btn btn-sm";
         button.addEventListener("click", () => select(group.valuesDigest));
@@ -306,7 +310,7 @@
       const box = el("div", "rd-check");
       box.id = "rd-notice";
       box.dataset.uninstalledNotice = "";
-      box.append(el("p", "field-hint", t("release.uninstalled_notice", { at: fmtTime(detail.uninstalledAt) })));
+      box.append(stampHint("p", "field-hint", "release.uninstalled_notice", detail.uninstalledAt));
       if (!pinnedRefs().length) box.append(el("p", "field-hint", t("release.restore_no_snapshot")));
       $("rd-summary").before(box);
     }

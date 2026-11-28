@@ -585,10 +585,7 @@
     const { api, t, el } = Anotify;
     const fmtNum = (n) => (n == null ? "–" : Number(n).toLocaleString());
 
-    function fmtTime(unix) {
-      if (!unix) return "—";
-      return Anotify.timeAgo(new Date(unix * 1000));
-    }
+    const fmtTime = (value) => Anotify.fmt.time(value); // unix 秒；秒/毫秒在共享实现里归一化
 
     function setText(id, text) {
       const node = document.getElementById(id);
@@ -858,7 +855,7 @@
         el(
           "td",
           { class: "ad-nowrap", "data-label": t("admin.users.created", "注册时间") },
-          el("span", { class: "ad-cell-meta", text: fmtTime(u.createdAt) }),
+          el("span", { class: "ad-cell-meta" }, fmtTime(u.createdAt)),
         ),
       );
 
@@ -1058,10 +1055,7 @@
               el(
                 "td",
                 { class: "ad-nowrap" },
-                el("span", {
-                  class: "ad-cell-meta",
-                  text: fmtTime(e.createdAt),
-                }),
+                el("span", { class: "ad-cell-meta" }, fmtTime(e.createdAt)),
               ),
             );
           }),
@@ -1107,18 +1101,12 @@
               el(
                 "td",
                 { class: "ad-nowrap" },
-                el("span", {
-                  class: "ad-cell-meta",
-                  text: fmtTime(s.lastSeen),
-                }),
+                el("span", { class: "ad-cell-meta" }, fmtTime(s.lastSeen)),
               ),
               el(
                 "td",
                 { class: "ad-nowrap" },
-                el("span", {
-                  class: "ad-cell-meta",
-                  text: fmtTime(s.expiresAt),
-                }),
+                el("span", { class: "ad-cell-meta" }, fmtTime(s.expiresAt)),
               ),
             ),
           ),

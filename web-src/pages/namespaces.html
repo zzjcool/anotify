@@ -62,7 +62,11 @@
       chips.append(chip);
     }
     row.append(head, chips);
-    if (meta.creationTimestamp) row.append(make('span', 'nsl-created', t('col_created') + ' · ' + String(meta.creationTimestamp).slice(0, 10)));
+    if (meta.creationTimestamp) {
+      const created = make('span', 'nsl-created', t('col_created') + ' · '); // 本地年月日：切 ISO 串取的是 UTC 日期
+      created.append(A.fmt.time(meta.creationTimestamp, { mode: 'date' }));
+      row.append(created);
+    }
     return row;
   }
   const message = (node, text) => {

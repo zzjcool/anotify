@@ -364,24 +364,14 @@
       return "/v1/console/events?" + params;
     }
 
-    /* 时间一律给本地时间（与 source-detail.html 同一个 formatter）：
-       事件流的「接收时间」是给人对时的，ISO 字符串留给下面的原始明细。 */
-    function fmtTime(iso) {
-      if (!iso) return "—";
-      const d = new Date(iso);
-      if (Number.isNaN(d.getTime())) return String(iso);
-      try {
-        return d.toLocaleString();
-      } catch (e) {
-        return String(iso);
-      }
-    }
 
     /* 一个字段 = label + value，两者同一种盒模型；所有字段（含「已派发任务数」）
      * 走同一个函数，权重天然一致。 */
     function fact(label, value, opts) {
       const box = el("div", { class: "ev-fact" });
-      const dd = el("dd", { class: "ev-fact-val mono", text: value == null ? "—" : String(value) });
+      const dd = el("dd", { class: "ev-fact-val mono" });
+      if (value && value.nodeType) dd.append(value); // 时间字段传的是 <time> 节点：要生效只有 append
+      else dd.textContent = value == null ? "—" : String(value);
       /* #374 验收 ②：内部标识也能一键取走（与 trace / message 的原始 JSON 复制按钮同一语言）。 */
       if (opts && opts.copyable) {
         const copy = el("button", { type: "button", class: "copy-btn", text: t("uxaudit.dev.copy") });
@@ -441,7 +431,7 @@
       const facts = el("dl", { class: "ev-facts" },
         fact(t("uxaudit.dev.event_id"), event.uid),
         fact("Trace UID", event.traceUID), fact(t("events.v4.source"), event.involvedObject?.name),
-        fact(t("events.v4.received"), fmtTime(event.creationTimestamp)));
+        fact(t("events.v4.received"), A.fmt.time(event.creationTimestamp, { mode: "absolute" })));
       const details = el("details", { class: "ev-details" },
         el("summary", null, t("events.v4.details")));
       const dispatched = el("div", { class: "ev-details-body" },
