@@ -97,6 +97,7 @@ curl -fsS -X POST "$HOOK_URL" -H 'content-type: application/json' \
 
 1. **匿名 API 有速率限制**：不配 `ghTokenFile` 时核心 60/小时、搜索 10/分钟。批量用请配 token 文件。
 2. **分支判定是启发式**：只扫前 100 个分支，按"名字含该号"匹配。作用是**提醒**，不是权威。
-3. **`dispatch` 不自动重试**（`lifecycle.idempotent: false`）：下单失败会红，人重新触发一次。
-   自动重试会造出第二张单，那正是重复派发的来源。
+3. **`dispatch` 不自动重试**（`lifecycle.maxAttempts: 1` —— `idempotent: false` 从 #661 起只是事实声明，
+   不参与重跑判定）：下单失败会红，人重新触发一次。自动重试会造出第二张单，那正是重复派发的来源。
+   写 `maxAttempts: 1` 是把“绝不重跑”显式写下来，而不是继续吃默认的 3 次预算（#669）。
 4. **gate 不会自己恢复**：人在 issue 上回答后要再触发一次；第二次 claim 会看到新事实。

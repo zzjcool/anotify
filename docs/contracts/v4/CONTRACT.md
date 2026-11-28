@@ -62,7 +62,7 @@ G1后产出可读的 `EXPORTED-INTERFACES.md`（团队自己的进度目录）�
 ### HTTP / UI
 
 - 私有资源只使用 `/v1/namespaces/{namespace}/...`：capabilities/sources/playbooks/tasks/events/traces/edges/deployments。namespace和node管理为 `/v1/namespaces`、`/v1/nodes`；hooks为 `/v1/hooks/{token}`（token定位ns）。不提供旧扁平资源接口供新UI兜底。
-- 资源读写按 `api-conventions.md`：`apiVersion/kind/metadata/spec/status`（列表为 KindList.items）；响应可选顶层 `warnings[]`。camelCase，空数组为 `[]`，错误是 Status。不可用旧命名数组/key作为兜底。
+- 资源读写按 `api-conventions.md`：`apiVersion/kind/metadata/spec/status`（列表为 KindList.items）；响应可选顶层 `warnings[]`（元素是 string 的写入期提示，空则整键省略；同名键在试跑回执 `CapabilityTestReceipt` 里是 `{reason,detail}` 对象数组，消费方按端点 schema 取元素，不要跨端点复用解析）。camelCase，空数组为 `[]`，错误是 Status。不可用旧命名数组/key作为兜底。
 - `metadata.name` 沿四主命名正则，`metadata.version`/`name@version` 保留；省略namespace由明确path/CLI补齐，显式与path不符400。
 - API直接写status400，CLI/UI导入剥离status后提交。配置CAS必须传 `metadata.resourceVersion`，缺400、旧409；`resourceVersion`不是 `configRevision/namespaceVarsRevision`。
 - 包POST创建同slug409、PUT整体换模板；GET `?includeBody=true` 给未渲染 files；render只读模板不读安装冲突库；install.body.dryRun 0持久写入，不落回执；普通install每次新回执；installs按 valuesDigest折叠，单回执通过installId读取。

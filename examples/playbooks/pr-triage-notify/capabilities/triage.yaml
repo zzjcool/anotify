@@ -24,6 +24,9 @@ spec:
     commands: [anode]
   concurrency:
     maxPerNode: 2
+  lifecycle:
+    idempotent: false
+    maxAttempts: 1  # 每次 emit 都真的建下游任务：重跑 = 重复派发（#669）
   run:
     entrypoint: run.sh
     files:

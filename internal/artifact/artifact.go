@@ -226,7 +226,6 @@ type EnvValue struct {
 	FieldPath string
 }
 
-// IsValueFrom 报告这个 env 值是不是 fieldRef 引用。
 func (v EnvValue) IsValueFrom() bool { return v.FieldPath != "" }
 
 // envFieldRef / envValueFrom / envRefValue 是 wire 上的 k8s 风格引用形状。
@@ -454,8 +453,10 @@ type fieldError struct {
 
 func (e *fieldError) Error() string { return e.code + ": " + e.msg }
 
-// Error 汇总一份产物上的全部问题：一次报全部而不只报第一条（手写 YAML 时用户要的是
-// 「哪里全错了」，而不是修一条、再跑一次、再发现下一条）。
+// Error 汇总一份产物上的全部问题。
+//
+// 一次报全部、不只报第一条：手写 YAML 时用户要的是「哪里全错了」，
+// 而不是修一条、再跑一次、再发现下一条。
 type Error struct {
 	Problems []string
 	Fields   []string
@@ -648,8 +649,7 @@ func Validate(a *Artifact) error { return validateArtifact(a, true) }
 // ValidateMetadataUpdate 跳过 #612 的 params 可用性判据（只改元数据，不判新写入的内容）。
 func ValidateMetadataUpdate(a *Artifact) error { return validateArtifact(a, false) }
 
-// Warnings 返回写入期的**非致命**提示（#669）：能存，但你多半不是想要这个——重试判据
-// 是 maxAttempts 而不是 idempotent，非幂等 + 预算>1 会重跑。绝不拦写入，呈现面由调用方定。
+// Warnings 返回写入期**非致命**提示（#669）：非幂等 + 预算>1 会重跑；绝不拦写入。
 func Warnings(a *Artifact) []string {
 	if a == nil {
 		return nil

@@ -2896,9 +2896,10 @@ components:
           type: array
           items: {type: string}
           description: |
-            写入期的**非致命**提示（可选，§3.1）：对象进去了，但中枢认为你多半不是想要这个
-            （例：`lifecycle.idempotent=false` 且 `maxAttempts>1`，失联会重跑，见 #669）。
-            与错误的区别是它**不影响 201/200**；空时整键省略（不控 `[]`）。
+            写入期的**非致命**提示（可选，§3.1；元素是 string）：对象进去了，但中枢认为你多半
+            不是想要这个。当前唯一的来源是 `lifecycle.idempotent=false` 且 `maxAttempts>1`
+            （租约失联会按预算重跑，见 #669）。它**不影响 201/200**；空时整键省略（不控 `[]`）。
+            只有直接写能力（POST / PATCH）才带：经 playbook 安装写入的能力不出提示。
     CapabilityList:
       type: object
       required: [apiVersion, kind, metadata, items]
@@ -3434,9 +3435,8 @@ components:
           type: array
           items: {type: string}
           description: |
-            写入期的**非致命**提示（可选，§3.1）：对象进去了，但中枢认为你多半不是想要这个
-            （例：`lifecycle.idempotent=false` 且 `maxAttempts>1`，失联会重跑，见 #669）。
-            与错误的区别是它**不影响 201/200**；空时整键省略（不控 `[]`）。
+            信封的可选顶层键（§3.1；元素是 string）：Source 没有写入期提示面，此处**预留**，
+            中枢当前恒不发（声明是为了与其余 kind 的信封同形，见 #669）。
     SourceList:
       type: object
       required: [apiVersion, kind, metadata, items]
@@ -3713,9 +3713,8 @@ components:
           type: array
           items: {type: string}
           description: |
-            写入期的**非致命**提示（可选，§3.1）：对象进去了，但中枢认为你多半不是想要这个
-            （例：`lifecycle.idempotent=false` 且 `maxAttempts>1`，失联会重跑，见 #669）。
-            与错误的区别是它**不影响 201/200**；空时整键省略（不控 `[]`）。
+            信封的可选顶层键（§3.1；元素是 string）：Playbook 没有写入期提示面，此处**预留**，
+            中枢当前恒不发（声明是为了与其余 kind 的信封同形，见 #669）。
     PlaybookList:
       type: object
       required: [apiVersion, kind, metadata, items]
@@ -4226,9 +4225,8 @@ components:
           type: array
           items: {type: string}
           description: |
-            写入期的**非致命**提示（可选，§3.1）：对象进去了，但中枢认为你多半不是想要这个
-            （例：`lifecycle.idempotent=false` 且 `maxAttempts>1`，失联会重跑，见 #669）。
-            与错误的区别是它**不影响 201/200**；空时整键省略（不控 `[]`）。
+            信封的可选顶层键（§3.1；元素是 string）：Namespace 没有写入期提示面，此处**预留**，
+            中枢当前恒不发（声明是为了与其余 kind 的信封同形，见 #669）。
     NamespaceList:
       type: object
       required: [apiVersion, kind, metadata, items]
@@ -4454,7 +4452,7 @@ components:
           type: array
           items: {type: string}
           description: |
-            信封的可选顶层提示（§3.1）。节点是只读资源、没有写入期提示面，中枢当前恒不发
+            信封的可选顶层提示（§3.1；元素是 string）。节点是只读资源、没有写入期提示面，中枢当前恒不发
             （这里声明是为了与其余 kind 的信封同形，见 #669）。
         context:
           $ref: '#/components/schemas/NodeReadContext'
@@ -4761,9 +4759,8 @@ components:
           type: array
           items: {type: string}
           description: |
-            写入期的**非致命**提示（可选，§3.1）：对象进去了，但中枢认为你多半不是想要这个
-            （例：`lifecycle.idempotent=false` 且 `maxAttempts>1`，失联会重跑，见 #669）。
-            与错误的区别是它**不影响 201/200**；空时整键省略（不控 `[]`）。
+            信封的可选顶层键（§3.1；元素是 string）：Task 没有写入期提示面，此处**预留**，
+            中枢当前恒不发（声明是为了与其余 kind 的信封同形，见 #669）。
     TaskList:
       type: object
       required: [apiVersion, kind, metadata, items]

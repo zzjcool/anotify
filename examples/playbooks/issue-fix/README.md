@@ -140,9 +140,8 @@ emit 到不存在的下游         → 包校验期就会红（渲染后查 unre
 
 ```
 implement / fix   maxAttempts: 1   重跑会复用固定分支 pi-subagent/issue-<n>-r<round>
-                                   （implement 每次 reset 到基线再建同名分支，fix 在既定分支上追加
-                                   提交）——第二轮会与上一轮的推送撞车，所以显式写 1
-                                 
+                                   （implement 每次 reset 到基线再建同名分支、fix 在既定分支上追加提交，
+                                   第二轮会与上一轮的推送撞车）所以显式写 1
 triage / review   maxAttempts: 3   只读 issue/diff + 评论/emit，重跑安全（最坏多一条评论）
 ```
 

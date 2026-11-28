@@ -134,7 +134,7 @@ const (
 	// 结果未知（可能已派发）：只用于本地 emit 网关的 CLI 退出码 5，不是任务失败码。
 	ReasonEmitUnreachable = "emit_unreachable"
 
-	// 运行期：短暂基础设施失败（只有 idempotent: true 才允许自动重试）。
+	// 运行期：短暂基础设施失败（失联后按 maxAttempts 预算重排，idempotent 只是事实投影，#669）。
 	ReasonNodeLost       = "node_lost"
 	ReasonLeaseExpired   = "lease_expired"
 	ReasonInfraTransient = "infra_transient"
@@ -240,7 +240,7 @@ func PruneReasons() []string {
 	return out
 }
 
-// retryableInfraReasons 是「idempotent: true 时才允许自动重试」的短暂基础设施失败。
+// retryableInfraReasons 是「可进入 maxAttempts 预算重排」的短暂基础设施失败（#669）。
 //
 // 只有运行器结构化判定的事实进得来：脚本退出码（包括 anode emit 的 exit 5）不是
 // infra 事实（capability.md §2.3）。

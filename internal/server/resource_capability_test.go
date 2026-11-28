@@ -369,6 +369,23 @@ func TestCapabilityResourceCreateAndGet(t *testing.T) {
 func TestCapabilityResourceRetryWarning(t *testing.T) {
 	env := newCapTestEnv(t)
 
+	assertWarning := func(t *testing.T, doc map[string]any, want int, what string) string {
+		t.Helper()
+		raw, ok := doc["warnings"]
+		if want == 0 {
+			if ok {
+				t.Fatalf("%s 不应有写入期提示，实际 %#v", what, raw)
+			}
+			return ""
+		}
+		warnings := capArray(t, raw, what+" warnings")
+		if len(warnings) != want {
+			t.Fatalf("%s 应当 %d 条写入期提示，实际 %d 条: %#v", what, want, len(warnings), warnings)
+		}
+		msg, _ := warnings[0].(string)
+		return msg
+	}
+
 	doc := capabilityBody("retryable", 0, "#!/bin/sh\necho retryable\n")
 	doc["spec"].(map[string]any)["lifecycle"] = map[string]any{
 		"idempotent": false, "maxAttempts": 3, "timeoutSec": 60,
@@ -378,12 +395,8 @@ func TestCapabilityResourceRetryWarning(t *testing.T) {
 		t.Fatalf("非幂等 + maxAttempts:3 必须能写入（提示不是拒绝）: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	created := decodeCapJSON(t, rec)
-	assertCapabilityEnvelope(t, created, "retryable")
-	warnings := capArray(t, created["warnings"], "warnings")
-	if len(warnings) != 1 {
-		t.Fatalf("应当恰好一条写入期提示，实际 %d 条: %#v", len(warnings), warnings)
-	}
-	msg, _ := warnings[0].(string)
+	createdMeta := assertCapabilityEnvelope(t, created, "retryable")
+	msg := assertWarning(t, created, 1, "POST 201")
 	if !strings.Contains(msg, "maxAttempts: 1") {
 		t.Fatalf("提示必须给出「不该重跑就写 maxAttempts: 1」的出路，实际: %q", msg)
 	}
@@ -391,12 +404,31 @@ func TestCapabilityResourceRetryWarning(t *testing.T) {
 		t.Fatalf("提示必须点名触发条件，实际: %q", msg)
 	}
 
-	rec = env.do(t, http.MethodGet, env.capPath(env.nsA, "retryable", ""), nil) // 读路径不带提示
+	rec = env.do(t, http.MethodGet, env.capPath(env.nsA, "retryable", ""), nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET: status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if _, ok := decodeCapJSON(t, rec)["warnings"]; ok {
-		t.Fatalf("GET 不应带写入期提示")
+	assertWarning(t, decodeCapJSON(t, rec), 0, "GET 200") // 读路径不带：写入期提示不是对象上的持久状态
+
+	rec = env.do(t, http.MethodPatch, env.capPath(env.nsA, "retryable", ""), map[string]any{ // 只改 displayName，正文没变
+		"metadata": map[string]any{
+			"displayName":     "可重跑",
+			"resourceVersion": capString(t, createdMeta, "resourceVersion"),
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertWarning(t, decodeCapJSON(t, rec), 1, "PATCH 200") // 第二处赋值：PATCH 回执也要带
+
+	yamlDoc := capYAMLDoc("yaml-retryable", 0, "#!/bin/sh\necho yaml-retryable\n") +
+		"  lifecycle: {idempotent: false, maxAttempts: 3, timeoutSec: 60}\n"
+	rec = env.do(t, http.MethodPost, env.capPath(env.nsA, "", "yaml"), yamlBody(yamlDoc))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /yaml: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := assertWarning(t, decodeCapJSON(t, rec), 1, "POST /yaml 201"); got != msg { // 同一个 createCore
+		t.Fatalf("两条写入口的提示必须同一条：\nJSON: %q\nYAML: %q", msg, got)
 	}
 
 	for _, tc := range []struct { // 绝不重跑 / 幂等 → 201 且没有 warnings 键
@@ -412,9 +444,7 @@ func TestCapabilityResourceRetryWarning(t *testing.T) {
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("create %s: status=%d body=%s", tc.name, rec.Code, rec.Body.String())
 		}
-		if _, ok := decodeCapJSON(t, rec)["warnings"]; ok {
-			t.Fatalf("%s 不应有写入期提示（maxAttempts=%v）", tc.name, tc.lifecycle["maxAttempts"])
-		}
+		assertWarning(t, decodeCapJSON(t, rec), 0, "create "+tc.name)
 	}
 }
 
