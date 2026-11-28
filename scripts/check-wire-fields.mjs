@@ -91,6 +91,7 @@ const WHITELIST = new Set([
 /* 已知遗留：服务端不发、契约里也没有，但当前**不产生用户可见的错误显示**。
  * 写在这里是为了让守卫只对「新出现」的字段报错；每条都注明为什么不修。 */
 const KNOWN_DEAD = new Map([
+	["warnings@web/partials.js", "API 错误信封（Status）的可选 warnings：Status 契约里没有这个字段、服务端恒不发；前端是「有就用」，无展示位。资源写入回执的顶层 warnings[]（string[]，见 CONTRACT.md §3.1）是另一条面，不在本条目范围内——本条目带文件后缀，只豁免这一个读取点"],
 	["blocker", "playbook status 的 v3 遗留：if 分支在真实数据下不执行；mock 仍在造（G1 系列测试依赖），另立事项"],
 	["machineLimits", "node：服务端不发，页面已回退到 localLimits（显示正确）"],
 	["overrideStale", "node：服务端不发，node.html 仅 `=== true` 时渲染徽章（永不出现）"],
@@ -115,7 +116,7 @@ for (const f of WORTH_SCANNING) {
 		for (const m of line.matchAll(/\b(spec|st|status)\.([A-Za-z_][A-Za-z0-9_]*)/g)) {
 			const name = m[2];
 			const kind = m[1] === "spec" ? "spec" : "status";
-			if (WHITELIST.has(name) || KNOWN_DEAD.has(name)) continue;
+			if (WHITELIST.has(name) || KNOWN_DEAD.has(name) || KNOWN_DEAD.has(`${name}@${f}`)) continue;
 			const mapped = curModel ? MODEL_SCHEMA[curModel] : null;
 			const schemaName = mapped ? mapped[kind] : null;
 			const schemaProps = schemaName ? SCHEMA_PROPS.get(schemaName) : null;

@@ -19,9 +19,9 @@ const DefaultInterval = 30 * time.Second
 
 // Report 是一轮巡检的结果（部分成功也如实返回：删了就要有人知道）。
 type Report struct {
-	// LeasesRequeued 是因短暂基础设施失败/幂等重试而回到 pending 的条数。
+	// LeasesRequeued 是按 maxAttempts 预算回到 pending 的条数（失联，不看 idempotent）。
 	LeasesRequeued int `json:"leasesRequeued"`
-	// LeasesAbandoned 是直接进入终态的条数（非幂等或取消在飞）。
+	// LeasesAbandoned 是直接进入终态的条数（预算用尽，或取消在飞）。
 	LeasesAbandoned  int                     `json:"leasesAbandoned"`
 	LedgersConverged store.LedgerConvergence `json:"ledgersConverged"`
 	// Retention 是本轮保留期清理的计数（含各 TTL 与是否被跳过/截断）。

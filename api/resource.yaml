@@ -2615,7 +2615,7 @@ components:
       properties:
         idempotent:
           type: boolean
-          description: "明确幂等才允许对短暂基础设施失败自动重试"
+          description: "「这次执行是否幂等」的事实声明，不参与重跑判定（判据是 maxAttempts 预算）；绝不重跑写 maxAttempts: 1（#669）"
         maxAttempts:
           type: integer
           minimum: 1

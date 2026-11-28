@@ -125,7 +125,7 @@ curl -fsS -X PATCH "$SERVER/v1/nodes/host-ws" -b "$COOKIE" \
 
 ```
 agent 没写裁决文件          → 任务失败（不猜结果）
-gh issue close 失败         → triage 仍是成功、但 record 里记下（不吞）
+gh issue close 失败         → triage 仍是成功、但错误写进任务日志（不吞）
 emit 到不存在的下游         → 包校验期就会红（渲染后查 unreachable）
 同一 issue 重复投递         → 会真的再跑一遍：这是"重投"不是"重试"，由人决定要不要投
 ```
@@ -142,12 +142,22 @@ emit 到不存在的下游         → 包校验期就会红（渲染后查 unre
 implement / fix   maxAttempts: 1   重跑会复用固定分支 pi-subagent/issue-<n>-r<round>
                                    （implement 每次 reset 到基线再建同名分支、fix 在既定分支上追加提交，
                                    第二轮会与上一轮的推送撞车）所以显式写 1
-triage / review   maxAttempts: 3   只读 issue/diff + 评论/emit，重跑安全（最坏多一条评论）
+triage / review   maxAttempts: 3   重跑**不会**再建下游任务：两者的 emit 都带 `--id`，同 task
+                                   同 id 跨 attempt 只派发一次（#669）。剩下的副作用是
+                                   `gh issue comment` 会多一条评论、triage 判 invalid 时
+                                   `gh issue close` 可能被 GitHub 拒（已关闭）—— 那是容忍的
+                                   （不成立不会让整支白跑），失败写在任务日志里
 ```
+
+判断口径就这一句：**重跑会不会重复那些用 `emit --id` 去不掉的副作用**。triage / review 会重复的只有
+`gh issue comment`（多一条评论）与 `gh issue close`（已关闭被拒，容忍），下游派发已被 `--id` 锁住，
+所以写 3；implement / fix 的固定分支、audit 的 append、page 的外部 POST 去不掉，所以写 1。
 
 写入这类能力时，如果 `idempotent: false` 而 `maxAttempts > 1`（含省略），中枢会在
 创建/更新的 201/200 回执里给一条 `warnings[]`：「重跑会重复副作用，确实不该重跑请写
 `maxAttempts: 1`」。提示**不影响写入**，只是把静默的语义变化说出来。
+本包的 triage / review 会命中这条提示（不是严格幂等：重跑会多一条评论）—— 那是**预期**的：
+下游派发已被 `emit --id` 锁住，不必为了消掉提示去写 1；只有真想「跑一遍就够」时才写 1。
 
 ## 已知边界
 
