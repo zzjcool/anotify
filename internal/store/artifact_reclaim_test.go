@@ -2,20 +2,15 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// 本文件是 #629 的 store 侧验收：
-//
-//  1. 对象行（task_artifact_objects）的生命周期必须在 purged_at 之后**真的结束**：
-//     字节删掉、且再没有任何 manifest/upload 引用的行，由下一轮 ExpireArtifactObjects
-//     物理删除（否则行只增不减，每轮 GC 的写锁时长随历史上传总数单调增长）；
-//  2. 两段扫描（到期 / 回收）都必须落在部分索引上，不能每轮全表扫历史行。
+// 本文件是 #629 的 store 侧验收：对象行的生命周期在 purged_at 之后真的结束，两段扫描都落在索引上。
 
-// seedArtifactObjectRow 直接写一行对象身份。task_artifact_objects 没有别的 NOT NULL 列，
-// 也没有外键，所以这里能独立造出「已过期 / 已 purged」的历史形状。
 func seedArtifactObjectRow(t *testing.T, db *DB, id string, createdAt int64, expiredAt, purgedAt any) {
 	t.Helper()
 	mustExec(t, db, `INSERT INTO task_artifact_objects(id,created_at,expired_at,purged_at) VALUES (?,?,?,?)`,
@@ -48,12 +43,7 @@ func artifactObjectIDs(ids []ArtifactObjectID) []string {
 	return out
 }
 
-// TestExpireArtifactObjects_DeletesPurgedUnreferencedRows 覆盖 #629 第 1 项的验收：
-//
-//   - 已 purged 且无引用的对象行 → 一轮后被物理删除；
-//   - 仍被 manifest 引用（410 的元数据还在）→ 保留，直到 manifest 随任务保留期级联删除；
-//   - 仍被活 ticket 引用（外键 ON DELETE RESTRICT）→ 不许删；ticket 到期后同一轮即回收；
-//   - 只 expired、还没 ack（字节可能还在）→ 不删，且仍然出现在返回值里（可重试清理）。
+// 覆盖：无引用→删；仍被引用→留（ticket 过期后同轮回收）；只 expired 没 ack→不删且返回；重复跑幂等。
 func TestExpireArtifactObjects_DeletesPurgedUnreferencedRows(t *testing.T) {
 	ctx := context.Background()
 	db, _ := newTestDBFile(t)
@@ -61,8 +51,7 @@ func TestExpireArtifactObjects_DeletesPurgedUnreferencedRows(t *testing.T) {
 	c := v4Cap(t, db, nsID, "artifact-reclaim", 1)
 	now := Now()
 
-	// 真实图结构：manifest/upload 都有 (task_id,attempt) → task_attempts 的外键，
-	// 所以引用分支必须建出真任务，不能用一行假引用。
+	// manifest/upload 都有 (task_id,attempt) → task_attempts 的外键，引用分支必须建真任务。
 	taskID := NewTaskID()
 	mustExec(t, db, `INSERT INTO tasks
 	   (id, namespace_id, trace_id, capability_id, capability, version, digest, phase, created_at)
@@ -88,13 +77,12 @@ func TestExpireArtifactObjects_DeletesPurgedUnreferencedRows(t *testing.T) {
 		"upl_reclaim", taskID, 1, "reports/ticket.md", strings.Repeat("b", 64), 13,
 		"obj_purged_upload", now+300)
 
-	// 第一轮：只应列出「已过期、没引用、还没 ack」那个；已 purged 的不再回来（字节已删）。
 	ids, err := db.ExpireArtifactObjects(ctx, now, 100)
 	if err != nil {
 		t.Fatalf("expire artifacts: %v", err)
 	}
 	if got, want := artifactObjectIDs(ids), []string{"obj_expired_unacked"}; !equalStrings(got, want) {
-		t.Fatalf("第一轮待清理 id = %v, want %v（已 purged 的行不该回到 GC，那会让它去删已删的字节）", got, want)
+		t.Fatalf("第一轮待清理 id = %v, want %v", got, want)
 	}
 	if artifactObjectRowExists(t, db, "obj_purged_free") {
 		t.Fatal("已 purged 且无引用的对象行还在（#629：行只增不减）")
@@ -108,7 +96,6 @@ func TestExpireArtifactObjects_DeletesPurgedUnreferencedRows(t *testing.T) {
 		t.Fatalf("第一轮后对象行 = %d, want 3", n)
 	}
 
-	// 第二轮（同一时刻）：回收幂等，已被删的行不会被再删一次，也没新增待清理项。
 	ids, err = db.ExpireArtifactObjects(ctx, now, 100)
 	if err != nil {
 		t.Fatalf("expire artifacts (2): %v", err)
@@ -117,10 +104,9 @@ func TestExpireArtifactObjects_DeletesPurgedUnreferencedRows(t *testing.T) {
 		t.Fatalf("第二轮待清理 id = %v, want 只有仍然没 ack 的 obj_expired_unacked", got)
 	}
 	if n := countArtifactObjectRows(t, db); n != 3 {
-		t.Fatalf("第二轮后对象行 = %d, want 3（回收必须是幂等的）", n)
+		t.Fatalf("第二轮后对象行 = %d, want 3（回收必须幂等）", n)
 	}
 
-	// 等到 ticket 过期：过期 ticket 先被删掉，同一轮里它的对象行就能回收（不留一轮延迟）。
 	if _, err := db.ExpireArtifactObjects(ctx, now+400, 100); err != nil {
 		t.Fatalf("expire artifacts (3): %v", err)
 	}
@@ -131,7 +117,6 @@ func TestExpireArtifactObjects_DeletesPurgedUnreferencedRows(t *testing.T) {
 		t.Fatal("仍被 manifest 引用的对象行被删了（410 元数据会失去它的身份）")
 	}
 
-	// manifest 随任务保留期级联删除之后，最后一轮把它也收掉。
 	mustExec(t, db, `DELETE FROM task_artifact_manifests WHERE object_id=?`, "obj_purged_manifest")
 	if _, err := db.ExpireArtifactObjects(ctx, now+800, 100); err != nil {
 		t.Fatalf("expire artifacts (4): %v", err)
@@ -159,8 +144,25 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
-// assertNoFullScan 断言计划里没有 alias 的**整表扫**：`SCAN <alias>` 后面没有 USING。
-// `SCAN o USING INDEX …` 是索引扫（只碰工作集），不在此列。
+// 单轮删除量受 limit 约束：历史积压再大也不会把一轮写事务拖长，余量下一轮继续（幂等 + 收敛）。
+func TestExpireArtifactObjects_ReclaimRespectsLimit(t *testing.T) {
+	ctx := context.Background()
+	db, _ := newTestDBFile(t)
+	now := Now()
+	for i := 0; i < 3; i++ {
+		seedArtifactObjectRow(t, db, fmt.Sprintf("obj_backlog_%d", i), now-1000, now-500, now-400+int64(i))
+	}
+	for i, want := range []int{1, 0} { // 每轮 limit=2：3 → 1 → 0
+		if _, err := db.ExpireArtifactObjects(ctx, now, 2); err != nil {
+			t.Fatalf("第 %d 轮 expire artifacts: %v", i+1, err)
+		}
+		if n := countArtifactObjectRows(t, db); n != want {
+			t.Fatalf("第 %d 轮后对象行 = %d, want %d（单轮最多删 limit 行）", i+1, n, want)
+		}
+	}
+}
+
+// assertNoFullScan 断言 alias 上**没有整表扫**：`SCAN <alias>` 后面必须带 USING。
 func assertNoFullScan(t *testing.T, tag, alias string, plan []string) {
 	t.Helper()
 	for _, line := range plan {
@@ -170,17 +172,11 @@ func assertNoFullScan(t *testing.T, tag, alias string, plan []string) {
 	}
 }
 
-// TestExpireArtifactObjects_UsesIndex 覆盖 #629 第 1 项的代价判据：
-// 到期候选集与物理回收都走部分索引，不是「每轮扫一遍全部历史行 + 临时排序」。
-//
-// 断言直接跑生产常量（artifactObjectsExpireSQL / artifactObjectsReclaimSQL），
-// 不抄副本：抄一份就等于在测一条没人跑的 SQL。
+// 两段扫描都跑生产常量：到期候选走部分索引且无临时排序，uploads 两个 NOT EXISTS 都走索引。
 func TestExpireArtifactObjects_UsesIndex(t *testing.T) {
 	db, _ := newTestDBFile(t)
 	now := Now()
 
-	// 历史包袱：大量已 purged 的行；工作集：少量仍活着的行。
-	// ANALYZE 之后计划仍应只碰工作集。
 	tx, err := db.Begin()
 	if err != nil {
 		t.Fatalf("begin seed: %v", err)
@@ -213,10 +209,13 @@ func TestExpireArtifactObjects_UsesIndex(t *testing.T) {
 	if !strings.Contains(expire, "idx_task_artifact_objects_live") {
 		t.Errorf("到期候选集没有走 idx_task_artifact_objects_live（会退化成全表扫历史行）:\n%s", expire)
 	}
-	if !strings.Contains(expire, "idx_task_artifact_uploads_object") {
-		t.Errorf("uploads 的 NOT EXISTS 没有走 object_id 索引（每行一次 uploads 全表扫）:\n%s", expire)
+	for _, idx := range []string{"idx_task_artifact_uploads_object", "idx_task_artifact_uploads_task"} {
+		if !strings.Contains(expire, idx) {
+			t.Errorf("uploads 的 NOT EXISTS 没有走 %s（每行一次 uploads 全表扫）:\n%s", idx, expire)
+		}
 	}
 	assertNoFullScan(t, "到期候选集", "o", expirePlan)
+	assertNoFullScan(t, "到期候选集", "u", expirePlan)
 	if strings.Contains(expire, "USE TEMP B-TREE FOR ORDER BY") {
 		t.Errorf("到期候选集要先排序才能取前 256 行（LIMIT 没落在索引 seek 上）:\n%s", expire)
 	}
@@ -228,24 +227,88 @@ func TestExpireArtifactObjects_UsesIndex(t *testing.T) {
 		t.Errorf("回收扫描没有走 idx_task_artifact_objects_purged（会每轮全表扫）:\n%s", reclaim)
 	}
 	assertNoFullScan(t, "回收扫描", "o", reclaimPlan)
+	assertNoFullScan(t, "回收扫描", "u", reclaimPlan)
 	if strings.Contains(reclaim, "USE TEMP B-TREE FOR ORDER BY") {
 		t.Errorf("回收扫描要先排序才能取前 256 行:\n%s", reclaim)
 	}
 
-	// 两个部分索引必须真的存在且谓词与查询逐字对应（谓词漂移 = 索引失效）。
-	var ddl string
-	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='index' AND name=?`,
-		"idx_task_artifact_objects_live").Scan(&ddl); err != nil {
-		t.Fatalf("read index ddl: %v", err)
+	// 部分索引必须真的存在且谓词与查询逐字对应（谓词漂移 = 索引失效）。
+	for _, want := range []struct{ name, predicate string }{
+		{"idx_task_artifact_objects_live", "where purged_at is null"},
+		{"idx_task_artifact_objects_purged", "where purged_at is not null"},
+	} {
+		var ddl string
+		if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='index' AND name=?`, want.name).Scan(&ddl); err != nil {
+			t.Fatalf("read index ddl %s: %v", want.name, err)
+		}
+		if !strings.Contains(compactSQL(ddl), want.predicate) {
+			t.Fatalf("%s 的谓词漂移了（部分索引按谓词匹配）: %s", want.name, ddl)
+		}
 	}
-	if !strings.Contains(compactSQL(ddl), "where purged_at is null") {
-		t.Fatalf("idx_task_artifact_objects_live 的谓词漂移了（部分索引按谓词匹配）: %s", ddl)
+}
+
+// 块 13/14 是纯索引块：记账只到 12 的老 v4 库在 Open 时必须就地补上索引并记到 head（不删库、不丢行）。
+func TestMigrationBlocks13And14MigrateOldDatabaseInPlace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v12-objects.db")
+	set, err := parseMigrations(schemaSQL)
+	if err != nil {
+		t.Fatalf("parse schema.sql: %v", err)
 	}
-	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='index' AND name=?`,
-		"idx_task_artifact_objects_purged").Scan(&ddl); err != nil {
-		t.Fatalf("read index ddl: %v", err)
+	raw, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
 	}
-	if !strings.Contains(compactSQL(ddl), "where purged_at is not null") {
-		t.Fatalf("idx_task_artifact_objects_purged 的谓词漂移了（部分索引按谓词匹配）: %s", ddl)
+	raw.SetMaxOpenConns(1)
+	if err := applyBaselineMigration(raw, set[0], nil); err != nil {
+		t.Fatalf("apply baseline only: %v", err)
+	}
+	for _, m := range set {
+		if m.version == baselineVersion || m.version > 12 {
+			continue
+		}
+		if err := applyMigration(raw, m, nil); err != nil {
+			t.Fatalf("apply migration %d: %v", m.version, err)
+		}
+	}
+	mustExec(t, raw, `INSERT INTO task_artifact_objects(id,created_at,expired_at,purged_at) VALUES ('obj_v12',1,1,1)`)
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open v12 db（块 13/14 应被应用）: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if v, err := db.SchemaVersion(); err != nil || v != headVersion {
+		t.Fatalf("SchemaVersion = %d, %v; want %d", v, err, headVersion)
+	}
+	for _, idx := range [][2]string{
+		{"task_artifact_objects", "idx_task_artifact_objects_live"},
+		{"task_artifact_objects", "idx_task_artifact_objects_purged"},
+		{"task_artifact_uploads", "idx_task_artifact_uploads_object"},
+		{"task_artifact_uploads", "idx_task_artifact_uploads_task"},
+	} {
+		if n := countIndexRows(t, db, idx[0], idx[1]); n != 1 {
+			t.Fatalf("就地迁移后索引 %s 有 %d 条, want 1", idx[1], n)
+		}
+	}
+	if !artifactObjectRowExists(t, db, "obj_v12") {
+		t.Fatal("就地迁移丢了老库里的对象行")
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	db2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = db2.Close() })
+	var n int
+	if err := db2.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&n); err != nil {
+		t.Fatalf("count schema_version: %v", err)
+	}
+	if n != headVersion {
+		t.Fatalf("重开后 schema_version 行数 = %d, want %d（每块只记一次账）", n, headVersion)
 	}
 }

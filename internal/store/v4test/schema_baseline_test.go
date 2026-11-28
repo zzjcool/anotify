@@ -313,6 +313,7 @@ func TestSchemaBaselineIndexes(t *testing.T) {
 		{name: "idx_task_artifact_objects_live", table: "task_artifact_objects", cols: []string{"created_at", "id"}, predicate: "purged_at is null"},
 		{name: "idx_task_artifact_objects_purged", table: "task_artifact_objects", cols: []string{"purged_at", "id"}, predicate: "purged_at is not null"},
 		{name: "idx_task_artifact_uploads_object", table: "task_artifact_uploads", cols: []string{"object_id"}},
+		{name: "idx_task_artifact_uploads_task", table: "task_artifact_uploads", cols: []string{"task_id"}},
 	}
 	for _, want := range indexes {
 		t.Run(want.name, func(t *testing.T) {
@@ -617,16 +618,15 @@ func TestSchemaBaselineLayoutMarkerIsSeparateFromLedger(t *testing.T) {
 	if got := rawUserVersion(t, path); got != 4 {
 		t.Fatalf("新库 PRAGMA user_version = %d, want 4（v4 布局格式标记）", got)
 	}
-	if v, err := db.SchemaVersion(); err != nil || v != 13 {
-		t.Fatalf("SchemaVersion = %d, %v; want 13（记账 = 块数，不是布局标记）", v, err)
+	if v, err := db.SchemaVersion(); err != nil || v != 15 {
+		t.Fatalf("SchemaVersion = %d, %v; want 15（记账 = 块数，不是布局标记）", v, err)
 	}
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM schema_version`).Scan(&n); err != nil {
 		t.Fatalf("count schema_version: %v", err)
 	}
-	if n != 13 {
-		t.Fatalf("schema_version 行数 = %d, want 13（baseline + release + 卸载标记 + 包版本历史 + router 结局表 + 轮询状态 + 依赖索引 + 安装时快照 + 凭据审计 + 手动拉取审计 + 复原审计 + 保留期表达式索引 + 能力引用列索引）", n)
-		t.Fatalf("schema_version 行数 = %d, want 13（baseline + release + 卸载标记 + 包版本历史 + router 结局表 + 轮询状态 + 依赖索引 + 安装时快照 + 凭据审计 + 手动拉取审计 + 复原审计 + 保留期表达式索引 + 产物对象回收索引）", n)
+	if n != 15 {
+		t.Fatalf("schema_version 行数 = %d, want 15（每块一行账：baseline、release、卸载标记、包版本历史、router 结局表、轮询状态、依赖索引、安装时快照、凭据审计、手动拉取审计、复原审计、保留期表达式索引、能力引用列索引、产物对象回收索引、产物上传按 task 索引）", n)
 	}
 }
 

@@ -826,18 +826,19 @@ CREATE INDEX IF NOT EXISTS idx_tasks_capability_id ON tasks(capability_id);
 CREATE INDEX IF NOT EXISTS idx_task_attempts_capability ON task_attempts(capability_id);
 CREATE INDEX IF NOT EXISTS idx_task_artifact_manifests_capability
     ON task_artifact_manifests(capability_id);
--- 产物对象行有**两段**扫描，各配一个部分索引，代价跟着工作集走、不跟历史上传总数走：
---   · 到期扫描（ExpireArtifactObjects）只看 purged_at IS NULL 的行，并按 created_at,id
---     取前 N 条 → idx_task_artifact_objects_live 同时满足过滤与排序（不产生临时排序）；
---   · 回收扫描（同一事务里物理删除已 purged 且无引用的行）只看 purged_at 非空的行
---     → idx_task_artifact_objects_purged 让「还有多少行待回收」直接读索引前缀。
--- 两个扫描都用 `NOT EXISTS … WHERE u.object_id=o.id` 复核 uploads：没有下面的 object_id
--- 索引时这一步是每行一次全表扫（EXPLAIN 里的 `SCAN u`），于是写锁时长随 uploads 历史
--- 行数增长——而这正是本块要消掉的那类成本。
+-- 产物对象行两段扫描各配一个部分索引：到期扫描（purged_at IS NULL，按 created_at,id 取前 N）
+-- 与回收扫描（purged_at 非空）都以索引前缀为工作集；uploads 的 NOT EXISTS 复核靠 object_id 索引。
 -- +migration 14 artifact_object_reclaim
+-- 对象行两段扫描（到期 / 回收）各配一个部分索引：代价跟工作集走，不跟历史上传总数走（到期扫描的过滤与排序都落在索引上）。
 CREATE INDEX IF NOT EXISTS idx_task_artifact_objects_live
     ON task_artifact_objects(created_at, id) WHERE purged_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_task_artifact_objects_purged
     ON task_artifact_objects(purged_at, id) WHERE purged_at IS NOT NULL;
+-- 两个扫描的 NOT EXISTS 都按 object_id 复核 uploads；没有它每行一次全表扫。
 CREATE INDEX IF NOT EXISTS idx_task_artifact_uploads_object
     ON task_artifact_uploads(object_id);
+
+-- +migration 15 artifact_upload_task_index
+-- 到期扫描里还有一个按 task 的 EXISTS（u.task_id=t.id）：没有它同样是每行一次 uploads 全表扫（顺带覆盖 tasks 级联删除的子表查找）。
+CREATE INDEX IF NOT EXISTS idx_task_artifact_uploads_task
+    ON task_artifact_uploads(task_id);

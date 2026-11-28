@@ -269,6 +269,14 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		)
 		spool = nil
 	} else {
+		if warn := spool.SweepWarning(); warn != nil {
+			slog.Warn("artifact spool: leftover drafts not removed",
+				"event", "server.artifact.spool.sweep_failed",
+				"component", "resultspool",
+				"path", spool.Root(),
+				"error", warn.Error(),
+			)
+		}
 		slog.Info("artifact spool configured",
 			"event", "server.artifact.spool.configured",
 			"path", spool.Root(),
