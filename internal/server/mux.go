@@ -406,15 +406,15 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 注意 Go 1.22+ ServeMux 最长模式优先，/v1/auth/me 与 /v1/auth/sessions 会优先于 /v1/auth/。
 	mux.Handle("/v1/auth/me", noStore(sessMW(http.HandlerFunc(authH.me))))
 	mux.Handle("/v1/auth/sessions", noStore(sessMW(http.HandlerFunc(authH.sessions))))
-	// 自助注册策略（#574）：匿名只读，登录页据此隐藏注册 tab。
-	mux.Handle("GET /v1/auth/registration", noStore(http.HandlerFunc(authH.registrationStatus)))
+	// 自助注册策略（#574）：匿名只读；裸挂载 + handler 内方法判定（带 `GET ` 的模式对非 GET 不匹配，会被
+	// /v1/auth/ 兜底接走回 404，而 spec 声明的是 405）。
+	mux.Handle("/v1/auth/registration", noStore(http.HandlerFunc(authH.registrationStatus)))
 	// Passkey 管理端点（需登录会话）：列表 / 补建凭证 / 重命名 / 删除。
 	// 独立于 /v1/auth/ 兜底注册，确保走 sessMW 鉴权（否则返回 401 而非 404）。
 	mux.Handle("/v1/auth/passkeys", noStore(sessMW(http.HandlerFunc(authH.passkeysRoot))))
 	mux.Handle("/v1/auth/passkeys/", noStore(sessMW(http.HandlerFunc(authH.passkeysItem))))
-	// 密码登录（契约 §2）：两条**显式**路由，保证语义化状态码——
-	//   - login 匿名（限速在 handler 里做，不包 sessMW，否则未登录的合法请求会被 401）
-	//   - 管理端点包 sessMW：未登录 401，而不是被 /v1/auth/ 兜底成 404/405。
+	// 密码登录（契约 §2）：两条**显式**路由，保证语义化状态码——login 匿名（限速在 handler
+	// 里做，不包 sessMW，否则未登录的合法请求被 401）；管理端点包 sessMW，未登录 401 而不是 404/405。
 	mux.Handle("/v1/auth/password/login", noStore(http.HandlerFunc(authH.passwordLogin)))
 	// 用密码注册（契约「追加：用密码注册」§A2）：**匿名**端点，与 password/login 同族。
 	// 与 login 不同，它只能显式注册：/v1/auth/ 的兜底 handler 不覆盖这个同族前缀，

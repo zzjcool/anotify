@@ -8,8 +8,7 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// 自助注册的入口闸门与策略查询（#574）。权威判定在 store（registerUser 在 BEGIN
-// IMMEDIATE 事务里数 users）；这里的 gate 只是提前给正常路径一个干净的 403。
+// 自助注册的入口闸门与策略查询（#574）：权威判定在 store 的 registerUser 事务里，这里只提前给干净的 403。
 
 func (h *authHandler) registrationMode(ctx context.Context) (string, error) {
 	if h.db.RegistrationPolicy() != store.RegistrationFirstUserOnly {
@@ -64,6 +63,11 @@ type registrationStatusResp struct {
 }
 
 func (h *authHandler) registrationStatus(w http.ResponseWriter, r *http.Request) {
+	// 方法判定先于限流：非 GET 不该占用 120/min 的查询额度，也不该回 404。
+	if r.Method != http.MethodGet {
+		writeErr(w, 405, "method not allowed")
+		return
+	}
 	if rateLimited(w, rlRegistrationStatusIP, clientIP(r)) {
 		return
 	}

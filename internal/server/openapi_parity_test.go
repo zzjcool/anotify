@@ -2266,6 +2266,13 @@ func bareMountSpec() []bareMountEntry {
 			},
 		},
 		{
+			Pattern:     "/v1/auth/registration",
+			HandlerFile: "registration_policy.go",
+			Ops: []bareOp{
+				{"GET", "/v1/auth/registration", `if r.Method != http.MethodGet`, "", `func (h *authHandler) registrationStatus(w http.ResponseWriter`},
+			},
+		},
+		{
 			Pattern:     "/v1/auth/passkeys",
 			HandlerFile: "auth_handlers.go",
 			Ops: []bareOp{

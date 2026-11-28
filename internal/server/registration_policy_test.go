@@ -91,6 +91,30 @@ func TestRegistrationStatus_ReportsPolicy(t *testing.T) {
 	})
 }
 
+func TestRegistrationStatus_MethodNotAllowed(t *testing.T) {
+	app := registrationApp(t, registrationFirstUserOnly)
+
+	// auth.yaml 声明了 405：非 GET 必须真的回 405（原先被 /v1/auth/ 兜底成 404）。
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodOptions} {
+		rr := appDo(t, app, method, "/v1/auth/registration", nil)
+		if rr.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s /v1/auth/registration = %d（body=%s）, want 405", method, rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "method not allowed") {
+			t.Fatalf("%s /v1/auth/registration body = %q, want method not allowed", method, rr.Body.String())
+		}
+	}
+
+	for i := 0; i < rlRegistrationStatusPerMin+1; i++ {
+		if rr := appDo(t, app, http.MethodPost, "/v1/auth/registration", nil); rr.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("第 %d 次 POST = %d, want 405", i+1, rr.Code)
+		}
+	}
+	if got := registrationState(t, app); got != registrationOpen {
+		t.Fatalf("POST 风暴之后 GET registration = %q, want open", got)
+	}
+}
+
 func TestRegistrationPolicy_FirstUserOnly_ClosesAfterFirstUser(t *testing.T) {
 	app := registrationApp(t, registrationFirstUserOnly)
 	if rr := registerPassword(t, app, "first"); rr.Code != http.StatusOK {
@@ -132,7 +156,6 @@ func TestRegistrationPolicy_FirstUserOnly_ClosesAfterFirstUser(t *testing.T) {
 		})
 	}
 
-	// 闸门拒绝后库没有变。
 	if n, err := app.DB.UserCount(t.Context()); err != nil || n != 1 {
 		t.Fatalf("拒绝后用户数 = %d (err=%v), want 1", n, err)
 	}

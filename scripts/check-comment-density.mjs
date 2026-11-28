@@ -29,7 +29,7 @@ export const BASELINE = {
 	"schemaVersion": 2,
 	"measuredAt": "2026-11-28",
 	"commentLines": 42819,
-	"codeLines": 301897,
+	"codeLines": 301928,
 	"files": 801,
 	"dirs": {
 		".": 86,
