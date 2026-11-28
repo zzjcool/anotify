@@ -760,14 +760,13 @@ body {
 	overflow-wrap: anywhere;
 	word-break: break-word;
 }
-.log-line { /* 不是 block：行尾已有换行符，block 会让一个换行翻成两行 */
-	overflow-wrap: anywhere;
-}
+.log-seq,
 .log-at,
 .log-tag {
 	color: var(--faint);
 }
-.log-line.is-stderr {
+.log-line.is-stderr,
+.log-line.is-stderr .log-tag { /* [stderr] 前缀也要上色：扫日志时先看到的就是它 */
 	color: var(--error);
 }
 .tk-key {

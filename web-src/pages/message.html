@@ -576,21 +576,27 @@
       choice.addEventListener("change", () => loadLogs());
       logs.append(controls, el("div", { id: "logs-status", class: "card-sub" }), el("div", { id: "logs-output" }));
     }
-    function logClock(at) { // 时间戳缩成 HH:MM:SS.mmm；解析不出来就原样显示（不猜也不隐藏）
+    function logParts(at) { // ISO 拆成 [日期, HH:MM:SS.mmm]；解析不出来就原样放时钟位（不猜也不隐藏）
       const text = at == null ? "" : String(at);
       const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?)/.exec(text);
-      return match ? match[2] : text;
+      return match ? [match[1], match[2]] : ["", text];
     }
-    function logLineText(line) {
-      return logClock(line.at) + " [" + line.stream + "] " + line.text;
+    function logLineText(line) { // 复制拿的是原文：序号 + 完整 ISO，跨天/跨尝试也对得回后端
+      const head = [line.sequence, line.at].filter(part => part != null && part !== "").join(" ");
+      return (head ? head + " " : "") + "[" + line.stream + "] " + (line.text == null ? "" : line.text);
     }
     function logLines(lines, label) { // #586：不走 json()——那会把拼好的串再 stringify（引号 + 字面 \n + 挤成一行）
       const text = lines.map(logLineText).join("\n");
       const body = el("pre", { class: "code-body log-body" }); // .log-body 覆盖 pre → pre-wrap，长行自动折行
-      for (const line of lines) {
+      let day = ""; // 第一行不补日期（就是 issue 要的 HH:MM:SS.mmm）；往后只有跨天才补 MM-DD
+      for (const [index, line] of lines.entries()) {
+        const [date, clock] = logParts(line.at);
+        const stamp = index > 0 && date && date !== day ? date.slice(5) + " " + clock : clock; // 跨天补 MM-DD：23:59 → 00:01 不会看着像倒序
+        day = date || day;
         const row = el("span", { class: "log-line" + (line.stream === "stderr" ? " is-stderr" : "") }); // stderr 行单独上色
         row.append(
-          el("span", { class: "log-at", title: line.at == null ? "" : String(line.at), text: logClock(line.at) + " " }),
+          el("span", { class: "log-seq", text: line.sequence == null ? "" : line.sequence + " " }), // 序号留着：tail/since 截断后能看出缺口
+          el("span", { class: "log-at", title: line.at == null ? "" : String(line.at), text: stamp + " " }),
           el("span", { class: "log-tag", text: "[" + line.stream + "] " }),
           el("span", { "data-raw-content": "", text: String(line.text) + "\n" })); // 行尾是真换行；原文是用户数据
         body.append(row);
@@ -600,7 +606,7 @@
       return el("div", { class: "code-block" },
         el("div", { class: "code-head" }, el("span", { text: label || t("message.v4.logs") }), button), body);
     }
-    function logsNotStarted() { // #586：attempt 0 且没 startedAt = 还没执行；后端那个 410 会把它说成「已过期」
+    function neverRan() { // #586：attempt 0 且没 startedAt = 从没跑过；后端那个 410 会把它说成「已过期」
       return !task.startedAt && !(task.attempt > 0);
     }
     async function logRetentionDays() { // 保留期在钉住的那个版本上（lifecycle.resultTtlSec）；读不到就不说天数
@@ -609,7 +615,7 @@
       try {
         const doc = await api(nsPath("capabilities", cap.name) + "/versions/" + encodeURIComponent(String(cap.version)));
         const ttl = doc && doc.spec && doc.spec.lifecycle ? doc.spec.lifecycle.resultTtlSec : null;
-        if (!Number.isFinite(ttl) || ttl <= 0) return "";
+        if (!Number.isFinite(ttl) || ttl < 86400) return ""; // 不足一天不说「N 天」：0.0 天是假精度，不如不说
         return ttl % 86400 === 0 ? String(ttl / 86400) : (ttl / 86400).toFixed(1);
       } catch {
         return "";
@@ -623,11 +629,12 @@
       node("logs-status").textContent = "";
       output.replaceChildren(el("p", { class: "card-sub", text: t("events.v4.loading") }));
       try {
-        if (logsNotStarted()) {
+        if (neverRan()) {
+          const closed = !!task.finishedAt; // 已结束却从没跑：说「还在等」会把排障引到等待原因上
           output.replaceChildren(stateNode({
             compact: true,
-            title: t("message.v4.logs_not_started", "任务还没开始执行，暂无日志。"),
-            desc: t("message.v4.logs_not_started_hint", "执行诊断里有它正在等待的原因。"),
+            title: closed ? t("message.v4.logs_never_ran", "任务已结束，且从未执行，没有日志。") : t("message.v4.logs_not_started", "任务还没开始执行，暂无日志。"),
+            desc: closed ? t("message.v4.logs_never_ran_hint", "执行诊断里有它没能跑起来的原因。") : t("message.v4.logs_not_started_hint", "执行诊断里有它正在等待的原因。"),
             back: { href: "#task-facts", text: t("message.v4.diagnostics", "执行诊断") },
           }));
           return;
@@ -649,12 +656,12 @@
           if (task.finishedAt) {
             const days = await logRetentionDays();
             if (current !== revision || request !== logRequest) return;
-            output.replaceChildren(stateNode({
+            output.replaceChildren(stateNode({ // 410 只说「档案不可用」：过保留期和被节点丢弃是两种可能，别替后端断言一种
               compact: true,
-              title: t("message.v4.logs_expired", "日志已过保留期"),
+              title: t("message.v4.logs_expired", "日志档案已不可用"),
               desc: days
-                ? t("message.v4.logs_expired_ttl", "这个能力的日志保留期是 {n} 天，超期后档案已被清理，不会再恢复。").replace("{n}", days)
-                : t("message.v4.logs_expired_gone", "档案已被清理，不会再恢复。"),
+                ? t("message.v4.logs_expired_ttl", "这个能力的日志保留期是 {n} 天；档案已过保留期清理，或被节点丢弃，不会再恢复。").replace("{n}", days)
+                : t("message.v4.logs_expired_gone", "档案已过保留期清理，或被节点丢弃，不会再恢复。"),
             }));
           } else {
             output.replaceChildren(stateNode({

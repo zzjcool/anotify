@@ -3481,6 +3481,8 @@ test('#586 message logs render real plain-text lines (stderr kept, no JSON quoti
   assert.equal(String(rows[0].className).includes('is-stderr'), false);
   assert.equal(String(rows[1].className).includes('is-stderr'), true, 'stderr rows are marked for the failure colour');
   assert.match(text, /22:45:58\.254/, 'timestamps shrink to HH:MM:SS.mmm');
+  const seqs = b2Find(pre, n => /(^| )log-seq( |$)/.test(String(n.className))).map(node => b2Text(node).trim());
+  assert.deepEqual(seqs, ['1', '2'], 'sequence numbers stay visible (the only evidence of gaps after tail/since trims)');
   const clips = [];
   run.sandbox.navigator.clipboard.writeText = async value => { clips.push(value); };
   const copy = b2Find(run.get('task-logs'), n => n.tagName === 'BUTTON' && String(n.className).includes('copy-btn'))[0];
@@ -3490,6 +3492,7 @@ test('#586 message logs render real plain-text lines (stderr kept, no JSON quoti
   assert.equal(clips[0].includes('\\n'), false, 'copy is not an escaped JSON string: ' + clips[0]);
   assert.equal(clips[0].split('\n').length, 2, 'copy is two real lines: ' + clips[0]);
   assert.match(clips[0].split('\n')[1], /\[stderr\] lint failed: 3 errors in src\/main\.go/);
+  assert.match(clips[0].split('\n')[0], /^1 2026-11-24T22:45:58\.254702693Z \[stdout\] checking PR #99 of acme\/api$/, 'copy keeps sequence + full ISO (the display may shorten, the pasted text must not): ' + clips[0]);
 
   const never = await b2Page('message', '?namespace=default&id=tsk_mock_5', ({ Mock }) => {
     const task = Mock.state.tasks.find(x => x.name === 'tsk_mock_5');
@@ -3500,6 +3503,50 @@ test('#586 message logs render real plain-text lines (stderr kept, no JSON quoti
   assert.match(empty, /任务还没开始执行/);
   assert.equal(/内容已过期|载入失败/.test(empty), false, 'never-ran is not "expired": ' + empty);
   assert.equal(b2Text(never.get('logs-status')).trim(), '');
+});
+
+test('#586 message logs: 410 is not always "expired" — finished says the archive is gone, running says there is none yet', async () => {
+  const expired = await b2Page('message', '?namespace=default&id=tsk_mock_3');
+  assert.equal(expired.calls.filter(c => String(c.url).includes('/logs')).length, 1, 'a finished task without an archive still asks once');
+  const expiredText = b2Text(expired.get('logs-output'));
+  assert.match(expiredText, /日志档案已不可用/);
+  assert.match(expiredText, /7 天/, 'the pinned version keeps logs 604800s = 7 days: ' + expiredText);
+  assert.equal(/内容已过期|载入失败/.test(expiredText), false, 'the bare 410 mapping must not win: ' + expiredText);
+
+  const unknownTtl = await b2Page('message', '?namespace=default&id=tsk_mock_3', ({ Mock }) => {
+    Mock.state.capabilities.find(c => c.name === 'lint-fix' && c.version === 1).spec.lifecycle.resultTtlSec = 3600;
+  });
+  const unknownText = b2Text(unknownTtl.get('logs-output'));
+  assert.match(unknownText, /日志档案已不可用/);
+  assert.equal(/\d+(\.\d+)? 天/.test(unknownText), false, 'no day count when the pinned version does not carry one: ' + unknownText);
+
+  const running = await b2Page('message', '?namespace=default&id=tsk_mock_6');
+  const runningText = b2Text(running.get('logs-output'));
+  assert.match(runningText, /这次执行还没有日志档案/);
+  assert.equal(/已过保留期|档案已不可用|内容已过期/.test(runningText), false, 'a running task has no archive yet, it is not expired: ' + runningText);
+});
+
+test('#586 message logs: an ended-but-never-run task is not "still waiting", and a day change stays visible', async () => {
+  const closed = await b2Page('message', '?namespace=default&id=tsk_mock_3', ({ Mock }) => {
+    const task = Mock.state.tasks.find(x => x.name === 'tsk_mock_3');
+    task.attempt = 0; task.startedAt = null; task.phase = 'failed'; task.finishedAt = '2026-11-24T22:50:00Z';
+  });
+  assert.equal(closed.calls.filter(c => String(c.url).includes('/logs')).length, 0, 'never ran = nothing to archive, so no /logs request');
+  const closedText = b2Text(closed.get('logs-output'));
+  assert.match(closedText, /任务已结束，且从未执行/);
+  assert.equal(/还没开始执行|正在等待/.test(closedText), false, 'an ended task is not waiting for anything: ' + closedText);
+
+  const rollover = await b2Page('message', '?namespace=default&id=tsk_mock_2', ({ Mock }) => {
+    Mock.state.taskLogs.find(l => l.task === 'tsk_mock_2').lines = [
+      { sequence: 1, stream: 'stdout', text: 'before midnight', at: '2026-11-24T23:59:59.500Z' },
+      { sequence: 2, stream: 'stdout', text: 'after midnight', at: '2026-11-25T00:00:01.250Z' },
+    ];
+  });
+  const rows = b2Find(rollover.get('task-logs'), n => /(^| )log-line( |$)/.test(String(n.className)));
+  assert.equal(rows.length, 2);
+  assert.match(b2Text(rows[0]), /23:59:59\.500/);
+  assert.equal(/11-24/.test(b2Text(rows[0])), false, 'first line: no date prefix needed');
+  assert.match(b2Text(rows[1]), /11-25 00:00:01\.250/, 'day change is visible, so midnight cannot look like a reversed order');
 });
 
 test("F2b2 trace/index controllers: actual namespace Trace graph and task deep links, stats only", async () => {
