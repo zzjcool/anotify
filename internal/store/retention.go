@@ -314,6 +314,24 @@ func terminalPhaseIn() (string, []any) {
 	return strings.Join(ph, ","), args
 }
 
+// purgeDeletedCapabilitiesCandidateSQL 是回收候选集的**唯一**来源：DELETE 与
+// EXPLAIN 门禁（retention_purge_index_test.go）跑同一条语句，不抄副本。
+//
+// 判据里四列都带索引：三个 capability_id 引用列由 migration 13 补上
+// （idx_tasks_capability_id / idx_task_attempts_capability /
+// idx_task_artifact_manifests_capability），deployments 早就有 idx_deploy_capability。
+// 没有这些索引时每个 tombstone 都是一次全表扫，代价 = 任务行数 × 候选 tombstone 数，
+// 稳态（一行都删不掉）也要按这个规模持写锁（#628）。
+func purgeDeletedCapabilitiesCandidateSQL() string {
+	return `SELECT c.id FROM capability_versions c WHERE c.deleted_at IS NOT NULL
+ AND NOT EXISTS(SELECT 1 FROM tasks t WHERE t.capability_id=c.id)
+ AND NOT EXISTS(SELECT 1 FROM task_attempts a WHERE a.capability_id=c.id)
+ AND NOT EXISTS(SELECT 1 FROM task_artifact_manifests m WHERE m.capability_id=c.id)
+ AND NOT EXISTS(SELECT 1 FROM deployments d WHERE d.capability_id=c.id)
+ AND NOT EXISTS(SELECT 1 FROM playbook_installs p WHERE p.id=c.installed_from OR EXISTS(SELECT 1 FROM json_tree(p.receipt) j WHERE j.type='text' AND j.value=c.id))
+ ORDER BY c.deleted_at,c.id LIMIT ?`
+}
+
 // PurgeDeletedCapabilities physically deletes only immutable tombstone IDs with
 // no task, attempt, manifest, deployment, or retained install-receipt reference.
 // All predicates and deletion execute as one writer statement/transaction;
@@ -327,14 +345,8 @@ func (d *DB) PurgeDeletedCapabilities(ctx context.Context, limit int) (int64, er
 		return 0, err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `DELETE FROM capability_versions WHERE id IN (
- SELECT c.id FROM capability_versions c WHERE c.deleted_at IS NOT NULL
- AND NOT EXISTS(SELECT 1 FROM tasks t WHERE t.capability_id=c.id)
- AND NOT EXISTS(SELECT 1 FROM task_attempts a WHERE a.capability_id=c.id)
- AND NOT EXISTS(SELECT 1 FROM task_artifact_manifests m WHERE m.capability_id=c.id)
- AND NOT EXISTS(SELECT 1 FROM deployments d WHERE d.capability_id=c.id)
- AND NOT EXISTS(SELECT 1 FROM playbook_installs p WHERE p.id=c.installed_from OR EXISTS(SELECT 1 FROM json_tree(p.receipt) j WHERE j.type='text' AND j.value=c.id))
- ORDER BY c.deleted_at,c.id LIMIT ?)`, limit)
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM capability_versions WHERE id IN (`+purgeDeletedCapabilitiesCandidateSQL()+`)`, limit)
 	if err != nil {
 		return 0, fmt.Errorf("purge capability references: %w", err)
 	}
