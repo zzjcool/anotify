@@ -336,22 +336,19 @@ func decodeStringList(raw string) ([]string, error) {
 
 // GetSystemConfig 读中枢系统配置；没有行时返回默认保留期。
 //
-// 没有行时 ResourceVersion = 1：单行表（id 恒为 1）在语义上已经存在，
-// 首次 PUT 必须能带一个合法的前置条件（缺失 = 400），所以默认值也给出可用令牌。
+// 没有行时 ResourceVersion = 1：单行表（id 恒为 1）语义上已存在，首次 PUT 必须能带一个
+// 合法前置条件（缺失 = 400），所以默认值也给出可用令牌。
 //
-// 只读路径**不**开事务（形状与理由照 `nodeEligibility`，见 node.go）：DSN 带着
-// `_txlock=immediate`（store.go:104），驱动把它应用到该 DSN 上的**每一条**连接 ——
-// 哪怕只是一条 SELECT，包了 `BeginTx` 也会开局抢写锁、排到写者后面。写者持锁时这里
-// 要等满 busy_timeout（store.go:102 的 5000ms）才报 `database is locked`，而这条读在
-// **ingest 热路径**上（`source.Service.eventWindow`，internal/source/source.go:363）——
-// 一次锁等待就是一次事件投递失败，并且被 ingress 翻成 500。
+// 只读路径**不**开事务（形状与理由照 `nodeEligibility`，见 node.go）：`_txlock=immediate`
+// （store.go:104）作用于该 DSN 上**每一条**连接 —— 一条 SELECT 包了 `BeginTx` 也会开局抢写
+// 锁、排到写者后面，等满 busy_timeout(5000ms) 报 `database is locked`。而这条读在 **ingest
+// 热路径**上（`source.Service.eventWindow`，internal/source/source.go:363）：一次锁等待就是
+// 一次事件投递失败，并被 ingress 翻成 500。
 //
-// 为什么去掉事务仍然安全：
-// - 读的是**单行、单语句**（`WHERE id = 1`），一条语句本身就是原子的，不会读到「半个行」；
-// - 调用方把错误当**可回落**：eventWindow 出错即用默认保留期
-// （internal/source/source.go:364-367）；RetentionConfig / RunRetention 只是报错，不写库；
-// - 没有调用方拿它做 check-then-act：改配置一律走 PutSystemConfig 的 CAS，它在自己的
-// **写事务内**重读 resource_version 再比。
+// 为什么去掉事务仍然安全：①读是**单行、单语句**（`WHERE id = 1`），一条语句本身原子；
+// ②调用方把错误当**可回落**（eventWindow 出错即用默认保留期，internal/source/source.go:364-367；
+// RetentionConfig / RunRetention 只报错不写库）；③没有 check-then-act —— 改配置一律走
+// PutSystemConfig 的 CAS，它在**写事务内**重读 resource_version 再比。
 func (d *DB) GetSystemConfig(ctx context.Context) (*SystemConfig, error) {
 	cfg := &SystemConfig{
 		RetentionEventTTLSec:  DefaultRetentionEventTTLSec,
@@ -374,7 +371,7 @@ func (d *DB) GetSystemConfig(ctx context.Context) (*SystemConfig, error) {
 // PutSystemConfig 写中枢系统配置（CAS：必须带当前 resourceVersion）。
 //
 // 缺 rv → ErrResourceVersionRequired（400）；rv 已旧 → ErrResourceVersionConflict（409）。
-// 成功后 cfg.ResourceVersion 就地 +1（单行表恒存在）。
+// 成功后 cfg.ResourceVersion 就地 +1。
 func (d *DB) PutSystemConfig(ctx context.Context, cfg *SystemConfig, rv int64) error {
 	if cfg == nil {
 		return fmt.Errorf("put system config: nil")
@@ -431,9 +428,8 @@ func (d *DB) PutSystemConfig(ctx context.Context, cfg *SystemConfig, rv int64) e
 	return nil
 }
 
-// SeedSystemConfigIfEmpty 在 system_config **无行**时写入给定保留期，返回「确实播种了」。
-//
-// 已有行 → 一个字节都不动、返回 false。运行期改配置的唯一路径仍是 PutSystemConfig。
+// SeedSystemConfigIfEmpty 在 system_config **无行**时写入给定保留期，返回「确实播种了」；
+// 已有行 → 一个字节都不动、返回 false（运行期改配置的唯一路径仍是 PutSystemConfig）。
 //
 // 为什么需要它（#005）：保留期的**运行期**来源只有一个 —— system_config
 // （RunRetention 每轮 GetSystemConfig）。而 env `ANOTIFY_EVENT_RETENTION_DAYS` 在 v4
@@ -444,12 +440,11 @@ func (d *DB) PutSystemConfig(ctx context.Context, cfg *SystemConfig, rv int64) e
 // （GET/PUT /v1/system/config）。若 env 每次启动都覆盖，就退回「双源互相打架」——
 // 「昨天在控制台改成 7 天，今天重启又变回 90 天」这类事故比「不生效」更难查。
 //
-// 并发安全：单条 `INSERT OR IGNORE` 本身就是原子的，多实例同时首次启动时只有一行
-// 插得进去，另一条拿到 RowsAffected()==0。刻意**不**写成「先查再插」：那中间有窗口，
-// 而单行表（id 恒为 1）的冲突判定交给 SQLite 比应用层更可靠。
+// 并发安全：单条 `INSERT OR IGNORE` 本身原子 —— 多实例同时首次启动只有一行插得进去，另一条
+// RowsAffected()==0。刻意**不**写「先查再插」：窗口交给单行表（id 恒为 1）的冲突判定更可靠。
 //
-// 记账：resource_version 写 1（= 与「无行」时 GetSystemConfig 报出的默认令牌一致）。
-// 这条很关键：首次 PUT 的前置条件仍然成立，且「rv>1」可以当「运维 PUT 过」的证据用。
+// 记账：resource_version 写 1（= 「无行」时 GetSystemConfig 报出的默认令牌）—— 首次 PUT 的
+// 前置条件仍成立，且「rv>1」可以当「运维 PUT 过」的证据用。
 //
 // 校验口径照 PutSystemConfig：nil / 负数 → ErrConfigInvalid，且**不写**。
 // 「负数 = 永久保留」这种归一化只发生在解析层（server 侧），store 不接受负数。
@@ -487,21 +482,17 @@ func (d *DB) SeedSystemConfigIfEmpty(ctx context.Context, cfg *SystemConfig) (bo
 
 // GetNamespaceConfig 读某个命名空间的默认 vars；没有配置行时返回空默认。
 //
-// 空默认的 ResourceVersion = 1（与 namespace_configs 列默认同值），
-// 让首次 PUT 能带一个合法前置条件。命名空间不存在 → ErrNamespaceNotFound。
+// 空默认的 ResourceVersion = 1（与 namespace_configs 列默认同值），让首次 PUT 能带一个
+// 合法前置条件。命名空间不存在 → ErrNamespaceNotFound。
 //
-// 只读路径**不**开事务（同 GetSystemConfig / `nodeEligibility`）：`_txlock=immediate`
-// 让读事务开局就抢写锁，把 ingest 热路径串行化到写者后面 —— 写者持锁时这里等满
-// busy_timeout(5000ms) 才报 `database is locked`（#008 的 5.006s 500 就是这一步）。
+// 只读路径**不**开事务（机制与热路径见 GetSystemConfig，#008）：写者持锁时这里会等满
+// busy_timeout(5000ms) 报 `database is locked`（#008 的 5.006s 500 就是这一步）。
 //
-// 为什么去掉事务仍然安全：这三条读**不是** check-then-act。
-// - 存在性（namespaceExistsOn）只是把「ns 不存在」翻成具名错误；
-// - Revision 是调用方带进写事务的「**计划时**钉住的输入版本」，真正的校验发生在
-// AcceptSourceEvent 的**写事务内**（internal/store/source_event.go:187-196 →
-// ErrNamespaceInputsChanged，api 侧翻 409，调用方重新计划）；
-// - namespaces.resource_version 同样只是写侧 CAS 的**前置条件**，写事务内会重读再比。
-//
-// 所以最坏情况是「拿到略旧的快照 → 写事务里被判 409」，不会被伪造成成功。
+// 为什么去掉事务仍然安全：这三条读**不是** check-then-act —— 存在性（namespaceExistsOn）
+// 只把「ns 不存在」翻成具名错误；Revision 是调用方带进写事务的「**计划时**钉住的输入版本」，
+// 真正的校验在 AcceptSourceEvent 的**写事务内**（internal/store/source_event.go:187-196
+// → ErrNamespaceInputsChanged，api 侧 409，调用方重新计划）；namespaces.resource_version
+// 同样只是写侧 CAS 的前置条件，写事务内会重读再比。最坏是「略旧快照 → 写事务判 409」。
 func (d *DB) GetNamespaceConfig(ctx context.Context, namespaceID string) (*NamespaceConfig, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -539,8 +530,7 @@ func (d *DB) GetNamespaceConfig(ctx context.Context, namespaceID string) (*Names
 
 // PutNamespaceConfig 写某个命名空间的默认 vars（CAS + 单调 revision）。
 //
-// 每次成功写入：revision +1（namespaceVarsRevision）、resource_version +1。
-// 值校验见 ValidateVars；违反 → ErrConfigInvalid。
+// 每次成功写入：revision +1（namespaceVarsRevision）、resource_version +1；违反 ValidateVars → ErrConfigInvalid。
 func (d *DB) PutNamespaceConfig(ctx context.Context, namespaceID string, vars map[string]string, rv int64) (*NamespaceConfig, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -650,31 +640,30 @@ func namespaceExistsOn(ctx context.Context, ex queryExec, namespaceID string) er
 // GetNodeConfig 读一台节点的中枢侧默认值与上报快照；没有配置行时返回空默认。
 //
 // 空默认：namespaces = ["*"]（不额外限制，以节点申报为准）、vars/limits 空、
-// revision 0、resource_version 1（首次 PUT 的合法前置条件）。
-// 节点不存在 → ErrNotFound（不是「返回空默认」：那会让一次写错 id 的读看起来成功）。
+// revision 0、resource_version 1（首次 PUT 的合法前置条件）。节点不存在 → ErrNotFound
+// （不是「返回空默认」：那会让一次写错 id 的读看起来成功）。
+//
+// 只读路径**不**开事务（#617）：`_txlock=immediate` 让空事务也开局抢写锁 → 写者持锁时这里排队到
+// 写者提交、满 busy_timeout 报 `database is locked`（实测 4.9s，机制见 GetSystemConfig）；它在
+// welcome / config.get、DispatchOnce、GET /v1/nodes 上。安全性同 #008：不是 check-then-act 的前半段
+// —— 写方在自己的写事务内重读 resource_version 再 CAS（putNodeConfigOn），最坏是「略旧快照 → 写事务判 409」。
 func (d *DB) GetNodeConfig(ctx context.Context, nodeID string) (*NodeConfig, error) {
 	if nodeID == "" {
 		return nil, fmt.Errorf("get node config: empty node_id")
 	}
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("get node config: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	cfg, err := scanNodeConfigOn(ctx, txExec{tx: tx}, nodeID)
+	// 下面两条读走**同一个** ex：一半走池、一半走事务就成了两个快照的撕裂形态
+	// （配置行看见的行与存在性看不见的行不是同一个时刻）。
+	ex := queryExec(d)
+	cfg, err := scanNodeConfigOn(ctx, ex, nodeID)
 	if err != nil {
 		return nil, err
 	}
 	if cfg == nil {
 		// 没有配置行：节点必须存在（否则是调用方写错 id）。
-		if err := nodeExistsOn(ctx, txExec{tx: tx}, nodeID); err != nil {
+		if err := nodeExistsOn(ctx, ex, nodeID); err != nil {
 			return nil, err
 		}
 		cfg = emptyNodeConfig(nodeID)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("get node config: commit: %w", err)
 	}
 	return cfg, nil
 }
@@ -733,7 +722,7 @@ func scanNodeConfigOn(ctx context.Context, ex queryExec, nodeID string) (*NodeCo
 	return cfg, nil
 }
 
-// nodeExistsOn 在事务内确认节点存在（不存在 → ErrNotFound）。
+// nodeExistsOn 确认节点存在（不存在 → ErrNotFound）；ex 可以是 *DB，也可以是事务。
 func nodeExistsOn(ctx context.Context, ex queryExec, nodeID string) error {
 	var one int
 	err := ex.queryRowContext(ctx, `SELECT 1 FROM nodes WHERE id = ?`, nodeID).Scan(&one)
@@ -748,9 +737,8 @@ func nodeExistsOn(ctx context.Context, ex queryExec, nodeID string) error {
 
 // PutNodeConfig 写一台节点的中枢侧默认值（CAS：cfg.ResourceVersion 是前置条件）。
 //
-// 每次成功写入：revision +1（configRevision）、resource_version +1；
-// 不碰 applied_* 与本机快照（那是节点回报/上报的事实）。
-// 成功后把新 revision/resourceVersion 就地写回 cfg。
+// 每次成功写入：revision +1（configRevision）、resource_version +1；不碰 applied_* 与本机
+// 快照（那是节点回报/上报的事实）。成功后把新 revision/resourceVersion 就地写回 cfg。
 // PutNodeConfig is the immutable-ID revision CAS; HTTP uses PutNodeConfigByName.
 func (d *DB) PutNodeConfig(ctx context.Context, cfg *NodeConfig) error {
 	if cfg == nil || cfg.NodeID == "" {
@@ -870,9 +858,8 @@ func (d *DB) PutNodeConfigBatch(ctx context.Context, cfgs []*NodeConfig) []NodeC
 
 // RecordApplied 记录节点回报的机器级配置已生效（config.md §4.2 的 config.applied）。
 //
-// 只碰 applied_* 三列：revision 是中枢的配置生效版本，节点只能**回报它应用了哪一版**，
-// 不能改写它（那会让「配置没生效」凭空变成「已生效」）。
-// 没有配置行时补一行默认值（节点先于中枢配置连上是正常时序）。
+// 只碰 applied_* 三列：revision 是中枢的配置生效版本，节点只能**回报它应用了哪一版**，不能
+// 改写它（那会让「配置没生效」凭空变成「已生效」）。没有配置行时补一行默认值（节点先于中枢配置连上）。
 func (d *DB) RecordApplied(ctx context.Context, nodeID string, revision int64, hash string) error {
 	if nodeID == "" {
 		return fmt.Errorf("record applied: empty node_id")
@@ -910,14 +897,11 @@ func (d *DB) RecordApplied(ctx context.Context, nodeID string, revision int64, h
 
 // RecordHello 落一次 hello 上报（config.md §4.2 / anode.md §3.3, D-I3）。
 //
-// 写两处，同一个事务：
-// 1. nodes：facts / declared_capabilities / declared_namespaces / agent 版本 / last_seen_at
-// —— 都是**节点自报的事实**，中枢只存快照；
-// 2. node_configs：local_vars / local_limits（本机值快照，只用于匹配与展示）。
-//
-// **不改节点默认值**（vars/limits/namespaces/revision）：默认值是中枢配置，
-// hello 只上报本机那份；两者同名时按 local > node > namespace 逐键解析。
-// 节点不存在 → ErrNotFound（token 定位失败必须响，不能静默丢配置）。
+// 写两处，同一个事务：①nodes —— facts / declared_capabilities / declared_namespaces / agent
+// 版本 / last_seen_at（**节点自报的事实**，中枢只存快照）；②node_configs —— local_vars /
+// local_limits（本机值快照，只用于匹配与展示）。**不改节点默认值**（vars/limits/namespaces/
+// revision）：默认值是中枢配置，两者同名时按 local > node > namespace 逐键解析。
+// 节点不存在 → ErrNotFound（不能静默丢配置）。
 func (d *DB) RecordHello(ctx context.Context, nodeID string, facts NodeFacts,
 	capabilities NodeCapabilityReport, declaredNamespaces []string,
 	localVars map[string]string, localLimits map[string]any,
@@ -1010,17 +994,16 @@ func (d *DB) RecordHello(ctx context.Context, nodeID string, facts NodeFacts,
 	return nil
 }
 
-// MergeDeclaredCapability 用一条**最新探测**更新节点申报里的**一项**（同名同版本替换，
-// 其它项保留），并 bump 节点行的 resource_version。
+// MergeDeclaredCapability 用一条**最新探测**更新节点申报里的**一项**（同名同版本替换，其它项
+// 保留），并 bump 节点行的 resource_version。
 //
-// 为什么需要：节点申报（nodes.declared_capabilities，来自 hello.capabilities[]）是
-// 「这台机器能不能跑这个能力」的唯一依据（EligibleNodes 的 CommandMissing 就查它），
-// 而它历史上只在握手时上报。部署刚落地时节点不会重连 ⇒ 中枢一直看到 CommandMissing ⇒
-// 能力部署成功却永远不可派发（现场：ready 一直 false）。`capability.deployed` 回执带回
-// 本次探测结果后用它落账，收敛不再依赖重连。
+// 为什么需要：节点申报（nodes.declared_capabilities，来自 hello.capabilities[]）是「这台机器
+// 能不能跑这个能力」的唯一依据（EligibleNodes 的 CommandMissing 就查它），而它历史上只在握手
+// 时上报 —— 部署刚落地时节点不重连 ⇒ 中枢一直看到 CommandMissing ⇒ 能力部署成功却永远不可
+// 派发（现场：ready 一直 false）。`capability.deployed` 回执带回本次探测结果后用它落账。
 //
-// 边界：这是**并集式**更新，不是整份替换（整份替换是 hello 的 RecordHello，下一次 hello
-// 会把整份对齐）。节点说它有、就记它有；不认识的条目原样保留。
+// 边界：**并集式**更新（节点说它有就记它有，不认识的条目原样保留），不是整份替换（整份替换是
+// hello 的 RecordHello，下一次 hello 会对齐全份）。
 func (d *DB) MergeDeclaredCapability(ctx context.Context, nodeID string, cap DeclaredCapability) error {
 	if nodeID == "" {
 		return fmt.Errorf("merge declared capability: empty node_id")
@@ -1135,23 +1118,19 @@ func (d *DB) EffectiveVars(ctx context.Context, nodeID, namespaceID string, name
 	return out, nil
 }
 
-// loadVarsLayers 一次读出三层 vars（机器级两层 + 任务 ns 一层）。
+// loadVarsLayers 一次读出三层 vars（机器级两层 + 任务 ns 一层）；纯读，不开事务（#617，
+// 理由见 GetNodeConfig，三层 vars 之间没有跨层不变量）。
 func (d *DB) loadVarsLayers(ctx context.Context, nodeID, namespaceID string) (local, node, ns map[string]string, err error) {
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("load vars layers: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if err := nodeExistsOn(ctx, txExec{tx: tx}, nodeID); err != nil {
+	ex := queryExec(d)
+	if err := nodeExistsOn(ctx, ex, nodeID); err != nil {
 		return nil, nil, nil, err
 	}
-	if err := namespaceExistsOn(ctx, txExec{tx: tx}, namespaceID); err != nil {
+	if err := namespaceExistsOn(ctx, ex, namespaceID); err != nil {
 		return nil, nil, nil, err
 	}
 	local, node = map[string]string{}, map[string]string{}
 	var rawLocal, rawNode string
-	qerr := tx.QueryRowContext(ctx,
+	qerr := ex.queryRowContext(ctx,
 		`SELECT local_vars, vars FROM node_configs WHERE node_id = ?`, nodeID).
 		Scan(&rawLocal, &rawNode)
 	if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
@@ -1167,7 +1146,7 @@ func (d *DB) loadVarsLayers(ctx context.Context, nodeID, namespaceID string) (lo
 	}
 	ns = map[string]string{}
 	var rawNS string
-	qerr = tx.QueryRowContext(ctx,
+	qerr = ex.queryRowContext(ctx,
 		`SELECT vars FROM namespace_configs WHERE namespace_id = ?`, namespaceID).Scan(&rawNS)
 	if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
 		return nil, nil, nil, fmt.Errorf("load vars layers: namespace config: %w", qerr)
@@ -1176,9 +1155,6 @@ func (d *DB) loadVarsLayers(ctx context.Context, nodeID, namespaceID string) (lo
 		if ns, err = decodeStringMap(rawNS); err != nil {
 			return nil, nil, nil, fmt.Errorf("load vars layers: namespace vars: %w", err)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, nil, nil, fmt.Errorf("load vars layers: commit: %w", err)
 	}
 	return local, node, ns, nil
 }
@@ -1198,10 +1174,8 @@ func varRefName(raw string) (string, bool) {
 
 // ResolveRequiredValues 判定 `spec.requires.values` 里每个 `vars.*` 名字都能解析。
 //
-// 只处理 `vars.*`：`status.*` / `metadata.*` 是节点内置事实，不参与匹配
-// （anode.md §3.6：它们不用写进 requires.values）。格式坏掉的元素按缺失处理
-// （宁可少派，也不把拼错的引用当成"不需要值"）。
-//
+// 只处理 `vars.*`（`status.*` / `metadata.*` 是节点内置事实，不用写进 requires.values，见
+// anode.md §3.6）。格式坏掉的元素按缺失处理（宁可少派，也不把拼错的引用当成"不需要值"）；
 // missing 保留调用方给的**原字符串**（`vars.SOURCE_ROOT`），直接可回显给用户。
 func (d *DB) ResolveRequiredValues(ctx context.Context, nodeID, namespaceID string, values []string) (bool, []string, error) {
 	names := make([]string, 0, len(values))
@@ -1241,29 +1215,26 @@ func (d *DB) ResolveRequiredValues(ctx context.Context, nodeID, namespaceID stri
 // EffectiveLimits 返回一台节点的机器级生效并发预算（local ⊕ node）。
 //
 // 只有两层（anode.md §2 / C16）：total 同名覆盖；perCapability 递归到每个能力键，
-// local 同名覆盖 node、未写继承。没有 ns 层。
+// local 同名覆盖 node、未写继承。没有 ns 层。纯读，不开事务（#617，理由见 GetNodeConfig）：
+// limits 与 local_limits 同在一行，合并规则没有跨行不变量。
 func (d *DB) EffectiveLimits(ctx context.Context, nodeID string) (map[string]any, error) {
 	if nodeID == "" {
 		return nil, fmt.Errorf("effective limits: empty node_id")
 	}
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("effective limits: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if err := nodeExistsOn(ctx, txExec{tx: tx}, nodeID); err != nil {
+	ex := queryExec(d)
+	if err := nodeExistsOn(ctx, ex, nodeID); err != nil {
 		return nil, err
 	}
 	nodeLimits, localLimits := map[string]any{}, map[string]any{}
 	var rawNode, rawLocal string
-	qerr := tx.QueryRowContext(ctx,
+	qerr := ex.queryRowContext(ctx,
 		`SELECT limits, local_limits FROM node_configs WHERE node_id = ?`, nodeID).
 		Scan(&rawNode, &rawLocal)
 	if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
 		return nil, fmt.Errorf("effective limits: %w", qerr)
 	}
 	if qerr == nil {
+		var err error
 		if nodeLimits, err = decodeAnyMap(rawNode); err != nil {
 			return nil, fmt.Errorf("effective limits: node limits: %w", err)
 		}
@@ -1271,20 +1242,15 @@ func (d *DB) EffectiveLimits(ctx context.Context, nodeID string) (map[string]any
 			return nil, fmt.Errorf("effective limits: local limits: %w", err)
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("effective limits: commit: %w", err)
-	}
 	return mergeLimits(nodeLimits, localLimits), nil
 }
 
 // TypedMachineLimits 把「local ⊕ node 合并后的 limits 映射」归一成协议强类型。
 //
-// 这是 store 里**唯一**的 limits → protocol.Limits 适配点：共享 hash、grant 的
-// applied 校验与 attempt 快照都经由它，禁止在别处再写一份「map 怎么读 total/
-// perCapability」的规则（否则两侧对同一份配置算出不同 hash）。
-//
-// 缺省语义交给 protocol.MachineConfigHash（total 未设置归一成 1）；这里是保真转换，
-// 非法形状（负数 / 非整数 / 未知维度）直接报错，不静默丢弃（配置写入期已校验，
+// 这是 store 里**唯一**的 limits → protocol.Limits 适配点：共享 hash、grant 的 applied 校验与
+// attempt 快照都经由它，禁止在别处再写一份「map 怎么读 total/perCapability」的规则（否则两侧
+// 对同一份配置算出不同 hash）。缺省语义交给 protocol.MachineConfigHash（total 未设置归一成 1）；
+// 这里是保真转换，非法形状（负数 / 非整数 / 未知维度）直接报错，不静默丢弃（写入期已校验，
 // 走到这里说明库里已有坏数据）。
 func TypedMachineLimits(raw map[string]any) (protocol.Limits, error) {
 	out := protocol.Limits{}
@@ -1316,11 +1282,9 @@ func TypedMachineLimits(raw map[string]any) (protocol.Limits, error) {
 	return out, nil
 }
 
-// MachineConfigHash 是 store 侧计算「机器生效配置内容 hash」的唯一入口。
-//
-// 它只做一件事：把合并后的 vars / limits（map 形态，来自 node_configs 的
-// vars/local_vars/limits/local_limits）适配成强类型后调用**共享的**
-// protocol.MachineConfigHash。不在 store 复制 canonical 规则，也不把 namespace 默认值、
+// MachineConfigHash 是 store 侧计算「机器生效配置内容 hash」的唯一入口：把合并后的 vars / limits
+// （map 形态，来自 node_configs 的 vars/local_vars/limits/local_limits）适配成强类型后调用
+// **共享的** protocol.MachineConfigHash。不在 store 复制 canonical 规则，也不把 namespace 默认值、
 // revision、token、凭证、envPassthrough 名单带进 hash（那些不是机器配置内容）。
 func MachineConfigHash(vars map[string]string, limits map[string]any) (string, error) {
 	typed, err := TypedMachineLimits(limits)
@@ -1351,21 +1315,18 @@ func mergeLimits(base, override map[string]any) map[string]any {
 // AuthorizedNamespaces 返回一台节点的**生效**命名空间列表（申报 ∩ 授权）。
 //
 // 两边各有一份列表：node_configs.namespaces 是中枢授权（缺省 ["*"]），
-// nodes.declared_namespaces 是本机申报（hello 上报）。任一侧 "*" = 全部；
-// 这是权限，只能收紧，**不做** local 优先（anode.md D7）。
-// 返回 ns 名（slug）或 ["*"]（两边都是 "*"）。
+// nodes.declared_namespaces 是本机申报（hello 上报）。任一侧 "*" = 全部；这是权限，
+// 只能收紧，**不做** local 优先（anode.md D7）。返回 ns 名（slug）或 ["*"]（两边都是 "*"）。
+//
+// 纯读，不开事务（#617；理由见 GetNodeConfig）：这是下发用的交集，真正的授权判定在写事务
+// 内重做（namespaceAllowedOn），稍旧的一次交集只会让某个 ns 本轮多收敛一次。
 func (d *DB) AuthorizedNamespaces(ctx context.Context, nodeID string) ([]string, error) {
 	if nodeID == "" {
 		return nil, fmt.Errorf("authorized namespaces: empty node_id")
 	}
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("authorized namespaces: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
+	ex := queryExec(d)
 	var rawDeclared string
-	err = tx.QueryRowContext(ctx,
+	err := ex.queryRowContext(ctx,
 		`SELECT declared_namespaces FROM nodes WHERE id = ?`, nodeID).Scan(&rawDeclared)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -1379,7 +1340,7 @@ func (d *DB) AuthorizedNamespaces(ctx context.Context, nodeID string) ([]string,
 	}
 	authorized := []string{NamespaceWildcard}
 	var rawAuthorized string
-	qerr := tx.QueryRowContext(ctx,
+	qerr := ex.queryRowContext(ctx,
 		`SELECT namespaces FROM node_configs WHERE node_id = ?`, nodeID).Scan(&rawAuthorized)
 	if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
 		return nil, fmt.Errorf("authorized namespaces: %w", qerr)
@@ -1388,9 +1349,6 @@ func (d *DB) AuthorizedNamespaces(ctx context.Context, nodeID string) ([]string,
 		if authorized, err = decodeStringList(rawAuthorized); err != nil {
 			return nil, fmt.Errorf("authorized namespaces: %w", err)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("authorized namespaces: commit: %w", err)
 	}
 	return intersectNamespaces(authorized, declared), nil
 }
