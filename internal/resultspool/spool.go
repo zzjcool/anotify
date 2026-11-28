@@ -34,7 +34,6 @@ const (
 // 导出错误（调用方用 errors.Is 判定，不比较错误字符串）。
 var (
 	// ErrInvalidObjectID 表示 id 不合白名单规则（长度 3..64、首字符字母、只含 [A-Za-z0-9_]）。
-	//
 	// 这是**安全边界**：id 是唯一会拼进文件名的外部输入，先校验再落盘，
 	// 任何 `..`、`/`、`\`、`.`、空白、控制字符、NUL 都在这里被拦住。
 	ErrInvalidObjectID = errors.New("resultspool: invalid object id")
@@ -49,10 +48,9 @@ var (
 
 // Store 是一个已初始化好的托管字节池。零值不可用：必须用 New 建（root/objects/tmp 的 0700 与存在性由 New 保证）。
 type Store struct {
-	root    string
-	objects string
-	tmp     string
-	// sweepWarn 是启动清理没删掉的遗留草稿（非致命：见 SweepWarning）。
+	root      string
+	objects   string
+	tmp       string
 	sweepWarn error
 }
 
@@ -62,8 +60,8 @@ type Store struct {
 // 猜一个默认值会在部署时把产物写到意料之外的盘上）。
 //
 // 建完目录后清一遍 tmp/ 下**上一次进程**遗留的草稿（kill -9 / OOM / 容器重启时 handler 的
-// defer Discard 不会运行）。只有列目录失败才让 New 失败；单个文件删不掉只记进 sweepWarn，
-// 由调用方 Warn —— 一份旧草稿不该让整个产物域 503。
+// defer Discard 不会运行）；GC 每轮也会再扫一次（sweepTmpDrafts），所以清理时机不取决于重启。
+// 只有列目录失败才让 New 失败；单个文件删不掉只记进 sweepWarn（见 SweepWarning）。
 func New(root string) (*Store, error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, errors.New("resultspool: root 为空（不猜默认路径）")
@@ -89,23 +87,30 @@ func New(root string) (*Store, error) {
 }
 
 // draftNameRE 是 tmp/ 下临时文件的唯一合法形状（名字只由 newTempFile 铸造：`draft-` + 32 位小写
-// 十六进制）。启动清理只认这个形状——不匹配的文件一律不碰，宁可漏删也不猜。
+// 十六进制）。清理（New 与 GC 每轮）只认这个形状——不匹配的文件一律不碰，宁可漏删也不猜。
 var draftNameRE = regexp.MustCompile(`^draft-[0-9a-f]{32}$`)
 
-// draftSweepGrace 是启动清理的时间护栏：只删 mtime 早于「现在 - draftSweepGrace」的草稿。
-//
-// 比它年轻的草稿可能是**另一个进程**正在写的：滚动重启/蓝绿、或两个实例共用同一个
-// ARTIFACT_SPOOL_DIR 时，删掉它会让那次上传在 Finalize 时 ENOENT。单次上传远跑不满这个窗口，
-// 所以只要一条时间线就能把「崩溃遗留」与「别进程在写」分开，不靠部署自觉。
-const draftSweepGrace = time.Hour
+// draftSweepGrace 是清理遗留草稿的时间护栏：只删 mtime 早于「现在 - draftSweepGrace」的草稿。
+// 草稿的 mtime 是最后一次写入的时刻，所以它量的是「多久没有进展」而不是「活了多久」：还在收字节的
+// 草稿一直新鲜，只有卡住/死掉的才过期。上传窗口是 30s（登记 ticket 与节点侧单次上传请求各 30s），
+// 取 2 倍；比这更年轻的草稿可能是另一个进程正在写的（滚动重启/共用 ARTIFACT_SPOOL_DIR）。
+const draftSweepGrace = time.Minute
 
-// SweepWarning 报告启动清理没能删掉的遗留草稿（nil = 干净）。非致命，调用方按 Warn 记录。
+// SweepWarning 报告清理（启动与 GC 每轮）没能删掉的遗留草稿（nil = 干净）。非致命，调用方按 Warn 记录。
 func (s *Store) SweepWarning() error { return s.sweepWarn }
 
-// sweepLeftoverDrafts 删掉 entries 里上一次进程遗留的草稿，返回删不掉的那些（汇总，非致命）。
-//
-// 只处置「名字匹配 draftNameRE、是普通文件、且 mtime 早于 draftSweepGrace」的条目：符号链接、
-// 子目录、其它名字、可能属于活进程的新草稿一律不碰。remove 是参数（测试可注入失败）。
+// sweepTmpDrafts 是 GC 每轮的临时目录扫描（New 走同一段逻辑，但把列目录失败当致命）。
+// 读目录失败只算本轮一次失败：进程已在服务，一份旧草稿不该让产物域停摆。
+func (s *Store) sweepTmpDrafts() error {
+	entries, err := os.ReadDir(s.tmp)
+	if err != nil {
+		return fmt.Errorf("resultspool: 扫描临时目录 %s: %w", s.tmp, err)
+	}
+	return s.sweepLeftoverDrafts(entries, os.Remove)
+}
+
+// sweepLeftoverDrafts 删掉 entries 里遗留的草稿，返回删不掉的那些（汇总，非致命）。
+// 名字/普通文件/mtime 三道守卫见条件本身：符号链接、子目录、活进程的新草稿一律不碰；remove 是参数。
 func (s *Store) sweepLeftoverDrafts(entries []os.DirEntry, remove func(string) error) error {
 	cutoff := time.Now().Add(-draftSweepGrace)
 	var errs []error
@@ -138,8 +143,7 @@ func ensurePrivateDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("resultspool: 创建目录 %s: %w", dir, err)
 	}
-	// 先 Lstat **再** Chmod：Chmod 跟随符号链接，顺序反过来会先改**链接目标**的权限再拒绝用这个目录
-	// （「改了权限却不用它」）；先拒绝就永远不碰 root 外的 inode。
+	// 先 Lstat **再** Chmod：Chmod 跟随符号链接，反过来会先改**链接目标**的权限再拒绝用这个目录（先拒绝就永不碰 root 外的 inode）。
 	info, err := os.Lstat(dir)
 	if err != nil {
 		return fmt.Errorf("resultspool: 检查目录 %s: %w", dir, err)
@@ -166,8 +170,7 @@ func (s *Store) ObjectPath(id string) (string, error) {
 }
 
 // CreateDraft 在 root/tmp 下开一个 0600 临时文件，准备接收一次上传的字节。limit 是本次草稿的字节
-// 上限（<=0 视为配置错误：没有上限的草稿等于可以写满磁盘）；草稿要么 Finalize 成 objects/<id>，
-// 要么 Discard 只删自己的临时文件。
+// 上限（<=0 视为配置错误：没有上限的草稿等于可以写满磁盘）。
 func (s *Store) CreateDraft(limit int64) (*Draft, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("resultspool: 草稿上限 %d 非法（必须为正）", limit)
@@ -362,7 +365,7 @@ func (s *Store) Move(from, to string) error {
 
 // Open 只读打开 objects/<id>，返回文件句柄与大小。防符号链接：O_NOFOLLOW 让「对象位置被换成符号
 // 链接」直接失败（不会顺着链接读到 root 外的 decoy），再 Stat 复核 IsRegular 挡掉目录/设备/FIFO。
-// 不存在、符号链接、非普通文件都包装 ErrNoSuchObject（托管字节不可用，调用方统一按已清理处理）。
+// 不可用的几种原因统一包装成 ErrNoSuchObject（见 objectUnavailable）。
 func (s *Store) Open(id string) (*os.File, int64, error) {
 	path, err := s.ObjectPath(id)
 	if err != nil {
@@ -411,8 +414,7 @@ func (s *Store) Remove(id string) error {
 }
 
 // objectUnavailable 把「托管副本不可用」的各种原因统一包装到 ErrNoSuchObject 上：符号链接/非普通
-// 文件与「不存在」后果相同（托管字节读不到），下载端因此能用 errors.Is 统一映射成 410，真实原因
-// 留在消息里由调用方 log.Warn 告警（不静默吞掉）。
+// 文件与「不存在」后果相同（托管字节读不到），下载端因此能用 errors.Is 统一映射成 410。
 func objectUnavailable(id, reason string) error {
 	return fmt.Errorf("%w: %s（%s）", ErrNoSuchObject, id, reason)
 }

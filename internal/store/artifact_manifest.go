@@ -385,9 +385,9 @@ func (d *DB) GetTaskArtifactDownload(ctx context.Context, namespaceID, taskID, s
 	return nil, ErrNotFound
 }
 
-// artifactObjectsExpireSQL 是「到期候选集」：只列字节身份仍活着（purged_at IS NULL）、没有活动 ticket、
-// 也没有仍在保护期内的 manifest/任务/attempt 引用的对象。谓词与 ORDER BY 的 created_at,id 与部分索引
-// idx_task_artifact_objects_live 逐字对应（schema.sql 块 13），扫描量跟「仍活着的对象数」走。
+// artifactObjectsExpireSQL 是「到期候选集」：只列还没回执清理（purged_at IS NULL）、没有活动 ticket、
+// 也没有仍在保护期内的 manifest/任务/attempt 引用的对象。已 expired 但还没 ack 的行**仍在**候选集里
+// （字节可能还在盘上，每轮都要重试）；谓词与 ORDER BY 与部分索引 idx_task_artifact_objects_live 逐字对应（schema.sql 块 13）。
 const artifactObjectsExpireSQL = `SELECT o.id FROM task_artifact_objects o WHERE o.purged_at IS NULL AND
  NOT EXISTS(SELECT 1 FROM task_artifact_uploads u WHERE u.object_id=o.id) AND
  NOT EXISTS(SELECT 1 FROM task_artifact_manifests m JOIN tasks t ON t.id=m.task_id WHERE m.object_id=o.id AND (m.expires_at=0 OR m.expires_at>? OR t.phase IN ('pending','running') OR EXISTS(SELECT 1 FROM task_artifact_uploads u WHERE u.task_id=t.id) OR EXISTS(SELECT 1 FROM task_attempts a WHERE a.task_id=t.id AND a.reaped_at IS NULL)))
@@ -406,8 +406,8 @@ const artifactObjectsReclaimSQL = `DELETE FROM task_artifact_objects WHERE id IN
 
 // ExpireArtifactObjects atomically revokes system byte identities and retains manifest metadata for 410; no
 // active ticket or unreaped/running attempt may be collected, and only a live ticket minted for a new object
-// can publish. Returned IDs are retryable purge work: G3 deletes those files outside the transaction, then
-// acks. The same pass reclaims rows whose life already ended, so the scan set tracks live objects only.
+// can publish. Returned IDs are retryable purge work (G3 deletes those files outside the transaction, then
+// acks), so an expired-but-unacked row returns every round. Same pass reclaims purged, unreferenced rows.
 func (d *DB) ExpireArtifactObjects(ctx context.Context, now int64, limit int) ([]ArtifactObjectID, error) {
 	out := []ArtifactObjectID{}
 	if limit <= 0 {
@@ -459,7 +459,7 @@ func (d *DB) ExpireArtifactObjects(ctx context.Context, now int64, limit int) ([
 	return out, nil
 }
 
-// AckArtifactObjectPurged records completion only for already-revoked IDs. purged_at is not the end of the row's life: artifactObjectsReclaimSQL deletes it once nothing references it, and until then the row keeps "already collected" so a retried ack stays an invalid transition instead of resurrecting anything.
+// AckArtifactObjectPurged records completion only for already-revoked IDs. purged_at is not the end of the row's life: artifactObjectsReclaimSQL deletes it once nothing references it; while the row exists a retried ack is an idempotent no-op (COALESCE keeps the first purged_at), and ErrInvalidTransition appears only after reclaim removed it.
 func (d *DB) AckArtifactObjectPurged(ctx context.Context, id ArtifactObjectID, now int64) error {
 	if id.id == "" {
 		return ErrNotFound
