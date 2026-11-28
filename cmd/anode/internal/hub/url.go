@@ -6,10 +6,8 @@ import (
 	"strings"
 )
 
-// StreamPath 是节点 WS 端点（api-conventions.md §8.2：GET /v1/node/stream）。
-//
-// 父会话裁决：server 为空 path 时补这条**唯一**既定路径；显式 path 原样使用
-// （反向代理可以把它挂到别处）。不接受 /v1/node/ws 之类的试拟路径。
+// StreamPath 是节点 WS 端点（api-conventions.md §8.2：GET /v1/node/stream）：server 为空 path
+// 时补这条**唯一**既定路径，显式 path 原样使用（反向代理可以挂到别处）。
 const StreamPath = "/v1/node/stream"
 
 // StreamURL 把配置里的 server（ws:// / wss://）解析成实际连接 URL。

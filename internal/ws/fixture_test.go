@@ -27,6 +27,7 @@ func boolPtr(v bool) *bool { return &v }
 
 type env struct {
 	db        *store.DB
+	dbPath    string
 	ns        *store.Namespace
 	node      *store.Node
 	token     string
@@ -52,20 +53,22 @@ func (e *env) sessionCount() int {
 	return len(e.hub.sessions)
 }
 
-func testDB(t *testing.T) *store.DB {
+// testDB 连库路径一起给：用例需要另开句柄模拟「另一个连接持写锁」（#590）。
+func testDB(t *testing.T) (*store.DB, string) {
 	t.Helper()
-	db, err := store.Open(t.TempDir() + "/ws.db")
+	path := t.TempDir() + "/ws.db"
+	db, err := store.Open(path)
 	if err != nil {
 		t.Fatalf("打开测试库: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return db
+	return db, path
 }
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	ctx := context.Background()
-	db := testDB(t)
+	db, dbPath := testDB(t)
 	ns, err := db.CreateNamespace(ctx, "default", "Default")
 	if err != nil {
 		t.Fatalf("建命名空间: %v", err)
@@ -80,7 +83,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatalf("回读节点: %v", err)
 	}
 	e := &env{
-		db: db, ns: ns, node: stored, token: token,
+		db: db, dbPath: dbPath, ns: ns, node: stored, token: token,
 		tokenHash: store.HashNodeToken(token),
 		now:       time.Now().Unix(),
 	}

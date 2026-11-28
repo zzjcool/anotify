@@ -770,19 +770,9 @@ func TestLogsWaiterBoundedCorrelationAndWake(t *testing.T) {
 // TestHandshakeRejectsBadTokenAndName：坏 token / 名字不符 / 缺 token 必须在握手期
 // fail closed（连接关闭、不注册 online），不是「先连上再说」。
 //
-// 退役映射（v3 → v4）。本测试是**形态映射**，不声明「v4 仍在 HTTP 层拒绝」：
-//   - v3 的旧断言是「HTTP upgrade 不带合法凭证 → 不返回 101（连接根本不建立）」：
-//     旧客户端把节点凭证放在 upgrade 请求上，认证失败是 HTTP 层拒绝，拿不到 101。
-//   - v4 的等价防线在**首帧 hello** 上：upgrade 已建立（101）后，由 Hub.handshake
-//     （hub.go:237-263，ServeHTTP 在 hub.go:175 调用）读首帧、要求它必须是 hello，
-//     再用 Hub.authenticate 校验 token/name；失败时 ServeHTTP 直接
-//     close(websocket.StatusPolicyViolation, "handshake failed") 并 return ——
-//     会话从未 attach、不注册 online。serveSession 只跑握手之后的读循环，它分派到的
-//     HelloFrame 是 re-hello（同样再走一次 Hub.authenticate，失败按
-//     errProtocolViolation 断连）。凭证不再走 HTTP 头，所以 v4 不存在「HTTP 层拒绝」
-//     这一形态，唯一可验收的等价物是「非法 hello 后连接断开 + 中枢 0 写」。
-//   - 所以下面断言的是 v4 的真实形态（能建立连接、但非法 hello 必然断开且不留事实），
-//     比 v3 的「连不上」更严：v3 无法区分「被拒」与「根本没通」。
+// v3 的等价防线在 HTTP upgrade（认证失败拿不到 101）；v4 的凭证改为首帧 hello，所以唯一
+// 可验收的等价物是「非法 hello 后连接断开 + 中枢 0 写」——比「连不上」更严。close code
+// 分属见 handshakeClose。
 func TestHandshakeRejectsBadTokenAndName(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -816,13 +806,8 @@ func TestHandshakeRejectsBadTokenAndName(t *testing.T) {
 			if e.hub.Online(e.node.ID) {
 				t.Fatal("非法 hello 不得注册 online 会话")
 			}
-			// 判别性 0 写：非法 hello 不得留下任何会话事实。
-			//
-			// 关于「capability 行」：v4 baseline 没有 node_capabilities 表（注册表基线测试
-			// 明确要求该表在 v4 不存在：internal/store/node_test.go 的
-			// TestNodeCapabilitiesNoHarnessColumns）；hello 申报的能力落在
-			// nodes.declared_capabilities JSON。所以这里断言 v4 的等价事实：
-			// 节点的能力申报快照必须仍是空的（加上槽位表为空）。
+			// 判别性 0 写：非法 hello 不得留下任何会话事实。v4 没有 node_capabilities 表，
+			// hello 申报的能力落在 nodes.declared_capabilities JSON，所以断言这份快照仍为空。
 			ctx := context.Background()
 			if rows, err := e.db.ListInstances(ctx, e.node.ID); err != nil || len(rows) != 0 {
 				t.Fatalf("非法 hello 不得申报物理槽位: %v/%+v", err, rows)
@@ -837,10 +822,8 @@ func TestHandshakeRejectsBadTokenAndName(t *testing.T) {
 			if node.Status != store.NodeStatusOffline {
 				t.Fatalf("非法 hello 不得把节点置为 %q（应保持 offline）", node.Status)
 			}
-			// agent 版本列同样必须仍为空：上面的 hello 明确声明了
-			// v9.9.9-forged/deadbeef，而 applyHello → store.RecordHello 真的会写
-			// nodes.agent_version/agent_commit（正常路径见 TestConfigAppliedAndAgentFactsPersist
-			// 的 rehello 断言），所以这两条断言有判别力。
+			// agent 版本列同样必须仍为空：applyHello → RecordHello 真的会写它（正常路径见
+			// TestConfigAppliedAndAgentFactsPersist 的 rehello 断言），所以这条有判别力。
 			if node.AgentVersion != "" || node.AgentCommit != "" {
 				t.Fatalf("非法 hello 不得写 agent 版本事实: %q/%q", node.AgentVersion, node.AgentCommit)
 			}

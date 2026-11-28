@@ -28,7 +28,7 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const BASELINE = {
 	"schemaVersion": 2,
 	"measuredAt": "2026-11-28",
-	"commentLines": 42820,
+	"commentLines": 42818,
 	"codeLines": 300680,
 	"files": 796,
 	"dirs": {
@@ -44,7 +44,7 @@ export const BASELINE = {
 		"cmd/anode/internal/emitgw": 43,
 		"cmd/anode/internal/execenv": 99,
 		"cmd/anode/internal/hostenv": 34,
-		"cmd/anode/internal/hub": 134,
+		"cmd/anode/internal/hub": 132,
 		"cmd/anode/internal/install": 112,
 		"cmd/anode/internal/listen": 29,
 		"cmd/anode/internal/node": 70,

@@ -102,13 +102,24 @@ anode serve --check --config /etc/anode/anode.yaml --data /var/lib/anode
   键清单与语义（含 `idleTimeoutSec` 这个无进展默认）见 `anode-install.md` §10 的完整样例：
   写错键名不会静默忽略，而是启动失败。
 - `--data` 是私有数据目录（缓存的能力产物、执行档案、emit 端点信息）。
-- 启动是**全有或全无**：身份被拒 / 配置不合法就退出，不存在「半在线」。
+- 启动是**全有或全无**：身份被拒 / 配置不合法就退出（exit 2），不存在「半在线」。
+  **exit 2 的语义是「配置或身份」**：这两种错重试没用，需要人改配置/换 token；中枢
+  自己的暂时性故障**不走这条路**（见下一条）。
 - `--check` 是**一次性自检**：握手走到 `welcome` 就退出。成功时 stdout 只有一行
   `check ok: node=<name>`（不含 token）→ exit 0；失败时 stderr 打
   `anode check: <unauthorized|timeout|config>: …` → **exit 2**。上限**固定 10s**，
   不写盘、不监听、不启动 runner/emit，也不改配置——所以可以在落正式配置**之前**用它验令牌。
-- `serve` 本体也认这条判据：`welcome` 之前的 close 1008（或 401）是**身份拒绝**，直接退出，
-  不再无限重连——错误令牌重连只会把中枢日志刷成一片认证失败。
+- `serve` 本体按**握手期的 close code** 分流（判据在 `internal/ws/handshakeClose`）：
+  - `1008`（或 HTTP 401/403）= **身份拒绝**（token 未知 / name 不符 / 节点已被删）→
+    直接退出、不退避：错误令牌重连只会把中枢日志刷成一片认证失败（#323）；
+  - 其余 close code 一律**退避重连**（1s→30s）：
+    - `1002` 握手协议错误（首帧不是 hello / 解码失败）：节点的 hello 自身有问题，
+      重连会持续失败但日志里带原因（也不归入身份终态——版本错位/中枢回错码
+      不该让运维去轮换 token）；
+    - `1013` 稍后重试 / `1011` 内部错误 / `1006` 异常断开 = 中枢**暂时**不行，例如
+      单写者 SQLite 的写锁等待超过 `busy_timeout` 报 `database is locked`：锁释放后
+      自己回到 online，**不需要人工重启进程**。
+    把这一类也回成 1008 会让一次 5s 的写锁把节点永久踢下线（#590）。
 
 ## 4. 能力脚本的出口：`anode emit`
 

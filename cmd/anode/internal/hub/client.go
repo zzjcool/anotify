@@ -203,11 +203,11 @@ func checkContextErr(ctx context.Context, err error) error {
 	}
 }
 
-// Run 连接中枢并保持配置同步，直到 ctx 结束或认证被拒。
+// Run 连接中枢并保持配置同步，直到 ctx 结束或**身份被拒**。
 //
-// 断线/连接失败按有界指数退避重连（封顶 DefaultBackoffMax）；401/403 是终态
-// （令牌错重试没用，只会制造登录风暴）。每次连接（含重连）都重发 hello 全量
-// 对齐——中枢从不主动问节点。
+// 断线/连接失败按有界指数退避重连（封顶 DefaultBackoffMax）。终态只有身份类：401/403 与
+// welcome 之前的 close 1008（token 未知/name 不符/节点已删）；其余 close code（1013/1011/
+// 1006）是中枢暂时不行，退避重连即可（#590）。每次连接（含重连）都重发 hello 全量对齐。
 func (c *Client) Run(ctx context.Context) error {
 	if c.Handler == nil {
 		return errors.New("hub: 缺少 Handler")
@@ -364,10 +364,8 @@ func (c *Client) runSession(ctx context.Context) error {
 	}
 }
 
-// keepalive 定期发 WebSocket ping（见 pingInterval 的注释）。
-//
-// 发不出去 / 收不到 pong 就关掉这条连接：读循环随即报错退出，交给外层退避重连。
-// 不在这里重连，也不吞错——重连策略只有一处（runSession 的调用方）。
+// keepalive 定期发 ping（见 pingInterval）；发不出去/收不到 pong 就关连接，读循环随即退出，
+// 交给外层退避重连——重连策略只有一处（runSession 的调用方）。
 func (c *Client) keepalive(ctx context.Context, conn *websocket.Conn) {
 	t := time.NewTicker(pingInterval)
 	defer t.Stop()
@@ -455,10 +453,8 @@ func (c *Client) watchHeartbeat(ctx context.Context, conn *websocket.Conn) {
 	}
 }
 
-// dispatch 分派一条下行帧。
-//
-// 慢操作（部署 GET、日志读盘、升级下载、取消收尾）放到 goroutine：一个慢 HTTP
-// 不能卡住同一条连接上的 lease.ack / result.ack / emit.ack 读取。
+// dispatch 分派一条下行帧：慢操作（部署 GET、日志读盘、升级下载、取消收尾）放 goroutine，
+// 一个慢 HTTP 不能卡住同一条连接上的 lease.ack / result.ack / emit.ack 读取。
 func (c *Client) dispatch(ctx context.Context, conn *websocket.Conn, frame any) {
 	switch f := frame.(type) {
 	case *protocol.WelcomeFrame:

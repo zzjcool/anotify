@@ -1495,3 +1495,56 @@ func TestRunTreatsPreWelcomePolicyViolationAsTerminal(t *testing.T) {
 		t.Fatalf("welcome 前 1008 不应退避重连，sleep %d 次", got)
 	}
 }
+
+// TestRunRetriesOnNon1008CloseBeforeWelcome 是上一条的反面（#590）：welcome 之前收到
+// 1013（中枢自己的暂时性故障）必须退避重连，不能当身份被拒 exit 2 永久离线。
+func TestRunRetriesOnNon1008CloseBeforeWelcome(t *testing.T) {
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != StreamPath {
+			http.NotFound(w, r)
+			return
+		}
+		atomic.AddInt32(&requests, 1)
+		conn := acceptWS(t, w, r)
+		if conn == nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		if _, err := readFrame(ctx, conn); err != nil { // hello
+			t.Logf("read hello: %v", err)
+			return
+		}
+		// 与 internal/ws/handshakeClose 的「暂时性」分支同形。
+		_ = conn.Close(websocket.StatusTryAgainLater, "handshake failed: retry")
+	}))
+	defer srv.Close()
+
+	n := testNode(t, wsURL(srv.URL), "")
+	client, err := New(wsURL(srv.URL), "node-secret-token", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+	defer cancel()
+	var sleeps int32
+	client.Sleep = func(ctx context.Context, d time.Duration) error {
+		if atomic.AddInt32(&sleeps, 1) >= 2 {
+			// 两次退避已证明「重连而不是退出」；收工，别在这个用例里跑真退避。
+			cancel()
+		}
+		return nil
+	}
+	err = client.Run(ctx)
+	if errors.Is(err, ErrAuthRejected) {
+		t.Fatalf("welcome 前的 1013 不是身份拒绝，Run 却返回 ErrAuthRejected（%v）：节点会 exit 2 永久离线", err)
+	}
+	if got := atomic.LoadInt32(&requests); got < 2 {
+		t.Fatalf("1013 必须触发重连（握手请求 %d 次，want ≥2）", got)
+	}
+	if got := atomic.LoadInt32(&sleeps); got < 2 {
+		t.Fatalf("重连前必须退避（sleep %d 次，want ≥2）", got)
+	}
+}
