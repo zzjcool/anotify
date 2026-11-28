@@ -112,6 +112,34 @@ func enrollDoReq(t *testing.T, env *enrollTestEnv, method, path string, body any
 	return rr
 }
 
+// addUser 建一个普通用户并返回其登录 cookie（越权用例用）。
+func (env *enrollTestEnv) addUser(t *testing.T, username string) *http.Cookie {
+	t.Helper()
+	uid, err := env.db.InsertUser(context.Background(), "", username, username)
+	if err != nil {
+		t.Fatalf("insert user %s: %v", username, err)
+	}
+	sess, err := env.svc.Sessions().Create(uid, "Other · macOS")
+	if err != nil {
+		t.Fatalf("create session for %s: %v", username, err)
+	}
+	return &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID}
+}
+
+// enrollDoReqAs 以指定登录 cookie 发请求（越权用例用）。
+func enrollDoReqAs(t *testing.T, env *enrollTestEnv, method, path string, body any, cookie *http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	if body != nil {
+		_ = json.NewEncoder(&buf).Encode(body)
+	}
+	req := httptest.NewRequest(method, path, &buf)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, req)
+	return rr
+}
+
 func enrollDecodeBody(t *testing.T, rr *httptest.ResponseRecorder) map[string]any {
 	t.Helper()
 	var m map[string]any
@@ -487,5 +515,111 @@ func TestEnroll_CliAuthZeroRegression(t *testing.T) {
 	}
 	if res.APIKey == "" {
 		t.Error("apikey-kind poll 应返回明文 apiKey")
+	}
+}
+
+// TestPasskeyEnrollApprove_NonInitiator_Returns404AndKeepsOwner 任何登录用户都能批准别人的
+// 会话、并把 user_id 覆盖成自己（#625）——修后非发起者 404，状态与属主都不变。
+func TestPasskeyEnrollApprove_NonInitiator_Returns404AndKeepsOwner(t *testing.T) {
+	env := newEnrollTestEnv(t)
+	created := enrollCreateHelper(t, env)
+	base := "/v1/passkey-enroll/sessions/" + created.sessionID
+
+	_ = enrollDoReq(t, env, "POST", base+"/request", map[string]any{"deviceHint": "Chrome"}, false)
+
+	other := env.addUser(t, "bob")
+	rr := enrollDoReqAs(t, env, "POST", base+"/approve", nil, other)
+	if rr.Code != 404 {
+		t.Fatalf("非发起者批准应 404, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	got, err := env.mgr.GetByID(created.sessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if got.Status != store.CliAuthRequested {
+		t.Errorf("status got %q want %q（越权批准不得推进状态机）", got.Status, store.CliAuthRequested)
+	}
+	if got.UserID != env.userID {
+		t.Errorf("userID got %q want %q（发起者不得被批准者覆盖）", got.UserID, env.userID)
+	}
+
+	// 发起者不受影响：仍能 watch 到 requested。
+	rr2 := enrollDoReq(t, env, "GET", base+"/watch", nil, true)
+	if rr2.Code != 200 {
+		t.Fatalf("发起者 watch 应 200, got %d body=%s", rr2.Code, rr2.Body.String())
+	}
+	if m := enrollDecodeBody(t, rr2); m["status"] != "requested" {
+		t.Errorf("watch status=%v want requested", m["status"])
+	}
+}
+
+// TestPasskeyEnrollDeny_NonInitiator_Returns404 非发起者不能拒绝别人的授权（#625）。
+func TestPasskeyEnrollDeny_NonInitiator_Returns404(t *testing.T) {
+	env := newEnrollTestEnv(t)
+	created := enrollCreateHelper(t, env)
+	base := "/v1/passkey-enroll/sessions/" + created.sessionID
+
+	_ = enrollDoReq(t, env, "POST", base+"/request", map[string]any{"deviceHint": "Chrome"}, false)
+
+	other := env.addUser(t, "bob")
+	rr := enrollDoReqAs(t, env, "POST", base+"/deny", nil, other)
+	if rr.Code != 404 {
+		t.Fatalf("非发起者拒绝应 404, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	got, _ := env.mgr.GetByID(created.sessionID)
+	if got.Status != store.CliAuthRequested {
+		t.Errorf("status got %q want %q（越权拒绝不得推进状态机）", got.Status, store.CliAuthRequested)
+	}
+}
+
+// TestPasskeyEnrollWatch_InitiatorStillSeesAfterApprove 批准不会把发起者挤出去（#625）：
+// approve 不再覆盖 user_id，发起者批准后仍能 watch，状态为 approved。
+func TestPasskeyEnrollWatch_InitiatorStillSeesAfterApprove(t *testing.T) {
+	env := newEnrollTestEnv(t)
+	created := enrollCreateHelper(t, env)
+	base := "/v1/passkey-enroll/sessions/" + created.sessionID
+
+	_ = enrollDoReq(t, env, "POST", base+"/request", map[string]any{"deviceHint": "Chrome"}, false)
+	if rr := enrollDoReq(t, env, "POST", base+"/approve", nil, true); rr.Code != 200 {
+		t.Fatalf("发起者批准应 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	rr := enrollDoReq(t, env, "GET", base+"/watch", nil, true)
+	if rr.Code != 200 {
+		t.Fatalf("批准后发起者 watch 应 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if m := enrollDecodeBody(t, rr); m["status"] != "approved" {
+		t.Errorf("watch status=%v want approved", m["status"])
+	}
+}
+
+// TestPasskeyEnrollKnock_OnlyOnce 第二次敲门 409，且不重发 secret（secret_hash 不变）。
+func TestPasskeyEnrollKnock_OnlyOnce(t *testing.T) {
+	env := newEnrollTestEnv(t)
+	created := enrollCreateHelper(t, env)
+	base := "/v1/passkey-enroll/sessions/" + created.sessionID
+
+	rr := enrollDoReq(t, env, "POST", base+"/request", map[string]any{"deviceHint": "Chrome · macOS"}, false)
+	if rr.Code != 200 {
+		t.Fatalf("首次敲门 status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	before, err := env.mgr.GetByID(created.sessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+
+	rr2 := enrollDoReq(t, env, "POST", base+"/request", map[string]any{"deviceHint": "Firefox"}, false)
+	if rr2.Code != 409 {
+		t.Fatalf("重复敲门应 409, got %d body=%s", rr2.Code, rr.Body.String())
+	}
+
+	after, _ := env.mgr.GetByID(created.sessionID)
+	if after.SecretHash != before.SecretHash {
+		t.Error("重复敲门不得重写 secret_hash")
+	}
+	if after.DeviceHint != before.DeviceHint {
+		t.Errorf("重复敲门不得重写 deviceHint: got %q want %q", after.DeviceHint, before.DeviceHint)
 	}
 }

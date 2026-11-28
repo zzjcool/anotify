@@ -159,11 +159,12 @@ func (h *passkeyEnrollHandler) knock(w http.ResponseWriter, r *http.Request, id 
 		h.writeEnrollErr(w, r, id, err)
 		return
 	}
+	// 只记录裁剪后的自报信息：deviceHint 来自匿名客户端，原样写日志等于允许伪造日志行
 	slog.Info("enroll session requested",
 		"event", "enroll.session.requested",
 		"session_id", id,
 		"ip", clientIP(r),
-		"device_hint", req.DeviceHint,
+		"device_hint", auth.SanitizeDeviceHint(req.DeviceHint),
 	)
 	writeJSON(w, 200, enrollRequestResp{Secret: secret})
 }
@@ -176,8 +177,9 @@ func (h *passkeyEnrollHandler) watch(w http.ResponseWriter, r *http.Request, id 
 		writeErr(w, 404, "授权会话不存在或已过期")
 		return
 	}
-	// 属主校验：approved 后 session.user_id = 批准者；pending/requested 时 user_id 为空，允许已登录用户查看（发起者）
-	if s.UserID != "" && s.UserID != uid {
+	// 属主校验：user_id 只表示发起者（建会话时写入），批准不会改写它。
+	// 不是发起者一律 404（与 lookup 一致，不泄露会话是否存在）。
+	if s.UserID == "" || s.UserID != uid {
 		writeErr(w, 404, "授权会话不存在或已过期")
 		return
 	}
@@ -248,9 +250,10 @@ func (h *passkeyEnrollHandler) approve(w http.ResponseWriter, r *http.Request, i
 	writeJSON(w, 200, map[string]string{"status": store.CliAuthApproved})
 }
 
-// deny 旧设备拒绝（需登录 Cookie，requested→denied）。
+// deny 旧设备拒绝（需登录 Cookie，只有发起者可拒绝，requested→denied）。
 func (h *passkeyEnrollHandler) deny(w http.ResponseWriter, r *http.Request, id string) {
-	err := h.mgr.Deny(id)
+	uid := auth.UserIDFromContext(r.Context())
+	err := h.mgr.Deny(id, uid)
 	if err != nil {
 		h.writeEnrollErr(w, r, id, err)
 		return
@@ -258,7 +261,7 @@ func (h *passkeyEnrollHandler) deny(w http.ResponseWriter, r *http.Request, id s
 	slog.Info("enroll session denied",
 		"event", "enroll.session.denied",
 		"session_id", id,
-		"user_id", auth.UserIDFromContext(r.Context()),
+		"user_id", uid,
 	)
 	writeJSON(w, 200, map[string]string{"status": store.CliAuthDenied})
 }
@@ -327,8 +330,8 @@ func (h *passkeyEnrollHandler) cancel(w http.ResponseWriter, r *http.Request, id
 		writeErr(w, 404, "授权会话不存在或已过期")
 		return
 	}
-	// 属主校验
-	if s.UserID != "" && s.UserID != uid {
+	// 属主校验：只有发起者可以取消（#625）
+	if s.UserID == "" || s.UserID != uid {
 		writeErr(w, 404, "授权会话不存在或已过期")
 		return
 	}
@@ -336,7 +339,7 @@ func (h *passkeyEnrollHandler) cancel(w http.ResponseWriter, r *http.Request, id
 		writeErr(w, 404, "授权会话不存在或已过期")
 		return
 	}
-	if err := h.mgr.Delete(id); err != nil {
+	if err := h.mgr.Delete(id, uid); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
@@ -393,7 +396,7 @@ func (h *passkeyEnrollHandler) toEnrollAnonView(s *store.CliAuthSession) enrollA
 	return v
 }
 
-// initiatorName 查批准者显示名（approve 后 s.UserID 已回填）。
+// initiatorName 查发起者显示名（建会话时写入的 s.UserID，批准不会改写）。
 // 匿名视图不返回 user_id，仅返回 displayName/username 供新设备核对「给哪个账号加 Passkey」。
 func (h *passkeyEnrollHandler) initiatorName(s *store.CliAuthSession) string {
 	if s.UserID == "" {
@@ -410,7 +413,7 @@ func (h *passkeyEnrollHandler) initiatorName(s *store.CliAuthSession) string {
 }
 
 func (h *passkeyEnrollHandler) writeEnrollErr(w http.ResponseWriter, r *http.Request, id string, err error) {
-	if errors.Is(err, store.ErrNotFound) {
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, auth.ErrNotOwner) {
 		writeErr(w, 404, "授权会话不存在或已过期")
 		return
 	}

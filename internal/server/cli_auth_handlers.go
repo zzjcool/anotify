@@ -124,10 +124,12 @@ func (h *cliAuthHandler) get(w http.ResponseWriter, r *http.Request, id string) 
 	writeJSON(w, 200, toSessionView(s))
 }
 
-// byCode 按短码查会话（需登录，按用户限速）。
+// byCode 按短码查会话（需登录，双维限速：uid + IP）。
 func (h *cliAuthHandler) byCode(w http.ResponseWriter, r *http.Request) {
 	uid := auth.UserIDFromContext(r.Context())
-	if rateLimited(w, rlByCode, uid) {
+	// 双维限流（#625）：uid 维拦「一个账号地毯式试码」，IP 维也拦「换账号接着刷同一台机器」。
+	// 会话是匿名创建的，没有属主可校验，短码枚举只能靠限流拦。任一维拒绝即 429。
+	if rateLimited(w, rlByCode, uid) || rateLimited(w, rlByCodeIP, clientIP(r)) {
 		return
 	}
 	code := r.URL.Query().Get("code")
@@ -176,6 +178,9 @@ func (h *cliAuthHandler) approve(w http.ResponseWriter, r *http.Request, id stri
 }
 
 // deny 拒绝（需登录）。
+//
+// cli-auth 会话是匿名创建的，没有属主概念，所以这里没有「属主校验」可做（与 passkey-enroll
+// 不同）；能削减的是可审计性：请求者 user_id 必须进审计日志（见下方 slog）。
 func (h *cliAuthHandler) deny(w http.ResponseWriter, r *http.Request, id string) {
 	uid := auth.UserIDFromContext(r.Context())
 	err := h.mgr.Deny(id)

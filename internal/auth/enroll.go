@@ -12,6 +12,31 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
+// deviceHintMaxLen 是新设备自报设备信息的最大长度（字符）。
+// 该字段完全由新设备自报，只是批准页给发起者看的参考信息。
+const deviceHintMaxLen = 64
+
+// SanitizeDeviceHint 归一化新设备自报的设备信息：剔除控制字符与双向文本控制符
+// （防日志注入 / 显示伪装），去首尾空白，并按字符截断到 deviceHintMaxLen。
+// 该字段仍然不可信：批准页只当文本展示，不做任何授权判断。
+func SanitizeDeviceHint(hint string) string {
+	hint = strings.Map(func(r rune) rune {
+		switch {
+		case r < 0x20, r == 0x7f: // 控制字符（含 \n / \t）
+			return -1
+		case r >= 0x202a && r <= 0x202e: // LRE/RLE/PDF/LRO/RLO
+			return -1
+		case r >= 0x2066 && r <= 0x2069: // LRI/RLI/FSI/PDI
+			return -1
+		}
+		return r
+	}, hint)
+	if runes := []rune(strings.TrimSpace(hint)); len(runes) > deviceHintMaxLen {
+		hint = string(runes[:deviceHintMaxLen])
+	}
+	return strings.TrimSpace(hint)
+}
+
 // PasskeyEnrollManager 管理 Passkey 设备授权会话的完整生命周期。
 // 复用 cli_auth_sessions 表（kind=passkey），但状态机和端点独立于 CliAuthManager。
 // 状态流：pending → requested → approved → consumed（+denied/expired 旁路终态）。
@@ -173,8 +198,9 @@ func (m *PasskeyEnrollManager) RequestKnock(sessionID, deviceHint string) (secre
 		return "", err
 	}
 
-	// 更新 secret_hash + 状态迁移 pending→requested
-	ok, err := m.db.UpdateCliAuthSessionRequestedWithSecret(sessionID, deviceHint, secretHash)
+	// 更新 secret_hash + 状态迁移 pending→requested。
+	// deviceHint 由新设备自报，落库前先裁剪控制字符与长度（#625）。
+	ok, err := m.db.UpdateCliAuthSessionRequestedWithSecret(sessionID, SanitizeDeviceHint(deviceHint), secretHash)
 	if err != nil {
 		return "", err
 	}
@@ -184,7 +210,10 @@ func (m *PasskeyEnrollManager) RequestKnock(sessionID, deviceHint string) (secre
 	return secret, nil
 }
 
-// Approve 旧设备批准：requested→approved，回填 user_id。
+// Approve 旧设备批准：requested→approved。
+//
+// 只有会话发起者（建会话时写入的 user_id）可以批准——批准不写 user_id，
+// 该列永远只表示发起者，否则任何登录用户都能把别人的新设备绑进自己的账号（#625）。
 func (m *PasskeyEnrollManager) Approve(id, userID string) error {
 	s, err := m.db.GetCliAuthSession(id)
 	if err != nil {
@@ -196,11 +225,14 @@ func (m *PasskeyEnrollManager) Approve(id, userID string) error {
 	if s.Kind != store.CliAuthKindPasskey {
 		return fmt.Errorf("%w: 非 passkey 类型会话", ErrInvalidParam)
 	}
+	if userID == "" || s.UserID != userID {
+		return fmt.Errorf("%w: 批准者必须是会话发起者", ErrNotOwner)
+	}
 	if s.Status != store.CliAuthRequested {
 		return fmt.Errorf("%w: 当前状态 %s 不可批准", ErrAlreadyTerminal, s.Status)
 	}
 
-	ok, err := m.db.UpdateCliAuthSessionApprovedFromRequested(id, userID, m.timeNow().Unix())
+	ok, err := m.db.UpdateCliAuthSessionApprovedFromRequested(id, userID)
 	if err != nil {
 		return err
 	}
@@ -210,8 +242,8 @@ func (m *PasskeyEnrollManager) Approve(id, userID string) error {
 	return nil
 }
 
-// Deny 旧设备拒绝：requested→denied。
-func (m *PasskeyEnrollManager) Deny(id string) error {
+// Deny 旧设备拒绝：requested→denied。只有会话发起者可以拒绝（#625）。
+func (m *PasskeyEnrollManager) Deny(id, userID string) error {
 	s, err := m.db.GetCliAuthSession(id)
 	if err != nil {
 		return err
@@ -222,11 +254,14 @@ func (m *PasskeyEnrollManager) Deny(id string) error {
 	if s.Kind != store.CliAuthKindPasskey {
 		return fmt.Errorf("%w: 非 passkey 类型会话", ErrInvalidParam)
 	}
+	if userID == "" || s.UserID != userID {
+		return fmt.Errorf("%w: 拒绝者必须是会话发起者", ErrNotOwner)
+	}
 	if s.Status != store.CliAuthRequested {
 		return fmt.Errorf("%w: 当前状态 %s 不可拒绝", ErrAlreadyTerminal, s.Status)
 	}
 
-	ok, err := m.db.UpdateCliAuthSessionDeniedFromRequested(id)
+	ok, err := m.db.UpdateCliAuthSessionDeniedFromRequested(id, userID)
 	if err != nil {
 		return err
 	}
@@ -378,8 +413,19 @@ func (m *PasskeyEnrollManager) Complete(sessionID, registrationToken, name strin
 	return &CompleteResult{Ok: true}, nil
 }
 
-// Delete 旧设备取消会话（删除记录）。
-func (m *PasskeyEnrollManager) Delete(id string) error {
+// Delete 旧设备取消会话（删除记录）。只有会话发起者可以取消（#625）。
+// kind 不匹配返回 ErrInvalidParam（handler 投影成 404，与 lookup 一致）。
+func (m *PasskeyEnrollManager) Delete(id, userID string) error {
+	s, err := m.db.GetCliAuthSession(id)
+	if err != nil {
+		return err
+	}
+	if s.Kind != store.CliAuthKindPasskey {
+		return fmt.Errorf("%w: 非 passkey 类型会话", ErrInvalidParam)
+	}
+	if userID == "" || s.UserID != userID {
+		return fmt.Errorf("%w: 只有会话发起者可以取消", ErrNotOwner)
+	}
 	return m.db.DeleteCliAuthSession(id)
 }
 

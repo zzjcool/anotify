@@ -768,10 +768,13 @@ paths:
   /v1/cli-auth/sessions/by-code:
     get:
       tags: [cli-auth]
-      summary: 按短码查授权会话（需登录，按用户限速 20/min）
+      summary: 按短码查授权会话（需登录，双维限速 20/min/user + 20/min/IP）
       description: |
         浏览器侧输入 `userCode` 后用。`code` 缺参 `400`；短码无效/过期 `404`
-        （文案「授权会话不存在或已过期」）；按用户限速 20/min，超限 `429`。
+        （文案「授权会话不存在或已过期」）；限速是**双维**的（#625）：每个登录用户
+        20/min，每个客户端 IP 也 20/min（会话是匿名创建的，没有属主可校验，
+        短码枚举只能靠限流拦——只按用户限速的话，换个账号就能接着刷同一台机器）。
+        任一维超限即 `429`。
       operationId: findCLIAuthSessionByCode
       security: [{ session: [] }]
       parameters:
@@ -966,10 +969,10 @@ paths:
 
     delete:
       tags: [passkey-enroll]
-      summary: 取消补建会话（需登录，属主校验）
+      summary: 取消补建会话（需登录，只有发起者可取消）
       description: |
-        旧设备取消：删除会话行，回 `{"status":"deleted"}`。属主校验与 kind guard 失败都是 `404`；
-        删库失败 `500`。
+        旧设备取消：删除会话行，回 `{"status":"deleted"}`。只有会话发起者（`user_id`）能取消，
+        非发起者、属主为空与 kind guard 失败都是 `404`；删库失败 `500`。
       operationId: cancelPasskeyEnrollment
       security: [{ session: [] }]
       parameters:
@@ -995,6 +998,11 @@ paths:
       description: |
         新设备自报设备信息（`deviceHint`）并进入 `requested`，等旧设备批准。返回的 `secret`
         供后续 `poll` 使用。限速 10/min/IP。
+
+        敲门只能一次：会话进入 `requested` 后再次敲门回 `409`，且**不重发 secret**
+        （`secret_hash` 不变），避免已知 sessionId 的第三方抢换轮询凭证。
+        `deviceHint` 由客户端自报：服务端裁剪控制字符/双向控制符并按字符截断到 64，
+        它只是展示给发起者核对的参考信息，不参与任何授权判断。
 
         错误：body 解析失败 `400`；会话不存在 `404`；状态不对（已 approved/denied/expired）
         `409`（body `{"status":"<当前状态>"}`）。
@@ -1133,10 +1141,10 @@ paths:
   /v1/passkey-enroll/sessions/{id}/watch:
     get:
       tags: [passkey-enroll]
-      summary: 旧设备轮询会话状态（需登录，属主校验）
+      summary: 旧设备轮询会话状态（需登录，只有发起者可看）
       description: |
-        旧设备侧展示「新设备是否已敲门」。属主校验：`userID` 非空且不是自己 → `404`
-        （pending/requested 阶段 user_id 还为空，允许已登录用户查看）。
+        旧设备侧展示「新设备是否已敲门」。属主校验：`user_id` 不是当前用户 → `404`
+        （`user_id` 在 pending/requested 阶段就是发起者，批准不会改写它）。
 
         `deviceHint` 在该会话进入 requested 之后才有值。kind 不匹配也是 `404`。
       operationId: watchPasskeyEnrollSession
@@ -1159,11 +1167,13 @@ paths:
   /v1/passkey-enroll/sessions/{id}/approve:
     post:
       tags: [passkey-enroll]
-      summary: 旧设备批准补建（requested → approved）
+      summary: 旧设备批准补建（requested → approved，只有发起者可批准）
       description: |
-        批准后 owner 回填为当前用户，新设备的 `poll` 才能拿到 attestation options。
-        错误：参数不合法 `400`；会话不存在 `404`；状态不对 `409`（body `{"status":"<当前状态>"}`）；
-        其它 `500`。
+        只有会话发起者（建会话时写入的 `user_id`）可以批准；`user_id` 不会被批准者覆盖，
+        批准后新设备的 `poll` 才能拿到归属发起者的 attestation options。
+        非发起者回 `404`（与 `watch` 一致，不泄露会话是否存在）。
+        错误：参数不合法 `400`；会话不存在或不是发起者 `404`；状态不对 `409`
+        （body `{"status":"<当前状态>"}`）；其它 `500`。
       operationId: approvePasskeyEnrollment
       security: [{ session: [] }]
       parameters:
@@ -1187,9 +1197,11 @@ paths:
   /v1/passkey-enroll/sessions/{id}/deny:
     post:
       tags: [passkey-enroll]
-      summary: 旧设备拒绝补建（→ denied）
+      summary: 旧设备拒绝补建（→ denied，只有发起者可拒绝）
       description: |
-        错误：参数不合法 `400`；会话不存在 `404`；状态不对 `409`
+        只有会话发起者（`user_id`）可以拒绝。非发起者回 `404`（否则任何登录用户都能
+        拒掉别人的授权，形成 DoS）。
+        错误：参数不合法 `400`；会话不存在或不是发起者 `404`；状态不对 `409`
         （body `{"status":"<当前状态>"}`）；其它 `500`。
       operationId: denyPasskeyEnrollment
       security: [{ session: [] }]
@@ -1994,7 +2006,10 @@ components:
       properties:
         deviceHint:
           type: string
-          description: 新设备自报的设备信息（如「iPhone · Safari」），展示给旧设备核对
+          maxLength: 64
+          description: |
+            新设备自报的设备信息（如「iPhone · Safari」），展示给旧设备核对。
+            服务端会剔除控制字符与双向文本控制符，并按字符截断到 64；不可信，只用于展示。
 
     PasskeyEnrollKnockResult:
       type: object

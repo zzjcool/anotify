@@ -319,11 +319,15 @@ func (d *DB) UpdateCliAuthSessionRequestedWithSecret(id, deviceHint, secretHash 
 }
 
 // UpdateCliAuthSessionApprovedFromRequested 原子迁移 requested→approved（Passkey 授权批准）。
-// 回填 user_id。返回 false 表示会话不在 requested 状态。
-func (d *DB) UpdateCliAuthSessionApprovedFromRequested(id, userID string, now int64) (bool, error) {
+//
+// initiatorID 是会话发起者（建会话时写入的 user_id）。条件里带 `AND user_id = ?`，
+// 因为 `user_id` 只表示「谁发起」，批准者不允许改写它（#625：任何登录用户都能批准
+// 别人的会话并把新设备绑进自己的账号）。返回 false 表示会话不在 requested 状态
+// 或发起者不匹配。
+func (d *DB) UpdateCliAuthSessionApprovedFromRequested(id, initiatorID string) (bool, error) {
 	res, err := d.Exec(
-		`UPDATE cli_auth_sessions SET status = ?, user_id = ? WHERE id = ? AND status = ?`,
-		CliAuthApproved, userID, id, CliAuthRequested,
+		`UPDATE cli_auth_sessions SET status = ? WHERE id = ? AND status = ? AND user_id = ?`,
+		CliAuthApproved, id, CliAuthRequested, initiatorID,
 	)
 	if err != nil {
 		return false, fmt.Errorf("update cli_auth_session approved from requested: %w", err)
@@ -336,10 +340,11 @@ func (d *DB) UpdateCliAuthSessionApprovedFromRequested(id, userID string, now in
 }
 
 // UpdateCliAuthSessionDeniedFromRequested 原子迁移 requested→denied（Passkey 授权拒绝）。
-func (d *DB) UpdateCliAuthSessionDeniedFromRequested(id string) (bool, error) {
+// 同批准：initiatorID 必须是发起者，返回 false 表示状态不对或不是属主。
+func (d *DB) UpdateCliAuthSessionDeniedFromRequested(id, initiatorID string) (bool, error) {
 	res, err := d.Exec(
-		`UPDATE cli_auth_sessions SET status = ? WHERE id = ? AND status = ?`,
-		CliAuthDenied, id, CliAuthRequested,
+		`UPDATE cli_auth_sessions SET status = ? WHERE id = ? AND status = ? AND user_id = ?`,
+		CliAuthDenied, id, CliAuthRequested, initiatorID,
 	)
 	if err != nil {
 		return false, fmt.Errorf("update cli_auth_session denied from requested: %w", err)

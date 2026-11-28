@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -194,7 +195,7 @@ func TestEnroll_Deny_Success(t *testing.T) {
 	created, _ := m.CreateSession(uid, "old-mac")
 	_, _ = m.RequestKnock(created.SessionID, "Chrome")
 
-	err := m.Deny(created.SessionID)
+	err := m.Deny(created.SessionID, uid)
 	if err != nil {
 		t.Fatalf("deny: %v", err)
 	}
@@ -303,7 +304,7 @@ func TestEnroll_Delete(t *testing.T) {
 	m := newEnrollMgrWithClock(db, svc, clock)
 
 	created, _ := m.CreateSession(uid, "old-mac")
-	if err := m.Delete(created.SessionID); err != nil {
+	if err := m.Delete(created.SessionID, uid); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
@@ -322,7 +323,7 @@ func TestEnroll_Poll_DeniedStatus(t *testing.T) {
 
 	created, _ := m.CreateSession(uid, "old-mac")
 	knockSecret, _ := m.RequestKnock(created.SessionID, "Chrome")
-	_ = m.Deny(created.SessionID)
+	_ = m.Deny(created.SessionID, uid)
 
 	res, err := m.Poll(created.SessionID, knockSecret)
 	if err != nil {
@@ -453,5 +454,95 @@ func TestEnroll_RegistrationTokenSupersededByNextPoll(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("伪造/缺失 attestation 不应 complete 成功")
+	}
+}
+
+// TestEnroll_Approve_NonInitiator 非发起者批准：ErrNotOwner，状态与 user_id 都不变（#625）。
+func TestEnroll_Approve_NonInitiator(t *testing.T) {
+	db, svc, uid := newEnrollTestDB(t)
+	clock := &fakeClock{t: time.Now()}
+	m := newEnrollMgrWithClock(db, svc, clock)
+
+	created, _ := m.CreateSession(uid, "old-mac")
+	_, _ = m.RequestKnock(created.SessionID, "Chrome")
+
+	err := m.Approve(created.SessionID, "usr_attacker")
+	if !errors.Is(err, ErrNotOwner) {
+		t.Fatalf("非发起者批准应 ErrNotOwner, got %v", err)
+	}
+
+	got, _ := db.GetCliAuthSession(created.SessionID)
+	if got.Status != store.CliAuthRequested {
+		t.Errorf("status got %q want %q（越权批准不得推进状态机）", got.Status, store.CliAuthRequested)
+	}
+	if got.UserID != uid {
+		t.Errorf("userID got %q want %q（发起者不得被覆盖）", got.UserID, uid)
+	}
+}
+
+// TestEnroll_Deny_NonInitiator 非发起者拒绝：ErrNotOwner，状态不变（#625）。
+func TestEnroll_Deny_NonInitiator(t *testing.T) {
+	db, svc, uid := newEnrollTestDB(t)
+	clock := &fakeClock{t: time.Now()}
+	m := newEnrollMgrWithClock(db, svc, clock)
+
+	created, _ := m.CreateSession(uid, "old-mac")
+	_, _ = m.RequestKnock(created.SessionID, "Chrome")
+
+	if err := m.Deny(created.SessionID, "usr_attacker"); !errors.Is(err, ErrNotOwner) {
+		t.Fatalf("非发起者拒绝应 ErrNotOwner, got %v", err)
+	}
+	got, _ := db.GetCliAuthSession(created.SessionID)
+	if got.Status != store.CliAuthRequested {
+		t.Errorf("status got %q want %q（越权拒绝不得推进状态机）", got.Status, store.CliAuthRequested)
+	}
+}
+
+// TestEnroll_Delete_NonInitiator 非发起者不能取消别人的会话（#625）。
+func TestEnroll_Delete_NonInitiator(t *testing.T) {
+	db, svc, uid := newEnrollTestDB(t)
+	clock := &fakeClock{t: time.Now()}
+	m := newEnrollMgrWithClock(db, svc, clock)
+
+	created, _ := m.CreateSession(uid, "old-mac")
+	if err := m.Delete(created.SessionID, "usr_attacker"); !errors.Is(err, ErrNotOwner) {
+		t.Fatalf("非发起者取消应 ErrNotOwner, got %v", err)
+	}
+	if _, err := db.GetCliAuthSession(created.SessionID); err != nil {
+		t.Fatalf("越权取消不应删掉会话: %v", err)
+	}
+}
+
+// TestEnroll_RequestKnock_SanitizesDeviceHint deviceHint 由匿名客户端自报，
+// 落库前剔除控制字符（含换行）并截断长度，否则可伪造日志行（#625）。
+func TestEnroll_RequestKnock_SanitizesDeviceHint(t *testing.T) {
+	db, svc, uid := newEnrollTestDB(t)
+	clock := &fakeClock{t: time.Now()}
+	m := newEnrollMgrWithClock(db, svc, clock)
+
+	created, _ := m.CreateSession(uid, "old-mac")
+	hint := " Chrome\n\t· macOS\x7f \u202e "
+	if _, err := m.RequestKnock(created.SessionID, hint); err != nil {
+		t.Fatalf("request knock: %v", err)
+	}
+	got, _ := db.GetCliAuthSession(created.SessionID)
+	for _, r := range got.DeviceHint {
+		if r < 0x20 || r == 0x7f || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) {
+			t.Fatalf("deviceHint 含不该落库的字符 %U: %q", r, got.DeviceHint)
+		}
+	}
+	if got.DeviceHint != "Chrome· macOS" {
+		t.Errorf("deviceHint got %q", got.DeviceHint)
+	}
+
+	// 超长截断到 deviceHintMaxLen 个字符（不按字节截断）。
+	created2, _ := m.CreateSession(uid, "old-mac-2")
+	long := strings.Repeat("设", deviceHintMaxLen+10)
+	if _, err := m.RequestKnock(created2.SessionID, long); err != nil {
+		t.Fatalf("request knock long: %v", err)
+	}
+	got2, _ := db.GetCliAuthSession(created2.SessionID)
+	if n := len([]rune(got2.DeviceHint)); n != deviceHintMaxLen {
+		t.Errorf("deviceHint 字符数 got %d want %d", n, deviceHintMaxLen)
 	}
 }

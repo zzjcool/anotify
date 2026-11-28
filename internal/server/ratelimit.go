@@ -106,8 +106,11 @@ func hookWindowOrNil(limit int, dimension, envKey string) *fixedWindow {
 const (
 	rlCreatePerMin = 10 // 建会话：10/min/IP
 	rlByCodePerMin = 20 // by-code lookup：20/min/user
-	rlQRPerMin     = 30 // qr.txt：30/min/IP
-	pollInterval   = 2  // 轮询最小间隔（秒）
+	// by-code 的第二维（IP）：会话是匿名创建的，没有属主可校验，
+	// 所以短码枚举只能靠限流拦——只按 uid 限的话，换个账号就能接着刷同一台机器（#625）。
+	rlByCodeIPPerMin = 20 // by-code lookup：20/min/IP
+	rlQRPerMin       = 30 // qr.txt：30/min/IP
+	pollInterval     = 2  // 轮询最小间隔（秒）
 )
 
 // fixedWindow 是一个内存固定窗口限速器。
@@ -170,7 +173,9 @@ func (rl *fixedWindow) pruneLocked(now time.Time) {
 var (
 	rlCreate = newFixedWindow(rlCreatePerMin, time.Minute)
 	rlByCode = newFixedWindow(rlByCodePerMin, time.Minute)
-	rlQR     = newFixedWindow(rlQRPerMin, time.Minute)
+	// 第二维：同一出口 IP 换账号也不能绕过（见 rlByCodeIPPerMin 注释）。
+	rlByCodeIP = newFixedWindow(rlByCodeIPPerMin, time.Minute)
+	rlQR       = newFixedWindow(rlQRPerMin, time.Minute)
 )
 
 // pollGuard 按 sessionId 记录上次 poll 时间，保证最小间隔。

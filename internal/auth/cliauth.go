@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -35,6 +36,10 @@ var ErrAlreadyTerminal = errors.New("auth: 会话已处于终态")
 
 // ErrAlreadyConsumed 会话已被消费（明文 Key 已领取过）。
 var ErrAlreadyConsumed = errors.New("auth: 会话已被消费")
+
+// ErrNotOwner 表示当前用户不是该授权会话的发起者（属主）。
+// 设备授权会话的 user_id 只表示「谁发起」：批准/拒绝/取消都必须由发起者本人操作。
+var ErrNotOwner = errors.New("auth: 不是会话发起者")
 
 // CreatedCliAuthSession 是建会话后返回给调用方的信息。
 type CreatedCliAuthSession struct {
@@ -361,13 +366,30 @@ func generateSecret() (plaintext, hashHex string, err error) {
 
 // generateUserCode 生成一个 8 字符短码（去歧义字符集）。
 func generateUserCode() (string, error) {
-	raw := make([]byte, userCodeLen)
-	if _, err := rand.Read(raw); err != nil {
-		return "", errors.New("auth: userCode 随机数生成失败")
-	}
-	out := make([]byte, userCodeLen)
-	for i, b := range raw {
-		out[i] = userCodeCharset[int(b)%len(userCodeCharset)]
+	return generateUserCodeFrom(rand.Reader)
+}
+
+// generateUserCodeFrom 从 r 采样 8 个字符（拒绝采样，无取模偏差）。
+//
+// 字符集 31 个字符：256 % 31 = 8，直接用 int(b)%31 会让前 8 个字符的概率高 1/32。
+// 这里只接受 < 248（= 31*8）的字节，≥248 的字节丢弃重采（#625）。
+func generateUserCodeFrom(r io.Reader) (string, error) {
+	const limit = 256 - 256%len(userCodeCharset) // 248：≤255 中 31 的最大倍数
+	out := make([]byte, 0, userCodeLen)
+	buf := make([]byte, userCodeLen)
+	for len(out) < userCodeLen {
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return "", errors.New("auth: userCode 随机数生成失败")
+		}
+		for _, b := range buf {
+			if int(b) >= limit {
+				continue // 拒绝采样：丢弃会造成模偏差的字节
+			}
+			out = append(out, userCodeCharset[int(b)%len(userCodeCharset)])
+			if len(out) == userCodeLen {
+				break
+			}
+		}
 	}
 	return string(out), nil
 }

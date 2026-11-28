@@ -325,6 +325,7 @@ func TestCliAuthSession_PasskeyEnroll_RoundTrip(t *testing.T) {
 		UserCode:   "ENRL0001",
 		DeviceName: "old-macbook",
 		Kind:       CliAuthKindPasskey,
+		UserID:     "usr_owner", // passkey 会话建会话时就写入发起者
 		Status:     CliAuthPending,
 		CreatedAt:  1000,
 		ExpiresAt:  1600,
@@ -358,8 +359,23 @@ func TestCliAuthSession_PasskeyEnroll_RoundTrip(t *testing.T) {
 		t.Errorf("secretHash got %q want newhash", got.SecretHash)
 	}
 
-	// Approve: requested→approved + user_id
-	ok, err = db.UpdateCliAuthSessionApprovedFromRequested("cas_enroll1", "usr_test", 1100)
+	// Approve: requested→approved，只允许发起者；user_id 不被批准者改写（#625）
+	ok, err = db.UpdateCliAuthSessionApprovedFromRequested("cas_enroll1", "usr_attacker")
+	if err != nil {
+		t.Fatalf("approved from requested (non-owner) err: %v", err)
+	}
+	if ok {
+		t.Fatal("非发起者批准应返回 false")
+	}
+	got, _ = db.GetCliAuthSession("cas_enroll1")
+	if got.Status != CliAuthRequested {
+		t.Errorf("非发起者批准后 status got %q want %q", got.Status, CliAuthRequested)
+	}
+	if got.UserID != "usr_owner" {
+		t.Errorf("非发起者批准后 userID got %q want usr_owner", got.UserID)
+	}
+
+	ok, err = db.UpdateCliAuthSessionApprovedFromRequested("cas_enroll1", "usr_owner")
 	if err != nil || !ok {
 		t.Fatalf("approved from requested: ok=%v err=%v", ok, err)
 	}
@@ -367,8 +383,8 @@ func TestCliAuthSession_PasskeyEnroll_RoundTrip(t *testing.T) {
 	if got.Status != CliAuthApproved {
 		t.Errorf("status got %q want %q", got.Status, CliAuthApproved)
 	}
-	if got.UserID != "usr_test" {
-		t.Errorf("userID got %q want usr_test", got.UserID)
+	if got.UserID != "usr_owner" {
+		t.Errorf("userID got %q want usr_owner（发起者不被批准者覆盖）", got.UserID)
 	}
 
 	// ConsumePasskey: approved→consumed
@@ -390,19 +406,26 @@ func TestCliAuthSession_PasskeyEnroll_RoundTrip(t *testing.T) {
 		t.Error("重复 consume 应返回 alreadyConsumed=true")
 	}
 
-	// Deny from requested
+	// Deny from requested（只有发起者可拒绝）
 	s2 := &CliAuthSession{
 		ID: "cas_enroll2", SecretHash: "h", UserCode: "ENRL0002",
-		DeviceName: "dev", Kind: CliAuthKindPasskey,
+		DeviceName: "dev", Kind: CliAuthKindPasskey, UserID: "usr_owner2",
 		Status: CliAuthPending, CreatedAt: 1000, ExpiresAt: 1600,
 	}
 	db.CreateCliAuthSession(s2)
 	db.UpdateCliAuthSessionRequestedWithSecret("cas_enroll2", "hint", "hash")
-	ok, err = db.UpdateCliAuthSessionDeniedFromRequested("cas_enroll2")
+	if ok, err = db.UpdateCliAuthSessionDeniedFromRequested("cas_enroll2", "usr_attacker"); err != nil || ok {
+		t.Fatalf("非发起者拒绝应返回 false 且不报错: ok=%v err=%v", ok, err)
+	}
+	got2, _ := db.GetCliAuthSession("cas_enroll2")
+	if got2.Status != CliAuthRequested {
+		t.Errorf("非发起者拒绝后 status got %q want %q", got2.Status, CliAuthRequested)
+	}
+	ok, err = db.UpdateCliAuthSessionDeniedFromRequested("cas_enroll2", "usr_owner2")
 	if err != nil || !ok {
 		t.Fatalf("deny from requested: ok=%v err=%v", ok, err)
 	}
-	got2, _ := db.GetCliAuthSession("cas_enroll2")
+	got2, _ = db.GetCliAuthSession("cas_enroll2")
 	if got2.Status != CliAuthDenied {
 		t.Errorf("status got %q want %q", got2.Status, CliAuthDenied)
 	}
