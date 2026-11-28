@@ -158,13 +158,6 @@ func (m *SessionManager) Revoke(sessionID string) error {
 	return nil
 }
 
-// sessionCookie 是 SetCookie / ClearCookie 的**唯一**组装点（#624）。
-//
-// 为什么必须共用一个 helper：两条 Cookie 的属性只要有一项不一致（曾经的 ClearCookie
-// 缺 SameSite、缺 Expires），浏览器就可能把它当成**另一个** cookie 而不清理——
-// 用户在登出 / 被禁用后看起来仍“登录着”，而服务端又已经把这个 session 删了：
-// 于是每个请求 401，但前端每次刷新都看到自己还在登录页。属性集合就这一个来源，
-// 以后加 Domain / Path 也只改这里。
 func (m *SessionManager) sessionCookie(value string, expires time.Time) *http.Cookie {
 	return &http.Cookie{
 		Name:     SessionCookieName,
@@ -183,10 +176,6 @@ func (m *SessionManager) SetCookie(w http.ResponseWriter, sessionID string) {
 }
 
 // ClearCookie 清除会话 Cookie。
-//
-// 属性必须与 SetCookie **逐项一致**（同一个 sessionCookie），否则浏览器会认为是两个
-// 不同的 cookie：值清不掉，但服务端 session 已经删了 → 用户卡在“已登录但天天 401”
-// （#624）。清 Cookie 靠空 Value + MaxAge<0（Max-Age 优先于 Expires）。
 func (m *SessionManager) ClearCookie(w http.ResponseWriter) {
 	c := m.sessionCookie("", time.Now().Add(-time.Hour))
 	c.MaxAge = -1

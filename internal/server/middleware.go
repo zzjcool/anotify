@@ -98,12 +98,6 @@ func accessLog(next http.Handler) http.Handler {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: 0}
 
-		// request id 在进 handler **之前**落到响应头上（#624）：
-		//   - 用户报障时前端/运维直接读这个头（web/partials.js 的 responseRequestID）；
-		//   - 500 的错误出口里没有 *http.Request（writeAPIError 的签名），日志就靠回读它
-		//     取 request_id（handlers.go 的 logInternal）。
-		// 写在 ServeHTTP 之前是必须的：handler 内部就要用它；statusWriter 只在第一次
-		// WriteHeader 时快照状态码，提前 Set 一个头不影响那条既有语义。
 		sw.Header().Set(requestIDHeader, rid)
 
 		next.ServeHTTP(sw, r)

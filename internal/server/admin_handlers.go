@@ -221,20 +221,13 @@ func (h *adminHandler) changeRole(w http.ResponseWriter, r *http.Request, id str
 }
 
 type adminErr struct {
-	code int
-	msg  string
-	// cause 是底层原始错误；非空表示这次失败是**内部**的（现在是 500），
-	// 此时 msg 只是构造时的占位，落地响应时一律换成 internalErrMsg（#624）。
+	code  int
+	msg   string
 	cause error
 }
 
 func (e adminErr) Error() string { return e.msg }
 
-// writeAdminErr 把 adminErr 落到响应上：内部失败先记原文日志再回固定文案，
-// 其余（400/404/409）按 code/msg 原样回。
-//
-// 为什么不把 err.Error() 直接给客户端：它带库层原文（表名、约束名、文件路径），
-// 而这条路径的任何 500 都是我们没预料到的状态，调用方拿它做不了任何决策（#624）。
 func writeAdminErr(w http.ResponseWriter, err *adminErr) {
 	if err.cause != nil {
 		logInternal(w, err.cause)

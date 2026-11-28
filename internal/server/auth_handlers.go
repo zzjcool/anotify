@@ -163,8 +163,6 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 			"request_id", logging.RequestID(r.Context()),
 			"error", err.Error(),
 		)
-		// #624：原文只进日志。登录失败一律 401 且文案固定（api/auth.yaml 的 login 约定：
-		// 不区分用户不存在 / 断言无效 / 账户禁用），否则响应体就是一张枚举用户的口令表。
 		writeErr(w, 401, "登录失败，请重新发起登录")
 		return
 	}
@@ -578,10 +576,6 @@ func (h *authHandler) passwordLogin(w http.ResponseWriter, r *http.Request) {
 			"request_id", logging.RequestID(r.Context()),
 			"error", err.Error(),
 		)
-		// #624 / #618：原文只进日志；响应只回下面两句**固定**文案之一（不再透传 err.Error()）：
-		//   · 无密码账号 → 指向 Passkey（password_test.go 的 TestPassword_LoginNoPasswordAccount 钉住
-		//     「未设置密码」这个指引，它是句产品决定：没设密码的人需要知道该走哪条路）；
-		//   · 其余（用户不存在 / 密码错 / 未设置）→ 同一句，不泄露用户是否存在。
 		msg := "用户名或密码错误"
 		if errors.Is(err, auth.ErrPasswordNotSet) {
 			msg = "该账户未设置密码，请使用 Passkey 登录"
@@ -768,7 +762,6 @@ func (h *authHandler) recoveryLogin(w http.ResponseWriter, r *http.Request) {
 			"error", err.Error(),
 		)
 		// 账户禁用用 401；其余统一 401（不区分用户/码错误）。
-		// #624：原文只进日志；文案固定，用户不存在与恢复码错误给同一句。
 		writeErr(w, 401, "用户名或恢复码错误")
 		return
 	}

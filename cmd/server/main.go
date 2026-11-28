@@ -69,11 +69,6 @@ func main() {
 
 	mux := server.NewMux(cfg)
 
-	// pprof 走**独立监听**（#624）：不与 ANOTIFY_ADDR 共用端口。
-	//
-	// 旧实现挂在业务 mux 上，而 ANOTIFY_ADDR 默认 `:8080`（全接口）——开关一开就把
-	// goroutine 栈与堆分布暴露到业务监听面，pprof 又没有任何鉴权。现在暴露面只由
-	// ANOTIFY_PPROF_ADDR 决定（默认 127.0.0.1:6060，仅回环）。
 	if cfg.Pprof {
 		slog.Warn("pprof 已开启（性能评估用，独立监听）",
 			"event", "server.pprof.enabled",
@@ -85,8 +80,6 @@ func main() {
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
-			// 监听失败不改业务服务的命运（pprof 是可选能力）：记一条 ERROR 继续。
-			// ErrServerClosed 是正常关闭，不算失败。
 			if err := pprofSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				slog.Error("pprof 监听失败（业务服务继续运行）",
 					"event", "server.fatal",

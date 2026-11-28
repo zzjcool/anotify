@@ -255,12 +255,9 @@ func writeAPIError(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrNamespaceInputsChanged):
 		writeStatus(w, http.StatusConflict, reasonConflict, err.Error(), nil)
 	case errors.Is(err, store.ErrSourceEventReceiptMissing):
-		// 回执缺行是**服务端**的不变量破了（写事件与写回执同事务），必须 5xx；
-		// 但给出去的只有固定文案，原文进日志（#624）。
 		logInternal(w, err)
 		writeStatus(w, http.StatusInternalServerError, reasonInternal, internalErrMsg, nil)
 	default:
-		// 没预料到的错误一律 500（报成 4xx 会把产品 bug 藏起来），原文只进日志。
 		logInternal(w, err)
 		writeStatus(w, http.StatusInternalServerError, reasonInternal, internalErrMsg, nil)
 	}
