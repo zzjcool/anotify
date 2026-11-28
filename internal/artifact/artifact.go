@@ -331,7 +331,7 @@ func (r *Requires) UnmarshalJSON(data []byte) error {
 // resultTtlSec 省略 = 604800、显式 0 = 永不清理。用 int 吞掉这个区别就会把
 // 「写错了」变成「按默认值跑」。
 type Lifecycle struct {
-	// Idempotent 是「明确幂等」的声明：true 才允许对短暂基础设施失败自动重试。
+	// Idempotent 是「明确幂等」的事实声明，不参与重试判定（#669）：绝不重跑写 maxAttempts: 1。
 	Idempotent bool `json:"idempotent"`
 	// MaxAttempts 是总尝试次数（含第一次，≥1，默认 3）。
 	MaxAttempts *int `json:"maxAttempts,omitempty"`
@@ -454,10 +454,8 @@ type fieldError struct {
 
 func (e *fieldError) Error() string { return e.code + ": " + e.msg }
 
-// Error 汇总一份产物上的全部问题。
-//
-// 一次报全部、不只报第一条：手写 YAML 时用户要的是「哪里全错了」，
-// 而不是修一条、再跑一次、再发现下一条。
+// Error 汇总一份产物上的全部问题：一次报全部而不只报第一条（手写 YAML 时用户要的是
+// 「哪里全错了」，而不是修一条、再跑一次、再发现下一条）。
 type Error struct {
 	Problems []string
 	Fields   []string
@@ -649,6 +647,23 @@ func Validate(a *Artifact) error { return validateArtifact(a, true) }
 
 // ValidateMetadataUpdate 跳过 #612 的 params 可用性判据（只改元数据，不判新写入的内容）。
 func ValidateMetadataUpdate(a *Artifact) error { return validateArtifact(a, false) }
+
+// Warnings 返回写入期的**非致命**提示（#669）：能存，但你多半不是想要这个——重试判据
+// 是 maxAttempts 而不是 idempotent，非幂等 + 预算>1 会重跑。绝不拦写入，呈现面由调用方定。
+func Warnings(a *Artifact) []string {
+	if a == nil {
+		return nil
+	}
+	var out []string
+	lc := a.Spec.Lifecycle
+	if attempts := lc.EffectiveMaxAttempts(); !lc.Idempotent && attempts > 1 {
+		out = append(out, fmt.Sprintf(
+			"lifecycle.idempotent=false 且 maxAttempts=%d（含首次）：租约失联会按预算重跑同一次执行，"+
+				"非幂等能力重跑可能重复副作用（固定分支名 / 重复推送）；确实不该重跑请写 maxAttempts: 1",
+			attempts))
+	}
+	return out
+}
 
 func validateArtifact(a *Artifact, checkParamUsable bool) error {
 	if a == nil {

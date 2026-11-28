@@ -411,6 +411,12 @@ components:
           $ref: '#/components/schemas/EventSpec'
         status:
           $ref: '#/components/schemas/EventStatus'
+        warnings:
+          type: array
+          items: {type: string}
+          description: |
+            信封的可选顶层提示（§3.1）。事件是只读投影、没有写入期提示面，中枢当前恒不发
+            （这里声明是为了与其余 kind 的信封同形，见 #669）。
       additionalProperties: false
     EventSpec:
       type: object

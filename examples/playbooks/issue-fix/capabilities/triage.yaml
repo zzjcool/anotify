@@ -25,6 +25,7 @@ spec:
     values: [vars.REPO_DIR]
   lifecycle:
     idempotent: false
+    maxAttempts: 3  # 只读 issue + 打标/评论，重跑安全（最坏多一条评论）（#669）
     timeoutSec: 1800
     idleTimeoutSec: 900
     onFailure:

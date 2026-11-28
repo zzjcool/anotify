@@ -130,6 +130,26 @@ emit 到不存在的下游         → 包校验期就会红（渲染后查 unre
 同一 issue 重复投递         → 会真的再跑一遍：这是"重投"不是"重试"，由人决定要不要投
 ```
 
+## 重跑语义（#669）
+
+租约失联（节点崩溃 / 网络分区 / 中枢重启）后**是否重跑**，判据是 `lifecycle.maxAttempts`
+（总尝试次数，含第一次；省略 = 3），**不是** `idempotent`：那个标记从 #661 起只作为
+「这次执行是否幂等」的事实投影，不再一票否决重试。**声明「绝不重跑」的写法是
+`maxAttempts: 1`**。重跑会换新 attempt token（旧 attempt 的 emit/result 被中枢拒），
+但沿用**同一份 params**，所以：
+
+```
+implement / fix   maxAttempts: 1   重跑会复用固定分支 pi-subagent/issue-<n>-r<round>
+                                   （implement 每次 reset 到基线再建同名分支，fix 在既定分支上追加
+                                   提交）——第二轮会与上一轮的推送撞车，所以显式写 1
+                                 
+triage / review   maxAttempts: 3   只读 issue/diff + 评论/emit，重跑安全（最坏多一条评论）
+```
+
+写入这类能力时，如果 `idempotent: false` 而 `maxAttempts > 1`（含省略），中枢会在
+创建/更新的 201/200 回执里给一条 `warnings[]`：「重跑会重复副作用，确实不该重跑请写
+`maxAttempts: 1`」。提示**不影响写入**，只是把静默的语义变化说出来。
+
 ## 已知边界
 
 1. **`timeoutSec` 是整任务上限**：triage 1800s、implement/review/fix 3600s。agent 跑太久会被杀，

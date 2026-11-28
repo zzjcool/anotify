@@ -91,7 +91,7 @@ const WHITELIST = new Set([
 /* 已知遗留：服务端不发、契约里也没有，但当前**不产生用户可见的错误显示**。
  * 写在这里是为了让守卫只对「新出现」的字段报错；每条都注明为什么不修。 */
 const KNOWN_DEAD = new Map([
-	["warnings", "API 错误信封的可选 warnings：服务端从不发；无展示位"],
+	["warnings", "信封顶层 warnings：capability 写入回执已发（#669），Web 仍无展示位（API 调用方消费）"],
 	["blocker", "playbook status 的 v3 遗留：if 分支在真实数据下不执行；mock 仍在造（G1 系列测试依赖），另立事项"],
 	["machineLimits", "node：服务端不发，页面已回退到 localLimits（显示正确）"],
 	["overrideStale", "node：服务端不发，node.html 仅 `=== true` 时渲染徽章（永不出现）"],

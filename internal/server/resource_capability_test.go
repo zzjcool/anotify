@@ -366,6 +366,58 @@ func TestCapabilityResourceCreateAndGet(t *testing.T) {
 	}
 }
 
+func TestCapabilityResourceRetryWarning(t *testing.T) {
+	env := newCapTestEnv(t)
+
+	doc := capabilityBody("retryable", 0, "#!/bin/sh\necho retryable\n")
+	doc["spec"].(map[string]any)["lifecycle"] = map[string]any{
+		"idempotent": false, "maxAttempts": 3, "timeoutSec": 60,
+	}
+	rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "", ""), doc)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("非幂等 + maxAttempts:3 必须能写入（提示不是拒绝）: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	created := decodeCapJSON(t, rec)
+	assertCapabilityEnvelope(t, created, "retryable")
+	warnings := capArray(t, created["warnings"], "warnings")
+	if len(warnings) != 1 {
+		t.Fatalf("应当恰好一条写入期提示，实际 %d 条: %#v", len(warnings), warnings)
+	}
+	msg, _ := warnings[0].(string)
+	if !strings.Contains(msg, "maxAttempts: 1") {
+		t.Fatalf("提示必须给出「不该重跑就写 maxAttempts: 1」的出路，实际: %q", msg)
+	}
+	if !strings.Contains(msg, "idempotent=false") {
+		t.Fatalf("提示必须点名触发条件，实际: %q", msg)
+	}
+
+	rec = env.do(t, http.MethodGet, env.capPath(env.nsA, "retryable", ""), nil) // 读路径不带提示
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, ok := decodeCapJSON(t, rec)["warnings"]; ok {
+		t.Fatalf("GET 不应带写入期提示")
+	}
+
+	for _, tc := range []struct { // 绝不重跑 / 幂等 → 201 且没有 warnings 键
+		name      string
+		lifecycle map[string]any
+	}{
+		{"once", map[string]any{"idempotent": false, "maxAttempts": 1, "timeoutSec": 60}},
+		{"safe", map[string]any{"idempotent": true, "maxAttempts": 3, "timeoutSec": 60}},
+	} {
+		body := capabilityBody(tc.name, 0, "#!/bin/sh\necho "+tc.name+"\n")
+		body["spec"].(map[string]any)["lifecycle"] = tc.lifecycle
+		rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "", ""), body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %s: status=%d body=%s", tc.name, rec.Code, rec.Body.String())
+		}
+		if _, ok := decodeCapJSON(t, rec)["warnings"]; ok {
+			t.Fatalf("%s 不应有写入期提示（maxAttempts=%v）", tc.name, tc.lifecycle["maxAttempts"])
+		}
+	}
+}
+
 // ---------- 2) versions 列表：降序 + 完整信封 + kind ----------
 
 func TestCapabilityResourceVersionsDescending(t *testing.T) {

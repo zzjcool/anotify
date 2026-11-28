@@ -75,7 +75,7 @@ G1后产出可读的 `EXPORTED-INTERFACES.md`（团队自己的进度目录）�
 - foldKey取 name+执行正文，排除 version/next/displayName；省略version先判等/分配再算含version的digest。显式同版内容不可变；next/displayName按既定例外原地更新、digest不变、不推节点。
 - Edge是投影：能力 `spec.next` 和源 `spec.targets`；无port/priority/mapping/literals。无直接写Edge API。
 - vars `local > node > namespace`，limits仅local/node两层并递归逐叶合并；Node cluster、授权=申报∩中枢授权；applied只机器层，namespace默认随任务内存使用。
-- 同逻辑 Task 一行，attempt计数器；grant后attempt生效；重试钉版/params/ns输入，新执行节点重解析机器值；每attempt运行期间值固定。非幂等默认false，maxAttempts总尝试默认3。
+- 同逻辑 Task 一行，attempt计数器；grant后attempt生效；重试钉版/params/ns输入，新执行节点重解析机器值；每attempt运行期间值固定。非幂等默认false，maxAttempts总尝试默认3，失联是否重排只看maxAttempts预算（idempotent仅为事实投影，见V4-D4）。
 - 安装只INSERT新对象，不改已有路由，不删资源；能力next/源targets差异unapplied；kind/config/显式版本真conflict单事务整包0写。归一化defaults，省略自动token保留已有，显式token参与比较且差异脱敏。
 - 用户显式删除可留下逻辑缺失引用，引用方状态报告，不新增in_use/finalizer。已被task钉住执行事实保留到引用安全GC。install不自动部署，保留人工部署动作。
 
@@ -84,7 +84,7 @@ G1后产出可读的 `EXPORTED-INTERFACES.md`（团队自己的进度目录）�
 - 一个零依赖共享协议类型源（建议新增 `internal/protocol/` 或移出原 ws 的纯协议子包）。server/anode直接使用同一份Go定义，禁止各写snake/camel镜像；节点二进制不引SQLite/server依赖。不提供旧frame aliases。
 - 配置子协议：hello/welcome/config.changed/config.get/config.applied，具体字段按config文档，只有机器值快照+revision/hash，未回传凭证值/完整白名单。
 - 执行10帧按capability §8.5：task.dispatch/accept/reject、lease.grant/renew/ack、task.result/result.ack、task.cancel/cancel.ack。dispatch只assignmentId/proposedAttempt、不授lease/token；stale_config仅accept前reject不计attempt；grant由中枢生成leaseId/attemptToken并计attempt。固定默认TTL60s/续租20s/TERM宽限5s后KILL进程组；节点本地ACK deadline失效自行停，旧attempt结果/emit中枢权威拒绝。cancel槽位等processGroupReaped再释放；超过600s宽限仍无该事实时，按「中枢不再等这条执行」补reaped_at并释槽（#682，语义是放弃等待而不是进程已回收）。
-- grant后启动前 missing_requirement/workdir_unavailable/home_unavailable 等确定性错误failed已计attempt，不重试；stale_config回pending/waiting_for_config不耗执行预算，不热循环。仅显式幂等任务的可靠infra事实/失联允许自动重试，普通script非零/timeout/cancel不自动重试。
+- grant后启动前 missing_requirement/workdir_unavailable/home_unavailable 等确定性错误failed已计attempt，不重试；stale_config回pending/waiting_for_config不耗执行预算，不热循环。可靠infra事实/失联允许自动重试，判据是maxAttempts预算而非幂等标记（绝不重跑请写maxAttempts:1），普通script非零/timeout/cancel不自动重试。
 - 本机一个HTTP emit网关默认loopback内核端口，可按文档unix形态；转中枢权威派发。请求 `{to,id?,data}`，Bearer attemptToken；无to missing_target400/CLI2；no_target仅Source.targets为空剪枝。可选id以逻辑(taskId,id)跨attempt去重，异to/data409；无id每次不同，不按旧seq自动业务去重；剪枝200 taskId:null/eventId/pruned，exit0。exit5只表示结果未知，可能已派发，不能凭shell退出码推断infra自动整任务重跑。
 - 只有serve/install/emit三个公开子命令；改二进制与服务/config名为anode/anode.yaml/anode.service，不加旧命名alias。curl安装脚本只负责下载并调用anode install（或与它保持单源的最小引导），不能存在两套不同初始化语义。
 - PATH=守护进程启动基线且探测/执行同源，本轮run.env不能覆盖PATH；HOME可显式绝对目录；envPassthrough完整名单仅本机、禁PATH/HOME/ANOTIFY_、只按显式变量名透传且run.env同名优先。值不进vars/中枢/诊断快照，实际用到名字可诊断。files静态路径与限额写入校验；真实symlink边界执行前files_escape。0600/入口0700，告知用户目录同名覆盖副作用。
@@ -99,7 +99,7 @@ G1后产出可读的 `EXPORTED-INTERFACES.md`（团队自己的进度目录）�
 
 - 每个 writer 必带verify数组。阶段验收只跑该阶段闭包，但整体交付必须 `go test ./... -count=1`、`make contract`、E2E quick（T1）及 `make fe`、sitegen测试、新前端单测、页面检查（T2）。
 - 可删除纯旧语义专属ports/priority/迁移测试，但必须在团队测试映射表列旧用例→新契约用例；不全删测试、不skip、不弱化断言迁就产品bug。认证/passkey/设备授权等保留功能回归不得丢（推送域已退役，见 V4-D7）。
-- 必测：digest/next不出版本；字段往返；ns授权+三层配置+CAS；12格安装+dryRun+源targets差异+token省略；重复delivery/id不同payload/过窗；emit跨attempt幂等和剪枝；stale无attempt/grant唯一授权/旧attempt拒绝；取消回收；非幂等不重跑；干净环境/凭证白名单；files_escape/用户目录GC安全；raw包体/实例溯源/派生status。
+- 必测：digest/next不出版本；字段往返；ns授权+三层配置+CAS；12格安装+dryRun+源targets差异+token省略；重复delivery/id不同payload/过窗；emit跨attempt幂等和剪枝；stale无attempt/grant唯一授权/旧attempt拒绝；取消回收；非幂等按预算重跑且同执行不并跑；干净环境/凭证白名单；files_escape/用户目录GC安全；raw包体/实例溯源/派生status。
 - 父会话交叉集成后重建 `make fe` 和 `make build`，跑全量 `make e2e`、`make ci`、目标页面dark/light及桌面/手机 `web_verify`。全量E2E只在最终集成门禁跑，不让每个小阶段重复全量。
 - 中间Go依赖编译失败是阶段状态，不是完成；不得用legacy structs/stubs/fallback接口掩盖。团队交付须真实v4闭环，不得自行缩减核心范围/以时间不足宣布全量完成。
 

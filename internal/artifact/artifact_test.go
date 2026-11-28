@@ -758,6 +758,41 @@ func TestLifecycleValidation(t *testing.T) {
 	}
 }
 
+func TestWarningsNonIdempotentRetry(t *testing.T) {
+	cases := []struct {
+		name      string
+		lifecycle string
+		want      int
+	}{
+		{"非幂等 + 显式预算 3", "  lifecycle: {idempotent: false, maxAttempts: 3}\n", 1},
+		{"非幂等 + 省略预算（默认 3）", "  lifecycle: {idempotent: false}\n", 1},
+		{"非幂等 + 预算 1", "  lifecycle: {idempotent: false, maxAttempts: 1}\n", 0},
+		{"幂等 + 预算 3", "  lifecycle: {idempotent: true, maxAttempts: 3}\n", 0},
+		{"省略 lifecycle（零值非幂等 + 默认 3）", "", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := strings.Replace(minimalYAML, "spec:\n", "spec:\n"+tc.lifecycle, 1)
+			a := mustParse(t, doc)
+			if err := Validate(a); err != nil { // 提示不能变成拒绝
+				t.Fatalf("提示不应拦写入，Validate 却报错：%v", err)
+			}
+			got := Warnings(a)
+			if len(got) != tc.want {
+				t.Fatalf("期望 %d 条提示，实际 %d 条：%v", tc.want, len(got), got)
+			}
+			if tc.want > 0 { // 提示必须点名可操作的写法，不能只报「有问题」
+				if !strings.Contains(got[0], "maxAttempts: 1") {
+					t.Fatalf("提示必须给出「不该重跑就写 maxAttempts: 1」的出路，实际：%s", got[0])
+				}
+			}
+		})
+	}
+	if got := Warnings(nil); got != nil {
+		t.Fatalf("nil 产物应当没有提示，实际 %v", got)
+	}
+}
+
 func TestConcurrencyValidation(t *testing.T) {
 	for name, field := range map[string]string{
 		"0":    "  concurrency: {maxPerNode: 0}\n",
