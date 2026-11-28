@@ -692,3 +692,47 @@ func TestPassword_LoginDisabledAccount(t *testing.T) {
 		t.Fatalf("Passkey login/options 的文案 = %q，期望与密码登录同一句", msg)
 	}
 }
+
+func TestPasskeyLoginOptions_NoPasskeyIsUserFacing400(t *testing.T) {
+	env := newPasswordTestEnv(t) // 这个账号只有密码，一个 Passkey 都没绑
+
+	rr := pwReq(t, env, "POST", "/v1/auth/login/options", map[string]any{"username": "pwuser"}, false)
+	if rr.Code != 400 {
+		t.Fatalf("没有 Passkey 的账号 login/options 应 400（用户面错误），不得被内部错误脱敏升级成 500，got %d body=%s", rr.Code, rr.Body.String())
+	}
+	msg, _ := decodeBody(t, rr)["error"].(string)
+	if msg != "该账户还没有 Passkey，请使用密码登录" {
+		t.Fatalf("文案 = %q，期望固定文案（指向密码登录）", msg)
+	}
+	for _, leak := range []string{"credentials", "webauthn", "begin login", "auth:"} {
+		if strings.Contains(rr.Body.String(), leak) {
+			t.Errorf("响应体泄露内部串 %q：%s", leak, rr.Body.String())
+		}
+	}
+
+	rr = pwReq(t, env, "POST", "/v1/auth/login/options", map[string]any{"username": "ghost"}, false)
+	if rr.Code != 400 {
+		t.Fatalf("不存在的账号 login/options 应 400, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if msg, _ := decodeBody(t, rr)["error"].(string); msg != "用户不存在" {
+		t.Errorf("不存在的账号文案 = %q，期望「用户不存在」", msg)
+	}
+}
+
+func TestPasskeyLoginOptions_InternalErrorStays500(t *testing.T) {
+	logs := captureInternalErrorLogs(t) // 这条 database is closed 是故意打的：#259 的竞态检查按日志文本判，先收进缓冲区隔开
+	env := newPasswordTestEnv(t)
+	if err := env.db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	rr := pwReq(t, env, "POST", "/v1/auth/login/options", map[string]any{"username": "pwuser"}, false)
+	if rr.Code != 500 {
+		t.Fatalf("库层故障必须仍是 500（未预料的错误不得降级成 4xx，否则产品 bug 被藏起来）, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "database is closed") {
+		t.Errorf("500 响应体不得带库层原文：%s", rr.Body.String())
+	}
+	if !strings.Contains(logs.String(), "database is closed") {
+		t.Errorf("原文必须进日志（否则系统 500 无法排障）：%s", logs.String())
+	}
+}

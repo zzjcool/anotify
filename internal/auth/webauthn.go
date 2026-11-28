@@ -360,6 +360,9 @@ func (s *Service) BeginLogin(username string) (*protocol.CredentialAssertion, er
 	if err != nil {
 		return nil, err
 	}
+	if len(waUser.WebAuthnCredentials()) == 0 { // 空凭证让库回 ErrBadRequest（内部错误形状），映射不出用户面 4xx（#624）
+		return nil, ErrNoPasskey
+	}
 	assertion, session, err := s.wa.BeginLogin(waUser)
 	if err != nil {
 		return nil, fmt.Errorf("begin login: %w", err)

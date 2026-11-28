@@ -133,12 +133,14 @@ func (h *authHandler) loginOptions(w http.ResponseWriter, r *http.Request) {
 	} else {
 		opts, err = h.svc.BeginDiscoverableLogin(req.Token)
 	}
-	if err != nil { // 400 只回固定文案；库层内部原文只进日志（writeInternal → 500）
+	if err != nil { // 用户面错误回 400 固定文案；库层内部原文只进日志（writeInternal → 500）
 		switch {
 		case errors.Is(err, auth.ErrAccountDisabled):
 			writeErr(w, 400, "账户已被禁用，请联系管理员")
 		case errors.Is(err, auth.ErrLoginUserNotFound):
 			writeErr(w, 400, "用户不存在")
+		case errors.Is(err, auth.ErrNoPasskey):
+			writeErr(w, 400, "该账户还没有 Passkey，请使用密码登录")
 		default:
 			writeInternal(w, err)
 		}

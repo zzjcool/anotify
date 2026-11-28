@@ -133,6 +133,16 @@ async function main() {
 	});
 	H.eq("member role = member", memberMe.json?.role, "member");
 
+	const noPasskeyOpts = await H.req(server.base, "/v1/auth/login/options", {
+		body: { username: memberMe.json.username },
+	});
+	H.eq("#624 无 Passkey 账号 login/options → 400", noPasskeyOpts.status, 400);
+	H.check(
+		"#624 无 Passkey 的 400 文案指向密码登录",
+		String(noPasskeyOpts.json?.error || "").includes("Passkey"),
+		`body=${String(noPasskeyOpts.text || "").slice(0, 80)}`,
+	);
+
 	// ---------- 3. 权限矩阵 ----------
 	// 无 session → 401
 	H.eq(

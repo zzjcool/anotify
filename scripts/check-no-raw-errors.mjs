@@ -22,6 +22,16 @@ export const RULES = [
 		re: /writeErr\s*\(\s*w\s*,\s*(?:401|http\.StatusUnauthorized)\s*,\s*err\s*\.\s*Error\s*\(\s*\)\s*\)/,
 		hint: "401 不许回 err.Error()：原文进日志，响应回固定文案（口径见 #618）",
 	},
+	{
+		id: "RAW_ERR_IN_STATUS500",
+		re: /writeStatus\s*\(\s*w\s*,\s*(?:500|http\.StatusInternalServerError)\s*,[^;]*err\s*\.\s*Error\s*\(\s*\)/,
+		hint: "信封 500（writeStatus）的 message 不许是 err.Error()：原文进日志，响应回 internalErrMsg",
+	},
+	{
+		id: "RAW_ERR_IN_APISTATUS500",
+		re: /writeAPIStatus\s*\(\s*w\s*,\s*(?:500|http\.StatusInternalServerError)\s*,[^;]*err\s*\.\s*Error\s*\(\s*\)/,
+		hint: "信封 500（writeAPIStatus）的 message 不许是 err.Error()：原文进日志，响应回 InternalErrorMessage",
+	},
 ];
 
 const ADMIN_ERR_LITERAL = /&\s*adminErr\s*\{/g;
@@ -254,6 +264,39 @@ export function selfTest() {
 		0,
 	);
 
+	const envelopes = [
+		'\t\twriteStatus(w, http.StatusInternalServerError, reasonInternal, err.Error(), nil)',
+		'\t\twriteAPIStatus(w, 500, reasonInternal, err.Error())',
+	].join("\n");
+	const envelopeFindings = scanText(envelopes);
+	t("信封 500 两种写法都判红", envelopeFindings.map((f) => f.rule), [
+		"RAW_ERR_IN_STATUS500",
+		"RAW_ERR_IN_APISTATUS500",
+	]);
+	t(
+		"信封 400/409/502 不算违规（各自有契约口径）",
+		scanText(
+			[
+				'writeStatus(w, http.StatusBadRequest, reasonBadRequest, err.Error(), nil)',
+				'writeStatus(w, http.StatusConflict, "already_installed", err.Error(), nil)',
+				'writeStatus(w, http.StatusBadGateway, reasonPollFailed, err.Error(), nil)',
+				'writeAPIStatus(w, http.StatusUnauthorized, reasonUnauthorized, err.Error())',
+			].join("\n"),
+		).length,
+		0,
+	);
+	t(
+		"信封 500 回固定文案判绿",
+		scanText(
+			[
+				'writeStatus(w, http.StatusInternalServerError, reasonInternal, internalErrMsg, nil)',
+				'writeAPIStatus(w, http.StatusInternalServerError, reasonInternal, InternalErrorMessage)',
+				'writeAPIStatus(w, http.StatusInternalServerError, reasonInternal, "event ingress is not configured")',
+			].join("\n"),
+		).length,
+		0,
+	);
+
 	t("排除 _test.go", shouldScan("internal/server/handlers_test.go"), false);
 	t("排除非 Go", shouldScan("web/partials.js"), false);
 	t("保留普通 Go 文件", shouldScan("internal/server/handlers.go"), true);
@@ -307,7 +350,9 @@ function main() {
 		}
 		return 1;
 	}
-	console.log(`✅ 扫过 ${files.length} 个 Go 文件：500/401 与 adminErr 构造都没有直接回内部原文（#624；400 的契约用户面文案与 502 的刻意回传不在本守卫范围）`);
+	console.log(
+		`✅ 扫过 ${files.length} 个 Go 文件：500/401、信封 500 与 adminErr 构造都没有直接回内部原文（#624；400/403/409/502 的契约用户面文案与 502 的刻意回传不在本守卫范围）`,
+	);
 	return 0;
 }
 

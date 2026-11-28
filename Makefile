@@ -121,7 +121,7 @@ check-test-discipline: ## 测试纪律棘轮：waitForTimeout/吞异常/t.Skip/t
 	node scripts/check-test-discipline.mjs --self-test
 	node scripts/check-test-discipline.mjs
 
-check-no-raw-errors: ## 错误响应脱敏：500/401 不回 err.Error()、adminErr 的 500 必带 cause（#624：库层原文只进日志）
+check-no-raw-errors: ## 错误响应脱敏：500/401 与信封 500 不回 err.Error()、adminErr 的 500 必带 cause（#624：库层原文只进日志）
 	node scripts/check-no-raw-errors.mjs --self-test
 	node scripts/check-no-raw-errors.mjs
 

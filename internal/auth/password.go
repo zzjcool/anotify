@@ -36,6 +36,8 @@ var (
 
 	ErrLoginUserNotFound = errors.New("auth: 用户不存在") // Passkey 登录发起时用户名不存在：契约允许用 400 告知（用户需要去注册），文案固定、不含内部信息
 
+	ErrNoPasskey = errors.New("auth: 该账户还没有 Passkey") // 用户存在但一个 Passkey 都没绑过：同样是用户面 4xx（改走密码登录），不是内部错误
+
 	// errUserNotFound / errCurrentPasswordWrong 是密码管理端点直接展示给用户的文案
 	// （前端把服务端 error 原样贴进弹层），所以措辞固定、不带包前缀。
 	errUserNotFound         = errors.New("用户不存在")
