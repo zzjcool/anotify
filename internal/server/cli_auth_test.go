@@ -30,6 +30,7 @@ func newCliAuthTestEnv(t *testing.T) *cliAuthTestEnv {
 	// 重置全局限速器（防止跨用例污染）
 	rlCreate = newFixedWindow(rlCreatePerMin, time.Minute)
 	rlByCode = newFixedWindow(rlByCodePerMin, time.Minute)
+	rlByCodeIP = newFixedWindow(rlByCodeIPPerMin, time.Minute)
 	rlQR = newFixedWindow(rlQRPerMin, time.Minute)
 	pollG = &pollGuard{last: make(map[string]time.Time)}
 
@@ -578,5 +579,48 @@ func createSessionHelper(t *testing.T, env *cliAuthTestEnv) createdSession {
 		sessionID: m["sessionId"].(string),
 		secret:    m["secret"].(string),
 		userCode:  m["userCode"].(string),
+	}
+}
+
+func TestCliAuthByCode_RateLimitedPerUserAndPerIP(t *testing.T) {
+	env := newCliAuthTestEnv(t)
+	created := createSessionHelper(t, env)
+
+	sm := auth.NewSessionManager(env.db, 0, false)
+	uidB, err := env.db.InsertUser(context.Background(), "", "bycodeuser2", "ByCode User 2")
+	if err != nil {
+		t.Fatalf("insert second user: %v", err)
+	}
+	sessB, err := sm.Create(uidB, "Other · CLI")
+	if err != nil {
+		t.Fatalf("create second session: %v", err)
+	}
+	cookieB := &http.Cookie{Name: auth.SessionCookieName, Value: sessB.ID}
+
+	const ipA = "198.51.100.7:1234"
+	const ipB = "198.51.100.8:1234"
+	byCode := func(cookie *http.Cookie, remoteAddr string) int {
+		req := httptest.NewRequest("GET", "/v1/cli-auth/sessions/by-code?code="+created.userCode, nil)
+		req.RemoteAddr = remoteAddr
+		req.AddCookie(cookie)
+		rr := httptest.NewRecorder()
+		env.mux.ServeHTTP(rr, req)
+		return rr.Code
+	}
+
+	for i := 0; i < rlByCodePerMin; i++ {
+		if got := byCode(env.cookie, ipA); got != 200 {
+			t.Fatalf("用户 A 第 %d 次 by-code status=%d want 200", i+1, got)
+		}
+	}
+
+	if got := byCode(env.cookie, ipB); got != 429 {
+		t.Errorf("同账号换 IP 应被 uid 维限速为 429, got %d", got)
+	}
+	if got := byCode(cookieB, ipA); got != 429 {
+		t.Errorf("同 IP 换账号应被 IP 维限速为 429, got %d", got)
+	}
+	if got := byCode(cookieB, ipB); got != 200 {
+		t.Errorf("新账号 + 新 IP 应 200, got %d", got)
 	}
 }

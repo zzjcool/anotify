@@ -104,10 +104,11 @@ func hookWindowOrNil(limit int, dimension, envKey string) *fixedWindow {
 
 // 限速阈值常量（见 cli-auth-plan §0）.
 const (
-	rlCreatePerMin = 10 // 建会话：10/min/IP
-	rlByCodePerMin = 20 // by-code lookup：20/min/user
-	rlQRPerMin     = 30 // qr.txt：30/min/IP
-	pollInterval   = 2  // 轮询最小间隔（秒）
+	rlCreatePerMin   = 10 // 建会话：10/min/IP
+	rlByCodePerMin   = 20 // by-code lookup：20/min/user
+	rlByCodeIPPerMin = 20 // by-code lookup：20/min/IP
+	rlQRPerMin       = 30 // qr.txt：30/min/IP
+	pollInterval     = 2  // 轮询最小间隔（秒）
 )
 
 // fixedWindow 是一个内存固定窗口限速器。
@@ -168,9 +169,10 @@ func (rl *fixedWindow) pruneLocked(now time.Time) {
 
 // 全局限速器实例（进程级）。
 var (
-	rlCreate = newFixedWindow(rlCreatePerMin, time.Minute)
-	rlByCode = newFixedWindow(rlByCodePerMin, time.Minute)
-	rlQR     = newFixedWindow(rlQRPerMin, time.Minute)
+	rlCreate   = newFixedWindow(rlCreatePerMin, time.Minute)
+	rlByCode   = newFixedWindow(rlByCodePerMin, time.Minute)
+	rlByCodeIP = newFixedWindow(rlByCodeIPPerMin, time.Minute)
+	rlQR       = newFixedWindow(rlQRPerMin, time.Minute)
 )
 
 // pollGuard 按 sessionId 记录上次 poll 时间，保证最小间隔。

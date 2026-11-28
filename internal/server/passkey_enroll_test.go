@@ -112,6 +112,32 @@ func enrollDoReq(t *testing.T, env *enrollTestEnv, method, path string, body any
 	return rr
 }
 
+func (env *enrollTestEnv) addUser(t *testing.T, username string) *http.Cookie {
+	t.Helper()
+	uid, err := env.db.InsertUser(context.Background(), "", username, username)
+	if err != nil {
+		t.Fatalf("insert user %s: %v", username, err)
+	}
+	sess, err := env.svc.Sessions().Create(uid, "Other · macOS")
+	if err != nil {
+		t.Fatalf("create session for %s: %v", username, err)
+	}
+	return &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID}
+}
+
+func enrollDoReqAs(t *testing.T, env *enrollTestEnv, method, path string, body any, cookie *http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	if body != nil {
+		_ = json.NewEncoder(&buf).Encode(body)
+	}
+	req := httptest.NewRequest(method, path, &buf)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, req)
+	return rr
+}
+
 func enrollDecodeBody(t *testing.T, rr *httptest.ResponseRecorder) map[string]any {
 	t.Helper()
 	var m map[string]any
@@ -487,5 +513,223 @@ func TestEnroll_CliAuthZeroRegression(t *testing.T) {
 	}
 	if res.APIKey == "" {
 		t.Error("apikey-kind poll 应返回明文 apiKey")
+	}
+}
+
+func TestPasskeyEnrollApprove_NonInitiator_Returns404AndKeepsOwner(t *testing.T) {
+	env := newEnrollTestEnv(t)
+	created := enrollCreateHelper(t, env)
+	base := "/v1/passkey-enroll/sessions/" + created.sessionID
+
+	_ = enrollDoReq(t, env, "POST", base+"/request", map[string]any{"deviceHint": "Chrome"}, false)
+
+	other := env.addUser(t, "bob")
+	rr := enrollDoReqAs(t, env, "POST", base+"/approve", nil, other)
+	if rr.Code != 404 {
+		t.Fatalf("非发起者批准应 404, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	got, err := env.mgr.GetByID(created.sessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if got.Status != store.CliAuthRequested {
+		t.Errorf("status got %q want %q（越权批准不得推进状态机）", got.Status, store.CliAuthRequested)
+	}
+	if got.UserID != env.userID {
+		t.Errorf("userID got %q want %q（发起者不得被批准者覆盖）", got.UserID, env.userID)
+	}
+
+	rr2 := enrollDoReq(t, env, "GET", base+"/watch", nil, true)
+	if rr2.Code != 200 {
+		t.Fatalf("发起者 watch 应 200, got %d body=%s", rr2.Code, rr2.Body.String())
+	}
+	if m := enrollDecodeBody(t, rr2); m["status"] != "requested" {
+		t.Errorf("watch status=%v want requested", m["status"])
+	}
+}
+
+func TestPasskeyEnrollDeny_NonInitiator_Returns404(t *testing.T) {
+	env := newEnrollTestEnv(t)
+	created := enrollCreateHelper(t, env)
+	base := "/v1/passkey-enroll/sessions/" + created.sessionID
+
+	_ = enrollDoReq(t, env, "POST", base+"/request", map[string]any{"deviceHint": "Chrome"}, false)
+
+	other := env.addUser(t, "bob")
+	rr := enrollDoReqAs(t, env, "POST", base+"/deny", nil, other)
+	if rr.Code != 404 {
+		t.Fatalf("非发起者拒绝应 404, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	got, _ := env.mgr.GetByID(created.sessionID)
+	if got.Status != store.CliAuthRequested {
+		t.Errorf("status got %q want %q（越权拒绝不得推进状态机）", got.Status, store.CliAuthRequested)
+	}
+}
+
+func TestPasskeyEnrollNonInitiator_ExpiredSessionStill404(t *testing.T) {
+	env := newEnrollTestEnv(t)
+	other := env.addUser(t, "bob")
+
+	for _, action := range []string{"approve", "deny"} {
+		t.Run(action, func(t *testing.T) {
+			created := enrollCreateHelper(t, env)
+			base := "/v1/passkey-enroll/sessions/" + created.sessionID
+			if rr := enrollDoReq(t, env, "POST", base+"/request", map[string]any{"deviceHint": "Chrome"}, false); rr.Code != 200 {
+				t.Fatalf("knock: %d %s", rr.Code, rr.Body.String())
+			}
+
+			env.mgr.SetClock(func() time.Time { return time.Now().Add(11 * time.Minute) })
+			t.Cleanup(func() { env.mgr.SetClock(time.Now) })
+
+			rr := enrollDoReqAs(t, env, "POST", base+"/"+action, nil, other)
+			if rr.Code != 404 {
+				t.Fatalf("非发起者操作未迁移的过期会话应 404, got %d body=%s", rr.Code, rr.Body.String())
+			}
+			got, err := env.db.GetCliAuthSession(created.sessionID)
+			if err != nil {
+				t.Fatalf("get session: %v", err)
+			}
+			if got.Status != store.CliAuthRequested || got.UserID != env.userID {
+				t.Fatalf("越权请求改动了会话: status=%q userID=%q", got.Status, got.UserID)
+			}
+
+			if rrw := enrollDoReq(t, env, "GET", base+"/watch", nil, true); rrw.Code != 200 {
+				t.Fatalf("属主 watch 过期会话应 200, got %d body=%s", rrw.Code, rrw.Body.String())
+			}
+			rr2 := enrollDoReqAs(t, env, "POST", base+"/"+action, nil, other)
+			if rr2.Code != 404 {
+				t.Fatalf("会话已惰性过期后非发起者仍应 404, got %d body=%s", rr2.Code, rr2.Body.String())
+			}
+
+			rro := enrollDoReq(t, env, "POST", base+"/"+action, nil, true)
+			if rro.Code != 409 {
+				t.Fatalf("属主操作过期会话应 409, got %d body=%s", rro.Code, rro.Body.String())
+			}
+			if m := enrollDecodeBody(t, rro); m["status"] != store.CliAuthExpired {
+				t.Errorf("409 body status=%v want expired", m["status"])
+			}
+		})
+	}
+}
+
+func TestPasskeyEnrollNonInitiator_NoStateChange(t *testing.T) {
+	env := newEnrollTestEnv(t)
+	other := env.addUser(t, "bob")
+
+	for _, tc := range []struct {
+		name    string
+		method  string
+		suffix  string
+		expired bool
+		want    string
+	}{
+		{"watch", "GET", "/watch", false, store.CliAuthRequested},
+		{"cancel", "DELETE", "", false, ""},
+		{"watch_expired", "GET", "/watch", true, store.CliAuthExpired},
+		{"cancel_expired", "DELETE", "", true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			created := enrollCreateHelper(t, env)
+			base := "/v1/passkey-enroll/sessions/" + created.sessionID
+			if rr := enrollDoReq(t, env, "POST", base+"/request", map[string]any{"deviceHint": "Chrome"}, false); rr.Code != 200 {
+				t.Fatalf("knock: %d %s", rr.Code, rr.Body.String())
+			}
+			if tc.expired {
+				env.mgr.SetClock(func() time.Time { return time.Now().Add(11 * time.Minute) })
+				t.Cleanup(func() { env.mgr.SetClock(time.Now) })
+			}
+
+			rr := enrollDoReqAs(t, env, tc.method, base+tc.suffix, nil, other)
+			if rr.Code != 404 {
+				t.Fatalf("非发起者 %s 应 404, got %d body=%s", tc.name, rr.Code, rr.Body.String())
+			}
+			got, err := env.db.GetCliAuthSession(created.sessionID)
+			if err != nil {
+				t.Fatalf("get session: %v", err)
+			}
+			if got.Status != store.CliAuthRequested || got.UserID != env.userID {
+				t.Fatalf("越权 %s 不得推进状态机: status=%q userID=%q", tc.name, got.Status, got.UserID)
+			}
+
+			if tc.method == "DELETE" {
+				if rro := enrollDoReq(t, env, "DELETE", base, nil, true); rro.Code != 200 {
+					t.Fatalf("属主 cancel 应 200, got %d body=%s", rro.Code, rro.Body.String())
+				}
+				return
+			}
+			rro := enrollDoReq(t, env, "GET", base+"/watch", nil, true)
+			if rro.Code != 200 || enrollDecodeBody(t, rro)["status"] != tc.want {
+				t.Fatalf("属主 watch 应 200/%s, got %d body=%s", tc.want, rro.Code, rro.Body.String())
+			}
+		})
+	}
+}
+
+func TestPasskeyEnrollApprove_NonInitiatorOnAPIKeyKind_Returns404(t *testing.T) {
+	env := newEnrollTestEnv(t)
+	other := env.addUser(t, "bob")
+	cliMgr := auth.NewCliAuthManager(env.db, 0)
+	created, err := cliMgr.CreateSession("test", []string{"notify:send"})
+	if err != nil {
+		t.Fatalf("create cli-auth session: %v", err)
+	}
+	if _, err := env.db.UpdateCliAuthSessionRequestedWithSecret(created.SessionID, "Chrome", "hash"); err != nil {
+		t.Fatalf("mark requested: %v", err)
+	}
+
+	for _, action := range []string{"approve", "deny"} {
+		rr := enrollDoReqAs(t, env, "POST", "/v1/passkey-enroll/sessions/"+created.SessionID+"/"+action, nil, other)
+		if rr.Code != 404 {
+			t.Fatalf("非发起者操作 apikey-kind 会话 %s 应 404（属主先于 kind guard）, got %d body=%s", action, rr.Code, rr.Body.String())
+		}
+	}
+}
+
+func TestPasskeyEnrollWatch_InitiatorStillSeesAfterApprove(t *testing.T) {
+	env := newEnrollTestEnv(t)
+	created := enrollCreateHelper(t, env)
+	base := "/v1/passkey-enroll/sessions/" + created.sessionID
+
+	_ = enrollDoReq(t, env, "POST", base+"/request", map[string]any{"deviceHint": "Chrome"}, false)
+	if rr := enrollDoReq(t, env, "POST", base+"/approve", nil, true); rr.Code != 200 {
+		t.Fatalf("发起者批准应 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	rr := enrollDoReq(t, env, "GET", base+"/watch", nil, true)
+	if rr.Code != 200 {
+		t.Fatalf("批准后发起者 watch 应 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if m := enrollDecodeBody(t, rr); m["status"] != "approved" {
+		t.Errorf("watch status=%v want approved", m["status"])
+	}
+}
+
+func TestPasskeyEnrollKnock_OnlyOnce(t *testing.T) {
+	env := newEnrollTestEnv(t)
+	created := enrollCreateHelper(t, env)
+	base := "/v1/passkey-enroll/sessions/" + created.sessionID
+
+	rr := enrollDoReq(t, env, "POST", base+"/request", map[string]any{"deviceHint": "Chrome · macOS"}, false)
+	if rr.Code != 200 {
+		t.Fatalf("首次敲门 status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	before, err := env.mgr.GetByID(created.sessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+
+	rr2 := enrollDoReq(t, env, "POST", base+"/request", map[string]any{"deviceHint": "Firefox"}, false)
+	if rr2.Code != 409 {
+		t.Fatalf("重复敲门应 409, got %d body=%s", rr2.Code, rr.Body.String())
+	}
+
+	after, _ := env.mgr.GetByID(created.sessionID)
+	if after.SecretHash != before.SecretHash {
+		t.Error("重复敲门不得重写 secret_hash")
+	}
+	if after.DeviceHint != before.DeviceHint {
+		t.Errorf("重复敲门不得重写 deviceHint: got %q want %q", after.DeviceHint, before.DeviceHint)
 	}
 }

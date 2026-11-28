@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 	"testing"
@@ -475,5 +476,67 @@ func TestCliAuth_UserCodeRetryExhausted(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "冲突超过重试上限") {
 		t.Errorf("错误信息应含「冲突超过重试上限」, got %v", err)
+	}
+}
+
+func TestUserCodeAlphabetIsUnbiased(t *testing.T) {
+	raw := make([]byte, 0, 248)
+	for i := 0; i < 248; i++ {
+		raw = append(raw, byte(i))
+	}
+	r := bytes.NewReader(raw)
+	counts := map[rune]int{}
+	for i := 0; i < 31; i++ {
+		code, err := generateUserCodeFrom(r)
+		if err != nil {
+			t.Fatalf("generateUserCodeFrom: %v", err)
+		}
+		if len(code) != userCodeLen {
+			t.Fatalf("code 长度 got %d want %d", len(code), userCodeLen)
+		}
+		for _, c := range code {
+			if !strings.ContainsRune(userCodeCharset, c) {
+				t.Fatalf("code 含字符集外字符 %q", c)
+			}
+			counts[c]++
+		}
+	}
+	for _, c := range userCodeCharset {
+		if counts[c] != 8 {
+			t.Errorf("字符 %q 出现 %d 次 want 8（映射不均匀）", c, counts[c])
+		}
+	}
+
+	biased := []byte{248, 0, 249, 1, 250, 2, 251, 3, 252, 4, 253, 5, 254, 6, 255, 7}
+	code, err := generateUserCodeFrom(bytes.NewReader(biased))
+	if err != nil {
+		t.Fatalf("generateUserCodeFrom(rejection): %v", err)
+	}
+	if want := userCodeCharset[:userCodeLen]; code != want {
+		t.Errorf("拒绝采样 got %q want %q", code, want)
+	}
+
+	drained := bytes.Repeat([]byte{248}, 64)
+	if _, err := generateUserCodeFrom(bytes.NewReader(drained)); err == nil {
+		t.Fatal("输入全是应丢弃字节时应报错")
+	}
+}
+
+func TestGenerateUserCode_Statistical(t *testing.T) {
+	const draws = 31 * 2000 // 期望每个字符 2000 次
+	counts := map[rune]int{}
+	for i := 0; i < draws/userCodeLen; i++ {
+		code, err := generateUserCode()
+		if err != nil {
+			t.Fatalf("generateUserCode: %v", err)
+		}
+		for _, c := range code {
+			counts[c]++
+		}
+	}
+	for _, c := range userCodeCharset {
+		if n := counts[c]; n < 1700 || n > 2300 {
+			t.Errorf("字符 %q 出现 %d 次，超出 [1700,2300]（期望 %d）", c, n, draws/len(userCodeCharset))
+		}
 	}
 }

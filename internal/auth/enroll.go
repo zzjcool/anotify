@@ -8,9 +8,26 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/zzjcool/anotify/internal/store"
 )
+
+// deviceHintMaxLen 是新设备自报设备信息的最大长度（字符）。
+const deviceHintMaxLen = 64
+
+func SanitizeDeviceHint(hint string) string {
+	hint = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) || r == '\u2028' || r == '\u2029' {
+			return -1
+		}
+		return r
+	}, hint)
+	if runes := []rune(strings.TrimSpace(hint)); len(runes) > deviceHintMaxLen {
+		hint = string(runes[:deviceHintMaxLen])
+	}
+	return strings.TrimSpace(hint)
+}
 
 // PasskeyEnrollManager 管理 Passkey 设备授权会话的完整生命周期。
 // 复用 cli_auth_sessions 表（kind=passkey），但状态机和端点独立于 CliAuthManager。
@@ -138,6 +155,18 @@ func (m *PasskeyEnrollManager) GetByID(id string) (*store.CliAuthSession, error)
 	return s, nil
 }
 
+func (m *PasskeyEnrollManager) GetByIDAsOwner(id, userID string) (*store.CliAuthSession, error) {
+	s, err := m.db.GetCliAuthSession(id)
+	if err != nil {
+		return nil, err
+	}
+	if userID == "" || s.UserID != userID {
+		return nil, fmt.Errorf("%w: 只有会话发起者可以查看", ErrNotOwner)
+	}
+	m.lazyExpire(s)
+	return s, nil
+}
+
 // GetByCode 按短码查会话。code 归一化（去连字符、大写）。读取时执行惰性过期迁移。
 func (m *PasskeyEnrollManager) GetByCode(code string) (*store.CliAuthSession, error) {
 	normalized := NormalizeUserCode(code)
@@ -166,15 +195,13 @@ func (m *PasskeyEnrollManager) RequestKnock(sessionID, deviceHint string) (secre
 		return "", fmt.Errorf("%w: 当前状态 %s 不可敲门", ErrAlreadyTerminal, s.Status)
 	}
 
-	// 重新生成 secret（建会话时的 secret 仅供旧设备持有，
-	// 敲门时重新生成，使新设备获得独立的轮询凭证）
+	// 重新生成 secret：建会话时的 secret 仅供旧设备持有，新设备需要独立凭证。
 	secret, secretHash, err := generateSecret()
 	if err != nil {
 		return "", err
 	}
 
-	// 更新 secret_hash + 状态迁移 pending→requested
-	ok, err := m.db.UpdateCliAuthSessionRequestedWithSecret(sessionID, deviceHint, secretHash)
+	ok, err := m.db.UpdateCliAuthSessionRequestedWithSecret(sessionID, SanitizeDeviceHint(deviceHint), secretHash)
 	if err != nil {
 		return "", err
 	}
@@ -184,23 +211,27 @@ func (m *PasskeyEnrollManager) RequestKnock(sessionID, deviceHint string) (secre
 	return secret, nil
 }
 
-// Approve 旧设备批准：requested→approved，回填 user_id。
+// Approve 旧设备批准：requested→approved。只有发起者可批准，且批准不写 user_id
+// （该列永远只表示发起者，否则任何登录用户都能把别人的新设备绑进自己的账号）。
 func (m *PasskeyEnrollManager) Approve(id, userID string) error {
 	s, err := m.db.GetCliAuthSession(id)
 	if err != nil {
 		return err
 	}
-	if m.lazyExpire(s) {
-		return fmt.Errorf("%w: 会话已过期", ErrAlreadyTerminal)
+	if userID == "" || s.UserID != userID {
+		return fmt.Errorf("%w: 批准者必须是会话发起者", ErrNotOwner)
 	}
 	if s.Kind != store.CliAuthKindPasskey {
 		return fmt.Errorf("%w: 非 passkey 类型会话", ErrInvalidParam)
+	}
+	if m.lazyExpire(s) {
+		return fmt.Errorf("%w: 会话已过期", ErrAlreadyTerminal)
 	}
 	if s.Status != store.CliAuthRequested {
 		return fmt.Errorf("%w: 当前状态 %s 不可批准", ErrAlreadyTerminal, s.Status)
 	}
 
-	ok, err := m.db.UpdateCliAuthSessionApprovedFromRequested(id, userID, m.timeNow().Unix())
+	ok, err := m.db.UpdateCliAuthSessionApprovedFromRequested(id, userID)
 	if err != nil {
 		return err
 	}
@@ -210,23 +241,27 @@ func (m *PasskeyEnrollManager) Approve(id, userID string) error {
 	return nil
 }
 
-// Deny 旧设备拒绝：requested→denied。
-func (m *PasskeyEnrollManager) Deny(id string) error {
+// Deny 旧设备拒绝：requested→denied。只有会话发起者可以拒绝（#625）。
+func (m *PasskeyEnrollManager) Deny(id, userID string) error {
 	s, err := m.db.GetCliAuthSession(id)
 	if err != nil {
 		return err
 	}
-	if m.lazyExpire(s) {
-		return fmt.Errorf("%w: 会话已过期", ErrAlreadyTerminal)
+	// 同 Approve：属主判断先于 kind 与 lazyExpire。
+	if userID == "" || s.UserID != userID {
+		return fmt.Errorf("%w: 拒绝者必须是会话发起者", ErrNotOwner)
 	}
 	if s.Kind != store.CliAuthKindPasskey {
 		return fmt.Errorf("%w: 非 passkey 类型会话", ErrInvalidParam)
+	}
+	if m.lazyExpire(s) {
+		return fmt.Errorf("%w: 会话已过期", ErrAlreadyTerminal)
 	}
 	if s.Status != store.CliAuthRequested {
 		return fmt.Errorf("%w: 当前状态 %s 不可拒绝", ErrAlreadyTerminal, s.Status)
 	}
 
-	ok, err := m.db.UpdateCliAuthSessionDeniedFromRequested(id)
+	ok, err := m.db.UpdateCliAuthSessionDeniedFromRequested(id, userID)
 	if err != nil {
 		return err
 	}
@@ -241,7 +276,7 @@ type EnrollPollResult struct {
 	Status             string // pending/requested/approved/consumed/denied/expired
 	AttestationOptions any    // 仅 approved 首次返回（protocol.CredentialCreation 序列化后）
 	RegistrationToken  string // 仅 approved 首次返回（一次性，用于 complete 端点）
-	InitiatorName      string // 批准者显示名（approved 时有值）
+	InitiatorName      string // 发起者显示名（approved 时有值）
 }
 
 // Poll 新设备轮询：secret 门控。
@@ -303,7 +338,7 @@ func (m *PasskeyEnrollManager) generateAttestation(s *store.CliAuthSession) (*En
 	// 暂存 registrationToken hash（用 challenge key 空间存）
 	m.svc.storeEnrollToken(s.ID, regTokenHash)
 
-	// 获取批准者显示名
+	// 获取发起者显示名
 	initiatorName := ""
 	if u, err := m.db.GetUserByID(s.UserID); err == nil {
 		if u.DisplayName != "" {
@@ -378,8 +413,19 @@ func (m *PasskeyEnrollManager) Complete(sessionID, registrationToken, name strin
 	return &CompleteResult{Ok: true}, nil
 }
 
-// Delete 旧设备取消会话（删除记录）。
-func (m *PasskeyEnrollManager) Delete(id string) error {
+// Delete 旧设备取消会话（删除记录）。只有发起者可取消；kind 不匹配返回 ErrInvalidParam。
+func (m *PasskeyEnrollManager) Delete(id, userID string) error {
+	s, err := m.db.GetCliAuthSession(id)
+	if err != nil {
+		return err
+	}
+	// 属主优先：非发起者即使会话类型不匹配也只能看到 404。
+	if userID == "" || s.UserID != userID {
+		return fmt.Errorf("%w: 只有会话发起者可以取消", ErrNotOwner)
+	}
+	if s.Kind != store.CliAuthKindPasskey {
+		return fmt.Errorf("%w: 非 passkey 类型会话", ErrInvalidParam)
+	}
 	return m.db.DeleteCliAuthSession(id)
 }
 
@@ -395,7 +441,3 @@ func (m *PasskeyEnrollManager) lazyExpire(s *store.CliAuthSession) bool {
 	s.Status = store.CliAuthExpired
 	return true
 }
-
-// verifySecret 常量时间校验 secret（sha256 后比对 hex）。
-// 复用 cliauth.go 中的同名函数（包内可见）。
-var _ = verifySecret

@@ -124,10 +124,10 @@ func (h *cliAuthHandler) get(w http.ResponseWriter, r *http.Request, id string) 
 	writeJSON(w, 200, toSessionView(s))
 }
 
-// byCode 按短码查会话（需登录，按用户限速）。
+// byCode 按短码查会话（需登录，双维限速：uid + IP）。
 func (h *cliAuthHandler) byCode(w http.ResponseWriter, r *http.Request) {
 	uid := auth.UserIDFromContext(r.Context())
-	if rateLimited(w, rlByCode, uid) {
+	if rateLimited(w, rlByCode, uid) || rateLimited(w, rlByCodeIP, clientIP(r)) {
 		return
 	}
 	code := r.URL.Query().Get("code")
@@ -175,7 +175,7 @@ func (h *cliAuthHandler) approve(w http.ResponseWriter, r *http.Request, id stri
 	writeJSON(w, 200, map[string]string{"status": store.CliAuthApproved})
 }
 
-// deny 拒绝（需登录）。
+// deny 拒绝（需登录）。cli-auth 会话是匿名创建的，没有属主可校验，只能靠审计日志追溯。
 func (h *cliAuthHandler) deny(w http.ResponseWriter, r *http.Request, id string) {
 	uid := auth.UserIDFromContext(r.Context())
 	err := h.mgr.Deny(id)
