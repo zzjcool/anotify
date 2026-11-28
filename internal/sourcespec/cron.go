@@ -8,18 +8,14 @@ import (
 	"time"
 )
 
-// cron 表达式（五段）：支持 `* / 5 / 1-5 / */15 / 1,3,5 / 1-30/5`；`@daily` 宏、秒字段、L/W/#
-// 明确拒绝（静默忽略比报错糟得多）。只做时刻计算，不理解业务语义。
+// cron 表达式（五段）：支持 `* / 5 / 1-5 / */15 / 1,3,5 / 1-30/5`；`@daily` 宏、秒字段、L/W/# 明确拒绝（静默忽略比报错糟得多）。只做时刻计算，不理解业务语义。
 
-// CronSchedule 是一个解析好的五段表达式。
 type CronSchedule struct {
 	Minute, Hour, Dom, Month, Dow map[int]bool
-	// DomStar / DowStar：该字段是否以 `*` 开头，**只决定 dom/dow 的组合方式**（任一以 `*`
-	// 开头 → 两者 AND，都受限 → OR）。它不表示「不用判断」：`*/2` 的位图只有奇数日。
+	// DomStar / DowStar：字段是否以 `*` 开头，只决定 dom/dow 的组合方式（任一以 `*` 开头 → AND，都受限 → OR），不表示「不用判断」：`*/2` 只匹配奇数日。
 	DomStar, DowStar bool
 }
 
-// ParseCron 解析五段表达式。
 func ParseCron(expr string) (*CronSchedule, error) {
 	fields := strings.Fields(strings.TrimSpace(expr))
 	if len(fields) != 5 {
@@ -51,7 +47,6 @@ func ParseCron(expr string) (*CronSchedule, error) {
 	return s, nil
 }
 
-// parseCronField 解析单个字段，返回允许的取值集合与"是否为 *"。
 func parseCronField(field string, min, max int, name string) (map[int]bool, bool, error) {
 	out := map[int]bool{}
 	if field == "" {
@@ -77,7 +72,6 @@ func parseCronField(field string, min, max int, name string) (map[int]bool, bool
 		lo, hi := min, max
 		switch {
 		case base == "*":
-			// 用默认区间
 		case strings.Contains(base, "-"):
 			a, b, ok := strings.Cut(base, "-")
 			if !ok {
@@ -115,35 +109,77 @@ func parseCronField(field string, min, max int, name string) (map[int]bool, bool
 	return out, isStar, nil
 }
 
-// Next 返回 after 之后的第一个触发时刻（严格大于 after，秒/纳秒归零）；找不到（例如表达式永不成立，
-// 如 2 月 30 日）时返回零值 time.Time。
+// Next 返回 after 之后的第一个触发时刻（严格大于 after，秒/纳秒归零）；没有（如 2 月 30 日）时返回零值。
+//
+// 按**墙钟**匹配（`30 2 * * *` 指本地 02:30，不是固定偏移）：日历推进用 UTC 承载（无夏令时，
+// 不会被跳格/回拨改写），分/时都匹配后才翻译成 after 所在时区的绝对时刻——春季跳格里不存在的
+// 墙钟顺延到跳格结束后第一个存在的时刻（当天仍触发一次），秋季回拨里重复的墙钟只在第一次出现时
+// 触发一次。上限 5 年，跨得过任何闰年组合又不死循环。
 func (s *CronSchedule) Next(after time.Time) time.Time {
-	// 从下一分钟开始：cron 的语义是"到点触发"，同一分钟内不重复
-	t := after.Truncate(time.Minute).Add(time.Minute)
+	loc := after.Location()
+	c := time.Date(after.Year(), after.Month(), after.Day(), after.Hour(), after.Minute(), 0, 0, time.UTC).
+		Add(time.Minute)
 
-	// 上限 5 年：足够跨过任何闰年组合，也不至于死循环
-	limit := t.AddDate(5, 0, 0)
-	for t.Before(limit) {
-		if !s.Month[int(t.Month())] {
-			// 跳到下月 1 日 00:00
-			t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location()).AddDate(0, 1, 0)
+	limit := c.AddDate(5, 0, 0)
+	for c.Before(limit) {
+		if !s.Month[int(c.Month())] {
+			c = time.Date(c.Year(), c.Month()+1, 1, 0, 0, 0, 0, time.UTC)
 			continue
 		}
-		if !s.matchDay(t) {
-			t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()).AddDate(0, 0, 1)
+		if !s.matchDay(c) {
+			c = time.Date(c.Year(), c.Month(), c.Day()+1, 0, 0, 0, 0, time.UTC)
 			continue
 		}
-		if !s.Hour[t.Hour()] {
-			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location()).Add(time.Hour)
+		if !s.Hour[c.Hour()] {
+			c = time.Date(c.Year(), c.Month(), c.Day(), c.Hour()+1, 0, 0, 0, time.UTC)
 			continue
 		}
-		if !s.Minute[t.Minute()] {
-			t = t.Add(time.Minute)
+		if !s.Minute[c.Minute()] {
+			c = c.Add(time.Minute)
 			continue
 		}
-		return t
+		fire, ok := wallClockInstant(loc, c)
+		if !ok {
+			c = time.Date(c.Year(), c.Month(), c.Day()+1, 0, 0, 0, 0, time.UTC)
+			continue
+		}
+		if fire.After(after) {
+			return fire
+		}
+		// 已经落在 after 之前（回拨里「第一次出现」被越过）：从它的墙钟继续往后找。
+		c = time.Date(fire.Year(), fire.Month(), fire.Day(), fire.Hour(), fire.Minute(), 0, 0, time.UTC).Add(time.Minute)
 	}
 	return time.Time{}
+}
+
+// wallClockInstant 把墙钟游标 c 翻译成 loc 里的绝对时刻：出现两次（回拨）取第一次，往前半小时/1/2
+// 小时的绝对时刻墙钟相同即当前是第二次；不存在（跳格）取同一天里墙钟不早于它、且真实存在的第一个时刻。
+// false = 这个墙钟在 loc 里整个不存在（整日被跳过的时区），调用方跳过这一格。
+func wallClockInstant(loc *time.Location, c time.Time) (time.Time, bool) {
+	y, mo, d := c.Date()
+	h, mi := c.Hour(), c.Minute()
+	t := time.Date(y, mo, d, h, mi, 0, 0, loc)
+	if t.Hour() == h && t.Minute() == mi {
+		for _, back := range [...]time.Duration{30 * time.Minute, time.Hour, 2 * time.Hour} {
+			if prev := t.Add(-back); prev.Hour() == h && prev.Minute() == mi {
+				return prev, true
+			}
+		}
+		return t, true
+	}
+	target := h*60 + mi
+	start := time.Date(y, mo, d, 0, 0, 0, 0, loc)
+	for i := 0; i < 24*60; i++ {
+		cand := start.Add(time.Duration(i) * time.Minute)
+		cy, cmo, cd := cand.Date()
+		if cy != y || cmo != mo || cd != d {
+			continue
+		}
+		if cand.Hour()*60+cand.Minute() >= target {
+			return cand, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // matchDay 判 dom/dow（cronie）：任一字段以 `*` 开头 → 两者 AND，都受限 → OR；位图始终参与。

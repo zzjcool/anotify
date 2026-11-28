@@ -1,9 +1,11 @@
 package sourcespec
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 	"time"
+	_ "time/tzdata" // 测试自带 IANA 时区数据，宿主镜像缺 zoneinfo 也照样跑 DST 用例
 )
 
 // TestCronDomDowStep 对照 cronie 的 dom/dow 判据：`*/N` 的步长必须进位图，不能当纯 `*`（#610）。
@@ -76,5 +78,70 @@ func TestCronDomDowStep(t *testing.T) {
 		if !slices.Equal(got, c.want) {
 			t.Errorf("%q 在 %s 之后的连续触发 = %v, want %v", c.expr, c.after, got, c.want)
 		}
+	}
+}
+
+// 春季跳格的墙钟不存在 → 顺延到跳格结束后第一个存在的时刻（当天仍触发一次，不是整天跳过）；秋季回拨里重复的墙钟只按第一次出现触发一次（#603）。
+func TestCronNextDST(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  string
+		from string
+		want []string
+	}{
+		{
+			name: "new-york spring forward",
+			cfg:  `{"expr":"30 2 * * *","tz":"America/New_York"}`,
+			from: "2026-03-08T00:00:00-05:00",
+			want: []string{"2026-03-08T03:00:00-04:00", "2026-03-09T02:30:00-04:00"},
+		},
+		{
+			name: "new-york fall back",
+			cfg:  `{"expr":"30 1 * * *","tz":"America/New_York"}`,
+			from: "2026-11-01T00:00:00-04:00",
+			want: []string{"2026-11-01T01:30:00-04:00", "2026-11-02T01:30:00-05:00"},
+		},
+		{
+			name: "new-york spring forward control",
+			cfg:  `{"expr":"0 3 * * *","tz":"America/New_York"}`,
+			from: "2026-03-08T00:00:00-05:00",
+			want: []string{"2026-03-08T03:00:00-04:00", "2026-03-09T03:00:00-04:00"},
+		},
+		{
+			name: "london spring forward",
+			cfg:  `{"expr":"30 1 * * *","tz":"Europe/London"}`,
+			from: "2026-03-29T00:00:00Z",
+			want: []string{"2026-03-29T02:00:00+01:00", "2026-03-30T01:30:00+01:00"},
+		},
+		{
+			name: "london fall back",
+			cfg:  `{"expr":"30 1 * * *","tz":"Europe/London"}`,
+			from: "2026-10-24T23:00:00Z",
+			want: []string{"2026-10-25T01:30:00+01:00", "2026-10-26T01:30:00Z"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			at, err := time.Parse(time.RFC3339, c.from)
+			if err != nil {
+				t.Fatalf("解析起点: %v", err)
+			}
+			cfg := json.RawMessage(c.cfg)
+			got := make([]string, 0, len(c.want))
+			for range c.want {
+				next, err := NextCronTime(cfg, at)
+				if err != nil {
+					t.Fatalf("NextCronTime: %v", err)
+				}
+				if next.IsZero() {
+					t.Fatalf("%s: 只触发 %d 次就永不成立（want %d）", c.cfg, len(got), len(c.want))
+				}
+				got = append(got, next.Format(time.RFC3339))
+				at = next
+			}
+			if !slices.Equal(got, c.want) {
+				t.Fatalf("%s 从 %s 起的连续触发 = %v, want %v", c.cfg, c.from, got, c.want)
+			}
+		})
 	}
 }

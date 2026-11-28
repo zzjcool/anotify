@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"testing"
 	"time"
 
@@ -136,5 +137,96 @@ func TestRunDueErrorsAreNotSwallowed(t *testing.T) {
 	}
 	if _, err := f.sched.RunDue(context.Background(), time.Now().Unix(), 10); err == nil {
 		t.Fatal("列到点源失败必须返回错误（不吞）")
+	}
+}
+
+func count(t *testing.T, db *store.DB, query string, args ...any) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(context.Background(), query, args...).Scan(&n); err != nil {
+		t.Fatalf("计数 %q: %v", query, err)
+	}
+	return n
+}
+
+func setNextFire(t *testing.T, f *fixture, at int64) {
+	t.Helper()
+	if _, err := f.db.Exec(`UPDATE sources SET next_fire_at = ? WHERE id = ?`, at, f.src.ID); err != nil {
+		t.Fatalf("改 next_fire_at: %v", err)
+	}
+}
+
+func TestCronDowntimeCoalescesToOneFireAndRealigns(t *testing.T) {
+	f := newFixture(t, "* * * * *")
+	now := time.Now().Truncate(time.Minute).Unix()
+	setNextFire(t, f, now-3600)
+
+	results, err := f.sched.RunDue(context.Background(), now, 10)
+	if err != nil {
+		t.Fatalf("RunDue: %v", err)
+	}
+	if len(results) != 1 || results[0].Err != nil {
+		t.Fatalf("应触发一条源: %+v", results)
+	}
+	if results[0].ScheduledAt != now-3600 {
+		t.Fatalf("补发应归到最早的错过计划时刻 %d, got %d", now-3600, results[0].ScheduledAt)
+	}
+	if results[0].Missed != 61 {
+		t.Fatalf("停机 60 分钟错过 61 格, got missed=%d", results[0].Missed)
+	}
+	if n := count(t, f.db, `SELECT COUNT(*) FROM events WHERE namespace_id = ? AND source = ?`,
+		f.ns.ID, "cron-1"); n != 1 {
+		t.Fatalf("补发必须合并成 1 条事件, got %d", n)
+	}
+	if n := count(t, f.db, `SELECT COUNT(*) FROM tasks WHERE namespace_id = ?`, f.ns.ID); n != 1 {
+		t.Fatalf("补发必须只建 1 个任务, got %d", n)
+	}
+	stored, err := f.db.GetSourceByName(context.Background(), f.ns.ID, "cron-1")
+	if err != nil {
+		t.Fatalf("回读源: %v", err)
+	}
+	if stored.NextFireAt == nil || *stored.NextFireAt != now+60 {
+		t.Fatalf("next_fire_at 应对齐到 now 之后的下一个整分钟 %d, got %v", now+60, stored.NextFireAt)
+	}
+	if again, err := f.sched.RunDue(context.Background(), now, 10); err != nil || len(again) != 0 {
+		t.Fatalf("对齐后同一时刻不该再补发: %+v err=%v", again, err)
+	}
+}
+
+func TestCronDeliveryIDDedupesRepeatedSlot(t *testing.T) {
+	f := newFixture(t, "* * * * *")
+	slot := *f.src.NextFireAt
+	now := slot + 1
+
+	first, err := f.sched.RunDue(context.Background(), now, 10)
+	if err != nil || len(first) != 1 || first[0].Err != nil {
+		t.Fatalf("首轮触发: %+v err=%v", first, err)
+	}
+	if first[0].Receipt == nil || first[0].Receipt.Duplicate {
+		t.Fatalf("首轮不该是重复投递: %+v", first[0].Receipt)
+	}
+	// 模拟 MarkSourceFired 失败：库里 next_fire_at 还停在同一个计划时刻，下一轮仍是同一格。
+	setNextFire(t, f, slot)
+
+	second, err := f.sched.RunDue(context.Background(), now+30, 10)
+	if err != nil || len(second) != 1 || second[0].Err != nil {
+		t.Fatalf("第二轮触发: %+v err=%v", second, err)
+	}
+	if second[0].ScheduledAt != slot {
+		t.Fatalf("第二轮应归到同一计划时刻 %d, got %d", slot, second[0].ScheduledAt)
+	}
+	if second[0].Receipt == nil || !second[0].Receipt.Duplicate {
+		t.Fatalf("同一计划时刻的第二次触发必须命中投递幂等键（duplicate）: %+v", second[0].Receipt)
+	}
+	if n := count(t, f.db, `SELECT COUNT(*) FROM events WHERE namespace_id = ? AND source = ?`,
+		f.ns.ID, "cron-1"); n != 1 {
+		t.Fatalf("同一计划时刻只该有 1 条事件, got %d", n)
+	}
+	if n := count(t, f.db, `SELECT COUNT(*) FROM tasks WHERE namespace_id = ?`, f.ns.ID); n != 1 {
+		t.Fatalf("重复投递不该再建任务, got %d", n)
+	}
+	if n := count(t, f.db, `SELECT COUNT(*) FROM event_deliveries WHERE delivery_id = ?`,
+		"cron:"+f.src.ID+":"+strconv.FormatInt(slot, 10)); n != 1 {
+		t.Fatalf("cron 必须写投递幂等键（1 行）, got %d", n)
 	}
 }
