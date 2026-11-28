@@ -1,19 +1,16 @@
 #!/usr/bin/env node
 /* ============================================================
- * check-contrast.mjs · #370 / #371 对比度机械门禁（纯 node，零依赖）
+ * check-contrast.mjs · 对比度机械校验（#370 / #371，纯 node 零依赖）
  * ------------------------------------------------------------
- * 解析 web/tokens.css 的两个主题块（`:root` 暗色 / `:root[data-theme="light"]` 亮色），
- * 按 issue #370（容器层次）与 #371（对比度 / 语义药丸）的验收配对计算 WCAG 2.1 对比度，
- * 打印矩阵；任一 REQUIRED 项低于阈值 → process.exit(1)。
+ * 解析 web/tokens.css 两个主题块（暗色 `:root` / 亮色 `:root[data-theme="light"]`），按 #370/#371
+ * 的验收配对算 WCAG 2.1 的对比度打印矩阵；任一 REQUIRED 项低于阈值 → process.exit(1)。
  *
  * 用法：
  *   node scripts/check-contrast.mjs              # 门禁：tokens 矩阵 + 页面私有样式
  *   node scripts/check-contrast.mjs --verbose    # 额外打印参考配对（不参与判定）
- *   node scripts/check-contrast.mjs --self-test  # 本守卫的红/绿自证（纯内存，不读盘）
+ *   node scripts/check-contrast.mjs --self-test  # 红/绿自证（纯内存，不读盘）
  * 约定：
- * - 除 tokens.css 的双主题判定外，还扫 web-src/pages/*.html 的 <style> 块（#588 D8）：页面私有样式
- *   拿状态原色（--success/--warn/--error/--info）当 color 判红 —— 亮色对任何 surface 都 < 4.5:1；
- *   改 token 或页面样式后都要重跑本脚本。
+ * - 除 tokens.css 双主题外还扫 web-src/pages 的 <style>：状态原色当前景判红（#588 D8，改 token/页面后重跑）。
  * - 半透明色（--*-soft / --line / color-mix(… transparent)）先与所在底色合成再算对比度（浏览器实际像素）。
  * ============================================================ */
 
@@ -74,7 +71,6 @@ function parseHex(hex) {
 }
 
 function parseColorFn(value) {
-	// rgb( / rgba( —— 逗号或空格分隔
 	const inner = value.slice(value.indexOf("(") + 1, value.lastIndexOf(")"));
 	const parts = inner.replace(/\//g, " ").split(/[,\s]+/).filter(Boolean);
 	const rgb = parts.slice(0, 3).map((p) => {
@@ -161,7 +157,6 @@ const hex = (rgb) => "#" + rgb.map((c) => c.toString(16).padStart(2, "0")).join(
 /** 每项：{ id, theme, label, fg, bg, min }；fg/bg 是 (t) => rgb，t 是 theme() 返回的封装。 */
 function buildCases(dark, light) {
 	const PILLS = [
-		// [语义, 文字色 token, 底色 token]
 		["success", "--pill-success-fg", "--success-soft"],
 		["warn", "--pill-warn-fg", "--warn-soft"],
 		["error", "--pill-error-fg", "--error-soft"],

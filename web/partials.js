@@ -432,7 +432,6 @@
 		return theme;
 	}
 
-	/* auto → dark → light → auto */
 	function cycleTheme() {
 		const next = { auto: "dark", dark: "light", light: "auto" };
 		applyTheme(next[readThemeMode()] || "dark", true);
@@ -580,7 +579,6 @@
 	function createLangDropdown(cfg) {
 		const { items, direction, width, align } = cfg;
 
-		/* Trigger button: globe icon + current language name + chevron */
 		const triggerClass =
 			"lang-trigger flex " +
 			(width === "full" ? "w-full " : "") +
@@ -617,7 +615,6 @@
 			),
 		);
 
-		/* Menu positioning: sidebar = up (bottom-full), login = down (top-full) */
 		const menuPosClass =
 			direction === "up"
 				? "absolute bottom-full left-0 right-0 mb-2"
@@ -666,7 +663,6 @@
 
 		const host = el("div", { class: "relative" }, trigger, menu);
 
-		/* --- Toggle / keyboard / outside-click --- */
 		function openMenu() {
 			menu.classList.remove("hidden");
 			trigger.setAttribute("aria-expanded", "true");
@@ -748,7 +744,6 @@
 			const code = a.getAttribute("hreflang") || "";
 			const label = a.textContent || code;
 			let href = a.getAttribute("href") || "";
-			/* Append query + hash if not already present (preserve deep links) */
 			if (qs && !href.includes("?")) href += qs;
 			if (hash && !href.includes("#")) href += hash;
 			items.push({
@@ -759,7 +754,6 @@
 			});
 		}
 
-		/* Remove the data block from DOM (consumed) */
 		dataEl.remove();
 
 		const { host } = createLangDropdown({
@@ -796,7 +790,6 @@
 				a.querySelector("span:not(.lang-check):not(.sr-only)")?.textContent ||
 				code;
 			let href = a.getAttribute("href") || "";
-			/* Append query + hash if not already present (preserve deep links) */
 			if (qs && !href.includes("?")) href += qs;
 			if (hash && !href.includes("#")) href += hash;
 			items.push({
@@ -814,7 +807,6 @@
 			align: "right",
 		});
 
-		/* Replace the flat list with the dropdown (clear via DOM, not innerHTML) */
 		while (hostEl.firstChild) hostEl.removeChild(hostEl.firstChild);
 		hostEl.append(dropdown);
 	}
@@ -1198,7 +1190,7 @@
 		return map;
 	})();
 
-	/* #588 D2：可聚焦选择器只留这一份 —— 抽屉陷阱与弹层 Tab 环必须逐字相同。 */
+	/* 抽屉陷阱与弹层 Tab 环共用这一份选择器（契约 D2 要求逐字相同）。 */
 	const FOCUSABLE_SELECTOR =
 		'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -1767,8 +1759,7 @@
 			appCol,
 		);
 		document.body.prepend(root);
-		/* #588 D3：Tab 顺序按 DOM 走，prepend(root) 把 .skip-link 挤到了外壳后面（要按 45 下）。
-		 * 再 prepend 回 body 第一个子节点；它是 position:fixed，布局零变化。 */
+		/* #588 D3：Tab 顺序按 DOM 走 —— prepend(root) 把 .skip-link 挤到外壳后面，再顶回 body 首位（fixed，布局不变）。 */
 		const skipLink = document.querySelector(".skip-link");
 		if (skipLink) document.body.prepend(skipLink);
 		/* 顶栏上下文里的命名空间：命名空间列表回来后再画一次 ——
@@ -1808,7 +1799,7 @@
 		   还在，只查 hidden 会让「移动端开抽屉 → 放大到桌面」后仍被陷阱卡住
 		   （桌面侧栏只是常驻导航，WCAG 2.1.2 键盘陷阱）。 */
 		document.addEventListener("keydown", (e) => {
-			/* #588 D2：弹层开着时 Tab 归弹层陷阱管（同一时刻只允许一个焦点环）。 */
+			/* 弹层开着时 Tab 归弹层环管（同一时刻只有一个焦点环）。 */
 			if (topOpenModal()) return;
 			if (e.key !== "Tab") return;
 			if (!mobileMQ.matches || overlay.classList.contains("hidden")) return;
@@ -1910,7 +1901,7 @@
 		/* Language hint banner: must run after body.prepend(root) above
 		 * so the banner lands as body's first child (above the layout root). */
 		mountLangHint();
-		/* #588 D3：横幅（mountLangHint 里也 body.prepend）会把 .skip-link 再挤下去，横幅后顶回来。 */
+		/* 横幅同样 prepend，会把 .skip-link 再挤下去 —— 同样顶回来。 */
 		const skipLinkTop = document.querySelector(".skip-link");
 		if (skipLinkTop) document.body.prepend(skipLinkTop);
 	}
@@ -2450,15 +2441,8 @@
 		});
 	}
 
-	/* 共享 toast（#anotify-toast-host）。时序：入场 180ms → 停留 3600ms →
-	 * 退场 160ms 后 remove。CSS 动画在 ui.css 的 .anotify-toast.is-in/.is-out；
-	 * 位置（顶部居中）与层级（--z-toast，必须高于弹层）也在 ui.css —
-	 * 这里只给类名，避免同一件事在 JS 的 Tailwind 串和 CSS 里各写一份。
-	 * reduce 下不加动画类，直接 remove。退场时长从 --dur-mid 读，避免与
-	 * ui.css 双份硬编码（reviewer minor）。
-	 *
-	 * #378：错误不再走这条自动退场——错误是产品的一部分，3.6s 既读不完也复制不到。
-	 * 错误条见 errorBar()：持久、可关、可复制；成功/警告仍是回执，照旧自动退场。 */
+	/* 共享 toast（#anotify-toast-host）：时序/位置/层级都在 ui.css，这里只给类名，reduce 下直接 remove。
+	 * #378：错误不走自动退场（3.6s 读不完也复制不到），改走持久可关的 errorBar()，成功/警告照旧。 */
 	function toastExitMs() {
 		const raw = getComputedStyle(document.documentElement)
 			.getPropertyValue("--dur-mid")
@@ -2466,7 +2450,6 @@
 		return parseFloat(raw) || 160;
 	}
 
-	/* toastHost 拿（或首次创建一个）toast 容器。 */
 	function toastHost() {
 		let host = document.getElementById("anotify-toast-host");
 		if (!host) {
@@ -2502,7 +2485,6 @@
 		return out;
 	}
 
-	/* copyButton 一个会自己改文案的「复制」按钮（1.5s 后改回）。 */
 	function copyButton(text, label, cls) {
 		const idle = label || t("common.err.copy", "复制详情");
 		const btn = el("button", { type: "button", class: cls || "btn btn-ghost btn-sm", text: idle });
@@ -2856,7 +2838,6 @@
 		return node;
 	}
 
-	/* WebAuthn ArrayBuffer <-> base64url */
 	function b64urlToBuf(b64) {
 		const s = b64.replace(/-/g, "+").replace(/_/g, "/");
 		const bin = atob(s + "=".repeat((4 - (s.length % 4)) % 4));
@@ -2871,7 +2852,6 @@
 		return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 	}
 
-	/* 平台图标（按 platform 字段） */
 	const PLATFORM_META = {
 		ios: { icon: "📱", label: "iOS Safari" },
 		mac: { icon: "💻", label: "macOS" },
@@ -2965,7 +2945,6 @@
 		);
 		document.body.append(indicator);
 
-		/* spin 动画 */
 		const style = document.createElement("style");
 		style.textContent =
 			"@keyframes anotify-spin { to { transform: rotate(360deg); } }";
@@ -3508,8 +3487,7 @@
 		MODAL_RETURN_FOCUS.delete(backdrop);
 		const at = MODAL_STACK.indexOf(backdrop);
 		if (at >= 0) MODAL_STACK.splice(at, 1);
-		/* #588 D2：先撤 inert 再还焦点 —— inert 子树里的 focus() 是空操作（真 Chrome 实测），
-		 * 反序会让「焦点还给触发控件」静默失效。栈刚弹掉一个，这里同步就是真实现场。 */
+		/* 先撤 inert 再还焦点：inert 子树里的 focus() 是空操作（真 Chrome 实测），反序会静默失效。 */
 		syncModalInert();
 		if (!prev || typeof prev.focus !== "function") return;
 		try {
@@ -3520,19 +3498,13 @@
 		}
 	}
 
-	/* ---------- #588 · 弹层焦点管理（D2） ----------
-	 * 三件事都以 topOpenModal() 为唯一真源（嵌套弹层只认最上层）：初始焦点、外壳 inert、Tab 环。
-	 * 敢对 #app-shell 用 inert，是因为页级弹层都在 #page-main **之外**（body 直属，mountLayout
-	 * 只搬 #page-main）；唯一例外是 playbooks.html 的 #pb-import-modal（长在 #page-main 里），
-	 * 那种情况退化成 inert 旁支子树，见 syncModalInert。 */
+	/* ---------- #588 · 弹层焦点管理（D2）：初始焦点 / 外壳 inert / Tab 环都以 topOpenModal() 为准 ---------- */
 
-	/* 元素 → 我们动手前它是否已 aria-hidden（页面自己的不能被我们撤掉）。 */
 	const MODAL_INERT_ARIA = new WeakMap();
 	let MODAL_INERTED = [];
 	let MODAL_TRAP_BOUND = false;
 
-	/* 初始焦点：data-autofocus → 第一个可见可聚焦 → 面板本身（补 tabindex="-1"）。
-	 * 不用原生 autofocus：那是页面加载时抢焦点，弹层是后开的。 */
+	/* 不用原生 autofocus（那是页面加载时抢焦点）；顺序：data-autofocus → 首个可聚焦 → 面板本身。 */
 	function focusModalEntry(backdrop) {
 		if (!backdrop || typeof backdrop.querySelector !== "function") return;
 		try {
@@ -3580,7 +3552,6 @@
 				}
 			}
 		}
-		/* 先撤上一轮加过、这轮不需要的（关闭 ⇒ targets 空 ⇒ 全撤） */
 		for (let i = 0; i < MODAL_INERTED.length; i++) {
 			const old = MODAL_INERTED[i];
 			if (targets.indexOf(old) >= 0) continue;
@@ -3602,7 +3573,6 @@
 				el.setAttribute("inert", "");
 				el.setAttribute("aria-hidden", "true");
 			} catch (e) {
-				/* 设不上就只靠 bindModalTrap 的 Tab 环兜底 */
 			}
 		}
 		MODAL_INERTED = targets;
@@ -3614,7 +3584,6 @@
 		try {
 			node.focus({ preventScroll: true });
 		} catch (e) {
-			/* 见上 */
 		}
 	}
 
@@ -3631,7 +3600,6 @@
 		const first = items[0];
 		const last = items[items.length - 1];
 		const active = safeActiveElement();
-		/* inside 按「在可聚焦清单里」判：焦点在面板本身时也要拉回环（否则 Shift+Tab 退回背景） */
 		const inside = items.indexOf(active) >= 0;
 		if (event.shiftKey) {
 			if (inside && active !== first) return;
@@ -3647,7 +3615,6 @@
 	function bindModalTrap() {
 		if (MODAL_TRAP_BOUND) return;
 		MODAL_TRAP_BOUND = true;
-		/* capture 阶段：页面自己的 keydown（抽屉、下拉、编辑器…）不会先把 Tab 吃掉。 */
 		document.addEventListener("keydown", onModalTab, true);
 	}
 
@@ -3685,8 +3652,7 @@
 		if (backdrop.classList.contains("is-closing")) return; /* 重复调用不叠加 */
 		backdrop.classList.add("is-closing");
 		returnModalFocus(backdrop);
-		/* #588 D2：returnModalFocus 已弹栈（并已撤 inert），这里幂等收尾 ——
-		 * 下面还有弹层就继续 inert，真没了才彻底恢复。 */
+		/* #588 D2：returnModalFocus 已弹栈并撤 inert；还有下一层就继续，真没了才彻底恢复。 */
 		syncModalInert();
 		/* 时长与 CSS 同源；reduce 下该 token 是 0ms，0 必须当有效值 */
 		const raw = parseFloat(
