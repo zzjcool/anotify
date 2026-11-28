@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"testing"
 
+	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -114,10 +116,67 @@ func TestTaskRerunRejectsBadInput(t *testing.T) {
 	orig := env.seedRerunTask(env.ns, env.cap, "review", 1, "sha256:taskres", `{}`, store.TaskFailed)
 
 	trReason(t, env.do("POST", env.taskPath(env.ns, orig, "/rerun"), `{"verison":2}`), 400, "unknown_field")
+	trReason(t, env.do("POST", env.taskPath(env.ns, orig, "/rerun"), `{"params":{"repo":"x"}}`), 400, "unknown_field")
 	trReason(t, env.do("POST", env.taskPath(env.ns, orig, "/rerun"), `{"version":-1}`), 400, reasonBadRequest)
 	trReason(t, env.do("POST", env.taskPath(env.ns, orig, "/rerun"), `{`), 400, reasonUnknownField)
 	trReason(t, env.do("POST", env.taskPath(env.ns2, orig, "/rerun"), "{}"), 404, reasonNotFound)
 	trReason(t, env.do("POST", env.taskPath(env.ns, "tsk_missing", "/rerun"), "{}"), 404, reasonNotFound)
+}
+
+func TestTaskRerunAlignsParamsToTargetVersionContract(t *testing.T) {
+	env := newTaskResEnv(t)
+	env.seedCapabilitySpec(env.ns, "review", 2, "sha256:taskres-v2",
+		`{"params":{"type":"object","required":["repo"],"properties":{"repo":{"type":"string"},"channel":{"type":"string","default":"slack"}}}}`)
+	orig := env.seedRerunTask(env.ns, env.cap, "review", 1, "sha256:taskres", `{"repo":"acme/api","number":99}`, store.TaskFailed)
+
+	doc := trWant(t, env.do("POST", env.taskPath(env.ns, orig, "/rerun"), "{}"), 200)
+	if got := trNumber(t, doc, "spec", "capability", "version"); got != 2 {
+		t.Fatalf("重跑版本 = %v, want 2（live）", got)
+	}
+	params, ok := trValue(t, doc, "spec", "params").(map[string]any)
+	if !ok {
+		t.Fatalf("spec.params 不是对象：%s", mustJSON(t, doc))
+	}
+	want := map[string]any{"repo": "acme/api", "channel": "slack"}
+	if !reflect.DeepEqual(params, want) {
+		t.Fatalf("重跑 params = %v, want %v（按 v2 契约归一：补 default、丢契约外字段）", params, want)
+	}
+
+	origDoc := trWant(t, env.do("GET", env.taskPath(env.ns, orig, ""), nil), 200)
+	if got := trValue(t, origDoc, "spec", "params"); !reflect.DeepEqual(got, map[string]any{"repo": "acme/api", "number": float64(99)}) {
+		t.Fatalf("原任务 params 被改写了：%v", got)
+	}
+}
+
+func TestTaskRerunRejectsInputThatViolatesTargetContract(t *testing.T) {
+	env := newTaskResEnv(t)
+	env.seedCapabilitySpec(env.ns, "review", 2, "sha256:taskres-v2",
+		`{"params":{"type":"object","required":["repo"],"properties":{"repo":{"type":"string"}}}}`)
+	orig := env.seedRerunTask(env.ns, env.cap, "review", 1, "sha256:taskres", `{"number":99}`, store.TaskFailed)
+
+	body := trReason(t, env.do("POST", env.taskPath(env.ns, orig, "/rerun"), "{}"), 400, protocol.ReasonParamMissing)
+	causes := trArray(t, body, "details", "causes")
+	if len(causes) != 1 {
+		t.Fatalf("details.causes = %v, want 一条", causes)
+	}
+	cause, _ := causes[0].(map[string]any)
+	if got, _ := cause["field"].(string); got != "params.repo" {
+		t.Fatalf("details.causes[0].field = %q, want params.repo", got)
+	}
+
+	var created int
+	if err := env.db.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM tasks WHERE namespace_id = ? AND rerun_of = ?`, env.ns, orig).Scan(&created); err != nil {
+		t.Fatalf("count rerun rows: %v", err)
+	}
+	if created != 0 {
+		t.Fatalf("被拒的重跑建出了 %d 行任务", created)
+	}
+
+	doc := trWant(t, env.do("POST", env.taskPath(env.ns, orig, "/rerun"), `{"version":1}`), 200)
+	if got := trNumber(t, doc, "spec", "capability", "version"); got != 1 {
+		t.Fatalf("显式重跑版本 = %v, want 1", got)
+	}
 }
 
 func TestTaskStatusIdempotentIsExposed(t *testing.T) {

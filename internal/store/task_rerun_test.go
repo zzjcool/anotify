@@ -21,7 +21,7 @@ func seedRerunCapability(t *testing.T, db *DB, ns, name string, version int, dig
 	return id
 }
 
-func TestCreateRerun_DefaultsToLiveVersionAndCopiesParams(t *testing.T) {
+func TestCreateRerun_DefaultsToLiveVersionAndStoresPreparedParams(t *testing.T) {
 	ctx := context.Background()
 	db, _ := newTestDBFile(t)
 	ns, _ := newTestNS(t, db)
@@ -54,7 +54,7 @@ func TestCreateRerun_DefaultsToLiveVersionAndCopiesParams(t *testing.T) {
 		t.Fatalf("read original before rerun: %v", err)
 	}
 
-	created, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID})
+	created, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID, PreparedParams: params})
 	if err != nil {
 		t.Fatalf("create rerun task: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestCreateRerun_ExplicitVersionAndRejections(t *testing.T) {
 		t.Fatalf("create original task: %v", err)
 	}
 
-	pinned, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID, Version: 1})
+	pinned, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID, Version: 1, PreparedParams: json.RawMessage(`{"number":99}`)})
 	if err != nil {
 		t.Fatalf("create rerun @1: %v", err)
 	}
@@ -134,19 +134,19 @@ func TestCreateRerun_ExplicitVersionAndRejections(t *testing.T) {
 		t.Fatalf("显式版本重跑钉住 %d/%s, want 1/sha256:pin-v1", pinned.Version, pinned.Digest)
 	}
 
-	if _, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID, Version: 9}); !errors.Is(err, ErrNotFound) {
+	if _, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID, Version: 9, PreparedParams: json.RawMessage(`{}`)}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("version=9 err = %v, want ErrNotFound", err)
 	}
 	if _, err := db.Exec(`UPDATE capability_versions SET deleted_at = ? WHERE id = ?`, Now(), v1); err != nil {
 		t.Fatalf("soft-delete v1: %v", err)
 	}
-	if _, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID, Version: 1}); !errors.Is(err, ErrNotFound) {
+	if _, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID, Version: 1, PreparedParams: json.RawMessage(`{}`)}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("已删除版本 err = %v, want ErrNotFound", err)
 	}
-	if _, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: other, TaskID: orig.ID}); !errors.Is(err, ErrNotFound) {
+	if _, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: other, TaskID: orig.ID, PreparedParams: json.RawMessage(`{}`)}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("跨 ns err = %v, want ErrNotFound", err)
 	}
-	if _, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: "tsk_missing"}); !errors.Is(err, ErrNotFound) {
+	if _, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: "tsk_missing", PreparedParams: json.RawMessage(`{}`)}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("不存在的任务 err = %v, want ErrNotFound", err)
 	}
 }
@@ -167,7 +167,7 @@ func TestCreateRerun_UnresolvedFailureUsesRequestedName(t *testing.T) {
 		t.Fatalf("seed unresolved task: %v", err)
 	}
 
-	created, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: id})
+	created, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: id, PreparedParams: json.RawMessage(`{"a":1}`)})
 	if err != nil {
 		t.Fatalf("rerun unresolved task: %v", err)
 	}
@@ -176,5 +176,29 @@ func TestCreateRerun_UnresolvedFailureUsesRequestedName(t *testing.T) {
 	}
 	if created.RerunOf != id {
 		t.Fatalf("rerunOf = %q, want %q", created.RerunOf, id)
+	}
+}
+
+func TestCreateRerun_RequiresPreparedParams(t *testing.T) {
+	ctx := context.Background()
+	db, _ := newTestDBFile(t)
+	ns, _ := newTestNS(t, db)
+	capID := seedRerunCapability(t, db, ns, "pr-check", 1, "sha256:prep-v1")
+
+	orig := &Task{
+		NamespaceID:  ns,
+		TraceID:      NewEventID(),
+		CapabilityID: capID,
+		Capability:   "pr-check",
+		Version:      1,
+		Digest:       "sha256:prep-v1",
+		Params:       json.RawMessage(`{"number":99}`),
+		Phase:        TaskPending,
+	}
+	if err := db.CreateTasks(ctx, []*Task{orig}); err != nil {
+		t.Fatalf("create original task: %v", err)
+	}
+	if _, err := db.CreateRerunTask(ctx, RerunInputs{NamespaceID: ns, TaskID: orig.ID}); err == nil {
+		t.Fatal("PreparedParams 为空却建出了任务：归一必须由调用方完成后传入")
 	}
 }

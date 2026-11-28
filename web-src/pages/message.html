@@ -552,7 +552,15 @@
           "&id=" + encodeURIComponent(created);
         return;
       } catch (error) {
-        node("rerun-error").replaceChildren(inlineFailure(error, submitRerun));
+        const box = node("rerun-error");
+        const paramRejected = !!error && error.status === 400 &&
+          ["param_missing", "param_type", "param_schema"].indexOf(error.reason) >= 0;
+        box.replaceChildren(inlineFailure(error, paramRejected ? undefined : submitRerun));
+        if (paramRejected) {
+          const go = el("button", { type: "button", class: "btn mt-2", text: t("message.v4.rerun_edit", "修改参数后重跑") });
+          go.addEventListener("click", rerunWithEdits);
+          box.append(go);
+        }
       } finally {
         rerunBusy = false;
         submit.disabled = false;

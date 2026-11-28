@@ -512,6 +512,142 @@ async function main() {
 		await ctx.close();
 	}
 
+	let strictVersion = null;
+	console.log("--- 重跑：按目标版本的参数契约归一 ---");
+	{
+		const v2 = await V.mkCapability(server.base, s.session, "review", {
+			body: V.capabilityBody({
+				name: "review",
+				params: {
+					type: "object",
+					properties: { channel: { type: "string", default: "slack" } },
+				},
+			}),
+		});
+		H.check("追加 review@2（新的参数契约）", v2.version === cap.version + 1, JSON.stringify(v2));
+
+		const norm = await H.req(server.base, V.P.tasks(NS) + "/" + taskId + "/rerun", {
+			method: "POST",
+			session: s.session,
+			body: {},
+		});
+		V.expectStatus("重跑 → 200（原输入能对上 v2 契约）", norm, 200);
+		H.eq("新任务钉住 live v2", norm.json?.spec?.capability?.version, v2.version);
+		H.eq("params 按 v2 契约补上 default", norm.json?.spec?.params, { channel: "slack" });
+
+		const v3 = await V.mkCapability(server.base, s.session, "review", {
+			body: V.capabilityBody({
+				name: "review",
+				params: {
+					type: "object",
+					required: ["repo"],
+					properties: { repo: { type: "string" } },
+				},
+			}),
+		});
+		const bad = await H.req(server.base, V.P.tasks(NS) + "/" + taskId + "/rerun", {
+			method: "POST",
+			session: s.session,
+			body: {},
+		});
+		V.expectReason("重跑不合 v3 契约 → 400", bad, 400, "param_missing");
+		H.eq(
+			"400 的 details.causes[0].field 指到具体参数",
+			bad.json?.details?.causes?.[0]?.field,
+			"params.repo",
+		);
+		const afterBad = await H.req(server.base, V.P.tasks(NS), {
+			session: s.session,
+		});
+		V.expectStatus("400 之后读任务列表 → 200", afterBad, 200);
+		const rerunRows = (afterBad.json?.items || []).filter(
+			(t) => t?.spec?.rerunOf === taskId,
+		);
+		H.eq("被拒的重跑没有建任务（只有两次成功的重跑）", rerunRows.length, 2);
+
+		const pinned = await H.req(server.base, V.P.tasks(NS) + "/" + taskId + "/rerun", {
+			method: "POST",
+			session: s.session,
+			body: { version: v2.version },
+		});
+		V.expectStatus("显式点名 v2 重跑 → 200", pinned, 200);
+		H.eq("显式版本钉住的还是 v2（不回退到 live v3）", pinned.json?.spec?.capability?.version, v2.version);
+
+		for (const id of [norm.json?.metadata?.name, pinned.json?.metadata?.name]) {
+			if (!id) continue;
+			const r = await H.req(server.base, V.P.tasks(NS) + "/" + id + "/cancel", {
+				method: "POST",
+				session: s.session,
+				body: {},
+			});
+			V.expectStatus("清场：取消重跑出来的任务 " + id, r, 200);
+		}
+		H.check("live 已是 v3（本段之外的重跑都会被 v3 契约挡）", v3.version > v2.version, JSON.stringify(v3));
+		strictVersion = v3.version;
+	}
+
+	console.log("--- 重跑被契约挡住 → 改走试跑 ---");
+	{
+		const ctx = await browser.newContext();
+		await H.mockExternalCdn(ctx);
+		await injectSession(ctx, s.session, server.base);
+		const page = await ctx.newPage();
+		const errs = [];
+		page.on("pageerror", (e) => errs.push(String(e)));
+		await page.goto(server.base + "/message.html?namespace=" + NS + "&id=" + rerunId, {
+			waitUntil: "load",
+			timeout: 15000,
+		});
+		await H.waitForAppReady(page, "workspace");
+		await page.waitForSelector("#task-rerun", { timeout: 10000 });
+		await page.click("#task-rerun");
+		await page.waitForSelector("#rerun-versions .msg-rerun-choice", { timeout: 10000 });
+		await page.click("#rerun-submit");
+		await page.waitForSelector("#rerun-error button", { timeout: 10000 });
+		const rejected = await page.evaluate(() => {
+			const box = document.getElementById("rerun-error");
+			return {
+				text: (box || {}).textContent || "",
+				buttons: Array.from((box || {}).querySelectorAll("button") || []).map((b) => b.textContent.trim()),
+				modalOpen: !document.getElementById("rerun-modal").classList.contains("hidden"),
+			};
+		});
+		H.check("400 后弹层停在原地（没有跳走）", rejected.modalOpen, JSON.stringify(rejected).slice(0, 240));
+		H.check("错误里点名缺哪个参数（repo）", rejected.text.includes("repo"), rejected.text.slice(0, 200));
+		H.check("给了「修改参数后重跑」按钮", rejected.buttons.some((b) => b.includes("修改参数")), JSON.stringify(rejected.buttons));
+
+		await page.click("#rerun-error button");
+		const capUrl = await H.waitForUrl(page, new RegExp("capability" + "\\.html"), 10000);
+		H.check("按钮跳到能力页（rerun=1 一次性入口）", capUrl.includes("capability.html") && capUrl.includes("rerun=1"), capUrl);
+		await H.waitForAppReady(page, "workspace");
+		await page.waitForSelector("#test-modal:not(.hidden)", { timeout: 10000 });
+		const prefill = await page.evaluate(() => ({
+			hint: (document.getElementById("test-version-hint") || {}).textContent || "",
+			version: (document.getElementById("test-version") || {}).value || "",
+			params: (document.getElementById("test-params") || {}).textContent || "",
+		}));
+		H.check("能力页带着原参数打开试跑弹层", prefill.params.length > 0, JSON.stringify(prefill).slice(0, 240));
+		H.check("提示行写明「已带入任务 X 的参数」", prefill.hint.includes(rerunId), prefill.hint);
+		H.check("版本默认当前 live（v3）", prefill.version === String(strictVersion), prefill.version);
+
+		await page.click("#test-close");
+		await page.waitForFunction(
+			() => document.getElementById("test-modal").classList.contains("hidden"),
+			{ timeout: 10000 },
+		);
+		await page.click('#cap-actions [data-act="test"]');
+		await page.waitForSelector("#test-modal:not(.hidden)", { timeout: 10000 });
+		const plain = await page.evaluate(() => ({
+			hint: (document.getElementById("test-version-hint") || {}).textContent || "",
+			params: (document.getElementById("test-params") || {}).textContent || "",
+		}));
+		H.check("普通试跑的提示行已还原（不再说「已带入任务」）", !plain.hint.includes("已带入任务"), plain.hint);
+		H.check("普通试跑的表单没有残留上一条任务的参数", !plain.params.includes(rerunId), plain.params.slice(0, 160));
+		H.check("重跑被拒 → 改走试跑全程无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 160));
+		await page.close();
+		await ctx.close();
+	}
+
 	const passed = H.summary("deeplink");
 	await browser.close();
 	server.stop();

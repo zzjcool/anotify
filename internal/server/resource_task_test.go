@@ -121,11 +121,16 @@ func (e *taskResEnv) taskPath(ns, id, suffix string) string {
 // 不走 CreateCapability：本文件的用例不关心能力正文，只关心任务行钉住的身份。
 func (e *taskResEnv) seedCapability(ns, name string, version int, digest string) string {
 	e.t.Helper()
+	return e.seedCapabilitySpec(ns, name, version, digest, `{}`)
+}
+
+func (e *taskResEnv) seedCapabilitySpec(ns, name string, version int, digest, spec string) string {
+	e.t.Helper()
 	id := "capv_" + strings.ReplaceAll(digest, ":", "_") + "_" + name
 	if _, err := e.db.Exec(
 		`INSERT INTO capability_versions (id, namespace_id, name, version, spec, digest, fold_key, created_at)
 		 VALUES (?,?,?,?,?,?,?,?)`,
-		id, ns, name, version, `{}`, digest, "fold_"+id, store.Now()); err != nil {
+		id, ns, name, version, spec, digest, "fold_"+id, store.Now()); err != nil {
 		e.t.Fatalf("seed capability: %v", err)
 	}
 	return id

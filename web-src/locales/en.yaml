@@ -361,7 +361,7 @@ message:
     rerun_version_live_unknown: "Current version"
     rerun_version_original: "Original v{n}"
     rerun_note: "This creates a new task; the original stays unchanged."
-    rerun_params_hint: "Parameters are copied verbatim from the original task (including webhook-derived values). Use \"Edit params and run again\" to change them."
+    rerun_params_hint: "Parameters are copied from the original task and aligned to the selected version's params contract (defaults filled, fields outside the contract ignored); a violation is rejected — use \"Edit params and run again\"."
     rerun_running: "Starting re-run…"
     rerun_gone: "This capability was deleted or renamed, so it cannot be re-run."
     rerun_prefill_unavailable: "The browser refused to stash the parameters (storage unavailable); re-enter them on the capability page."

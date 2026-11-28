@@ -2156,9 +2156,17 @@ paths:
         `spec.rerunOf` 指向原任务），原任务的任何字段都不变——重跑不是「让同一条任务
         再跑一次」，事件与任务行仍然不可改写。
 
-        `params` **不接受入参**：webhook 派生的参数（`$(payload.number)` 等）在任务页只
-        能看、带不走，所以重跑一律复制原任务钉住的那一份。要改参数请用能力页的试跑
-        （`POST …/capabilities/{name}/test`，前端会用原参数预填）。
+        `params` **不接受入参**（body 里带 `params` 就是 `400 unknown_field`）：webhook 派生的
+        参数（`$(payload.number)` 等）在任务页只能看、带不走，所以输入一律由服务端从原任务
+        复制。要改参数请用能力页的试跑（`POST …/capabilities/{name}/test`，前端会用原参数预填）。
+
+        **复制来的输入要过目标版本的参数契约**：归一（补齐 `spec.params` 里带 `default` 的字段、
+        丢掉契约外的字段）后落进新任务；不合契约（缺必填、类型不符、schema 不可用）→
+        `400`，`reason` 用封闭码 `param_missing` / `param_type` / `param_schema`，
+        `details.causes[].field` 指到 `params.<名字>`。这条边界很重要：版本默认是 live，
+        而「脚本修好了、顺手也改了参数契约」正是重跑的主场景；不校验的话会建出一条注定
+        `script_failed` 的任务（节点侧不校验 schema，用户看不出是哪条参数不合契约）。
+        收到 `400` 时调用方应改走「修改参数后重跑」（能力页试跑 + 原参数预填）。
 
         `version` 省略 / 0 = 该能力**当前 live 版本**（「脚本修好后再跑一次」正是这个
         用途）；显式给版本时必须是仍然活着的那个版本——已删除的版本不会被静默换成最新版。
@@ -4795,8 +4803,9 @@ components:
     TaskRerunRequest:
       type: object
       description: |
-        重跑的动作 body。`params` 刻意**不**在这里：重跑 = 复制原任务钉住的输入，
-        改参数走能力页的试跑（前端用原参数预填）。
+        重跑的动作 body。`params` 刻意**不**在这里（带上就是 `400 unknown_field`）：
+        重跑 = 服务端复制原任务的输入、按目标版本的参数契约归一后派发；改参数走能力页的试跑
+        （前端用原参数预填）。
       properties:
         version:
           type: integer

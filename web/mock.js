@@ -1236,6 +1236,39 @@
 		];
 	})();
 
+	const MOCK_EXTRA_TASKS_KEY = "anotify.mock.tasks";
+	const extraTasks = [];
+	function persistExtraTasks() {
+		try {
+			sessionStorage.setItem(MOCK_EXTRA_TASKS_KEY, JSON.stringify(extraTasks.slice(-20)));
+		} catch (e) {
+			return;
+		}
+	}
+	function restoreExtraTasks() {
+		let raw = null;
+		try {
+			raw = sessionStorage.getItem(MOCK_EXTRA_TASKS_KEY);
+		} catch (e) {
+			return;
+		}
+		if (!raw) return;
+		let seen = null;
+		try {
+			seen = JSON.parse(raw);
+		} catch (e) {
+			return;
+		}
+		for (const row of Array.isArray(seen) ? seen : []) {
+			if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+			if (typeof row.ns !== "string" || typeof row.name !== "string") continue;
+			if (state.tasks.some((t) => t.ns === row.ns && t.name === row.name)) continue;
+			state.tasks.push(row);
+			extraTasks.push(row);
+		}
+	}
+	restoreExtraTasks();
+
 	// ---------- 种子：事件 ----------
 	//
 	// 四种 reason 全覆盖：Ingested / Emitted / Pruned / RoutingChanged（+ ConfigApplied）。
@@ -1957,11 +1990,32 @@
 	}
 
 	// ---------- 派生：任务 / 事件 / trace / edges / deployments ----------
-	function capDigestOf(row) {
-		const cap = state.capabilities.find(
-			(c) => c.ns === row.ns && c.name === row.capability,
+	function capRowOf(row) {
+		return (
+			state.capabilities.find((c) => c.ns === row.ns && c.name === row.capability) || null
 		);
+	}
+	function capVersionOf(row) {
+		const cap = capRowOf(row);
+		if (!cap) return null;
+		if (!row.capabilityVersion || row.capabilityVersion === cap.version) return null;
+		return (cap.versions || []).find((v) => v.version === row.capabilityVersion) || null;
+	}
+	function capDigestOf(row) {
+		const hist = capVersionOf(row);
+		if (hist && hist.digest) return hist.digest;
+		const cap = capRowOf(row);
 		return cap ? cap.digest : null;
+	}
+	function taskIdempotent(row) {
+		if (row.idempotent !== undefined) return row.idempotent === true;
+		const hist = capVersionOf(row);
+		const cap = capRowOf(row);
+		const lifecycle =
+			(hist && hist.spec && hist.spec.lifecycle) ||
+			(cap && cap.spec && cap.spec.lifecycle) ||
+			null;
+		return !!(lifecycle && lifecycle.idempotent === true);
 	}
 
 	function taskStatus(row) {
@@ -1973,7 +2027,7 @@
 			instanceId: row.instanceId == null ? null : row.instanceId,
 			attempt: row.attempt == null ? 1 : row.attempt,
 			maxAttempts: row.maxAttempts == null ? 3 : row.maxAttempts,
-			idempotent: row.idempotent === true,
+			idempotent: taskIdempotent(row),
 			leaseExpiresAt: row.leaseExpiresAt || null,
 			startedAt: row.startedAt || null,
 			finishedAt: row.finishedAt || null,
@@ -4591,6 +4645,10 @@
 	// 事件入库 + 派发：fire 与 ingress 共用（去重、剪枝留痕、建任务）。
 	let taskSeq = 12;
 	function nextTaskName() {
+		for (const t of state.tasks) {
+			const m = /^tsk_mock_(\d+)$/.exec(t && t.name);
+			if (m && Number(m[1]) > taskSeq) taskSeq = Number(m[1]);
+		}
 		return "tsk_mock_" + ++taskSeq;
 	}
 	function recordEvent(ev) {
@@ -5010,6 +5068,51 @@
 			},
 		);
 	}
+
+	on("POST", /^\/v1\/namespaces\/([^/]+)\/tasks\/([^/]+)\/rerun$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findTask(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("任务 ");
+		const body = ctx.body || {};
+		if (body.params != null) return badRequest("BadRequest", "重跑不接受 params（输入一律复制原任务）");
+		const version = body.version == null ? 0 : Number(body.version);
+		if (!Number.isInteger(version) || version < 0) {
+			return badRequest("BadRequest", "version 必须是 ≥0 的整数（0 = live）");
+		}
+		const cap = findCap(ns, row.capability);
+		if (!cap) return notFound("能力 ");
+		const target =
+			version === 0 ? cap : pbVersions(cap).find((v) => v.version === version) || null;
+		if (!target) return notFound("能力版本 ");
+		const created = {
+			ns: row.ns,
+			name: nextTaskName(),
+			traceUID: "trace_mock_" + (state.tasks.length + 1),
+			sequence: 1,
+			sourceRef: null,
+			parentRef: null,
+			parentTaskId: null,
+			rerunOf: row.name,
+			capability: row.capability,
+			capabilityVersion: target.version,
+			params: clone(row.params || {}),
+			phase: "pending",
+			attempt: 0,
+			maxAttempts: 3,
+			waitingReason: "waiting_for_slot",
+			nextAttemptAt: iso(now() + 5),
+			createdAt: isoNow(),
+			envDiagnostics: [],
+			result: { summary: null, artifacts: [], error: null },
+			attempts: [],
+		};
+		state.tasks.push(created);
+		extraTasks.push(created);
+		persistExtraTasks();
+		return json(taskResource(created));
+	});
 
 	// ===== 事件（ns 私有，只读资源 + 投递入口）=====
 	on("GET", /^\/v1\/namespaces\/([^/]+)\/events$/, (ctx) => {

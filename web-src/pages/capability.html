@@ -2622,10 +2622,12 @@
         $("test-params-json").value = "";
         const live = liveVersionNum();
         $("test-version").value = live == null ? "" : String(live);
-        if (prefill) {
-          const hint = $("test-version-hint");
-          if (hint) hint.textContent = t("caps.test.rerun_from", "已带入任务 {task} 的参数；版本默认当前版本。")
-            .replace("{task}", String(prefill.fromTask || ""));
+        const hint = $("test-version-hint");
+        if (hint) {
+          hint.textContent = prefill
+            ? t("caps.test.rerun_from", "已带入任务 {task} 的参数；版本默认当前版本。")
+              .replace("{task}", String(prefill.fromTask || ""))
+            : t("caps.test.version_hint", "默认当前 live 版本；显式版本必须已存在。");
         }
         const host = $("test-params");
         host.replaceChildren();
@@ -2654,6 +2656,8 @@
       function closeTest() {
         closeModal($("test-modal"));
         TEST = null;
+        const hint = $("test-version-hint");
+        if (hint) hint.textContent = t("caps.test.version_hint", "默认当前 live 版本；显式版本必须已存在。");
       }
       /* 失败的两种来源（客户端校验一句人话 / 服务端 400 的 reason + causes）共用一块：
          causes[] 逐条点名 field（如 params.diff），并在能对上那个控件时把 message 也
@@ -2904,11 +2908,12 @@
           }
           const res = await nsApi("capabilities", name);
           render(res);
-          const params = new URLSearchParams(location.search);
-          if (params.get("rerun") === "1") {
-            openTest(takeRerunPrefill());
-              params.delete("rerun");
-            const qs = params.toString();
+          const query = new URLSearchParams(location.search);
+          if (query.get("rerun") === "1") {
+            const prefill = takeRerunPrefill();
+            if (prefill) openTest(prefill);
+            query.delete("rerun");
+            const qs = query.toString();
             history.replaceState(null, "", location.pathname + (qs ? "?" + qs : ""));
           }
         } catch (err) {

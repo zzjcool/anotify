@@ -361,7 +361,7 @@ message:
     rerun_version_live_unknown: "当前版本"
     rerun_version_original: "原版本 v{n}"
     rerun_note: "这会新建一个任务，原任务保持不变。"
-    rerun_params_hint: "参数原样复制自原任务（含 webhook 派生值）。要改参数请用「修改参数后重跑」。"
+    rerun_params_hint: "参数复制自原任务，并按所选版本的参数契约归一（补默认值、忽略契约外的字段）；不合契约会被拒绝，改用「修改参数后重跑」。"
     rerun_running: "重跑中…"
     rerun_gone: "这个能力已删除或已改名，无法重跑。"
     rerun_prefill_unavailable: "浏览器不允许暂存参数（存储不可用），请到能力页手动重填。"

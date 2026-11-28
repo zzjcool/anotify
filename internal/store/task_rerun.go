@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,10 +12,11 @@ import (
 var ErrTaskNotRerunnable = errors.New("task_not_rerunnable")
 
 type RerunInputs struct {
-	NamespaceID string
-	TaskID      string
-	Version     int
-	Now         int64
+	NamespaceID    string
+	TaskID         string
+	Version        int
+	PreparedParams json.RawMessage
+	Now            int64
 }
 
 func (d *DB) CreateRerunTask(ctx context.Context, in RerunInputs) (*Task, error) {
@@ -26,6 +28,9 @@ func (d *DB) CreateRerunTask(ctx context.Context, in RerunInputs) (*Task, error)
 	}
 	if in.Version < 0 {
 		return nil, fmt.Errorf("create rerun task: version must be >= 0（0 = live）")
+	}
+	if len(in.PreparedParams) == 0 {
+		return nil, fmt.Errorf("create rerun task: params 必须由调用方按目标版本归一后传入")
 	}
 	if in.Now == 0 {
 		in.Now = Now()
@@ -77,8 +82,8 @@ func (d *DB) CreateRerunTask(ctx context.Context, in RerunInputs) (*Task, error)
 		return nil, fmt.Errorf("create rerun task: capability %s@%d 没有真实 version/digest", name, version)
 	}
 
-	params := make([]byte, len(orig.Params))
-	copy(params, orig.Params)
+	params := make([]byte, len(in.PreparedParams))
+	copy(params, in.PreparedParams)
 	task := &Task{
 		NamespaceID:  in.NamespaceID,
 		TraceID:      NewEventID(),

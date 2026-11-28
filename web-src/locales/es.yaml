@@ -361,7 +361,7 @@ message:
     rerun_version_live_unknown: "Versión actual"
     rerun_version_original: "Original v{n}"
     rerun_note: "Esto crea una tarea nueva; la original no cambia."
-    rerun_params_hint: "Los parámetros se copian tal cual de la tarea original (incluidos los derivados del webhook). Para cambiarlos usa «Editar parámetros y ejecutar»."
+    rerun_params_hint: "Los parámetros se copian de la tarea original y se ajustan al contrato de la versión elegida (se rellenan los valores por defecto y se ignoran los campos fuera del contrato); si no cumple se rechaza: usa «Editar parámetros y ejecutar»."
     rerun_running: "Ejecutando de nuevo…"
     rerun_gone: "Esta capacidad se eliminó o cambió de nombre; no se puede ejecutar de nuevo."
     rerun_prefill_unavailable: "El navegador no permitió guardar los parámetros (almacenamiento no disponible); vuelve a escribirlos en la página de la capacidad."
