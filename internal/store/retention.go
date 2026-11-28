@@ -280,10 +280,8 @@ func (d *DB) DeleteExpiredPlaybookInstalls(ctx context.Context, cutoff int64, li
 	return n, nil
 }
 
-// drainRetention 按批调用 one，返回删掉的总行数与「预算是否用尽」。
-//
-// saturated=true 表示每批都删满（limit 行），即该范围**可能**还有积压——置 Truncated
-// 让运维知道下一轮还得跑。某批没删满（含 0）即视为清干净。
+// drainRetention 按批调用 one，返回删掉的总行数与「预算是否用尽」：每批都删满
+// （limit 行）即可能还有积压（置 Truncated），某批没删满（含 0）即视为清干净。
 func drainRetention(ctx context.Context, one func(limit int) (int64, error)) (deleted int64, saturated bool, err error) {
 	for i := 0; i < DefaultRetentionBatches; i++ {
 		if err := ctx.Err(); err != nil {
@@ -314,14 +312,8 @@ func terminalPhaseIn() (string, []any) {
 	return strings.Join(ph, ","), args
 }
 
-// purgeDeletedCapabilitiesCandidateSQL 是回收候选集的**唯一**来源：DELETE 与
-// EXPLAIN 门禁（retention_purge_index_test.go）跑同一条语句，不抄副本。
-//
-// 判据里四列都带索引：三个 capability_id 引用列由 migration 13 补上
-// （idx_tasks_capability_id / idx_task_attempts_capability /
-// idx_task_artifact_manifests_capability），deployments 早就有 idx_deploy_capability。
-// 没有这些索引时每个 tombstone 都是一次全表扫，代价 = 任务行数 × 候选 tombstone 数，
-// 稳态（一行都删不掉）也要按这个规模持写锁（#628）。
+// 生产语句的唯一来源：DELETE 与 EXPLAIN 断言（retention_purge_index_test.go）跑同一条候选集；
+// 三个 capability_id 引用列走 migration 13 的索引（#628）。
 func purgeDeletedCapabilitiesCandidateSQL() string {
 	return `SELECT c.id FROM capability_versions c WHERE c.deleted_at IS NOT NULL
  AND NOT EXISTS(SELECT 1 FROM tasks t WHERE t.capability_id=c.id)
@@ -332,10 +324,8 @@ func purgeDeletedCapabilitiesCandidateSQL() string {
  ORDER BY c.deleted_at,c.id LIMIT ?`
 }
 
-// PurgeDeletedCapabilities physically deletes only immutable tombstone IDs with
-// no task, attempt, manifest, deployment, or retained install-receipt reference.
-// All predicates and deletion execute as one writer statement/transaction;
-// this operation never deletes by name/digest or touches system/user files.
+// PurgeDeletedCapabilities deletes immutable tombstone IDs whose candidate set
+// (purgeDeletedCapabilitiesCandidateSQL) has no live reference. It never touches files.
 func (d *DB) PurgeDeletedCapabilities(ctx context.Context, limit int) (int64, error) {
 	if limit <= 0 {
 		return 0, nil

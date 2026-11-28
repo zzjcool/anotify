@@ -306,7 +306,6 @@ func TestSchemaBaselineIndexes(t *testing.T) {
 		{name: "idx_sources_due", table: "sources", cols: []string{"enabled", "next_fire_at"}},
 		{name: "idx_task_artifact_objects", table: "task_artifact_manifests", cols: []string{"object_id"}},
 		{name: "idx_task_artifact_upload_expiry", table: "task_artifact_uploads", cols: []string{"expires_at"}},
-		// #628：能力 tombstone 回收判据里的三个 capability_id 引用列（外键 RESTRICT 检查也走它们）。
 		{name: "idx_tasks_capability_id", table: "tasks", cols: []string{"capability_id"}},
 		{name: "idx_task_attempts_capability", table: "task_attempts", cols: []string{"capability_id"}},
 		{name: "idx_task_artifact_manifests_capability", table: "task_artifact_manifests", cols: []string{"capability_id"}},

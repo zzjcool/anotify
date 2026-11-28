@@ -820,21 +820,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_retain_from
     ON tasks(COALESCE(result_accepted_at, CASE WHEN reported=0 THEN finished_at END));
 
 -- +migration 13 capability_ref_indexes
---
--- 能力 tombstone 物理回收（PurgeDeletedCapabilities，#628）对**每个**候选 tombstone 做三次
--- NOT EXISTS 引用检查：tasks / task_attempts / task_artifact_manifests 的 capability_id。
--- 这三列原先没有索引，于是每次检查都是全表扫，单轮代价 = 任务行数 × 仍被引用的 tombstone 数，
--- 与「这轮删掉了几行」无关：30 万任务 + 100 个被任务钉住的 tombstone 时，一条 DELETE 在
--- BEGIN IMMEDIATE 写锁里跑 6.8s（deleted=0），同时到来的写撞满 busy_timeout(5000) 后报
--- database is locked。
---
--- 三条索引同时覆盖两处代价：
---   1. 判据里的 NOT EXISTS 由全表扫变成一次 seek，稳态（一行都删不掉）的持锁时长与任务行数脱钩；
---   2. tasks.capability_id 是 ON DELETE RESTRICT 外键：SQLite 每删一行父行都要在子表上确认
---      没有引用行，没索引时每删一行还要再全表扫一次 tasks。
--- 不写成部分索引（WHERE capability_id IS NOT NULL）：外键检查那条语句没有这个谓词，
--- 部分索引用不上；而且这三列绝大多数行本来就非 NULL。
--- 计划门禁见 retention_purge_index_test.go（出现 SCAN 即红）。
+-- #628：tombstone 回收判据与外键 RESTRICT 检查的三个引用列；计划断言见 retention_purge_index_test.go。
+-- 不做部分索引：外键检查那条语句没有谓词，部分索引用不上。
 CREATE INDEX IF NOT EXISTS idx_tasks_capability_id ON tasks(capability_id);
 CREATE INDEX IF NOT EXISTS idx_task_attempts_capability ON task_attempts(capability_id);
 CREATE INDEX IF NOT EXISTS idx_task_artifact_manifests_capability

@@ -9,15 +9,9 @@ import (
 	"time"
 )
 
-// 本文件钉住 #628：能力 tombstone 物理回收的判据必须「每个引用列一次 seek」。
-//
-// 判据里三次 NOT EXISTS 落在 tasks / task_attempts / task_artifact_manifests 的 capability_id 上。
-// 这三列没有索引时是三次全表扫，单轮代价 = 任务行数 × 候选 tombstone 数，与「这轮删掉几行」
-// 无关：30 万任务 + 100 个仍被引用的 tombstone 时，一条 DELETE 在 BEGIN IMMEDIATE 写锁里跑
-// 6.8s（deleted=0），同时到来的写撞满 busy_timeout(5000) 后全部 database is locked。
-// 所以这里守两件事：计划里没有对这三张表的 SCAN（结构），稳态代价有界（症状）。
+// 本文件钉住 #628：回收判据的每个引用列都只 seek，稳态代价与任务行数脱钩。
 
-// seedPurgeTask 直插一条引用 capID 的任务行（带真实 digest，否则 tasks_resolved_pin_shape 会挡）。
+// seedPurgeTask 直插一条引用 capID 的任务行（digest 写实，否则 tasks_resolved_pin_shape 会挡）。
 func seedPurgeTask(t *testing.T, db *DB, nsID, capID, capName, trace string, now int64) string {
 	t.Helper()
 	id := NewTaskID()
@@ -30,9 +24,7 @@ func seedPurgeTask(t *testing.T, db *DB, nsID, capID, capName, trace string, now
 	return id
 }
 
-// purgeSeedPinnedTombstones 造 n 个「已删除、但仍被一条最近任务钉住」的能力版本，返回它们的 UID。
-// 这正是稳态：任务保留 30 天，被引用的 tombstone 每轮都会重新进候选集，而一行都删不掉——
-// 报告里 deleted=0 却持锁 6.8s 的就是这种轮次。
+// purgeSeedPinnedTombstones 造 n 个「已删、但仍被一条最近任务钉住」的版本（稳态轮次）。
 func purgeSeedPinnedTombstones(t *testing.T, db *DB, nsID string, n int, now int64) []string {
 	t.Helper()
 	ids := make([]string, 0, n)
@@ -82,9 +74,8 @@ func TestPurgeDeletedCapabilitiesUsesIndexes(t *testing.T) {
 	plan := strings.Join(explainQueryPlan(t, db, purgeDeletedCapabilitiesCandidateSQL(), DefaultRetentionBatch), "\n")
 	t.Logf("EXPLAIN QUERY PLAN（能力 tombstone 回收候选集）:\n%s", plan)
 
-	// 剩下的 `SCAN p` 是安装回执那条分支（json_tree(p.receipt)）：它按**安装数**扫，
-	// 与任务行数无关，不属于本次回归（报告里 6.8s 全部来自上面三列）。把它结构化到
-	// playbook_install_pinned 的 id 列是 #551 的后续；在那之前它不能被误当成「已修」。
+	// 剩下的 SCAN p / SCAN j 是安装回执分支（按安装数扫，与任务行数无关）：结构化到
+	// playbook_install_pinned 是 #551 的后续，在那之前它不能被当成「已修」。
 	for _, scan := range []string{"SCAN t", "SCAN a", "SCAN m"} {
 		if strings.Contains(plan, scan) {
 			t.Errorf("候选集出现 `%s`（引用列全表扫）：代价 = 任务行数 × tombstone 数，与删了几行无关\n%s", scan, plan)
@@ -100,8 +91,7 @@ func TestPurgeDeletedCapabilitiesUsesIndexes(t *testing.T) {
 		}
 	}
 
-	// ON DELETE RESTRICT 的父行检查：SQLite 每删一行父行都在子表上查一次引用，
-	// 这条语句同样必须 seek（deleting 时才有的第二份代价）。
+	// ON DELETE RESTRICT 的父行检查同样要 seek（真删时才有的第二份代价）。
 	fkPlan := strings.Join(explainQueryPlan(t, db, `SELECT 1 FROM tasks WHERE capability_id = ?`, live.ID), "\n")
 	t.Logf("EXPLAIN QUERY PLAN（tasks.capability_id 外键 RESTRICT 检查）:\n%s", fkPlan)
 	if !strings.Contains(fkPlan, "idx_tasks_capability_id") {
@@ -121,8 +111,7 @@ func TestPurgeDeletedCapabilitiesUsesIndexes(t *testing.T) {
 	}
 }
 
-// 稳态（没有可删的 tombstone）的持锁时长必须与任务行数脱钩：报告里 50k 任务 / 100 个被钉住的
-// tombstone 是 380ms，150k 是 3.3s。走索引后同一规模是毫秒级，阈值 150ms 留了两位数余量。
+// 稳态（没有可删的 tombstone）持锁时长与任务行数脱钩：报告里 50k 是 380ms、150k 是 3.3s。
 func TestPurgeDeletedCapabilitiesSteadyStateCost(t *testing.T) {
 	db, _ := newTestDBFile(t)
 	ctx := context.Background()

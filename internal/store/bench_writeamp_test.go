@@ -2,82 +2,39 @@ package store
 
 // #237 写放大的**可复现度量**（契约 §3 修正②）——留在仓库里，不用每次重造探针。
 //
-// baseline 的 tasks 上有 (namespace_id, created_at, id) 索引：读路径因此能走覆盖索引
-// 反向扫、没有 TEMP B-TREE（见 migrate16_test.go 的 EXPLAIN 断言）。代价在**写**路径——
-// 每插一行都要多维护一棵 b-tree（插入 + 可能的页分裂）。契约要求把这份代价量出来、
-// 并且**可复现**，而不是「应该不大」。
+// 量的是「多维护一条索引」在写路径上的代价：A/B 只差 DROP 一条索引，其余（代码、夹具、
+// 事务形状、行数）逐字相同，ns/op 的差值就是这条索引。WRITEAMP_INDEX 选被测索引
+// （默认 idx_tasks_ns_created；#628 量 idx_tasks_capability_id 用同一个开关）。
 //
-// ── 怎么用 ────────────────────────────────────────────────────────────────────
-//
-// 两条命令，除了 A/B 开关之外逐字相同（都跑 20 轮、5 个样本，取中位数）：
-//
-//	# A：带索引（生产形态）
-//	taskset -c 8-11 go test ./internal/store/ -run '^$' \
-//	  -bench 'CreateTasksWriteAmplification' -benchtime 20x -count=5
-//
-//	# B：不带索引（先 DROP INDEX idx_tasks_ns_created 再插）
-//	WRITEAMP_DROP_INDEX=1 taskset -c 8-11 go test ./internal/store/ -run '^$' \
-//	  -bench 'CreateTasksWriteAmplification' -benchtime 20x -count=5
-//
-// **判据（冻结）：带/不带索引的中位数差 > 10% ⇒ 写放大不可接受**，必须如实写进报告
-// 并给取舍建议（不许调参掩盖、不许删索引了事）。
+// **判据（冻结）：带/不带索引的中位数差 > 10% ⇒ 写放大不可接受**，必须如实写进报告并给
+// 取舍建议（不许调参掩盖、不许删索引了事）。
 //
 // ── 两个口径，别混着用（#264 验收第 1 条）──────────────────────────────────────
 //
-// 同一条索引在两个形状下的代价完全不同，必须分别量、分别报：
+//	A. 批量口径 BenchmarkCreateTasksWriteAmplification：1 个事务插 1000 行，提交开销被
+//	   摊薄，量到的是**行成本**（b-tree 插入/页分裂的 CPU）；也是派发扇出的真实形状。
+//	B. 单行口径 BenchmarkCreateTasksSingleRowTx：1 个事务插 **1** 行，量到的是提交成本 +
+//	   1 行的行成本——正是 webhook（POST /v1/hooks/{token}）的形状，#264 第 1 条要的是它。
 //
-//	A. 批量口径 BenchmarkCreateTasksWriteAmplification：1 个事务插 1000 行。
-//	   提交开销被 1000 行摊薄，量到的是**行成本**（b-tree 插入/页分裂的 CPU）。
-//	B. 单行口径 BenchmarkCreateTasksSingleRowTx：1 个事务插 **1** 行，b.N 轮。
-//	   「提交次数 : 行数」= 1:1，量到的是**提交成本 + 1 行的行成本**——这正是
-//	   webhook（`POST /v1/hooks/{token}` → 建 1 个任务）的真实形状（#264 验收
-//	   第 1 条要的就是它；issue 正文里那个 −45.6% 也是这个口径）。
-//
-// 单行口径怎么跑（A/B 交错至少 3 组、每组 count=3，取中位并看极差）：
+// A/B 两条命令只差开关（批量 -benchtime 20x -count=5；单行 2000x -count=3）：
 //
 //	taskset -c 0-3 go test ./internal/store/ -run '^$' \
-//	  -bench 'CreateTasksSingleRowTx$' -benchtime 2000x -count=3      # A：有索引
-//	WRITEAMP_DROP_INDEX=1 taskset -c 0-3 go test ./internal/store/ -run '^$' \
-//	  -bench 'CreateTasksSingleRowTx$' -benchtime 2000x -count=3      # B：无索引
+//	  -bench 'CreateTasksSingleRowTx$' -benchtime 2000x -count=3
+//	WRITEAMP_DROP_INDEX=1 taskset ...（同上）；WRITEAMP_FILE_DB=1 ...（文件库 + WAL）
 //
-// 内存库 vs 文件库：内存库量的是「索引维护 + 事务提交的 CPU」，**没有任何 fsync**
-// （而且本仓库 DSN 是 WAL + `synchronous(NORMAL)`，文件库上单语句 COMMIT 同样不 fsync，
-// 见 store.go 的 openWithOptions）。要连「WAL 帧追加」也量进去，就加 WRITEAMP_FILE_DB=1：
+// ── 读法（实测，见 #264 报告）────────────────────────────────────────────────
 //
-//	WRITEAMP_FILE_DB=1 taskset -c 0-3 go test ./internal/store/ -run '^$' \
-//	  -bench 'CreateTasksSingleRowTx$' -benchtime 2000x -count=3      # 文件库 + WAL
+// 单行口径噪声很宽：一屏 -count=3 的极差能到中位 ±30%，而 tasks 上有 8 条索引，删掉其中
+// 一条只改变「1/8 的索引插入工作」= 个位数百分比，**落在噪声里**。所以 A/B 必须**交错**
+// 跑（同一时段各一组，抵消机器漂移），只看中位 + 极差；抬 -benchtime 只压同一次调用内的
+// 波动，跨调用漂移照旧（相邻调用中位能差 20% 以上）。
 //
-// 注意文件库那组会撞上 SQLite 的 auto-checkpoint（WAL 过 1000 页自动回写），
-// 极差比内存库大是正常的——那本来就是真部署里会发生的事，别当噪声剔掉。
+// 库类型：`:memory:` 只量索引维护 + 提交的 CPU（无 I/O，方向保守：磁盘上还要多写索引页，
+// 真实写放大 ≥ 这里的差值）；WRITEAMP_FILE_DB=1 加 WAL 帧追加（DSN 是 WAL +
+// synchronous(NORMAL)，单语句 COMMIT 不 fsync，量到的仍是 CPU + 页拷贝而非等磁盘）。
+// 文件库会撞 auto-checkpoint（WAL 过 1000 页），极差更大是正常的，别当噪声剔掉。
 //
-// **单行口径的噪声带很宽，读法有讲究**（实测，见 #264 报告）：一屏 `-count=3` 内部
-// 的极差就能到中位的 ±30%，而 tasks 上有 **5 条索引**（schema.sql: idx_tasks_trace /
-// _parent / _lease / _node / _ns_created），删掉其中 1 条在**单行事务**里只可能改变
-// 「1/6 的索引插入工作」，即个位数百分比——**落在噪声里**。所以：
-//   - A/B 必须**交错**跑（同一时段各跑一组，抵消机器漂移），不要先跑完 A 再跑 B；
-//   - 只看中位 + 极差，单组样本不足以下结论；
-//   - 抬 `-benchtime` 只能压小**同一次调用内**的随机波动（20000x 时同一屏 3 个样本
-//     常能收到 ±10%），**跨调用的漂移**照旧——实测两次相邻调用的中位能差 20% 以上，
-//     所以「交错 + 多组 + 中位」是唯一读法，别指望单跑一组长样本。
-// 另外：`:memory:` 与文件库在本仓库都是「不 fsync」（DSN 是 WAL + synchronous(NORMAL)），
-// 两者之差只是 WAL 帧追加，实测中位差约 15–30%，不是磁盘等待的数量级。
-//
-// ── 为什么这样量 ──────────────────────────────────────────────────────────────
-//
-//   - **1 个事务插 1000 行**是契约 §3 修正② 冻结的协议，也对应派发路径的真实形状
-//     （一条 trace 扇出的一批任务在一个事务里落库）。1000 行足够让索引维护的常数项
-//     淹没事务开启/提交的固定开销。
-//   - 同一事务的 1000 行**共用同一个 created_at**（真派发的 Now() 是批次级的），
-//     于是这台索引上的插入落在同一个键前缀里 —— 这恰恰是最坏也最真实的那种
-//     tie-breaking 形状，比"均匀散开"更能暴露页分裂成本。
-//   - 跑在 `:memory:` 上：要量的是**索引维护本身**（b-tree 插入/页分裂的 CPU 代价），
-//     不想让 WAL 的 fsync 噪声混进来（同机器上 fsync 抖动常常比索引代价大一个量级）。
-//     这个方向是保守的：磁盘上除了索引维护还要多写索引页，真实写放大 ≥ 这里的差值 ——
-//     报告里写清这一点，别把内存上的数字当成磁盘代价的上界。
-//   - 建行对象（`Task` 结构体）放在 b.StopTimer() 段：它是调用方的成本、在两臂里完全
-//     相同，留在计时区只会稀释差值。计时区内**只有** CreateTasks。
-//
-// 这不是 CI 门禁（是 bench）：`-run '^$'` 不跑任何用例，`go test ./internal/store/` 也不含它。
+// 这不是 CI 门禁（是 bench）：-run '^$' 不跑任何用例，go test ./internal/store/ 也不含它。
 
 import (
 	"context"
@@ -91,12 +48,12 @@ const (
 	// writeAmpRows 是一次事务插入的行数（契约要求 ≥1000）。
 	writeAmpRows = 1000
 
-	// writeAmpDropIndexEnv 是 A/B 开关：=1 时先 DROP 掉列表索引，量「没有这条索引」的写成本。
+	// writeAmpDropIndexEnv 是 A/B 开关：=1 时先 DROP 掉被测索引。
 	writeAmpDropIndexEnv = "WRITEAMP_DROP_INDEX"
 
-	// writeAmpIndexName 必须与 schema.sql 里的索引名一致（见 schema_baseline_test.go 的 baselineIndexes）。
-	// 这里单独写一份常量是为了让本文件自解释；两侧是否漂了由下面 DROP 之后的存在性断言兜住。
-	writeAmpIndexName = "idx_tasks_ns_created"
+	// writeAmpIndexEnv 选中被测索引（默认 baseline 的列表索引；#628 用 idx_tasks_capability_id）。
+	writeAmpIndexEnv     = "WRITEAMP_INDEX"
+	writeAmpDefaultIndex = "idx_tasks_ns_created"
 
 	// writeAmpFileDBEnv 是库类型开关：=1 时用**文件库**（store.Open 的 DSN 自带 WAL +
 	// synchronous(NORMAL)）而不是 ":memory:"。给单行口径用：内存库上根本没有 WAL 帧
@@ -104,13 +61,18 @@ const (
 	writeAmpFileDBEnv = "WRITEAMP_FILE_DB"
 )
 
+// writeAmpIndexName 返回本次被测索引名；开跑前先断言它真实存在（名字漂了就立刻失败）。
+func writeAmpIndexName() string {
+	if name := os.Getenv(writeAmpIndexEnv); name != "" {
+		return name
+	}
+	return writeAmpDefaultIndex
+}
+
 // openWriteAmpB 起一套两个口径**完全共用**的被测环境：库（含 A/B 臂）+ 外键父行。
 //
-// 两个基准共用它的理由与 A/B 判据同源：**两臂之间、两个口径之间**唯一的差异都只该是
-// 被声明的那个变量（索引 / 事务形状）。夹具（用户+命名空间+能力，都是外键父行）
-// 一旦各写一份，迟早会漂成两套行数/两套 schema 参数，ns/op 就不可比了。
-//
-// 返回 (库, 命名空间 id, 能力定义)。
+// 夹具（用户+命名空间+能力，都是外键父行）只写一份的理由与 A/B 判据同源：**两臂之间、
+// 两个口径之间**唯一的差异都只该是被声明的那个变量（索引 / 事务形状），否则 ns/op 不可比。
 func openWriteAmpB(b *testing.B) (*DB, string, *CapabilityVersion) {
 	b.Helper()
 	ctx := context.Background()
@@ -124,18 +86,18 @@ func openWriteAmpB(b *testing.B) (*DB, string, *CapabilityVersion) {
 	//   ① A 臂索引没建出来（索引没建 / 名字改了）→ 两臂其实是同一组实验；
 	//   ② B 臂 DROP 没生效（名字写错）→ 同上。
 	if !writeAmpIndexExists(b, db) {
-		b.Fatalf("baseline 的索引 %s 不存在（A 臂没有可量的对象；索引改名了？）", writeAmpIndexName)
+		b.Fatalf("baseline 的索引 %s 不存在（A 臂没有可量的对象；索引改名了？）", writeAmpIndexName())
 	}
 	if dropIndex {
-		if _, err := db.Exec(`DROP INDEX ` + writeAmpIndexName); err != nil {
-			b.Fatalf("DROP INDEX %s: %v", writeAmpIndexName, err)
+		if _, err := db.Exec(`DROP INDEX ` + writeAmpIndexName()); err != nil {
+			b.Fatalf("DROP INDEX %s: %v", writeAmpIndexName(), err)
 		}
 		if writeAmpIndexExists(b, db) {
-			b.Fatalf("DROP INDEX 之后 %s 仍然存在（B 臂其实还带着索引）", writeAmpIndexName)
+			b.Fatalf("DROP INDEX 之后 %s 仍然存在（B 臂其实还带着索引）", writeAmpIndexName())
 		}
-		b.Logf("臂 B：已 DROP INDEX %s（不带列表索引的写路径）", writeAmpIndexName)
+		b.Logf("臂 B：已 DROP INDEX %s（不带这条索引的写路径）", writeAmpIndexName())
 	} else {
-		b.Logf("臂 A：保留 INDEX %s（生产形态）", writeAmpIndexName)
+		b.Logf("臂 A：保留 INDEX %s（生产形态）", writeAmpIndexName())
 	}
 
 	// ---------- 夹具：外键父行（tasks.namespace_id / capability_id 都是外键） ----------
@@ -207,7 +169,8 @@ func BenchmarkCreateTasksWriteAmplification(b *testing.B) {
 				TraceID:      fmt.Sprintf("tr_wa_%d_%d", i, j),
 				CapabilityID: capDef.ID,
 				Capability:   capDef.Name,
-				Version:      1,
+				Version:      capDef.Version,
+				Digest:       capDef.Digest,
 				// 同一事务共用 created_at（真派发是批次级的），不同事务不同。
 				CreatedAt: base + int64(i),
 			}
@@ -225,14 +188,14 @@ func BenchmarkCreateTasksWriteAmplification(b *testing.B) {
 	b.Logf("累计插入 %d 行 = %d 个事务 × %d 行/事务", b.N*writeAmpRows, b.N, writeAmpRows)
 }
 
-// writeAmpIndexExists 报告 db 的 sqlite_master 里有没有名为 writeAmpIndexName 的索引。
+// writeAmpIndexExists 报告 db 的 sqlite_master 里有没有本次被测的索引。
 func writeAmpIndexExists(b *testing.B, db *DB) bool {
 	b.Helper()
 	var n int
 	if err := db.QueryRow(
-		`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, writeAmpIndexName).
+		`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, writeAmpIndexName()).
 		Scan(&n); err != nil {
-		b.Fatalf("查索引 %s 是否存在: %v", writeAmpIndexName, err)
+		b.Fatalf("查索引 %s 是否存在: %v", writeAmpIndexName(), err)
 	}
 	return n > 0
 }
@@ -267,7 +230,8 @@ func BenchmarkCreateTasksSingleRowTx(b *testing.B) {
 			TraceID:      fmt.Sprintf("tr_sr_%d", i),
 			CapabilityID: capDef.ID,
 			Capability:   capDef.Name,
-			Version:      1,
+			Version:      capDef.Version,
+			Digest:       capDef.Digest,
 			// 每轮一个事件一个 created_at（webhook 的真实形状：一行一个事务）。
 			CreatedAt: base + int64(i),
 		}}

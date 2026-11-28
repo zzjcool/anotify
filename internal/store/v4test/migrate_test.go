@@ -10,10 +10,7 @@ import (
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// 迁移机制的外部验收（v4：baseline + 按编号追加的增量块 + 旧库拒绝）。
-//
-// 白盒部分（parseMigrations 的编号校验、注入坏迁移后的回滚）需要包内访问，在 G1-6 内部测试迁移时补；
-// 这里用**公开面**验收用户真正会遇到的三件事：新建库版本正确、重开幂等、旧库被明确拒绝且数据不被删。
+// 迁移机制的外部验收（v4：baseline + 按编号追加的增量块 + 旧库拒绝）；白盒部分在包内测试补。
 
 // TestMigrationSchemaVersion 新建库应用 baseline + 全部增量块，每块记一行账。
 func TestMigrationSchemaVersion(t *testing.T) {
@@ -204,5 +201,59 @@ func TestSchemaSQLStaticDiscipline(t *testing.T) {
 	}
 	if !strings.Contains(string(src), "-- +migration 1 baseline") {
 		t.Error("schema.sql 缺 `-- +migration 1 baseline` 分块头")
+	}
+}
+
+// TestMigration13IndexesReachLibraryRecordedAt12 #628 验收：记着 1..12 的存量库重开后
+// 拿到块 13 的三条索引（索引若被挪进 baseline，新库用例看不出来，只有这条能发现）。
+func TestMigration13IndexesReachLibraryRecordedAt12(t *testing.T) {
+	indexes := []string{
+		"idx_tasks_capability_id",
+		"idx_task_attempts_capability",
+		"idx_task_artifact_manifests_capability",
+	}
+	hasIndex := func(db *store.DB, name string) bool {
+		var n int
+		if err := db.QueryRow(
+			`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, name).Scan(&n); err != nil {
+			t.Fatalf("查索引 %s: %v", name, err)
+		}
+		return n > 0
+	}
+
+	db, path := openTestDBWithPath(t)
+	for _, idx := range indexes {
+		if !hasIndex(db, idx) {
+			t.Fatalf("新库缺 %s（块 13 没建出来）", idx)
+		}
+	}
+	// 退回「只应用了 1..12」的存量库：块 13 的产物就是这三条索引。
+	for _, idx := range indexes {
+		if _, err := db.Exec(`DROP INDEX ` + idx); err != nil {
+			t.Fatalf("drop %s: %v", idx, err)
+		}
+	}
+	if _, err := db.Exec(`DELETE FROM schema_version WHERE version = 13`); err != nil {
+		t.Fatalf("delete ledger 13: %v", err)
+	}
+	if v, err := db.SchemaVersion(); err != nil || v != 12 {
+		t.Fatalf("退回后的版本 = %d, %v; want 12", v, err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	db2, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("reopen 1..12 库: %v", err)
+	}
+	defer func() { _ = db2.Close() }()
+	if v, err := db2.SchemaVersion(); err != nil || v != 13 {
+		t.Fatalf("存量库重开后的版本 = %d, %v; want 13", v, err)
+	}
+	for _, idx := range indexes {
+		if !hasIndex(db2, idx) {
+			t.Errorf("存量库重开后缺 %s（索引只在 baseline 里，没进增量块？）", idx)
+		}
 	}
 }
