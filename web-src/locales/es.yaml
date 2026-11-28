@@ -114,11 +114,13 @@ common:
     login_copyright: © 2026 Anotify · Licencia MIT · Solo Passkey
   time:
     just_now: ahora mismo
-    minutes_ago: hace {n} min
-    hours_ago: hace {n} h
-    days_ago: hace {n} d
     never: Nunca usado
-    weeks_ago: hace {n} sem
+    tz_hint: '(hora local {tz})'
+    unparsable: Hora no válida
+    field:
+      created: Creado
+      started: Iniciado
+      finished: Finalizado
   ttl:
     day: '{n} d'
     hour: '{n} h'
@@ -350,6 +352,7 @@ message:
     current: Actual
   v4:
     diagnostics: "Diagnóstico de ejecución"
+    elapsed_ms: "Duró {ms} ms"
     attempt: "Intento / máximo"
     cancel: "Cancelar tarea"
     abandon: "Abandonar tarea"

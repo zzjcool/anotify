@@ -1085,7 +1085,7 @@
       }
     }
 
-    const { el, api, mountLayout, mountPullRefresh, copyText, timeAgo, t } =
+    const { el, api, mountLayout, mountPullRefresh, copyText, fmt, t } =
       window.Anotify;
     // 解析期声明本页会画图：挂上 defer 图库的就绪门闩（实现只有 partials.js 一份）
     window.Anotify.expectGraphics();
@@ -1461,7 +1461,7 @@
       );
       row.append(el("div", { class: "ev-feed-main" }, head,
         el("span", { class: "mono ev-feed-trace", text: event.traceUID || event.name })),
-        el("span", { class: "card-sub ev-feed-time", text: timeAgo(Date.parse(event.creationTimestamp) / 1000) }));
+        el("span", { class: "card-sub ev-feed-time" }, fmt.time(event.creationTimestamp)));
       return row;
     }
 

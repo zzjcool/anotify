@@ -464,8 +464,9 @@ export async function playbook(d,mode){
     assert.deepEqual(listOrder, ['green', 'uninstalled'], '#565 生效中在上、已卸载分组在下：' + JSON.stringify(listOrder));
     const blueUninstalledAt = (await req(basePath + '/installs?include=uninstalled')).installs.find(group => group.release === 'blue').uninstalledAt;
     const blueText = await blueRow.innerText();
-    assert.ok(blueText.includes(await page.evaluate(iso => new Date(iso).toLocaleString(), blueUninstalledAt)),
-      '#565 已卸载行写的是这次卸载的时间：' + blueText + ' / ' + blueUninstalledAt);
+    const uninstalledWhen = await blueRow.locator('time[datetime]').first().getAttribute('datetime');
+    assert.equal(Date.parse(uninstalledWhen), Date.parse(blueUninstalledAt),
+      '#565/#604 已卸载行写的是这次卸载的时间：' + blueText + ' / datetime=' + uninstalledWhen + ' / ' + blueUninstalledAt);
     assert.match(blueText, /0 capabilities \/ 0 sources/, '#565 已卸载行的对象数来自服务端折叠视图（软删行不再算「装出了什么」）：' + blueText);
     assert.match(await blueRow.locator('[data-digest]').getAttribute('title'), /^sha256:[0-9a-f]{64}$/, '#565 已卸载行保留参数摘要');
     assert.equal(await blueRow.locator('[data-release-yaml]').count(), 1, '#553 每行都有「查看 YAML」入口（含已卸载行）');

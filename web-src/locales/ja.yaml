@@ -114,11 +114,13 @@ common:
     login_copyright: © 2026 Anotify · MIT License · Passkey のみ
   time:
     just_now: たった今
-    minutes_ago: '{n} 分前'
-    hours_ago: '{n} 時間前'
-    days_ago: '{n} 日前'
     never: 未使用
-    weeks_ago: '{n} 週間前'
+    tz_hint: '（現地時刻 {tz}）'
+    unparsable: 解釈できない時刻
+    field:
+      created: 作成
+      started: 開始
+      finished: 終了
   ttl:
     day: '{n} 日'
     hour: '{n} 時間'
@@ -350,6 +352,7 @@ message:
     current: 現在
   v4:
     diagnostics: "実行診断"
+    elapsed_ms: "所要 {ms} ms"
     attempt: "試行 / 上限"
     cancel: "タスクを取消"
     abandon: "タスクを放棄"

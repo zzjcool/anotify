@@ -1299,23 +1299,11 @@
     el._timer = setTimeout(() => el.classList.remove("show"), ttl);
   }
 
-  function fmtTime(ts) {
-    if (!ts) return "—";
-    const d = new Date(typeof ts === "number" ? ts * 1000 : ts);
-    if (isNaN(d.getTime())) return String(ts);
-    const diff = Date.now() - d.getTime();
-    if (diff < 60e3) return t("common.time.just_now", "刚刚");
-    if (diff < 3600e3)
-      return t("common.time.minutes_ago", "{n} 分钟前").replace(
-        "{n}",
-        Math.floor(diff / 60e3),
-      );
-    if (diff < 86400e3)
-      return t("common.time.hours_ago", "{n} 小时前").replace(
-        "{n}",
-        Math.floor(diff / 3600e3),
-      );
-    return d.toISOString().slice(0, 10);
+  const fmt = window.Anotify.fmt; // 展示层唯一时间实现；模型里存原始时间
+
+  function stampSentence(key, fallback, value, placeholder) { // 占位符换成 <time>，译文语序不动
+    const parts = t(key, fallback).split(placeholder);
+    return el("span", {}, parts[0], fmt.time(value), parts[1] || "");
   }
 
   /* SEC-3：设备图标统一用 SVG（与全站图标同一笔画语言）。emoji 在不同平台
@@ -1421,10 +1409,8 @@
         type: p.type || t("security.credential", "凭证"),
         icon: platformKind(p.devices || p.name),
         devices: p.devices || "",
-        created: p.createdAt
-          ? new Date(p.createdAt * 1000).toISOString().slice(0, 10)
-          : "",
-        lastUsed: fmtTime(p.lastUsedAt),
+        createdAt: p.createdAt || null,
+        lastUsedAt: p.lastUsedAt || null,
         current: !!p.current,
       }));
       loadFailed.passkeys = false;
@@ -1458,7 +1444,7 @@
           current: !!s.current,
           // SEC-2：这里一律是真实时间。当前会话的身份由行首 chip 表达，
           // 副标题再写一遍「当前会话」就是同一句话说两次。
-          lastActive: fmtTime(s.lastSeen || s.lastActive),
+          lastActiveAt: s.lastSeen || s.lastActive || null,
         };
       });
       loadFailed.sessions = false;
@@ -1546,27 +1532,17 @@
             p.devices
               ? el("div", { class: "sec-row-sub", text: p.devices })
               : null,
-            p.created
-              ? el("div", {
-                  class: "sec-row-time",
-                  text: t("security.created_at", "创建于 {date}").replace(
-                    "{date}",
-                    p.created,
-                  ),
-                })
+            p.createdAt
+              ? el("div", { class: "sec-row-time" },
+                  stampSentence("security.created_at", "创建于 {date}", p.createdAt, "{date}"))
               : null,
           ),
           // 行右簇 = .list-meta（时间 + 操作），与「登录会话」同一套语言
           el(
             "div",
             { class: "list-meta" },
-            el("span", {
-              class: "sec-row-time",
-              text: t("security.last_used", "最近使用 {time}").replace(
-                "{time}",
-                p.lastUsed,
-              ),
-            }),
+            el("span", { class: "sec-row-time" },
+              stampSentence("security.last_used", "最近使用 {time}", p.lastUsedAt, "{time}")),
             el(
               "button",
               {
@@ -1840,10 +1816,7 @@
         }
         if (parts.length || s.passkey) meta.append(" · ");
         meta.append(
-          t("security.last_active", "最后活跃 {time}").replace(
-            "{time}",
-            s.lastActive,
-          ),
+          stampSentence("security.last_active", "最后活跃 {time}", s.lastActiveAt, "{time}"),
         );
 
         return el(
@@ -2127,12 +2100,9 @@
   let pwdMode = "set"; // set | change | remove
   let pwdBusy = false;
 
-  // updatedAt 是 unix 秒（0 = 从未设置）→ YYYY-MM-DD（与列表里的日期同格式）
-  function passwordUpdatedDate(ts) {
+  function passwordUpdatedDate(ts) { // unix 秒 → 本地日期（不切 ISO 串：那是 UTC 的日期）
     if (!ts) return "";
-    const d = new Date(Number(ts) * 1000);
-    if (isNaN(d.getTime())) return "";
-    return d.toISOString().slice(0, 10);
+    return fmt.text(ts, "date", "");
   }
 
   function renderPasswordStatus() {
@@ -2165,13 +2135,16 @@
     const when = passwordUpdatedDate(PWD.updatedAt);
     const meta = document.createElement("span");
     meta.className = "sec-row-sub";
-    meta.textContent =
-      PWD.hasPassword && when
-        ? t("security.password.updated_at", "上次更新：{date}").replace(
-            "{date}",
-            when,
-          )
-        : t("security.password.never", "从未设置");
+    if (PWD.hasPassword && when)
+      meta.append(
+        stampSentence(
+          "security.password.updated_at",
+          "上次更新：{date}",
+          PWD.updatedAt,
+          "{date}",
+        ),
+      );
+    else meta.textContent = t("security.password.never", "从未设置");
     statusEl.appendChild(meta);
 
     editBtn.disabled = false;

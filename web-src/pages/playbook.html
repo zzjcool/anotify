@@ -591,8 +591,8 @@
         digest,
         el("span", "field-hint", t("pb.v4.release_objects", { c: String(row.caps.size), s: String(row.sources.size) })),
         row.uninstalled
-          ? el("span", "field-hint", t("pb.v4.release_uninstalled_at", { at: fmtTime(row.uninstalledAt) }))
-          : el("span", "field-hint", t("pb.v4.release_last_install", { at: fmtTime(row.lastAt) })));
+          ? stampHint("span", "field-hint", "pb.v4.release_uninstalled_at", row.uninstalledAt)
+          : stampHint("span", "field-hint", "pb.v4.release_last_install", row.lastAt));
       if (row.groups > 1) head.append(el("span", "field-hint", t("pb.v4.group_count", { n: String(row.groups) })));
       const yaml = el("a", "btn btn-ghost btn-sm", t("pb.v4.view_yaml"));
       yaml.dataset.releaseYaml = "";
@@ -630,11 +630,14 @@
       }
       return box;
     }
-    function fmtTime(iso) {
-      if (!iso) return "—";
-      const at = new Date(iso);
-      if (Number.isNaN(at.getTime())) return String(iso);
-      try { return at.toLocaleString(); } catch (e) { return String(iso); }
+    function stampHint(tag, cls, key, value) { // {at} 换成 <time>：译文语序不动；t() 只收 key（无 fallback 参）
+      const parts = t(key).split("{at}");
+      const box = el(tag, cls);
+      box.append(parts[0]);
+      if (parts.length === 1) box.append(" "); // 句子本身没有占位符（如 installed_at）
+      box.append(Anotify.fmt.time(value, { mode: "absolute" }));
+      if (parts[1]) box.append(parts[1]);
+      return box;
     }
     function releaseRows(groups) {
       const byRelease = new Map();

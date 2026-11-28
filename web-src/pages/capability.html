@@ -929,16 +929,7 @@
         if (!Number.isInteger(n) || n < min) return dflt;
         return n;
       }
-      function fmtTime(iso) {
-        if (!iso) return "—";
-        const d = new Date(iso);
-        if (Number.isNaN(d.getTime())) return String(iso);
-        try {
-          return d.toLocaleString();
-        } catch (e) {
-          return String(iso);
-        }
-      }
+      const fmtTime = (value) => A.fmt.time(value, { mode: "absolute" }); // 详情页：本地绝对时间
       function shortDigest(d) {
         const s = String(d || "");
         if (!s) return "—";
@@ -1445,7 +1436,7 @@
           row.append(txt("span", "cap-ver-no", "v" + (v.version == null ? "—" : v.version)));
           if (isCurrent) row.append(txt("span", "badge badge-accent", t("caps.versions.current", "当前")));
           row.append(txt("span", "cap-mono", shortDigest(v.digest)));
-          row.append(txt("span", "cap-mono", fmtTime(v.createdAt)));
+          row.append(el("span", { class: "cap-mono" }, fmtTime(v.createdAt)));
           const btn = el("button", {
             type: "button",
             class: "btn btn-ghost btn-sm",
@@ -2812,7 +2803,7 @@
                这里只是把它说成人话，不编 id。 */
             txt("span", "cap-kv-val", it.actor ? String(it.actor) : t("caps.audit.actor_none", "非会话主体（CLI / 系统）")),
             txt("span", "cap-sep", "·"),
-            txt("span", "cap-mono", fmtTime(it.at)),
+            el("span", { class: "cap-mono" }, fmtTime(it.at)),
             txt("span", "cap-sep", "·"),
             txt("span", "badge badge-neutral", auditActionLabel(it.action)),
           );

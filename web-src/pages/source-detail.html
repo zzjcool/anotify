@@ -184,16 +184,8 @@ function txt(tag, cls, text) {
   n.textContent = text == null ? "" : String(text);
   return n;
 }
-function fmtTime(iso) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return String(iso);
-  try {
-    return d.toLocaleString();
-  } catch (e) {
-    return String(iso);
-  }
-}
+const fmtNode = (value) => A.fmt.time(value, { mode: "absolute" }); // 能收节点的容器（带 datetime/title）
+const fmtText = (value) => A.fmt.text(value, "absolute");
 function statusLine(err) {
   if (!err) return "";
   if (err.reason) return err.reason + (err.message ? " · " + err.message : "");
@@ -385,7 +377,7 @@ function secretHistoryTable(rows) {
     const actor = el("td");
     if (it.actor) actor.append(rawText(String(it.actor)));
     else actor.textContent = t("source_detail.audit_actor_none", "非会话主体");
-    tr.append(txt("td", null, secretActionLabel(it.action)), txt("td", null, fmtTime(it.at)), actor);
+    tr.append(txt("td", null, secretActionLabel(it.action)), el("td", null, fmtNode(it.at)), actor);
     tbody.append(tr);
   }
   table.append(thead, tbody);
@@ -481,8 +473,8 @@ function pollSection(m, secretName) { // 拉取区块：只对 kind: poll 出现
     cursorValue.append(rawText(t("source_detail.poll_cursor_none", "还没有游标")));
   }
   stKv.append(
-    pair(t("source_detail.last_poll", "最近轮询"), m.lastPollAt ? fmtTime(m.lastPollAt) : never, { plain: !m.lastPollAt, muted: !m.lastPollAt }),
-    pair(t("sources.v4.next_fire", "下次触发时间"), fmtTime(m.nextFireAt), { muted: !m.nextFireAt }),
+    pair(t("source_detail.last_poll", "最近轮询"), m.lastPollAt ? fmtNode(m.lastPollAt) : never, { plain: !m.lastPollAt, muted: !m.lastPollAt }),
+    pair(t("sources.v4.next_fire", "下次触发时间"), fmtNode(m.nextFireAt), { muted: !m.nextFireAt }),
     pair(t("source_detail.consecutive_failures", "连续失败"), String(m.consecutiveFailures), { muted: !(m.consecutiveFailures > 0) }),
     pair(t("source_detail.poll_skipped", "跳过重叠"), String(m.skippedOverlaps), { muted: !(m.skippedOverlaps > 0) }),
     pair(t("source_detail.poll_cursor", "游标"), cursorValue, { muted: !cursorRaw }),
@@ -591,7 +583,7 @@ function auditSection(name) {
       row.append(
         txt("span", "badge badge-neutral", auditActionLabel(it.action)),
         txt("span", "sd-audit-sep", "·"),
-        txt("span", "mono", fmtTime(it.at)),
+        el("span", { class: "mono" }, fmtNode(it.at)),
         txt("span", "sd-audit-sep", "·"),
         actor,
       );
@@ -756,7 +748,7 @@ async function loadRecent(name) {
       const nameEl = el("span", { class: "mono" });
       nameEl.append(rawText(m.name == null ? "—" : m.name));
       line.append(nameEl);
-      line.append(rawText([m.eventType || m.reason, fmtTime(m.creationTimestamp)].filter(Boolean).join(" · ")));
+      line.append(rawText([m.eventType || m.reason, fmtText(m.creationTimestamp)].filter(Boolean).join(" · ")));
       /* 有 traceUID 才给「看执行细节」的入口：没有就是纯事件行，不造死链。 */
       if (m.traceUID) {
         const a = el("a", { class: "btn btn-ghost btn-sm", href: traceHref(CUR_RES, m.traceUID) });
@@ -839,8 +831,8 @@ function render(res) {
   kv.append(
     pair(t("sources.v4.namespace", "命名空间"), m.namespace, { muted: !m.namespace }),
     pair(t("source_detail.resolved", "目标解析"), resolved, { plain: true, muted: !m.targetsResolved }),
-    pair(t("sources.v4.last_fire", "最近触发时间"), fmtTime(m.lastFiredAt), { muted: !m.lastFiredAt }),
-    pair(t("source_detail.created", "创建时间"), fmtTime(res && res.metadata ? res.metadata.creationTimestamp : null), {
+    pair(t("sources.v4.last_fire", "最近触发时间"), fmtNode(m.lastFiredAt), { muted: !m.lastFiredAt }),
+    pair(t("source_detail.created", "创建时间"), fmtNode(res && res.metadata ? res.metadata.creationTimestamp : null), {
       muted: !(res && res.metadata && res.metadata.creationTimestamp),
     }),
     /* v4 没有「更新时间」这个落库事实（ObjectMeta 只有 creationTimestamp）：
