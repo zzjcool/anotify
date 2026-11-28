@@ -61,16 +61,16 @@ type Config struct {
 	LogLevel   string // 日志级别：debug/info/warn/error，默认 info
 	LogFormat  string // 日志格式：json/text，默认 json
 
-	// Pprof 打开 /debug/pprof/*（性能评估用，默认关闭）。
+	// Pprof 打开 pprof 的**独立监听**（性能评估用，默认关闭）：端点不在业务 mux 上，暴露面只由 PprofAddr 决定。
 	//
 	// 为什么要有开关而不是始终开：pprof 端点会泄露 goroutine 栈与堆分布，
 	// 生产环境不该默认暴露。评估/排障时用 ANOTIFY_PPROF=1 打开，
 	// 采样完就关（pprof 的 CPU 采样本身有 ~5% 开销）。
 	Pprof bool
 
-	PprofAddr string
+	PprofAddr string // ANOTIFY_PPROF_ADDR：独立监听地址；Pprof=false 时不使用
 
-	pprofInvalid string
+	pprofInvalid string // 非空 = ANOTIFY_PPROF 写了解析不了的值；Validate 拒绝启动并回显原值
 
 	// BootID 是**本次进程启动**的标识，由 /health 回显。
 	//

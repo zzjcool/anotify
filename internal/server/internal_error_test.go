@@ -168,3 +168,58 @@ func TestWriteInternalSanitizes(t *testing.T) {
 		t.Fatalf("日志里没有 request_id（对不上用户报障）：%s", logs.String())
 	}
 }
+
+func TestWriteAdminErrSanitizesCause(t *testing.T) {
+	logs := captureInternalErrorLogs(t)
+
+	const secret = "sql: database is closed"
+	rec := httptest.NewRecorder()
+	rec.Header().Set(requestIDHeader, "rid-admin-500")
+	writeAdminErr(rec, adminInternalErr(errors.New(secret)))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if body := rec.Body.String(); strings.Contains(body, secret) {
+		t.Fatalf("adminErr 的 500 响应体泄露了内部错误原文：%s", body)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, internalErrMsg) {
+		t.Fatalf("adminErr 的 500 响应体 = %s, want 含 %q", body, internalErrMsg)
+	}
+	if !strings.Contains(logs.String(), secret) {
+		t.Fatalf("原始错误必须进日志（原文没地方查了）：%s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "rid-admin-500") {
+		t.Fatalf("日志缺 request_id（对不上用户报障）：%s", logs.String())
+	}
+}
+
+func TestWriteAdminErrNeverEchosMessageOn500(t *testing.T) {
+	captureInternalErrorLogs(t)
+
+	const secret = "sql: database is closed"
+	rec := httptest.NewRecorder()
+	writeAdminErr(rec, &adminErr{code: http.StatusInternalServerError, msg: secret})
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if body := rec.Body.String(); strings.Contains(body, secret) {
+		t.Fatalf("500 即使漏了 cause 也不许把 msg 回给客户端：%s", body)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, internalErrMsg) {
+		t.Fatalf("500 响应体 = %s, want 含 %q", body, internalErrMsg)
+	}
+}
+
+func TestWriteAdminErrKeepsUserFacing4xx(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeAdminErr(rec, &adminErr{code: http.StatusConflict, msg: "不能修改自己的角色"})
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "不能修改自己的角色") {
+		t.Fatalf("4xx 的用户面文案必须原样返回：%s", body)
+	}
+}

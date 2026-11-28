@@ -133,8 +133,15 @@ func (h *authHandler) loginOptions(w http.ResponseWriter, r *http.Request) {
 	} else {
 		opts, err = h.svc.BeginDiscoverableLogin(req.Token)
 	}
-	if err != nil {
-		writeErr(w, 400, err.Error())
+	if err != nil { // 400 只回固定文案；库层内部原文只进日志（writeInternal → 500）
+		switch {
+		case errors.Is(err, auth.ErrAccountDisabled):
+			writeErr(w, 400, "账户已被禁用，请联系管理员")
+		case errors.Is(err, auth.ErrLoginUserNotFound):
+			writeErr(w, 400, "用户不存在")
+		default:
+			writeInternal(w, err)
+		}
 		return
 	}
 	writeJSON(w, 200, opts)
@@ -577,8 +584,11 @@ func (h *authHandler) passwordLogin(w http.ResponseWriter, r *http.Request) {
 			"error", err.Error(),
 		)
 		msg := "用户名或密码错误"
-		if errors.Is(err, auth.ErrPasswordNotSet) {
+		switch {
+		case errors.Is(err, auth.ErrPasswordNotSet):
 			msg = "该账户未设置密码，请使用 Passkey 登录"
+		case errors.Is(err, auth.ErrAccountDisabled):
+			msg = "账户已被禁用，请联系管理员"
 		}
 		writeErr(w, http.StatusUnauthorized, msg)
 		return
@@ -761,8 +771,12 @@ func (h *authHandler) recoveryLogin(w http.ResponseWriter, r *http.Request) {
 			"request_id", logging.RequestID(r.Context()),
 			"error", err.Error(),
 		)
-		// 账户禁用用 401；其余统一 401（不区分用户/码错误）。
-		writeErr(w, 401, "用户名或恢复码错误")
+		// 账户禁用用固定文案（不泄露内部串）；其余统一 401（不区分用户/码错误）。
+		msg := "用户名或恢复码错误"
+		if errors.Is(err, auth.ErrAccountDisabled) {
+			msg = "账户已被禁用，请联系管理员"
+		}
+		writeErr(w, 401, msg)
 		return
 	}
 	h.svc.Sessions().SetCookie(w, sessID)

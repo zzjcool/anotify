@@ -228,10 +228,18 @@ type adminErr struct {
 
 func (e adminErr) Error() string { return e.msg }
 
+func adminInternalErr(err error) *adminErr {
+	return &adminErr{code: http.StatusInternalServerError, msg: internalErrMsg, cause: err}
+}
+
 func writeAdminErr(w http.ResponseWriter, err *adminErr) {
 	if err.cause != nil {
 		logInternal(w, err.cause)
 		writeErr(w, http.StatusInternalServerError, internalErrMsg)
+		return
+	}
+	if err.code == http.StatusInternalServerError {
+		writeErr(w, err.code, internalErrMsg)
 		return
 	}
 	writeErr(w, err.code, err.msg)
@@ -259,7 +267,7 @@ func (h *adminHandler) applyRoleChange(r *http.Request, id, role string, actorID
 		if target.Role == store.RoleAdmin {
 			cnt, err := h.db.AdminCount(r.Context())
 			if err != nil {
-				return &adminErr{code: 500, msg: err.Error(), cause: err}
+				return adminInternalErr(err)
 			}
 			if cnt <= 1 {
 				return &adminErr{code: 409, msg: "至少保留一个超级管理员，无法降权最后一个 admin"}
@@ -268,7 +276,7 @@ func (h *adminHandler) applyRoleChange(r *http.Request, id, role string, actorID
 	}
 	n, err := h.db.UpdateUserRole(r.Context(), id, role)
 	if err != nil {
-		return &adminErr{code: 500, msg: err.Error(), cause: err}
+		return adminInternalErr(err)
 	}
 	if n == 0 {
 		return &adminErr{code: 404, msg: "用户不存在"}
@@ -307,7 +315,7 @@ func (h *adminHandler) applyDisabledChange(r *http.Request, id string, disabled 
 		if target.Role == store.RoleAdmin {
 			cnt, err := h.db.AdminCount(r.Context())
 			if err != nil {
-				return &adminErr{code: 500, msg: err.Error(), cause: err}
+				return adminInternalErr(err)
 			}
 			if cnt <= 1 {
 				return &adminErr{code: 409, msg: "至少保留一个启用的超级管理员，无法禁用最后一个 admin"}
@@ -316,7 +324,7 @@ func (h *adminHandler) applyDisabledChange(r *http.Request, id string, disabled 
 	}
 	n, err := h.db.UpdateUserDisabled(r.Context(), id, disabled)
 	if err != nil {
-		return &adminErr{code: 500, msg: err.Error(), cause: err}
+		return adminInternalErr(err)
 	}
 	if n == 0 {
 		return &adminErr{code: 404, msg: "用户不存在"}

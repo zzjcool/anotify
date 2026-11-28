@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -70,7 +71,7 @@ func TestBeginLogin_Disabled(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	_, err := svc.BeginLogin("ghost")
-	if err == nil {
-		t.Errorf("禁用用户应无法 BeginLogin")
+	if !errors.Is(err, ErrAccountDisabled) {
+		t.Errorf("禁用用户应无法 BeginLogin 且返回 ErrAccountDisabled，得到 %v", err)
 	}
 }

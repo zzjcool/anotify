@@ -661,3 +661,34 @@ func TestPasswordRegister_RouteUseExplicitPath(t *testing.T) {
 		t.Errorf("注册端点掉进了兜底 handler: %s", rr.Body.String())
 	}
 }
+
+func TestPassword_LoginDisabledAccount(t *testing.T) {
+	env := newPasswordTestEnv(t)
+	if _, err := env.svc.SetPassword(env.userID, "", testPassword); err != nil {
+		t.Fatalf("set password: %v", err)
+	}
+	if _, err := env.db.UpdateUserDisabled(context.Background(), env.userID, true); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+
+	rr := pwReq(t, env, "POST", passwordLoginPath, map[string]any{"username": "pwuser", "password": testPassword}, false)
+	if rr.Code != 401 {
+		t.Fatalf("禁用账号登录应 401, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	msg, _ := decodeBody(t, rr)["error"].(string)
+	if msg != "账户已被禁用，请联系管理员" {
+		t.Fatalf("禁用账号的文案 = %q，期望固定的「账户已被禁用，请联系管理员」（不能用「用户名或密码错误」抹掉）", msg)
+	}
+	if strings.Contains(msg, "auth:") {
+		t.Fatalf("响应体不得带内部错误前缀：%q", msg)
+	}
+
+	rr = pwReq(t, env, "POST", "/v1/auth/login/options", map[string]any{"username": "pwuser"}, false)
+	if rr.Code != 400 {
+		t.Fatalf("Passkey login/options 对禁用账号应 400（契约）, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	msg, _ = decodeBody(t, rr)["error"].(string)
+	if msg != "账户已被禁用，请联系管理员" {
+		t.Fatalf("Passkey login/options 的文案 = %q，期望与密码登录同一句", msg)
+	}
+}

@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/zzjcool/anotify/internal/api"
 	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/logging"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -20,16 +22,14 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
-const internalErrMsg = "服务内部错误，请带上 requestId 联系管理员"
+const internalErrMsg = api.InternalErrorMessage // 一条定义：internal/api 与 server 的 500 错误体不能漂
 
-const requestIDHeader = "X-Request-Id"
+const requestIDHeader = logging.RequestIDHeader // 一条定义：accessLog 写、logInternal 读（#624）
 
-// logInternal 记一条 500 的原始错误。request_id 从**响应头**回读而不是 r.Context()：
-// writeAPIError 的签名里没有 *http.Request，而 accessLog 进 handler 前已把它写进响应头。
 func logInternal(w http.ResponseWriter, err error) {
 	slog.Error("internal error",
 		"event", "server.internal_error",
-		"request_id", w.Header().Get(requestIDHeader),
+		"request_id", w.Header().Get(requestIDHeader), // 从响应头回读：writeAPIError 的调用点没有 *http.Request，accessLog 进 handler 前已写入
 		"error", err.Error())
 }
 
@@ -43,6 +43,8 @@ func readJSON(r *http.Request, v any) error {
 	return json.NewDecoder(r.Body).Decode(v)
 }
 
+// ---------- Keys ----------
+
 type keysHandler struct {
 	keys *auth.KeyManager
 	db   *store.DB
@@ -55,6 +57,7 @@ type keyCreateReq struct {
 
 func (h *keysHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/keys"), "/")
+	// /v1/keys/{id}/revoke
 	if rest != "" && strings.HasSuffix(rest, "/revoke") {
 		id := strings.TrimSuffix(rest, "/revoke")
 		id = strings.Trim(id, "/")

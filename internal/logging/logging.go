@@ -24,6 +24,8 @@ const (
 	keyUserID
 )
 
+const RequestIDHeader = "X-Request-Id" // accessLog 写入、客户端回报障、日志回读都用这一个头（#624）
+
 // Init 初始化全局 slog Logger。level/format 非法时回退默认值并打 WARN。
 // 输出固定写 stderr（自托管惯例，systemd/Docker 接管）。
 func Init(level, format string) {

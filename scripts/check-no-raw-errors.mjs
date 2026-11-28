@@ -22,12 +22,59 @@ export const RULES = [
 		re: /writeErr\s*\(\s*w\s*,\s*(?:401|http\.StatusUnauthorized)\s*,\s*err\s*\.\s*Error\s*\(\s*\)\s*\)/,
 		hint: "401 不许回 err.Error()：原文进日志，响应回固定文案（口径见 #618）",
 	},
-	{
-		id: "RAW_ADMIN_ERR_500",
-		re: /adminErr\s*\{\s*500\s*,\s*err\s*\.\s*Error\s*\(\s*\)\s*\}/,
-		hint: "adminErr 的 500 要带 cause：&adminErr{code: 500, msg: …, cause: err}，由 writeAdminErr 统一脱敏",
-	},
 ];
+
+const ADMIN_ERR_LITERAL = /&\s*adminErr\s*\{/g;
+
+function literalEnd(text, start) {
+	let depth = 0;
+	for (let i = start; i < text.length; i++) {
+		const ch = text[i];
+		if (ch === '"' || ch === "'" || ch === "`") {
+			const quote = ch;
+			i++;
+			while (i < text.length) {
+				if (quote !== "`" && text[i] === "\\") {
+					i += 2;
+					continue;
+				}
+				if (text[i] === quote) break;
+				i++;
+			}
+			continue;
+		}
+		if (ch === "{") depth++;
+		else if (ch === "}" && --depth === 0) return i;
+	}
+	return -1;
+}
+
+export function scanAdminErrLiterals(text) {
+	const findings = [];
+	ADMIN_ERR_LITERAL.lastIndex = 0;
+	let m;
+	while ((m = ADMIN_ERR_LITERAL.exec(text))) {
+		const open = text.indexOf("{", m.index);
+		const end = literalEnd(text, open);
+		if (end < 0) continue;
+		const body = text.slice(open, end + 1);
+		if (/\bcause\s*:/.test(body)) continue;
+		const is500 =
+			/^\{\s*(?:500|http\.StatusInternalServerError)\s*,/.test(body) ||
+			/\bcode\s*:\s*(?:500|http\.StatusInternalServerError)\b/.test(body);
+		const rawMsg = /\bmsg\s*:\s*err\s*\.\s*Error\s*\(\s*\)/.test(body);
+		if (!is500 && !rawMsg) continue;
+		findings.push({
+			line: text.slice(0, m.index).split("\n").length,
+			rule: is500 ? "ADMIN_ERR_500_NO_CAUSE" : "ADMIN_ERR_RAW_MSG_NO_CAUSE",
+			hint: is500
+				? "adminErr 的 500 必须带 cause（或直接 adminInternalErr(err)）：writeAdminErr 才会把原文压进日志"
+				: "adminErr 的 msg 不许是 err.Error()：用户面文案固定，原文只进日志（#624）",
+			text: body.split("\n")[0].trim(),
+		});
+	}
+	return findings;
+}
 
 export function stripGoComments(src) {
 	let out = "";
@@ -90,7 +137,8 @@ export function scanText(text) {
 			}
 		}
 	}
-	return findings;
+	findings.push(...scanAdminErrLiterals(text));
+	return findings.sort((a, b) => a.line - b.line);
 }
 
 export function shouldScan(relPath) {
@@ -165,7 +213,7 @@ export function selfTest() {
 	t(
 		"规则码分别命中",
 		badFindings.map((f) => f.rule),
-		["RAW_ERR_IN_RESPONSE", "RAW_ERR_IN_RESPONSE", "RAW_ERR_IN_401", "RAW_ADMIN_ERR_500"],
+		["RAW_ERR_IN_RESPONSE", "RAW_ERR_IN_RESPONSE", "RAW_ERR_IN_401", "ADMIN_ERR_500_NO_CAUSE"],
 	);
 	t("命中带行号", badFindings.map((f) => f.line), [1, 2, 3, 4]);
 	t("空白容错：writeErr(w,500,err.Error())", scanText("writeErr(w,500,err.Error())").length, 1);
@@ -185,6 +233,27 @@ export function selfTest() {
 	].join("\n");
 	t("修好的形状判绿", scanText(good).length, 0);
 
+	t(
+		"adminErr 的 msg: err.Error() 缺 cause 判红",
+		scanText("return &adminErr{code: 500, msg: err.Error()}").map((f) => f.rule),
+		["ADMIN_ERR_500_NO_CAUSE"],
+	);
+	t(
+		"adminErr 多行缺 cause 也判红",
+		scanText("return &adminErr{\n\tcode: 500,\n\tmsg: err.Error(),\n}").length,
+		1,
+	);
+	t(
+		"adminErr 的 400 带 err.Error() 也判红（原文不进用户面）",
+		scanText("return &adminErr{code: 400, msg: err.Error()}").map((f) => f.rule),
+		["ADMIN_ERR_RAW_MSG_NO_CAUSE"],
+	);
+	t(
+		"adminErr 带 cause 判绿",
+		scanText("return &adminErr{code: 500, msg: err.Error(), cause: err}").length,
+		0,
+	);
+
 	t("排除 _test.go", shouldScan("internal/server/handlers_test.go"), false);
 	t("排除非 Go", shouldScan("web/partials.js"), false);
 	t("保留普通 Go 文件", shouldScan("internal/server/handlers.go"), true);
@@ -195,8 +264,6 @@ export function selfTest() {
 
 	const live = check(ROOT);
 	t("扫描面够大（下限 " + MIN_GO_FILES + "）", live.files.length >= MIN_GO_FILES, true);
-
-t("仓库当前无漏原文的 500/401", live.findings.length, 0);
 
 	const realFile = live.files.find((f) => f === "internal/server/handlers.go") ?? live.files[0];
 	const realText = realFile ? readFileSync(path.join(ROOT, realFile), "utf8") : "";
@@ -233,14 +300,14 @@ function main() {
 		return 2;
 	}
 	if (findings.length > 0) {
-		console.error(`✗ 发现 ${findings.length} 处 500/401 直接回 err.Error()（内部原文不该进响应体，#624）：`);
+		console.error(`✗ 发现 ${findings.length} 处 500/401/adminErr 直接回内部原文（#624）：`);
 		for (const f of findings) {
 			console.error(`  ${f.file}:${f.line}  [${f.rule}]  ${f.text}`);
 			console.error(`     → ${f.hint}`);
 		}
 		return 1;
 	}
-	console.log(`✅ 扫过 ${files.length} 个 Go 文件：500/401 都没有直接回 err.Error()（#624）`);
+	console.log(`✅ 扫过 ${files.length} 个 Go 文件：500/401 与 adminErr 构造都没有直接回内部原文（#624；400 的契约用户面文案与 502 的刻意回传不在本守卫范围）`);
 	return 0;
 }
 

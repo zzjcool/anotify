@@ -32,6 +32,10 @@ var (
 	// ErrLastAuthMethod：会抹掉最后一种登录方式的操作被拒绝。
 	ErrLastAuthMethod = errors.New("auth: 至少保留一种登录方式：请先添加 Passkey 再移除密码")
 
+	ErrAccountDisabled = errors.New("auth: 账户已被禁用") // 必须告知用户去找管理员（否则是死胡同），但响应只回固定文案，正文不回 error 原文（#624）
+
+	ErrLoginUserNotFound = errors.New("auth: 用户不存在") // Passkey 登录发起时用户名不存在：契约允许用 400 告知（用户需要去注册），文案固定、不含内部信息
+
 	// errUserNotFound / errCurrentPasswordWrong 是密码管理端点直接展示给用户的文案
 	// （前端把服务端 error 原样贴进弹层），所以措辞固定、不带包前缀。
 	errUserNotFound         = errors.New("用户不存在")
@@ -209,7 +213,7 @@ func (s *Service) LoginWithPassword(username, password, deviceName string) (sess
 		return "", ErrInvalidCredentials
 	}
 	if user.Disabled {
-		return "", errors.New("auth: 账户已被禁用")
+		return "", ErrAccountDisabled
 	}
 	rec, err := s.db.GetUserPassword(user.ID)
 	if err != nil {
