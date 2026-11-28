@@ -96,20 +96,125 @@ func TestNodeYAMLPutRoundTripIsIdempotent(t *testing.T) {
 	got, _ := doc["yaml"].(string)
 	// 一次成功写入会 bump 底层 resourceVersion（Node.spec 与 config 子资源共享同一个
 	// 版本），所以除那一行之外必须逐字相同：其余任何差异都说明「取 → 贴回」改到了别的东西。
-	strip := func(s string) string {
-		lines := strings.Split(s, "\n")
-		for i, line := range lines {
-			if strings.HasPrefix(strings.TrimSpace(line), "resourceVersion:") {
-				lines[i] = "  resourceVersion: <bumped>"
-			}
-		}
-		return strings.Join(lines, "\n")
-	}
-	if strip(got) != strip(text) {
+	if stripNodeRV(got) != stripNodeRV(text) {
 		t.Fatalf("回写后的 YAML 与读面不一致:\n--- 读 ---\n%s\n--- 写回 ---\n%s", text, got)
 	}
 	if got == text {
 		t.Fatalf("写成功后 resourceVersion 应当前进（令牌没变）:\n%s", got)
+	}
+}
+
+// stripNodeRV 把 resourceVersion 那一行抹平（每次成功写入都会 bump 它）。
+func stripNodeRV(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "resourceVersion:") {
+			lines[i] = "  resourceVersion: <bumped>"
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// getNodeYAML 读一台节点的规范化文档（断言 200 + 正文非空）。
+func getNodeYAML(t *testing.T, env *nodeTestEnv, name string) string {
+	t.Helper()
+	rr := env.do(http.MethodGet, "/v1/nodes/"+name+"/yaml", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET yaml %q = %d, want 200 (body=%s)", name, rr.Code, rr.Body.String())
+	}
+	text, _ := decodeNodeDoc(t, rr)["yaml"].(string)
+	if strings.TrimSpace(text) == "" {
+		t.Fatalf("GET yaml %q 返回空正文", name)
+	}
+	return text
+}
+
+// TestNodeYAMLRoundTripWithoutTotal 是 issue #570 的回归：控制台「登记节点」出来的节点都没有
+// 设 limits.total，读面因此给出显式 `total: null`。这份正文必须能原样贴回（200），
+// 而不是 400 `limits.total 必须是 ≥1 的整数，实际 <nil>`。
+func TestNodeYAMLRoundTripWithoutTotal(t *testing.T) {
+	env := newNodeTestEnv(t)
+	env.createNode("hw", map[string]any{"namespaces": []string{"default"}})
+	text := getNodeYAML(t, env, "hw")
+	// 读面语义不变：显式 null = 「本层不压住下层」，所以文档里要有这一行。
+	if !strings.Contains(text, "    total: null\n") {
+		t.Fatalf("未设 total 的节点，文档里应是显式 total: null：\n%s", text)
+	}
+	rr := env.do(http.MethodPut, "/v1/nodes/hw/yaml", map[string]any{"yaml": text})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("原样回写 = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
+	}
+	got, _ := decodeNodeDoc(t, rr)["yaml"].(string)
+	if stripNodeRV(got) != stripNodeRV(text) {
+		t.Fatalf("回写后的文档与读面不一致：\n--- 读 ---\n%s\n--- 写回 ---\n%s", text, got)
+	}
+	// 读回配置：null 不该被写成一个 total 键（= 不压住下层）。
+	cfg := decodeNodeDoc(t, env.do(http.MethodGet, "/v1/nodes/hw/config", nil))
+	if limits := nodeObject(t, cfg, "limits"); len(limits) != 0 {
+		t.Fatalf("显式 null 不该落成 limits 的键: %v", limits)
+	}
+}
+
+// TestNodeYAMLPutNullTotalClearsBudget 显式 total: null = 清掉这一维度，其余维度保持原值。
+func TestNodeYAMLPutNullTotalClearsBudget(t *testing.T) {
+	env := newNodeTestEnv(t)
+	text, _ := nodeYAMLFixture(t, env, "hw")
+	if !strings.Contains(text, "    total: 4\n") {
+		t.Fatalf("fixture 应带 total: 4：\n%s", text)
+	}
+	noTotal := strings.Replace(text, "    total: 4\n", "    total: null\n", 1)
+	rr := env.do(http.MethodPut, "/v1/nodes/hw/yaml", map[string]any{"yaml": noTotal})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT yaml（total: null）= %d, want 200 (body=%s)", rr.Code, rr.Body.String())
+	}
+	cfg := decodeNodeDoc(t, env.do(http.MethodGet, "/v1/nodes/hw/config", nil))
+	limits := nodeObject(t, cfg, "limits")
+	if _, has := limits["total"]; has {
+		t.Fatalf("total: null 之后 limits 不该还有 total 键: %v", limits)
+	}
+	// 同一个 limits 对象里的其他维度不受影响（PUT 是整份 limits 替换，不是只改 total）。
+	per, _ := limits["perCapability"].(map[string]any)
+	if per["*"] != float64(2) || per["fixer"] != float64(1) {
+		t.Fatalf("total: null 不该动 perCapability: %v", limits)
+	}
+	// 回读文档仍是显式 null（读面形状不变），且可以再贴回。
+	again := getNodeYAML(t, env, "hw")
+	if !strings.Contains(again, "    total: null\n") {
+		t.Fatalf("写回后文档里应是显式 total: null：\n%s", again)
+	}
+	if rr := env.do(http.MethodPut, "/v1/nodes/hw/yaml", map[string]any{"yaml": again}); rr.Code != http.StatusOK {
+		t.Fatalf("再次原样回写 = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
+	}
+}
+
+// TestNodeYAMLPutNullPerCapabilityMeansUnset perCapability 本身为 null 同样等于「没设」。
+func TestNodeYAMLPutNullPerCapabilityMeansUnset(t *testing.T) {
+	env := newNodeTestEnv(t)
+	env.createNode("hw", map[string]any{"namespaces": []string{"default"}})
+	rv := env.configRV("hw")
+	doc := "apiVersion: anotify/v1\nkind: Node\nmetadata:\n  name: hw\n  resourceVersion: " + rv +
+		"\nspec:\n  limits:\n    total: null\n    perCapability: null\n"
+	rr := env.do(http.MethodPut, "/v1/nodes/hw/yaml", map[string]any{"yaml": doc})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT yaml（limits 全是 null）= %d, want 200 (body=%s)", rr.Code, rr.Body.String())
+	}
+	cfg := decodeNodeDoc(t, env.do(http.MethodGet, "/v1/nodes/hw/config", nil))
+	if limits := nodeObject(t, cfg, "limits"); len(limits) != 0 {
+		t.Fatalf("null 的 limits 不该落成键: %v", limits)
+	}
+}
+
+// TestNodeYAMLPutRejectsNonPositiveLimits null 被接受不等于放松校验：0 / 负数 / 字符串仍是 400。
+func TestNodeYAMLPutRejectsNonPositiveLimits(t *testing.T) {
+	env := newNodeTestEnv(t)
+	text, _ := nodeYAMLFixture(t, env, "hw")
+	for _, bad := range []string{"0", "-1", `"3"`, "1.5", "true"} {
+		doc := strings.Replace(text, "    total: 4\n", "    total: "+bad+"\n", 1)
+		if doc == text {
+			t.Fatalf("夹具替换失败（total: 4 不在文档里）")
+		}
+		wantStatus(t, env.do(http.MethodPut, "/v1/nodes/hw/yaml", map[string]any{"yaml": doc}),
+			http.StatusBadRequest, reasonValueInvalid)
 	}
 }
 

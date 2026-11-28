@@ -108,6 +108,11 @@ e2e 的判据取**服务端两次 `GET …/yaml` 的原文**（不是页面发�
 
 ## 5. 边界：`total: null` 原样贴回仍是 400（没有放宽）
 
+> **已变更（issue #570）**：本节记录的是当时的边界。现在写面把显式 `null` 当「本层没设这一项」
+> 接住（`internal/store` 的 `NormalizeLimits`：`total: null` / `perCapability` 的 nil 叶子在
+> 校验前就被丢掉），所以「取 → 原样贴回」是 200；`scripts/e2e/suites/vars_ui.mjs` 的同名
+> 边界用例已随之改为断言 200 + 文档除 `resourceVersion` 外逐字不变。0 / 负数 / 字符串仍 400。
+
 ```
 GET  /v1/nodes/{name}/yaml   →   limits:\n    total: null      （读面语义：不压住下层）
 PUT  /v1/nodes/{name}/yaml   ←   原样贴回                     →  400 value_invalid

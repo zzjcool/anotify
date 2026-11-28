@@ -1929,6 +1929,9 @@ paths:
         store 路径（`UpdateNode`：同一 CAS、同一配置 revision 语义）。
 
         - 省略的 spec 字段 = **不动**（merge-patch 语义，与 JSON 写入口一致）；
+        - `limits` 里的显式 `null`（`total: null` / `perCapability: null`）= 该维度**不设置**
+          （不压住下层）—— 与 GET 给出的文档一致，所以「取 → 原样贴回」是 200，不是把它写成
+          `0`；`0` / 负数 / 字符串仍按 `limits.total 必须是 ≥1 的整数` 拒绝（不放松正整数校验）；
         - `metadata.resourceVersion` 必填（CAS）；旧值 → 409 `resource_version_conflict`
           （`details.current.resourceVersion` 给当前令牌）；
         - `status` / `metadata.uid` 等只读面 → 400 `status_not_writable` / `unknown_field`；
