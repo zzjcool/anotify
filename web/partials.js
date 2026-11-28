@@ -1198,6 +1198,18 @@
 		return map;
 	})();
 
+	/* #588 D2：可聚焦选择器只留这一份 —— 抽屉陷阱与弹层 Tab 环必须逐字相同。 */
+	const FOCUSABLE_SELECTOR =
+		'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+	function focusableItems(root) {
+		if (!root || typeof root.querySelectorAll !== "function") return [];
+		return Array.prototype.filter.call(
+			root.querySelectorAll(FOCUSABLE_SELECTOR),
+			(n) => n.offsetWidth > 0 || n.offsetHeight > 0,
+		);
+	}
+
 	function mountLayout(opts) {
 		const o = Object.assign(
 			{
@@ -1755,6 +1767,10 @@
 			appCol,
 		);
 		document.body.prepend(root);
+		/* #588 D3：Tab 顺序按 DOM 走，prepend(root) 把 .skip-link 挤到了外壳后面（要按 45 下）。
+		 * 再 prepend 回 body 第一个子节点；它是 position:fixed，布局零变化。 */
+		const skipLink = document.querySelector(".skip-link");
+		if (skipLink) document.body.prepend(skipLink);
 		/* 顶栏上下文里的命名空间：命名空间列表回来后再画一次 ——
 		 * 首帧时 scope 可能还是空的（全新浏览器 / 深链），mountNamespaceSwitcher
 		 * 会在拿到列表后把真正生效的 name 写进 scope 并 resolve。 */
@@ -1792,14 +1808,11 @@
 		   还在，只查 hidden 会让「移动端开抽屉 → 放大到桌面」后仍被陷阱卡住
 		   （桌面侧栏只是常驻导航，WCAG 2.1.2 键盘陷阱）。 */
 		document.addEventListener("keydown", (e) => {
+			/* #588 D2：弹层开着时 Tab 归弹层陷阱管（同一时刻只允许一个焦点环）。 */
+			if (topOpenModal()) return;
 			if (e.key !== "Tab") return;
 			if (!mobileMQ.matches || overlay.classList.contains("hidden")) return;
-			const items = Array.prototype.filter.call(
-				sidebar.querySelectorAll(
-					'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-				),
-				(n) => n.offsetWidth > 0 || n.offsetHeight > 0,
-			);
+			const items = focusableItems(sidebar);
 			if (!items.length) return;
 			const first = items[0];
 			const last = items[items.length - 1];
@@ -1897,6 +1910,9 @@
 		/* Language hint banner: must run after body.prepend(root) above
 		 * so the banner lands as body's first child (above the layout root). */
 		mountLangHint();
+		/* #588 D3：横幅（mountLangHint 里也 body.prepend）会把 .skip-link 再挤下去，横幅后顶回来。 */
+		const skipLinkTop = document.querySelector(".skip-link");
+		if (skipLinkTop) document.body.prepend(skipLinkTop);
 	}
 
 	/* ---------- API 封装 ---------- */
@@ -3492,6 +3508,9 @@
 		MODAL_RETURN_FOCUS.delete(backdrop);
 		const at = MODAL_STACK.indexOf(backdrop);
 		if (at >= 0) MODAL_STACK.splice(at, 1);
+		/* #588 D2：先撤 inert 再还焦点 —— inert 子树里的 focus() 是空操作（真 Chrome 实测），
+		 * 反序会让「焦点还给触发控件」静默失效。栈刚弹掉一个，这里同步就是真实现场。 */
+		syncModalInert();
 		if (!prev || typeof prev.focus !== "function") return;
 		try {
 			if (prev.isConnected === false) return; // 触发它的行/按钮已重渲染：不抢焦点
@@ -3499,6 +3518,137 @@
 		} catch (e) {
 			/* 焦点归还失败不影响关闭 */
 		}
+	}
+
+	/* ---------- #588 · 弹层焦点管理（D2） ----------
+	 * 三件事都以 topOpenModal() 为唯一真源（嵌套弹层只认最上层）：初始焦点、外壳 inert、Tab 环。
+	 * 敢对 #app-shell 用 inert，是因为页级弹层都在 #page-main **之外**（body 直属，mountLayout
+	 * 只搬 #page-main）；唯一例外是 playbooks.html 的 #pb-import-modal（长在 #page-main 里），
+	 * 那种情况退化成 inert 旁支子树，见 syncModalInert。 */
+
+	/* 元素 → 我们动手前它是否已 aria-hidden（页面自己的不能被我们撤掉）。 */
+	const MODAL_INERT_ARIA = new WeakMap();
+	let MODAL_INERTED = [];
+	let MODAL_TRAP_BOUND = false;
+
+	/* 初始焦点：data-autofocus → 第一个可见可聚焦 → 面板本身（补 tabindex="-1"）。
+	 * 不用原生 autofocus：那是页面加载时抢焦点，弹层是后开的。 */
+	function focusModalEntry(backdrop) {
+		if (!backdrop || typeof backdrop.querySelector !== "function") return;
+		try {
+			if (backdrop.isConnected === false) return; /* 弹层已被移出文档：不抢焦点 */
+			let target = backdrop.querySelector("[data-autofocus]");
+			if (!target) target = focusableItems(backdrop)[0] || null;
+			if (!target) {
+				target = backdrop.querySelector(".modal-panel");
+				if (!target) return;
+				if (!target.hasAttribute("tabindex"))
+					target.setAttribute("tabindex", "-1");
+			}
+			if (typeof target.focus !== "function") return;
+			if (target.isConnected === false) return;
+			target.focus({ preventScroll: true });
+		} catch (e) {
+			/* 聚焦失败不影响打开：焦点留在原处比抛错把弹层卡住好查得多 */
+		}
+	}
+
+	function syncModalInert() {
+		const open = topOpenModal();
+		let shell = null;
+		try {
+			shell = document.getElementById("app-shell");
+		} catch (e) {
+			shell = null; /* login/focus 布局根本没有壳，没有可惰性的东西 */
+		}
+		/* 默认 inert 外壳；弹层长在壳里（playbooks 的导入弹层）时整壳 inert 会埋掉弹层自己，
+		 * 退化成「沿祖先链 inert 旁支子树」= 壳内除弹层这条路外全部退出无障碍树。 */
+		const targets = [];
+		if (open && shell) {
+			if (!shell.contains || !shell.contains(open)) {
+				targets.push(shell);
+			} else {
+				let node = open;
+				let guard = 0;
+				while (node && node !== shell && guard++ < 64) {
+					const parent = node.parentElement || node.parentNode || null;
+					if (!parent || !parent.children) break;
+					for (let i = 0; i < parent.children.length; i++) {
+						if (parent.children[i] !== node) targets.push(parent.children[i]);
+					}
+					node = parent;
+				}
+			}
+		}
+		/* 先撤上一轮加过、这轮不需要的（关闭 ⇒ targets 空 ⇒ 全撤） */
+		for (let i = 0; i < MODAL_INERTED.length; i++) {
+			const old = MODAL_INERTED[i];
+			if (targets.indexOf(old) >= 0) continue;
+			try {
+				old.removeAttribute("inert");
+				if (!MODAL_INERT_ARIA.get(old)) old.removeAttribute("aria-hidden");
+				MODAL_INERT_ARIA.delete(old);
+			} catch (e) {
+				/* 元素已随页面重渲染消失：没有要撤的 */
+			}
+		}
+		/* 再挂这一轮的：inert 挡指针/键盘/读屏，aria-hidden 兜住不认 inert 的老读屏 */
+		for (let i = 0; i < targets.length; i++) {
+			const el = targets[i];
+			if (!el || typeof el.setAttribute !== "function") continue;
+			try {
+				if (!MODAL_INERT_ARIA.has(el))
+					MODAL_INERT_ARIA.set(el, !!el.hasAttribute("aria-hidden"));
+				el.setAttribute("inert", "");
+				el.setAttribute("aria-hidden", "true");
+			} catch (e) {
+				/* 设不上就只靠 bindModalTrap 的 Tab 环兜底 */
+			}
+		}
+		MODAL_INERTED = targets;
+	}
+
+	/* 焦点搬运不抛错：元素可能已被重渲染掉，下一次 Tab 再试。 */
+	function focusQuietly(node) {
+		if (!node || typeof node.focus !== "function") return;
+		try {
+			node.focus({ preventScroll: true });
+		} catch (e) {
+			/* 见上 */
+		}
+	}
+
+	function onModalTab(event) {
+		if (event.key !== "Tab") return;
+		const top = topOpenModal();
+		if (!top) return;
+		const items = focusableItems(top);
+		if (!items.length) {
+			/* 弹层里没有任何可聚焦控件：Tab 一律拦掉，别把焦点放回背景。 */
+			event.preventDefault();
+			return;
+		}
+		const first = items[0];
+		const last = items[items.length - 1];
+		const active = safeActiveElement();
+		/* inside 按「在可聚焦清单里」判：焦点在面板本身时也要拉回环（否则 Shift+Tab 退回背景） */
+		const inside = items.indexOf(active) >= 0;
+		if (event.shiftKey) {
+			if (inside && active !== first) return;
+			event.preventDefault();
+			focusQuietly(last);
+			return;
+		}
+		if (inside && active !== last) return;
+		event.preventDefault();
+		focusQuietly(first);
+	}
+
+	function bindModalTrap() {
+		if (MODAL_TRAP_BOUND) return;
+		MODAL_TRAP_BOUND = true;
+		/* capture 阶段：页面自己的 keydown（抽屉、下拉、编辑器…）不会先把 Tab 吃掉。 */
+		document.addEventListener("keydown", onModalTab, true);
 	}
 
 	function openModal(backdrop) {
@@ -3519,6 +3669,10 @@
 		if (at >= 0) MODAL_STACK.splice(at, 1);
 		MODAL_STACK.push(backdrop);
 		bindModalEscape();
+		/* #588 D2：先停背景再搬焦点（中途不留一帧焦点落到背景）。 */
+		bindModalTrap();
+		syncModalInert();
+		focusModalEntry(backdrop);
 	}
 
 	function closeModal(backdrop) {
@@ -3531,6 +3685,9 @@
 		if (backdrop.classList.contains("is-closing")) return; /* 重复调用不叠加 */
 		backdrop.classList.add("is-closing");
 		returnModalFocus(backdrop);
+		/* #588 D2：returnModalFocus 已弹栈（并已撤 inert），这里幂等收尾 ——
+		 * 下面还有弹层就继续 inert，真没了才彻底恢复。 */
+		syncModalInert();
 		/* 时长与 CSS 同源；reduce 下该 token 是 0ms，0 必须当有效值 */
 		const raw = parseFloat(
 			getComputedStyle(document.documentElement).getPropertyValue(
