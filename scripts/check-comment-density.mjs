@@ -27,9 +27,9 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 /* BASELINE-BEGIN（`--init` / `--update` 只改这一段） */
 export const BASELINE = {
 	"schemaVersion": 2,
-	"measuredAt": "2026-11-27",
-	"commentLines": 42869,
-	"codeLines": 299437,
+	"measuredAt": "2026-11-28",
+	"commentLines": 42859,
+	"codeLines": 300365,
 	"files": 793,
 	"dirs": {
 		".": 86,
@@ -90,7 +90,7 @@ export const BASELINE = {
 		"internal/version": 48,
 		"internal/ws": 669,
 		"internal/yamldoc": 262,
-		"scripts": 3560,
+		"scripts": 3559,
 		"scripts/demo": 16,
 		"scripts/e2e": 632,
 		"scripts/e2e/fixtures": 0,
@@ -106,11 +106,11 @@ export const BASELINE = {
 		"scripts/perf/c": 800,
 		"scripts/perf/loadgen": 31,
 		"scripts/testdata/fakebroker": 24,
-		"web": 4647,
+		"web": 4646,
 		"web-src": 3,
 		"web-src/layouts": 98,
 		"web-src/locales": 49,
-		"web-src/pages": 2283,
+		"web-src/pages": 2275,
 		"web/fonts": 31
 	},
 	"dense": {

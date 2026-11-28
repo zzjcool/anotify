@@ -89,7 +89,6 @@
 	 */
 	function ctrlIcon(name) {
 		const paths = {
-			// 加 / 减
 			"zoom-in": ["M12 5v14", "M5 12h14"],
 			"zoom-out": ["M5 12h14"],
 			// 适应视图：四角**向内**的折角。
@@ -3337,6 +3336,9 @@
 		 * bead 同步循环；终点相位与起点一致，不会跳到中间。
 		 */
 		function startFlow(e, len, drawMs) {
+			/* 减少动效下不建这条 iterations:Infinity 的 shim：它会一直跑、永不进终态；
+			 * is-flow 的两个 CSS 消费方在 reduce 下本就 display:none，跳过零视觉损失。 */
+			if (reduceNow()) return;
 			if (!e.g || !e.core) return;
 			// shim 的循环速度跟着拍长走（0.5× 更慢），但 loop 本身是**无缝**的：
 			// @keyframes 每次正好位移一个 dash 周期 168px，终点相位 = 起点相位。
@@ -3360,6 +3362,27 @@
 				e.motion.setAttribute("dur", (flowMs / 1000).toFixed(3) + "s");
 				if (e.motion.beginElement) e.motion.beginElement();
 			}
+		}
+
+		/* 运行中切到减少动效：startFlow 的提前返回只管新建，停掉已在跑的 shim 靠这段。
+		 * 取舍：切回 no-preference 不重建（反推相位会闪），等下次 reveal/replay 自然恢复。 */
+		const reduceMq = window.matchMedia
+			? window.matchMedia("(prefers-reduced-motion: reduce)")
+			: null;
+
+		function onReduceMotionChange() {
+			if (!reduceNow()) return;
+			for (const e of edgeItems) {
+				if (e.shimAnim) {
+					e.shimAnim.cancel();
+					e.shimAnim = null;
+				}
+				e.g.classList.remove("is-flow");
+			}
+		}
+
+		if (reduceMq && reduceMq.addEventListener) {
+			reduceMq.addEventListener("change", onReduceMotionChange);
 		}
 
 		function resetReveal() {
@@ -3671,6 +3694,9 @@
 				overflowRaf = 0;
 				document.removeEventListener("click", onLegendDocClick, true);
 				document.removeEventListener("keydown", onLegendKey);
+				if (reduceMq && reduceMq.removeEventListener) {
+					reduceMq.removeEventListener("change", onReduceMotionChange);
+				}
 				if (ro) ro.disconnect();
 				container.replaceChildren();
 				container.classList.remove("flograph", "flograph--silk", "is-playing", "is-vertical");

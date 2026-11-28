@@ -510,6 +510,8 @@ keys:
     last_used: 最近使用
     status: 状态
     actions: 操作
+  caption:
+    my_keys: 我的 API Keys
   security:
     title: Key 的安全实践
     point1_prefix: Key 明文
@@ -681,6 +683,10 @@ docs:
     method: 方法
     path: 路径
     desc: 说明
+  caption:
+    endpoints: 端点列表
+    ops: 各操作摘要
+    params: 参数说明
   back_top: 返回顶部
   toc:
     agent: 接入 Agent
@@ -814,6 +820,7 @@ cliauth:
   entry:
     heading: 输入授权码
     sub: 在终端运行登录脚本后，输入终端显示的 8 位短码完成授权
+    code_label: 终端显示的 8 位授权码
     placeholder: XXXX-XXXX
     hint: 短码 10 分钟内有效 · 不区分大小写 · 不含 0/O、1/I 等易混淆字符
     continue: 继续
@@ -905,6 +912,7 @@ passkeyenroll:
   entry:
     heading: 输入添加短码
     sub: 在已登录设备的「安全与登录」页发起添加后，输入其显示的 8 位短码
+    code_label: 另一台设备上显示的 8 位添加码
     continue: 继续
     busy: 正在查找会话…
     not_found: 未找到该短码对应的会话，请核对后重试
@@ -979,6 +987,10 @@ admin:
   tab:
     users: 用户管理
     messages: 全局消息
+    sessions: 活跃会话
+  caption:
+    users: 用户
+    messages: 消息
     sessions: 活跃会话
   users:
     user: 用户

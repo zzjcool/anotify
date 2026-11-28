@@ -510,6 +510,8 @@ keys:
     last_used: Último uso
     status: Estado
     actions: Acciones
+  caption:
+    my_keys: Mis API Keys
   security:
     title: Buenas prácticas de seguridad de la Key
     point1_prefix: 'El texto plano de la Key '
@@ -681,6 +683,10 @@ docs:
     method: Método
     path: Ruta
     desc: Descripción
+  caption:
+    endpoints: Lista de endpoints
+    ops: Resumen de operaciones
+    params: Parámetros
   back_top: Volver arriba
   toc:
     agent: Conectar Agent
@@ -814,6 +820,7 @@ cliauth:
   entry:
     heading: Introduce el código de autorización
     sub: Tras ejecutar el script de inicio de sesión en tu terminal, introduce el código de 8 caracteres que aparece allí.
+    code_label: Código de autorización de 8 caracteres que aparece en tu terminal
     placeholder: XXXX-XXXX
     hint: Válido durante 10 minutos · No distingue mayúsculas · Sin caracteres ambiguos como 0/O o 1/I
     continue: Continuar
@@ -905,6 +912,7 @@ passkeyenroll:
   entry:
     heading: Introduce el código de registro
     sub: Tras iniciar el registro en «Seguridad e inicio de sesión» en un dispositivo con sesión iniciada, introduce el código de 8 caracteres que allí aparece.
+    code_label: Código de registro de 8 caracteres que aparece en el otro dispositivo
     continue: Continuar
     busy: Buscando la sesión…
     not_found: No hay ninguna sesión para este código. Compruébalo e inténtalo de nuevo.
@@ -980,6 +988,10 @@ admin:
     users: Usuarios
     messages: Mensajes
     sessions: Sesiones
+  caption:
+    users: Usuarios
+    messages: Mensajes
+    sessions: Sesiones activas
   users:
     user: Usuario
     role: Rol

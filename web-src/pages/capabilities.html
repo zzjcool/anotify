@@ -155,12 +155,12 @@
       .cap-cond-chip.is-ok {
         border-color: color-mix(in srgb, var(--success) 32%, transparent);
         background: var(--success-soft);
-        color: var(--success);
+        color: var(--pill-success-fg);
       }
       .cap-cond-chip.is-bad {
         border-color: color-mix(in srgb, var(--warn) 32%, transparent);
         background: var(--warn-soft);
-        color: var(--warn);
+        color: var(--pill-warn-fg);
       }
 
       /* ---------- 准备状态徽章 ---------- */
@@ -178,12 +178,12 @@
       .cap-ready.is-on {
         background: var(--success-soft);
         border-color: color-mix(in srgb, var(--success) 28%, transparent);
-        color: var(--success);
+        color: var(--pill-success-fg);
       }
       .cap-ready.is-off {
         background: var(--warn-soft);
         border-color: color-mix(in srgb, var(--warn) 28%, transparent);
-        color: var(--warn);
+        color: var(--pill-warn-fg);
       }
       .cap-ready.is-unknown {
         background: var(--surface-2);
@@ -203,10 +203,10 @@
         overflow-wrap: anywhere;
       }
       .cap-missing {
-        color: var(--warn);
+        color: var(--pill-warn-fg);
       }
       .cap-unready {
-        color: var(--warn);
+        color: var(--pill-warn-fg);
       }
       .cap-detail-empty {
         font-size: 11px;
@@ -359,14 +359,14 @@
         border: 1px solid color-mix(in srgb, var(--error) 35%, transparent);
         border-radius: var(--r-sm);
         background: var(--error-soft);
-        color: var(--error);
+        color: var(--pill-error-fg);
         font-size: 12px;
         line-height: 1.55;
       }
       .cap-banner.is-warn {
         border-color: color-mix(in srgb, var(--warn) 35%, transparent);
         background: var(--warn-soft);
-        color: var(--warn);
+        color: var(--pill-warn-fg);
       }
       .cap-banner-title {
         font-weight: 600;

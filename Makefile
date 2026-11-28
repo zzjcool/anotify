@@ -127,6 +127,7 @@ check-comment-density: ## 注释/文档棘轮：目录与总量注释行冻结�
 
 check-guard-selftest: ## 守卫自测：拦"守卫自己静默不查了"（恒绿的门禁等于没有门禁）
 	node scripts/check-classes.mjs --self-test
+	node scripts/check-contrast.mjs --self-test
 	node scripts/check-graph-access.mjs --self-test
 	node scripts/check-ui-copy.mjs --self-test
 	node scripts/check-config-writes.mjs --self-test

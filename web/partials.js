@@ -432,7 +432,6 @@
 		return theme;
 	}
 
-	/* auto → dark → light → auto */
 	function cycleTheme() {
 		const next = { auto: "dark", dark: "light", light: "auto" };
 		applyTheme(next[readThemeMode()] || "dark", true);
@@ -580,7 +579,6 @@
 	function createLangDropdown(cfg) {
 		const { items, direction, width, align } = cfg;
 
-		/* Trigger button: globe icon + current language name + chevron */
 		const triggerClass =
 			"lang-trigger flex " +
 			(width === "full" ? "w-full " : "") +
@@ -617,7 +615,6 @@
 			),
 		);
 
-		/* Menu positioning: sidebar = up (bottom-full), login = down (top-full) */
 		const menuPosClass =
 			direction === "up"
 				? "absolute bottom-full left-0 right-0 mb-2"
@@ -666,7 +663,6 @@
 
 		const host = el("div", { class: "relative" }, trigger, menu);
 
-		/* --- Toggle / keyboard / outside-click --- */
 		function openMenu() {
 			menu.classList.remove("hidden");
 			trigger.setAttribute("aria-expanded", "true");
@@ -748,7 +744,6 @@
 			const code = a.getAttribute("hreflang") || "";
 			const label = a.textContent || code;
 			let href = a.getAttribute("href") || "";
-			/* Append query + hash if not already present (preserve deep links) */
 			if (qs && !href.includes("?")) href += qs;
 			if (hash && !href.includes("#")) href += hash;
 			items.push({
@@ -759,7 +754,6 @@
 			});
 		}
 
-		/* Remove the data block from DOM (consumed) */
 		dataEl.remove();
 
 		const { host } = createLangDropdown({
@@ -796,7 +790,6 @@
 				a.querySelector("span:not(.lang-check):not(.sr-only)")?.textContent ||
 				code;
 			let href = a.getAttribute("href") || "";
-			/* Append query + hash if not already present (preserve deep links) */
 			if (qs && !href.includes("?")) href += qs;
 			if (hash && !href.includes("#")) href += hash;
 			items.push({
@@ -814,7 +807,6 @@
 			align: "right",
 		});
 
-		/* Replace the flat list with the dropdown (clear via DOM, not innerHTML) */
 		while (hostEl.firstChild) hostEl.removeChild(hostEl.firstChild);
 		hostEl.append(dropdown);
 	}
@@ -1197,6 +1189,18 @@
 		map.admin = { labelKey: "common.nav.admin_section", fallback: "管理" };
 		return map;
 	})();
+
+	/* 抽屉陷阱与弹层 Tab 环共用（契约 D2）：summary 与 contenteditable 也是天然可聚焦元素。 */
+	const FOCUSABLE_SELECTOR =
+		'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"])';
+
+	function focusableItems(root) {
+		if (!root || typeof root.querySelectorAll !== "function") return [];
+		return Array.prototype.filter.call(
+			root.querySelectorAll(FOCUSABLE_SELECTOR),
+			(n) => n.offsetWidth > 0 || n.offsetHeight > 0,
+		);
+	}
 
 	function mountLayout(opts) {
 		const o = Object.assign(
@@ -1755,6 +1759,9 @@
 			appCol,
 		);
 		document.body.prepend(root);
+		/* #588 D3：Tab 顺序按 DOM 走 —— prepend(root) 把 .skip-link 挤到外壳后面，再顶回 body 首位（fixed，布局不变）。 */
+		const skipLink = document.querySelector(".skip-link");
+		if (skipLink) document.body.prepend(skipLink);
 		/* 顶栏上下文里的命名空间：命名空间列表回来后再画一次 ——
 		 * 首帧时 scope 可能还是空的（全新浏览器 / 深链），mountNamespaceSwitcher
 		 * 会在拿到列表后把真正生效的 name 写进 scope 并 resolve。 */
@@ -1792,14 +1799,11 @@
 		   还在，只查 hidden 会让「移动端开抽屉 → 放大到桌面」后仍被陷阱卡住
 		   （桌面侧栏只是常驻导航，WCAG 2.1.2 键盘陷阱）。 */
 		document.addEventListener("keydown", (e) => {
+			/* 弹层开着时 Tab 归弹层环管（同一时刻只有一个焦点环）。 */
+			if (topOpenModal()) return;
 			if (e.key !== "Tab") return;
 			if (!mobileMQ.matches || overlay.classList.contains("hidden")) return;
-			const items = Array.prototype.filter.call(
-				sidebar.querySelectorAll(
-					'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-				),
-				(n) => n.offsetWidth > 0 || n.offsetHeight > 0,
-			);
+			const items = focusableItems(sidebar);
 			if (!items.length) return;
 			const first = items[0];
 			const last = items[items.length - 1];
@@ -1897,6 +1901,9 @@
 		/* Language hint banner: must run after body.prepend(root) above
 		 * so the banner lands as body's first child (above the layout root). */
 		mountLangHint();
+		/* 横幅同样 prepend，会把 .skip-link 再挤下去 —— 同样顶回来。 */
+		const skipLinkTop = document.querySelector(".skip-link");
+		if (skipLinkTop) document.body.prepend(skipLinkTop);
 	}
 
 	/* ---------- API 封装 ---------- */
@@ -2434,15 +2441,8 @@
 		});
 	}
 
-	/* 共享 toast（#anotify-toast-host）。时序：入场 180ms → 停留 3600ms →
-	 * 退场 160ms 后 remove。CSS 动画在 ui.css 的 .anotify-toast.is-in/.is-out；
-	 * 位置（顶部居中）与层级（--z-toast，必须高于弹层）也在 ui.css —
-	 * 这里只给类名，避免同一件事在 JS 的 Tailwind 串和 CSS 里各写一份。
-	 * reduce 下不加动画类，直接 remove。退场时长从 --dur-mid 读，避免与
-	 * ui.css 双份硬编码（reviewer minor）。
-	 *
-	 * #378：错误不再走这条自动退场——错误是产品的一部分，3.6s 既读不完也复制不到。
-	 * 错误条见 errorBar()：持久、可关、可复制；成功/警告仍是回执，照旧自动退场。 */
+	/* 共享 toast（#anotify-toast-host）：时序/位置/层级都在 ui.css，这里只给类名，reduce 下直接 remove。
+	 * #378：错误不走自动退场（3.6s 读不完也复制不到），改走持久可关的 errorBar()，成功/警告照旧。 */
 	function toastExitMs() {
 		const raw = getComputedStyle(document.documentElement)
 			.getPropertyValue("--dur-mid")
@@ -2450,7 +2450,6 @@
 		return parseFloat(raw) || 160;
 	}
 
-	/* toastHost 拿（或首次创建一个）toast 容器。 */
 	function toastHost() {
 		let host = document.getElementById("anotify-toast-host");
 		if (!host) {
@@ -2486,7 +2485,6 @@
 		return out;
 	}
 
-	/* copyButton 一个会自己改文案的「复制」按钮（1.5s 后改回）。 */
 	function copyButton(text, label, cls) {
 		const idle = label || t("common.err.copy", "复制详情");
 		const btn = el("button", { type: "button", class: cls || "btn btn-ghost btn-sm", text: idle });
@@ -2840,7 +2838,6 @@
 		return node;
 	}
 
-	/* WebAuthn ArrayBuffer <-> base64url */
 	function b64urlToBuf(b64) {
 		const s = b64.replace(/-/g, "+").replace(/_/g, "/");
 		const bin = atob(s + "=".repeat((4 - (s.length % 4)) % 4));
@@ -2855,7 +2852,6 @@
 		return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 	}
 
-	/* 平台图标（按 platform 字段） */
 	const PLATFORM_META = {
 		ios: { icon: "📱", label: "iOS Safari" },
 		mac: { icon: "💻", label: "macOS" },
@@ -2949,7 +2945,6 @@
 		);
 		document.body.append(indicator);
 
-		/* spin 动画 */
 		const style = document.createElement("style");
 		style.textContent =
 			"@keyframes anotify-spin { to { transform: rotate(360deg); } }";
@@ -3492,6 +3487,8 @@
 		MODAL_RETURN_FOCUS.delete(backdrop);
 		const at = MODAL_STACK.indexOf(backdrop);
 		if (at >= 0) MODAL_STACK.splice(at, 1);
+		/* 先撤 inert 再还焦点：inert 子树里的 focus() 是空操作（真 Chrome 实测），反序会静默失效。 */
+		syncModalInert();
 		if (!prev || typeof prev.focus !== "function") return;
 		try {
 			if (prev.isConnected === false) return; // 触发它的行/按钮已重渲染：不抢焦点
@@ -3499,6 +3496,129 @@
 		} catch (e) {
 			/* 焦点归还失败不影响关闭 */
 		}
+	}
+
+	/* ---------- #588 · 弹层焦点管理（D2）：初始焦点 / 外壳 inert / Tab 环都以 topOpenModal() 为准 ---------- */
+
+	const MODAL_INERT_ARIA = new WeakMap();
+	let MODAL_INERTED = [];
+	let MODAL_TRAP_BOUND = false;
+
+	/* 不用原生 autofocus（那是页面加载时抢焦点）；顺序：data-autofocus → 首个可聚焦 → 面板本身。 */
+	function focusModalEntry(backdrop) {
+		if (!backdrop || typeof backdrop.querySelector !== "function") return;
+		try {
+			if (backdrop.isConnected === false) return; /* 弹层已被移出文档：不抢焦点 */
+			let target = backdrop.querySelector("[data-autofocus]");
+			if (target && !(target.offsetWidth > 0 || target.offsetHeight > 0)) target = null; // 不可见的标记等于没标（focus() 静默失败）
+			if (!target) target = focusableItems(backdrop)[0] || null;
+			if (!target) {
+				target = backdrop.querySelector(".modal-panel");
+				if (!target) return;
+				if (!target.hasAttribute("tabindex"))
+					target.setAttribute("tabindex", "-1");
+			}
+			if (typeof target.focus !== "function") return;
+			if (target.isConnected === false) return;
+			target.focus({ preventScroll: true });
+		} catch (e) {
+			/* 聚焦失败不影响打开：焦点留在原处比抛错把弹层卡住好查得多 */
+		}
+	}
+
+	function syncModalInert() {
+		const open = topOpenModal();
+		let shell = null;
+		try {
+			shell = document.getElementById("app-shell");
+		} catch (e) {
+			shell = null; /* login/focus 布局根本没有壳，没有可惰性的东西 */
+		}
+		/* 默认 inert 外壳；弹层长在壳里（playbooks 的导入弹层）时整壳 inert 会埋掉弹层自己，
+		 * 退化成「沿祖先链 inert 旁支子树」= 壳内除弹层这条路外全部退出无障碍树。 */
+		const targets = [];
+		if (open && shell) {
+			if (!shell.contains || !shell.contains(open)) {
+				targets.push(shell);
+			} else {
+				let node = open;
+				let guard = 0;
+				while (node && node !== shell && guard++ < 64) {
+					const parent = node.parentElement || node.parentNode || null;
+					if (!parent || !parent.children) break;
+					for (let i = 0; i < parent.children.length; i++) {
+						if (parent.children[i] !== node) targets.push(parent.children[i]);
+					}
+					node = parent;
+				}
+			}
+		}
+		for (let i = 0; i < MODAL_INERTED.length; i++) {
+			const old = MODAL_INERTED[i];
+			if (targets.indexOf(old) >= 0) continue;
+			try {
+				old.removeAttribute("inert");
+				const wasAria = MODAL_INERT_ARIA.get(old);
+				if (wasAria === null) old.removeAttribute("aria-hidden");
+				else old.setAttribute("aria-hidden", wasAria);
+				MODAL_INERT_ARIA.delete(old);
+			} catch (e) {
+				/* 元素已随页面重渲染消失：没有要撤的 */
+			}
+		}
+		/* 再挂这一轮的：inert 挡指针/键盘/读屏，aria-hidden 兜住不认 inert 的老读屏 */
+		for (let i = 0; i < targets.length; i++) {
+			const el = targets[i];
+			if (!el || typeof el.setAttribute !== "function") continue;
+			try {
+				if (!MODAL_INERT_ARIA.has(el))
+					MODAL_INERT_ARIA.set(el, el.getAttribute("aria-hidden"));
+				el.setAttribute("inert", "");
+				el.setAttribute("aria-hidden", "true");
+			} catch (e) {
+			}
+		}
+		MODAL_INERTED = targets;
+	}
+
+	/* 焦点搬运不抛错：元素可能已被重渲染掉，下一次 Tab 再试。 */
+	function focusQuietly(node) {
+		if (!node || typeof node.focus !== "function") return;
+		try {
+			node.focus({ preventScroll: true });
+		} catch (e) {
+		}
+	}
+
+	function onModalTab(event) {
+		if (event.key !== "Tab") return;
+		const top = topOpenModal();
+		if (!top) return;
+		const items = focusableItems(top);
+		if (!items.length) {
+			/* 弹层里没有任何可聚焦控件：Tab 一律拦掉，别把焦点放回背景。 */
+			event.preventDefault();
+			return;
+		}
+		const first = items[0];
+		const last = items[items.length - 1];
+		const active = safeActiveElement();
+		const inside = !!active && typeof top.contains === "function" && top.contains(active); // 包含关系而非 items 成员：summary 不在环里
+		if (event.shiftKey) {
+			if (inside && active !== first) return;
+			event.preventDefault();
+			focusQuietly(last);
+			return;
+		}
+		if (inside && active !== last) return;
+		event.preventDefault();
+		focusQuietly(first);
+	}
+
+	function bindModalTrap() {
+		if (MODAL_TRAP_BOUND) return;
+		MODAL_TRAP_BOUND = true;
+		document.addEventListener("keydown", onModalTab, true);
 	}
 
 	function openModal(backdrop) {
@@ -3519,6 +3639,10 @@
 		if (at >= 0) MODAL_STACK.splice(at, 1);
 		MODAL_STACK.push(backdrop);
 		bindModalEscape();
+		/* #588 D2：先搬焦点再停背景 —— 反序会在焦点仍在背景子树时挂 aria-hidden，Chrome 拒绝应用并告警。 */
+		bindModalTrap();
+		focusModalEntry(backdrop);
+		syncModalInert();
 	}
 
 	function closeModal(backdrop) {
@@ -3531,6 +3655,8 @@
 		if (backdrop.classList.contains("is-closing")) return; /* 重复调用不叠加 */
 		backdrop.classList.add("is-closing");
 		returnModalFocus(backdrop);
+		/* #588 D2：returnModalFocus 里已按新栈撤过；这里再同步一次是幂等兜底（页面可能直接改过栈）。 */
+		syncModalInert();
 		/* 时长与 CSS 同源；reduce 下该 token 是 0ms，0 必须当有效值 */
 		const raw = parseFloat(
 			getComputedStyle(document.documentElement).getPropertyValue(

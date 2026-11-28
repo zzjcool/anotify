@@ -510,6 +510,8 @@ keys:
     last_used: Last used
     status: Status
     actions: Actions
+  caption:
+    my_keys: My API keys
   security:
     title: Key security best practices
     point1_prefix: 'Key plaintext is '
@@ -681,6 +683,10 @@ docs:
     method: Method
     path: Path
     desc: Description
+  caption:
+    endpoints: Endpoints
+    ops: Operations
+    params: Parameters
   back_top: Back to top
   toc:
     agent: Connect Agent
@@ -814,6 +820,7 @@ cliauth:
   entry:
     heading: Enter authorization code
     sub: After running the login script in your terminal, enter the 8-character code shown there to authorize it.
+    code_label: 8-character code shown in your terminal
     placeholder: XXXX-XXXX
     hint: Valid for 10 minutes · Case-insensitive · No ambiguous characters like 0/O or 1/I
     continue: Continue
@@ -905,6 +912,7 @@ passkeyenroll:
   entry:
     heading: Enter enrollment code
     sub: After starting enrollment in Security & Login on a signed-in device, enter the 8-character code shown there.
+    code_label: 8-character add code shown on your other device
     continue: Continue
     busy: Looking up session…
     not_found: No session matches this code. Check it and try again.
@@ -980,6 +988,10 @@ admin:
     users: Users
     messages: Messages
     sessions: Sessions
+  caption:
+    users: Users
+    messages: Messages
+    sessions: Active sessions
   users:
     user: User
     role: Role
