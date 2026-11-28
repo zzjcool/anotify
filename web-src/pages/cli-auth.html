@@ -67,15 +67,15 @@
       }
       .state-icon--success {
         background: var(--success-soft);
-        color: var(--success);
+        color: var(--pill-success-fg);
       }
       .state-icon--warn {
         background: var(--warn-soft);
-        color: var(--warn);
+        color: var(--pill-warn-fg);
       }
       .state-icon--error {
         background: var(--error-soft);
-        color: var(--error);
+        color: var(--pill-error-fg);
       }
       .state-icon--off {
         background: var(--surface-2);
@@ -168,14 +168,6 @@
         font-size: clamp(1.2rem, 3.4vw, 1.5rem);
         letter-spacing: 0.2em;
         text-align: center;
-      }
-      /* 输入框焦点只有一层（AU-2）：ui.css 的 .input:focus 已经画了
-         「accent 边框 + 3px accent-soft 环」，全站 :focus-visible 又叠上一圈
-         2px outline —— 三层同时出现，看起来像描边跑偏。这里按页面收掉 outline，
-         保留「边框 accent + 单圈 ring」；键盘焦点指示仍然可见。 */
-      .input:focus,
-      .input:focus-visible {
-        outline: none;
       }
       .entry-error {
         margin-top: 8px;
@@ -478,6 +470,7 @@
               id="code-input"
               type="text"
               class="input mono code-input"
+              aria-label="{{t "cliauth.entry.code_label"}}"
               maxlength="9"
               placeholder="{{t "cliauth.entry.placeholder"}}"
               autocomplete="off"

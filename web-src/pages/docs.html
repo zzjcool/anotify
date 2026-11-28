@@ -23,7 +23,7 @@
   }
   .m-get {
     background: var(--success-soft);
-    color: var(--success);
+    color: var(--pill-success-fg);
   }
   .m-post {
     background: var(--accent-soft);
@@ -31,11 +31,11 @@
   }
   .m-patch {
     background: var(--warn-soft);
-    color: var(--warn);
+    color: var(--pill-warn-fg);
   }
   .m-delete {
     background: var(--error-soft);
-    color: var(--error);
+    color: var(--pill-error-fg);
   }
   .m-ws {
     background: var(--accent-soft);
@@ -87,7 +87,7 @@
     padding: 0.1rem 0.4rem;
     border-radius: var(--r-xs);
     background: var(--error-soft);
-    color: var(--error);
+    color: var(--pill-error-fg);
     margin-left: 0.4rem;
   }
   .opt {
@@ -457,14 +457,14 @@
     background: color-mix(in srgb, var(--warn) 10%, var(--surface-1));
   }
   .doc-hint-warn b {
-    color: var(--warn);
+    color: var(--pill-warn-fg);
   }
   .doc-hint-ok {
     border-color: color-mix(in srgb, var(--success) 30%, transparent);
     background: color-mix(in srgb, var(--success) 10%, var(--surface-1));
   }
   .doc-hint-ok b {
-    color: var(--success);
+    color: var(--pill-success-fg);
   }
   .doc-journey {
     padding: 12px 14px;
@@ -926,11 +926,12 @@
             <div class="doc-fold-body">
               <div class="table-wrap">
                 <table class="data-table">
+                  <caption class="sr-only">{{t "docs.caption.endpoints"}}</caption>
                   <thead>
                     <tr>
-                      <th>{{t "docs.table.method"}}</th>
-                      <th>{{t "docs.table.path"}}</th>
-                      <th>{{t "docs.table.desc"}}</th>
+                      <th scope="col">{{t "docs.table.method"}}</th>
+                      <th scope="col">{{t "docs.table.path"}}</th>
+                      <th scope="col">{{t "docs.table.desc"}}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -991,6 +992,7 @@
               </div>
               <div class="doc-ep-table table-wrap">
                 <table class="data-table doc-ep-data">
+                  <caption class="sr-only">{{t "docs.caption.ops"}}</caption>
                   <tbody>
                     {{range .Ops}}
                     <tr>
@@ -1079,6 +1081,7 @@
             </div>
             <div class="table-wrap">
               <table class="param-table">
+                <caption class="sr-only">{{t "docs.caption.params"}}</caption>
                 <tbody>
                   <tr>
                     <td>

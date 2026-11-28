@@ -87,10 +87,10 @@
       /* 禁用是破坏性动作、启用是恢复性动作：用 token 保住这层语义
          （原来的 text-red-400 / text-emerald-400 是色板类，亮主题下读不清）。 */
       .ad-act-danger {
-        color: var(--error);
+        color: var(--pill-error-fg);
       }
       .ad-act-ok {
-        color: var(--success);
+        color: var(--pill-success-fg);
       }
       .ad-count {
         font-variant-numeric: tabular-nums;
@@ -199,7 +199,7 @@
       .sys-group-title { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
       .sys-group-note { margin: 0; font-size: 12px; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
       .sys-danger { margin-top: 4px; padding: 12px; border: 1px solid color-mix(in srgb, var(--error) 38%, transparent); border-radius: var(--r-md); background: var(--error-soft); }
-      .sys-danger .sys-group-title { color: var(--error); }
+      .sys-danger .sys-group-title { color: var(--pill-error-fg); }
       .sys-status-code { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
       .system-yaml-pre { max-height: 320px; overflow: auto; margin: 0; }
     </style>
@@ -343,17 +343,18 @@
       <div id="users-body" class="ad-table">
         <div class="table-wrap overflow-x-auto">
           <table class="data-table data-cards" id="users-table">
+            <caption class="sr-only">{{t "admin.caption.users"}}</caption>
             <thead>
               <tr>
-                <th>{{t "admin.users.user"}}</th>
-                <th>{{t "admin.users.role"}}</th>
-                <th>{{t "admin.users.status"}}</th>
-                <th class="ad-num">{{t "admin.users.messages"}}</th>
-                <th class="ad-num" data-col-priority="2">
+                <th scope="col">{{t "admin.users.user"}}</th>
+                <th scope="col">{{t "admin.users.role"}}</th>
+                <th scope="col">{{t "admin.users.status"}}</th>
+                <th scope="col" class="ad-num">{{t "admin.users.messages"}}</th>
+                <th scope="col" class="ad-num" data-col-priority="2">
                   {{t "admin.users.keys"}}
                 </th>
-                <th data-col-priority="2">{{t "admin.users.created"}}</th>
-                <th class="ad-num">{{t "admin.users.actions"}}</th>
+                <th scope="col" data-col-priority="2">{{t "admin.users.created"}}</th>
+                <th scope="col" class="ad-num">{{t "admin.users.actions"}}</th>
               </tr>
             </thead>
             <tbody id="users-tbody"></tbody>
@@ -399,12 +400,13 @@
       <div id="messages-body" class="ad-table">
         <div class="table-wrap overflow-x-auto">
           <table class="data-table" id="messages-table">
+            <caption class="sr-only">{{t "admin.caption.messages"}}</caption>
             <thead>
               <tr>
-                <th>{{t "admin.messages.type"}}</th>
-                <th>{{t "admin.messages.source"}}</th>
-                <th>{{t "admin.messages.namespace"}}</th>
-                <th>{{t "admin.messages.time"}}</th>
+                <th scope="col">{{t "admin.messages.type"}}</th>
+                <th scope="col">{{t "admin.messages.source"}}</th>
+                <th scope="col">{{t "admin.messages.namespace"}}</th>
+                <th scope="col">{{t "admin.messages.time"}}</th>
               </tr>
             </thead>
             <tbody id="messages-tbody"></tbody>
@@ -449,12 +451,13 @@
       <div id="sessions-body" class="ad-table">
         <div class="table-wrap overflow-x-auto">
           <table class="data-table" id="sessions-table">
+            <caption class="sr-only">{{t "admin.caption.sessions"}}</caption>
             <thead>
               <tr>
-                <th>{{t "admin.sessions.user"}}</th>
-                <th>{{t "admin.sessions.device"}}</th>
-                <th>{{t "admin.sessions.last_seen"}}</th>
-                <th>{{t "admin.sessions.expires"}}</th>
+                <th scope="col">{{t "admin.sessions.user"}}</th>
+                <th scope="col">{{t "admin.sessions.device"}}</th>
+                <th scope="col">{{t "admin.sessions.last_seen"}}</th>
+                <th scope="col">{{t "admin.sessions.expires"}}</th>
               </tr>
             </thead>
             <tbody id="sessions-tbody"></tbody>
