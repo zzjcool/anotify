@@ -110,19 +110,37 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		"note", "节点按每帧 lease.ack 的 expiresAt 自算本地 deadline，两侧用同一个数",
 	)
 
+	{
+		policy := cfg.RegistrationPolicy()
+		db.SetRegistrationPolicy(policy)
+		users := int64(-1) // -1 = 计数查询失败（不影响启动，闸门在事务里重新数）
+		if n, uerr := db.UserCount(ctx); uerr == nil {
+			users = n
+		}
+		slog.Info("registration policy configured",
+			"event", "server.registration.configured",
+			"policy", policy.String(),
+			"users_existing", users,
+			"accepting_registration", policy == store.RegistrationOpen || users == 0,
+			"note", "first-user-only = 库非空后注册入口一律 403 registration_closed；改策略需重启（ANOTIFY_REGISTRATION）",
+		)
+		if policy == store.RegistrationOpen {
+			slog.Warn("registration=open: anyone who can reach this hub can create an account",
+				"event", "server.registration.open",
+				"hint", "公网/隧道部署建议保持 first-user-only（不设 ANOTIFY_REGISTRATION 即为默认）",
+			)
+		}
+	}
+
 	// events 保留期（#229 / #005）：**生效值来自 system_config**，env 只在空库首次启动时播种。
 	//
 	// 必须打这一条：events 清理**不可逆**，运维要在重启后就能读到「这台机器会删 30 天前
 	// 的事件」还是「永不删、磁盘会一直涨」——两种后果完全不同，不能只留在文档里。
 	//
-	// 数字口径（`scripts/perf/c/s6-capacity.sh` a 段实测，与批次 4 的 s2-retention.sh
-	// 同量级）：一条空 payload 的 ingest 在磁盘上是 **679.9 B**（含派发剪枝留痕的额外行，
-	// 一条 ingest 落 2 行 events），1KB payload 是 **1908.7 B**。按 38 ev/s 算，
-	// 30 天窗口 ≈ 62.4 GiB（空 payload）/ 175.1 GiB（1KB）。
-	// 完整的容量表与复现口径见 docs/reports/capacity-and-backpressure.md。
-	//
-	// 调用点只负责「装配期做一次」，分支与字段在 reportEventRetention 里（那个函数带
-	// 一条确定性单测：日志里的数字必须是 system_config 的生效值，不是 env 的回显）。
+	// 数字口径（`scripts/perf/c/s6-capacity.sh` a 段实测）：空 payload 的 ingest 磁盘上
+	// **679.9 B**（一条 ingest 落 2 行 events），1KB payload **1908.7 B**；按 38 ev/s 算，
+	// 30 天窗口 ≈ 62.4 / 175.1 GiB。容量表与复现口径见 docs/reports/capacity-and-backpressure.md。
+	// 调用点只负责装配期做一次（分支与字段在 reportEventRetention，含确定性单测）。
 	reportEventRetention(ctx, db, cfg)
 
 	// 3. 认证（WebAuthn + API Key）
@@ -388,6 +406,8 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 注意 Go 1.22+ ServeMux 最长模式优先，/v1/auth/me 与 /v1/auth/sessions 会优先于 /v1/auth/。
 	mux.Handle("/v1/auth/me", noStore(sessMW(http.HandlerFunc(authH.me))))
 	mux.Handle("/v1/auth/sessions", noStore(sessMW(http.HandlerFunc(authH.sessions))))
+	// 自助注册策略（#574）：匿名只读，登录页据此隐藏注册 tab。
+	mux.Handle("GET /v1/auth/registration", noStore(http.HandlerFunc(authH.registrationStatus)))
 	// Passkey 管理端点（需登录会话）：列表 / 补建凭证 / 重命名 / 删除。
 	// 独立于 /v1/auth/ 兜底注册，确保走 sessMW 鉴权（否则返回 401 而非 404）。
 	mux.Handle("/v1/auth/passkeys", noStore(sessMW(http.HandlerFunc(authH.passkeysRoot))))

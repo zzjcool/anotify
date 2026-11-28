@@ -373,7 +373,7 @@ async function firstRunCase() {
 async function main() {
 	H.startTimer();
 	console.log("=== SUITE: auth_flow（Passkey 全流程 · 虚拟认证器）===");
-	server = await H.startServer({ suiteName: "auth_flow", rpId: RP });
+	server = await H.startServer({ suiteName: "auth_flow", rpId: RP, extraEnv: { ANOTIFY_REGISTRATION: "open" } });
 	browser = await chromium.launch({
 		channel: "chrome",
 		headless: true,

@@ -13,6 +13,7 @@ import (
 
 	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/route"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
 // 保留期 / 背压的默认值（#229 / #228）。
@@ -46,6 +47,15 @@ const (
 	// 出现两个默认值就是「升级前后行为不一致」的来源。
 	defaultMaxHops         = route.DefaultMaxHops
 	defaultTraceTaskBudget = route.DefaultTraceTaskBudget
+
+	// 自助注册策略（#574）：默认 first-user-only = 升级后立刻关闭匿名注册（见 CHANGELOG）；
+	// invite 是第 2 步的值（未落地，配了拒绝启动）；closed 是派生状态，不是配置取值。
+	registrationFirstUserOnly = "first-user-only"
+	registrationOpen          = "open"
+	registrationInvite        = "invite"
+	registrationClosed        = "closed"
+
+	defaultRegistration = registrationFirstUserOnly
 )
 
 // Config 服务配置（全部可用环境变量覆盖）。
@@ -186,30 +196,21 @@ type Config struct {
 	ArtifactGCIntervalSec int
 
 	// CapabilityGCIntervalSec 是已删能力（capability tombstone）**物理回收**的周期（秒，issue 003）。
-	//
-	// 语义（解析见 capabilityGCIntervalFromEnv，与 ArtifactGCIntervalSec 逐字同构）：
-	//   - 未设置 / 手滑 → 3600（1 小时）；
-	//   - "0" / 负数     → **禁用**周期回收（显式运维选择：tombstone 会一直留着）；
-	//   - 正数           → 原值（上限 1 天）。
-	//
-	// 为什么默认 1 小时而不是照抄产物 GC 的 5 分钟：purge 仍要扫 `capability_versions`
-	// 的全部 tombstone、按安装数扫回执的 `json_tree` 并临时 B 树排序，全程持
-	// `BEGIN IMMEDIATE` 写锁（引用列已走索引，#628；剩下的扫描归 #551）：按分钟级跑等于
-	// 持续与事件入口抢写锁，而 tombstone 是「个位数/天」量级。
+	// 语义同 ArtifactGCIntervalSec：未设置/手滑 → 3600；"0"/负数 → 禁用；正数 → 原值（上限 1 天）。
+	// 默认 1 小时而不是 5 分钟：purge 全程持 `BEGIN IMMEDIATE` 写锁扫 tombstone 与回执
+	// `json_tree`（#628/#551），按分钟跑等于持续与事件入口抢写锁。
 	CapabilityGCIntervalSec int
 
-	// LeaseTTL 是中枢授予/续租的租约时长（#661）。
-	//
-	// 语义（解析见 leaseTTLFromEnv，校验见 Validate）：
-	//   - 未设置 / 空 → 默认（protocol.DefaultLeaseTTL = 180s）；
-	//   - "180s" / "3m" / "180"（纯数字按秒）→ 原值；
-	//   - 其它（0 / 负数 / 低于协议下限 60s / 与续租间隔不成比例 / 写错）→
-	//     **启动即拒**（不像保留期那样回落默认）。
-	//
-	// 为什么“写错就拒”而不是静默回落：缩小的租约不会报错，只会让整单任务在隧道抽一下
-	// 时被判失联（#661：10–37 分钟的 implement 一步被 60s 抖动作废），而回落的默认值
-	// 恰好比运维想配的**更小**。类型是 time.Duration，与协议侧同一单位口径。
+	// LeaseTTL 是中枢授予/续租的租约时长（#661）：未设置/空 → 协议默认 180s；
+	// "180s"/"3m"/"180"（纯数字按秒）→ 原值；其它（0/负数/低于下限/写错）→ 启动即拒。
+	// 写错就拒而不是回落默认：缩小的租约是**静默**的危险（#661 隧道抖一下整单失联），
+	// 而回落值往往正好比运维想配的更小。
 	LeaseTTL time.Duration
+
+	// Registration 是自助注册策略（#574，ANOTIFY_REGISTRATION）：first-user-only（默认，
+	// 仅空库首个用户可注册，之后 403）/ open（任何人可注册，启动 WARN）/ invite（未实现，拒绝启动）。
+	// 闸门在 store 的注册事务里（判定与 INSERT 同事务），这里只解析、校验、装配期注入。
+	Registration string
 }
 
 // hookRateLimits 把两个字段归宿成最终额度（perToken, perIP）。
@@ -496,6 +497,32 @@ func (c Config) LeaseGrantTTL() time.Duration {
 	return c.LeaseTTL
 }
 
+// registrationFromEnv 读 ANOTIFY_REGISTRATION：空 → def，其余归一后交给 Validate 判值域
+// （安全策略不做「非法值回落默认」——手滑的正确方向是拒绝启动，不是换回默认值）。
+func registrationFromEnv(key, def string) string {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if raw == "" {
+		return def
+	}
+	return raw
+}
+
+// registrationMode 归一到生效值（未设置 / 空 = 默认）。
+func (c Config) registrationMode() string {
+	if raw := strings.ToLower(strings.TrimSpace(c.Registration)); raw != "" {
+		return raw
+	}
+	return defaultRegistration
+}
+
+// RegistrationPolicy 把配置换成 store 的注册闸门；未知取值一律 first-user-only（fail-closed）。
+func (c Config) RegistrationPolicy() store.RegistrationPolicy {
+	if c.registrationMode() == registrationOpen {
+		return store.RegistrationOpen
+	}
+	return store.RegistrationFirstUserOnly
+}
+
 // leaseTTLFromEnv 读 ANOTIFY_LEASE_TTL（#661）。与同文件其它 *_from_env 不同，这里
 // 是「写错就拒」：未设置/空 → def（180s）；"180s"/"3m"/"180"（纯数字按秒）→ 原值；
 // 其它（含 0 / 负数 / 写错）→ -1 哨兵，由 Validate 带着原值报错。缩小的租约是**静默**
@@ -562,6 +589,9 @@ func FromEnv() Config {
 		LogFormat:  get("ANOTIFY_LOG_FORMAT", "json"),
 		BootID:     bootIDFromEnv(),
 		Pprof:      get("ANOTIFY_PPROF", "") != "",
+
+		// 自助注册策略（#574）：默认 first-user-only，非法值由 Validate 拦在启动那一刻。
+		Registration: registrationFromEnv("ANOTIFY_REGISTRATION", defaultRegistration),
 
 		// hooks 入口双维度限流（issue #245）：每 token 600/min、每 IP 1200/min 为默认。
 		HookRatePerMin:      hookRateFromEnv("ANOTIFY_HOOK_RATE_PER_MIN", defaultHookRatePerMin),
@@ -658,6 +688,16 @@ func (c Config) Validate() error {
 	// 带上 env 里的原值，否则运维只会看到「低于下限」却不知道自己配了什么。
 	if err := protocol.ValidateLeaseTTL(c.LeaseGrantTTL(), protocol.LeaseRenewInterval); err != nil {
 		return fmt.Errorf("ANOTIFY_LEASE_TTL 非法（当前 %q）：%w", os.Getenv("ANOTIFY_LEASE_TTL"), err)
+	}
+	// 自助注册策略（#574）：值域外的取值启动即拒；invite 单独报「尚未实现」。
+	switch c.registrationMode() {
+	case registrationFirstUserOnly, registrationOpen:
+	case registrationInvite:
+		return fmt.Errorf("ANOTIFY_REGISTRATION=invite 尚未实现（邀请表随 #574 第 2 步落地）；"+
+			"请用 %q（空库首注册，默认）或 %q", registrationFirstUserOnly, registrationOpen)
+	default:
+		return fmt.Errorf("ANOTIFY_REGISTRATION 非法（当前 %q）：只接受 %q / %q",
+			c.registrationMode(), registrationFirstUserOnly, registrationOpen)
 	}
 	return nil
 }

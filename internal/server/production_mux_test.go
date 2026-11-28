@@ -35,7 +35,15 @@ import (
 //   - Pprof 关闭。
 //
 // 这三条正是「不带可选配置也要能起来」的验收；把它们配齐再测反而掩盖启动期分支。
+//
+// 与生产默认的一处有意的差异：注册策略放开（#574）—— 整机用例常在起服务后建第二个
+// 夹具用户，first-user-only 会把它们拒掉；策略本身由 registration_policy_test.go 覆盖。
 func newProductionAppForTest(t *testing.T) *App {
+	t.Helper()
+	return newProductionAppWithConfig(t, func(cfg *Config) { cfg.Registration = registrationOpen })
+}
+
+func newProductionAppWithConfig(t *testing.T, mutate func(*Config)) *App {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := FromEnv()
@@ -45,6 +53,9 @@ func newProductionAppForTest(t *testing.T) *App {
 	cfg.RPID = "localhost"
 	cfg.RPOrigin = "http://localhost"
 	cfg.Pprof = false
+	if mutate != nil {
+		mutate(&cfg)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	app := NewApp(ctx, cfg)
