@@ -25,6 +25,7 @@ spec:
     values: [vars.REPO_DIR]
   lifecycle:
     idempotent: false
+    maxAttempts: 1  # 在上一轮的分支上追加提交：重跑会与同一分支上已有提交打架（#669）
     timeoutSec: 3600
     idleTimeoutSec: 900
     onFailure:

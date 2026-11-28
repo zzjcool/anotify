@@ -16,7 +16,8 @@ spec:
   requires:
     commands: [curl]
   lifecycle:
-    idempotent: true                        # 短暂基础设施失败允许自动重试
+    idempotent: false                       # 每次真的 POST 一次告警：重跑 = 重复告警（#669）
+    maxAttempts: 1
     timeoutSec: 60
   run:
     entrypoint: run.sh

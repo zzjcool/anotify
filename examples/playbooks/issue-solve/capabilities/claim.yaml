@@ -20,6 +20,7 @@ spec:
     commands: [curl, grep, sed]
   lifecycle:
     idempotent: true
+    maxAttempts: 3  # 两次 emit 都带 --id：重跑不会重复派发/重复造单（#669）
     timeoutSec: 90
   run:
     entrypoint: run.sh
@@ -93,13 +94,13 @@ spec:
 
         if grep -qE '"name": *"(needs-human|needs-decision)"|需裁决|需要决策' "${art_dir}/issue.json"; then
           verdict gate "needs_human" "命中需裁决信号（label 或正文）"
-          anode emit '{{values.project}}-issue-gate' --data \
+          anode emit '{{values.project}}-issue-gate' --id claim-gate --data \
             "{\"repo\":\"${repo}\",\"issue\":${issue},\"title\":\"$(json_str "${title}")\",\"reason\":\"needs_human\",\"note\":\"$(json_str "${note}")\"}"
           exit 0
         fi
 
         verdict go "claimable" "${title}"
-        anode emit '{{values.project}}-issue-dispatch' --data \
+        anode emit '{{values.project}}-issue-dispatch' --id claim-dispatch --data \
           "{\"repo\":\"${repo}\",\"issue\":${issue},\"title\":\"$(json_str "${title}")\",\"note\":\"$(json_str "${note}")\"}"
     env:
       GITHUB_API: 'https://api.github.com'

@@ -203,6 +203,15 @@ curl -sb /tmp/anotify.jar -X POST "$B/v1/namespaces/$NS/playbooks/pr-triage-noti
 
 ## 几条必须知道的边界
 
+- **重跑判据是 `maxAttempts`，不是 `idempotent`**（#669）：租约失联后是否重跑只看
+  `lifecycle.maxAttempts`（总尝试次数，含第一次；省略 = 3 次预算）。判据是「重跑的副作用能不能
+  用 `emit --id` 去省」：triage 的 emit 都带 `--id`（同 task 同 id 跨 attempt 只派发一次），
+  所以它写 `maxAttempts: 3`；audit 每次追加一行证据、page 每次 POST 一次告警，这两个副作用
+  不可去省，所以写 `maxAttempts: 1`（绝不重跑）。
+  `--id` 的代价：同 id 换了 data（例如两次 attempt 之间上游数据被人改了）会 409
+  `emit_id_conflict`（exit 6），任务红着留给人 —— 它能防重复派发，但不能代替人去判断该不该重投。
+  triage 因此仍会在写入回执里带一条 `warnings[]`（`idempotent: false` + 预算 3 就是这个形状）——
+  **预期**：它不严格幂等（被调度两次会真跑两次脚本），但重跑不会再建下游任务，不必为消掉提示改成 1。
 - **包体可以换，装出来的东西不会跟着变**：PUT 是整体替换包体（要带 `metadata.resourceVersion`），
   但安装只做加法 —— 已经建出来的能力/源不会被改写，要让改动生效就在 PUT 之后再装一次
   （正文变了会作为新版本落库），或者换个 slug 建新包。同名重复 POST 是 409 `slug_taken`。

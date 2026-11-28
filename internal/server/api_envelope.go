@@ -55,6 +55,7 @@ type apiEnvelope struct {
 	Metadata   objectMeta `json:"metadata"`
 	Spec       any        `json:"spec"`
 	Status     any        `json:"status"`
+	Warnings   []string   `json:"warnings,omitempty"` // 写入期非致命提示（§3.1 可选顶层数组，元素是 string，#669）；空时整键省略
 }
 
 type listMeta struct {

@@ -27,6 +27,7 @@ spec:
     values: [vars.REPO_DIR]
   lifecycle:
     idempotent: false
+    maxAttempts: 1  # 重跑会 reset 到基线再建同名分支 pi-subagent/issue-<n>-r<round>，与上一轮的推送撞车（#669）
     timeoutSec: 3600
     idleTimeoutSec: 900
     onFailure:

@@ -54,7 +54,7 @@ spec:
           fieldRef: {fieldPath: vars.SOURCE_ROOT}
     workDir: $(vars.SOURCE_ROOT)
   lifecycle:
-    # 跑测试通常可以重放；idempotent 只影响「短暂基础设施失败」是否自动重试。
+    # 跑测试通常可以重放；idempotent 只是事实声明，重跑判据是 maxAttempts 预算（#669）。
     idempotent: true
     timeoutSec: 1800
   concurrency:

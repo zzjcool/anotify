@@ -13,6 +13,9 @@ spec:
       commit:       { type: string }
       changedLines: { type: integer }
   next: []
+  lifecycle:
+    idempotent: false
+    maxAttempts: 1  # 每次真的追加一行 audit.log：重跑 = 重复留证（#669）
   run:
     entrypoint: run.sh
     files:

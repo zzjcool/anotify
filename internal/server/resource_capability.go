@@ -465,6 +465,7 @@ func (a *capabilityAPI) createCore(w http.ResponseWriter, r *http.Request, meta 
 		writeAPIError(w, err)
 		return
 	}
+	env.Warnings = artifact.Warnings(capabilityArtifact(cv))
 	writeEnvelope(w, http.StatusCreated, env)
 }
 
@@ -535,6 +536,7 @@ func (a *capabilityAPI) patch(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	env.Warnings = artifact.Warnings(capabilityArtifact(updated))
 	writeEnvelope(w, http.StatusOK, env)
 }
 

@@ -25,6 +25,7 @@ spec:
     values: [vars.REPO_DIR]
   lifecycle:
     idempotent: false
+    maxAttempts: 3  # 评论会重复一条；emit 都带 --id，同 task 同 id 跨 attempt 只派发一次（#669）
     timeoutSec: 1800
     idleTimeoutSec: 900
     onFailure:
@@ -97,12 +98,13 @@ spec:
 
         if [ "$outcome" = invalid ]; then
           reason=$(sed -n 's/.*"reason": *"\([^"]*\)".*/\1/p' "$verdict" | head -1)
-          gh issue close "$issue" --repo "$repo" --comment "按自动判定关闭：${reason:-issue 不成立}"
-          anode emit '{{values.project}}-record' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"closed\"}"
+          gh issue close "$issue" --repo "$repo" --comment "按自动判定关闭：${reason:-issue 不成立}" ||
+            echo "gh issue close 失败（已关闭的 issue 再关会被 Github 拒）：不吞，记在任务日志里" >&2  # 重跑容忍这一支
+          anode emit '{{values.project}}-record' --id triage-closed --data "{\"repo\":\"$repo\",\"issue\":$issue,\"outcome\":\"closed\"}"
           exit 0
         fi
 
-        anode emit '{{values.project}}-implement' --data "{\"repo\":\"$repo\",\"issue\":$issue,\"round\":1}"
+        anode emit '{{values.project}}-implement' --id triage-implement --data "{\"repo\":\"$repo\",\"issue\":$issue,\"round\":1}"
     env:
       REPO_DIR:
         valueFrom:

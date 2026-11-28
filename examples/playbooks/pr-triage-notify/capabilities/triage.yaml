@@ -24,6 +24,9 @@ spec:
     commands: [anode]
   concurrency:
     maxPerNode: 2
+  lifecycle:
+    idempotent: false
+    maxAttempts: 3  # 每次 emit 都带 --id：同 task 同 id 跨 attempt 只派发一次（#669）
   run:
     entrypoint: run.sh
     files:
@@ -46,9 +49,11 @@ spec:
         if [ "${lines}" -ge "${threshold}" ]; then
           echo "triage: 高危 → {{values.project}}-page"
           anode emit '{{values.project}}-page' \
+            --id triage-page \
             --data "{\"repo\":\"${repo}\",\"commit\":\"${commit}\",\"changedLines\":${lines}}"
         else
           echo "triage: 常规 → {{values.project}}-audit"
           anode emit '{{values.project}}-audit' \
+            --id triage-audit \
             --data "{\"repo\":\"${repo}\",\"commit\":\"${commit}\",\"changedLines\":${lines}}"
         fi
