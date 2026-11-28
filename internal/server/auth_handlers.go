@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/logging"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -132,8 +133,17 @@ func (h *authHandler) loginOptions(w http.ResponseWriter, r *http.Request) {
 	} else {
 		opts, err = h.svc.BeginDiscoverableLogin(req.Token)
 	}
-	if err != nil {
-		writeErr(w, 400, err.Error())
+	if err != nil { // 用户面错误回 400 固定文案；库层内部原文只进日志（writeInternal → 500）
+		switch {
+		case errors.Is(err, auth.ErrAccountDisabled):
+			writeErr(w, 400, "账户已被禁用，请联系管理员")
+		case errors.Is(err, auth.ErrLoginUserNotFound):
+			writeErr(w, 400, "用户不存在")
+		case errors.Is(err, auth.ErrNoPasskey):
+			writeErr(w, 400, "该账户还没有 Passkey，请使用密码登录")
+		default:
+			writeInternal(w, err)
+		}
 		return
 	}
 	writeJSON(w, 200, opts)
@@ -159,9 +169,10 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("login failed",
 			"event", "auth.login.fail",
 			"ip", clientIP(r),
+			"request_id", logging.RequestID(r.Context()),
 			"error", err.Error(),
 		)
-		writeErr(w, 401, err.Error())
+		writeErr(w, 401, "登录失败，请重新发起登录")
 		return
 	}
 	h.svc.Sessions().SetCookie(w, sessID)
@@ -258,7 +269,7 @@ func (h *authHandler) sessions(w http.ResponseWriter, r *http.Request) {
 	}
 	list, err := h.db.ListSessionsByUserPage(r.Context(), uid, afterAt, afterID, limit+1)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	list, cont := pageCut(list, limit, binding, func(s *store.Session) []string {
@@ -366,7 +377,7 @@ func (h *authHandler) listPasskeys(w http.ResponseWriter, r *http.Request) {
 	}
 	recs, err := h.db.ListPasskeysByUserPage(r.Context(), uid, afterAt, afterID, limit+1)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	recs, cont := pageCut(recs, limit, binding, func(p *store.Passkey) []string {
@@ -460,7 +471,7 @@ func (h *authHandler) renamePasskey(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	if err := h.svc.RenamePasskey(id, req.Name); err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	slog.Info("passkey renamed",
@@ -492,7 +503,7 @@ func (h *authHandler) deletePasskey(w http.ResponseWriter, r *http.Request, id s
 	// 否则删完只能靠恢复码兜底。
 	list, err := h.svc.ListPasskeys(uid)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	if len(list) <= 1 {
@@ -526,7 +537,7 @@ func (h *authHandler) deletePasskey(w http.ResponseWriter, r *http.Request, id s
 		}
 	}
 	if err := h.svc.DeletePasskey(id); err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	slog.Info("passkey deleted",
@@ -571,9 +582,17 @@ func (h *authHandler) passwordLogin(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("password login failed",
 			"event", "auth.password.login_fail",
 			"ip", clientIP(r),
+			"request_id", logging.RequestID(r.Context()),
 			"error", err.Error(),
 		)
-		writeErr(w, 401, err.Error())
+		msg := "用户名或密码错误"
+		switch {
+		case errors.Is(err, auth.ErrPasswordNotSet):
+			msg = "该账户未设置密码，请使用 Passkey 登录"
+		case errors.Is(err, auth.ErrAccountDisabled):
+			msg = "账户已被禁用，请联系管理员"
+		}
+		writeErr(w, http.StatusUnauthorized, msg)
 		return
 	}
 	h.svc.Sessions().SetCookie(w, sessID)
@@ -667,7 +686,7 @@ func (h *authHandler) passwordStatus(w http.ResponseWriter, uid string) {
 	st, err := h.svc.PasswordStatus(uid)
 	if err != nil {
 		// 会话中间件已经验过用户存在，走到这里基本是库故障 → 500（不伪造“未设置”）。
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{
@@ -751,10 +770,15 @@ func (h *authHandler) recoveryLogin(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("recovery login failed",
 			"event", "auth.recovery.login_fail",
 			"ip", clientIP(r),
+			"request_id", logging.RequestID(r.Context()),
 			"error", err.Error(),
 		)
-		// 账户禁用用 401；其余统一 401（不区分用户/码错误）。
-		writeErr(w, 401, err.Error())
+		// 账户禁用用固定文案（不泄露内部串）；其余统一 401（不区分用户/码错误）。
+		msg := "用户名或恢复码错误"
+		if errors.Is(err, auth.ErrAccountDisabled) {
+			msg = "账户已被禁用，请联系管理员"
+		}
+		writeErr(w, 401, msg)
 		return
 	}
 	h.svc.Sessions().SetCookie(w, sessID)
@@ -800,7 +824,7 @@ func (h *authHandler) recoveryStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := h.svc.RecoveryStatus(uid)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"unusedCount": n, "hasCodes": n > 0})

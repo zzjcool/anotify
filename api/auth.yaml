@@ -105,7 +105,8 @@ paths:
       description: |
         匿名端点，两种模式：
 
-        - 给了 `username`：指定用户的 assertion options（用户不存在 / 已禁用 → `400`）
+        - 给了 `username`：指定用户的 assertion options（用户不存在 / 已禁用 /
+          该账户还没有 Passkey → `400`，文案固定）
         - 没给 `username`：**discoverable（免用户名）登录**，用 `token` 作为 challenge 的暂存键
           （调用方自带，`POST /v1/auth/login?token=` 时回传同一个值）
 
@@ -134,7 +135,8 @@ paths:
         匿名端点。`username` 或 `token` 走 **query**（二选一，对应 options 阶段的两条路径），
         body 是裸 WebAuthn assertion JSON。校验通过后签会话 Cookie（设备名从 UA 推断）。
 
-        失败统一 `401`（不区分「用户不存在 / 断言无效 / 账户禁用」），文案原样给前端。
+        失败统一 `401`（不区分「用户不存在 / 断言无效 / 账户禁用」），文案固定
+        （内部原文只进日志，对账用响应头 `X-Request-Id`）。
       operationId: login
       security: []
       parameters:
@@ -190,7 +192,8 @@ paths:
         限速 **双维度**：10/min/IP + 10/min/username（小写），两维都放行才继续；
         超限 `429` + `Retry-After`。限速判定先于读 body。
 
-        错误：缺字段 `400`；码错 / 用户不存在 / 账户禁用 `401`（不区分，防枚举）。
+        错误：缺字段 `400`；码错 / 用户不存在 `401`（同一句，防枚举）；
+        账户禁用 `401` + 固定文案（要告知用户去找管理员，否则是死胡同）。
       operationId: recoveryLogin
       security: []
       requestBody:

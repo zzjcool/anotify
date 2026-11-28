@@ -79,11 +79,11 @@ NON_V1_API_PATHS = {"/agent-login.sh"}
 NON_SPEC_ROUTES = {
     "/": "静态资源 / SPA 兜底（resolveStatic），不是 API",
     "/health": "探活端点（mux.go 内联），只给 e2e/运维用，不属于产品 API 契约",
-    "/debug/pprof/": "调试端点，仅 ANOTIFY_PPROF=1 时注册",
-    "/debug/pprof/cmdline": "调试端点，仅 ANOTIFY_PPROF=1 时注册",
-    "/debug/pprof/profile": "调试端点，仅 ANOTIFY_PPROF=1 时注册",
-    "/debug/pprof/symbol": "调试端点，仅 ANOTIFY_PPROF=1 时注册",
-    "/debug/pprof/trace": "调试端点，仅 ANOTIFY_PPROF=1 时注册",
+    "/debug/pprof/": "pprof 由独立监听 ANOTIFY_PPROF_ADDR 提供（#624），不挂在业务 mux 上",
+    "/debug/pprof/cmdline": "pprof 由独立监听 ANOTIFY_PPROF_ADDR 提供（#624），不挂在业务 mux 上",
+    "/debug/pprof/profile": "pprof 由独立监听 ANOTIFY_PPROF_ADDR 提供（#624），不挂在业务 mux 上",
+    "/debug/pprof/symbol": "pprof 由独立监听 ANOTIFY_PPROF_ADDR 提供（#624），不挂在业务 mux 上",
+    "/debug/pprof/trace": "pprof 由独立监听 ANOTIFY_PPROF_ADDR 提供（#624），不挂在业务 mux 上",
 }
 
 # 显式豁免「必须有 4xx/5xx 响应」的真实端点（每条都要给出理由）。

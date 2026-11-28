@@ -225,3 +225,30 @@ func TestRecovery_HTTP_LoginRateLimitUser(t *testing.T) {
 		t.Fatalf("4th attempt should 429, got %d %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestRecovery_HTTP_LoginDisabledAccount(t *testing.T) {
+	env := newRecoveryTestEnv(t)
+	rr := recReq(t, env, "POST", "/v1/auth/recovery/regenerate", nil, true)
+	if rr.Code != 200 {
+		t.Fatalf("regenerate: %d %s", rr.Code, rr.Body.String())
+	}
+	var regen map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &regen); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	code := regen["recoveryCodes"].([]any)[0].(string)
+	if _, err := env.db.UpdateUserDisabled(context.Background(), env.userID, true); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+
+	rr = recReq(t, env, "POST", "/v1/auth/recovery/login", map[string]string{
+		"username": env.username, "code": code,
+	}, false)
+	if rr.Code != 401 {
+		t.Fatalf("禁用账号用恢复码登录应 401, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	msg, _ := decodeBody(t, rr)["error"].(string)
+	if msg != "账户已被禁用，请联系管理员" {
+		t.Fatalf("文案 = %q，期望固定的「账户已被禁用，请联系管理员」", msg)
+	}
+}

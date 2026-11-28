@@ -118,7 +118,7 @@ func (h *adminHandler) stats(w http.ResponseWriter, r *http.Request) {
 	since := store.Now() - 371*86400
 	s, err := h.db.SystemStats(r.Context(), since)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	writeJSON(w, 200, s)
@@ -147,7 +147,7 @@ func (h *adminHandler) listUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	users, err := h.db.ListUsersWithStatsPage(r.Context(), afterAt, afterID, limit+1)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	users, cont := pageCut(users, limit, binding, func(u *store.UserWithStats) []string {
@@ -165,7 +165,7 @@ func (h *adminHandler) listUsers(w http.ResponseWriter, r *http.Request) {
 func (h *adminHandler) getUser(w http.ResponseWriter, r *http.Request, id string) {
 	all, err := h.db.ListUsersWithStats(r.Context())
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	for _, u := range all {
@@ -190,13 +190,13 @@ func (h *adminHandler) patchUser(w http.ResponseWriter, r *http.Request, id stri
 	}
 	if req.Role != nil {
 		if err := h.applyRoleChange(r, id, *req.Role, uid); err != nil {
-			writeErr(w, err.code, err.msg)
+			writeAdminErr(w, err)
 			return
 		}
 	}
 	if req.Disabled != nil {
 		if err := h.applyDisabledChange(r, id, *req.Disabled, uid); err != nil {
-			writeErr(w, err.code, err.msg)
+			writeAdminErr(w, err)
 			return
 		}
 	}
@@ -214,18 +214,36 @@ func (h *adminHandler) changeRole(w http.ResponseWriter, r *http.Request, id str
 		return
 	}
 	if err := h.applyRoleChange(r, id, req.Role, uid); err != nil {
-		writeErr(w, err.code, err.msg)
+		writeAdminErr(w, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 type adminErr struct {
-	code int
-	msg  string
+	code  int
+	msg   string
+	cause error
 }
 
 func (e adminErr) Error() string { return e.msg }
+
+func adminInternalErr(err error) *adminErr {
+	return &adminErr{code: http.StatusInternalServerError, msg: internalErrMsg, cause: err}
+}
+
+func writeAdminErr(w http.ResponseWriter, err *adminErr) {
+	if err.cause != nil {
+		logInternal(w, err.cause)
+		writeErr(w, http.StatusInternalServerError, internalErrMsg)
+		return
+	}
+	if err.code == http.StatusInternalServerError {
+		writeErr(w, err.code, internalErrMsg)
+		return
+	}
+	writeErr(w, err.code, err.msg)
+}
 
 // applyRoleChange 执行角色变更校验与持久化。
 // - 角色必须是 admin/member
@@ -235,33 +253,33 @@ func (h *adminHandler) applyRoleChange(r *http.Request, id, role string, actorID
 	switch role {
 	case store.RoleAdmin, store.RoleMember:
 	default:
-		return &adminErr{400, "role 仅支持 admin|member"}
+		return &adminErr{code: 400, msg: "role 仅支持 admin|member"}
 	}
 	if id == actorID {
-		return &adminErr{409, "不能修改自己的角色"}
+		return &adminErr{code: 409, msg: "不能修改自己的角色"}
 	}
 	// 降权最后一个 admin 需拦截
 	if role == store.RoleMember {
 		target, err := h.db.GetUserByID(id)
 		if err != nil {
-			return &adminErr{404, "用户不存在"}
+			return &adminErr{code: 404, msg: "用户不存在"}
 		}
 		if target.Role == store.RoleAdmin {
 			cnt, err := h.db.AdminCount(r.Context())
 			if err != nil {
-				return &adminErr{500, err.Error()}
+				return adminInternalErr(err)
 			}
 			if cnt <= 1 {
-				return &adminErr{409, "至少保留一个超级管理员，无法降权最后一个 admin"}
+				return &adminErr{code: 409, msg: "至少保留一个超级管理员，无法降权最后一个 admin"}
 			}
 		}
 	}
 	n, err := h.db.UpdateUserRole(r.Context(), id, role)
 	if err != nil {
-		return &adminErr{500, err.Error()}
+		return adminInternalErr(err)
 	}
 	if n == 0 {
-		return &adminErr{404, "用户不存在"}
+		return &adminErr{code: 404, msg: "用户不存在"}
 	}
 	slog.Info("admin: user role changed",
 		"event", "admin.user.role_changed",
@@ -276,7 +294,7 @@ func (h *adminHandler) applyRoleChange(r *http.Request, id, role string, actorID
 func (h *adminHandler) setDisabled(w http.ResponseWriter, r *http.Request, id string, disabled bool) {
 	uid := auth.UserIDFromContext(r.Context())
 	if err := h.applyDisabledChange(r, id, disabled, uid); err != nil {
-		writeErr(w, err.code, err.msg)
+		writeAdminErr(w, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
@@ -287,29 +305,29 @@ func (h *adminHandler) setDisabled(w http.ResponseWriter, r *http.Request, id st
 // - 禁用最后一个 admin 需拦截（防误锁唯一超管）
 func (h *adminHandler) applyDisabledChange(r *http.Request, id string, disabled bool, actorID string) *adminErr {
 	if id == actorID {
-		return &adminErr{409, "不能禁用自己的账户"}
+		return &adminErr{code: 409, msg: "不能禁用自己的账户"}
 	}
 	if disabled {
 		target, err := h.db.GetUserByID(id)
 		if err != nil {
-			return &adminErr{404, "用户不存在"}
+			return &adminErr{code: 404, msg: "用户不存在"}
 		}
 		if target.Role == store.RoleAdmin {
 			cnt, err := h.db.AdminCount(r.Context())
 			if err != nil {
-				return &adminErr{500, err.Error()}
+				return adminInternalErr(err)
 			}
 			if cnt <= 1 {
-				return &adminErr{409, "至少保留一个启用的超级管理员，无法禁用最后一个 admin"}
+				return &adminErr{code: 409, msg: "至少保留一个启用的超级管理员，无法禁用最后一个 admin"}
 			}
 		}
 	}
 	n, err := h.db.UpdateUserDisabled(r.Context(), id, disabled)
 	if err != nil {
-		return &adminErr{500, err.Error()}
+		return adminInternalErr(err)
 	}
 	if n == 0 {
-		return &adminErr{404, "用户不存在"}
+		return &adminErr{code: 404, msg: "用户不存在"}
 	}
 	// API Key 缓存也要失效（#254）：ValidateKey 的缓存命中路径不查库，
 	// 不 bump 的话"禁用后 key 还能用"会一直持续到条目自然过期（**默认 60s**，
@@ -344,7 +362,7 @@ func (h *adminHandler) listMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	events, err := h.db.ListGlobalEvents(r.Context(), limit)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"messages": events, "count": len(events)})
@@ -354,7 +372,7 @@ func (h *adminHandler) listMessages(w http.ResponseWriter, r *http.Request) {
 func (h *adminHandler) listSessions(w http.ResponseWriter, r *http.Request) {
 	sessions, err := h.db.ListAllSessions(r.Context())
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	if sessions == nil {

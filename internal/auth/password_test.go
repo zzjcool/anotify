@@ -157,8 +157,8 @@ func TestPassword_LoginFailureMapping(t *testing.T) {
 	}
 	if _, err := svc.LoginWithPassword("pwdisabled", "correct horse battery", "UA"); err == nil {
 		t.Fatal("禁用账号不应能登录")
-	} else if !strings.Contains(err.Error(), "禁用") {
-		t.Errorf("want disabled error, got %v", err)
+	} else if !errors.Is(err, ErrAccountDisabled) {
+		t.Errorf("want ErrAccountDisabled, got %v", err)
 	}
 
 	// 5) 哈希坏掉（数据被外部改坏）→ 凭据错误，不能 500。

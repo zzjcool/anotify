@@ -349,16 +349,19 @@ func (s *Service) BeginLogin(username string) (*protocol.CredentialAssertion, er
 	user, err := s.db.GetUserByUsername(username)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, errors.New("auth: 用户不存在")
+			return nil, ErrLoginUserNotFound
 		}
 		return nil, fmt.Errorf("auth: 登录失败，请稍后重试: %w", err)
 	}
 	if user.Disabled {
-		return nil, errors.New("auth: 账户已被禁用")
+		return nil, ErrAccountDisabled
 	}
 	waUser, err := s.loadWebAuthnUser(user)
 	if err != nil {
 		return nil, err
+	}
+	if len(waUser.WebAuthnCredentials()) == 0 { // 空凭证让库回 ErrBadRequest（内部错误形状），映射不出用户面 4xx（#624）
+		return nil, ErrNoPasskey
 	}
 	assertion, session, err := s.wa.BeginLogin(waUser)
 	if err != nil {
@@ -373,7 +376,7 @@ func (s *Service) FinishLogin(username string, r *http.Request) (sessionID strin
 	user, err := s.db.GetUserByUsername(username)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return "", errors.New("auth: 用户不存在")
+			return "", ErrLoginUserNotFound
 		}
 		return "", fmt.Errorf("auth: 登录失败，请稍后重试: %w", err)
 	}

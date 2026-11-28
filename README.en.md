@@ -233,8 +233,10 @@ curl -X POST https://your-domain/v1/namespaces/{namespace}/events \
 | `ANOTIFY_DB` | `./anotify.db` | SQLite path |
 | `ANOTIFY_STATIC` | empty (embed) | Local static directory (dev: `./web`) |
 | `ANOTIFY_RP_ID` | `localhost` | WebAuthn RP domain (= access domain) |
-| `ANOTIFY_RP_ORIGIN` | `http://localhost:8080` | WebAuthn Origin (with protocol) |
+| `ANOTIFY_RP_ORIGIN` | `http://localhost:8080` | WebAuthn Origin (with protocol). **Only an explicit `https://…` gets a `Secure` session cookie**; behind a TLS-terminating proxy write `https://…` here, otherwise the cookie has no `Secure` (startup logs a `server.cookie.insecure` WARN) |
 | `ANOTIFY_CDN_PREFIX` | empty | CDN prefix (production static acceleration) |
+| `ANOTIFY_PPROF` | off | Profiling switch: only `1`/`true`/`yes`/`on` turns it on, `0`/`false`/`no`/`off` and unset keep it off, anything else **fails at startup**. pprof listens on its **own** address, never on the business port |
+| `ANOTIFY_PPROF_ADDR` | `127.0.0.1:6060` | pprof listen address (only used when `ANOTIFY_PPROF` is on; loopback-only by default) |
 
 ## File Structure
 

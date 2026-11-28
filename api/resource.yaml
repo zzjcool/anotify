@@ -4907,7 +4907,9 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/Status'}
     Status500:
-      description: "服务端内部错误"
+      description: |
+        服务端内部错误。`message` 是**固定**文案（内部原文只进日志），响应头
+        `X-Request-Id` 与该次请求日志里的 `request_id` 同值（报障时提供它即可对账）。
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Status'}
@@ -4989,7 +4991,9 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/AuthError'}
     AuthError500:
-      description: "服务端内部错误（auth 域会把底层错误文本放进 `error`）"
+      description: |
+        服务端内部错误。`error` 是**固定**文案（底层错误文本只进日志），响应头
+        `X-Request-Id` 与该次请求日志里的 `request_id` 同值（报障时提供它即可对账）。
       content:
         application/json:
           schema: {$ref: '#/components/schemas/AuthError'}

@@ -98,6 +98,8 @@ func accessLog(next http.Handler) http.Handler {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: 0}
 
+		sw.Header().Set(requestIDHeader, rid)
+
 		next.ServeHTTP(sw, r)
 
 		if sw.status == 0 {

@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/zzjcool/anotify/internal/authn"
+	"github.com/zzjcool/anotify/internal/logging"
 	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/source"
 	"github.com/zzjcool/anotify/internal/store"
@@ -292,12 +293,21 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		writeAPIStatus(w, http.StatusConflict, reasonResourceVersionConflict, err.Error())
 	case errors.Is(err, store.ErrSourceEventReceiptMissing):
 		// 回执缺行是**服务端**的不变量破了（写事件与写回执同事务），必须 5xx。
-		slog.Error("source event receipt missing", "event", "events.ingress.receipt_missing", "err", err.Error())
-		writeAPIStatus(w, http.StatusInternalServerError, reasonInternal, err.Error())
+		logInternalError(w, "events.ingress.receipt_missing", err)
+		writeAPIStatus(w, http.StatusInternalServerError, reasonInternal, InternalErrorMessage)
 	default:
-		slog.Error("event ingress failed", "event", "events.ingress.failed", "err", err.Error())
-		writeAPIStatus(w, http.StatusInternalServerError, reasonInternal, err.Error())
+		logInternalError(w, "events.ingress.failed", err)
+		writeAPIStatus(w, http.StatusInternalServerError, reasonInternal, InternalErrorMessage)
 	}
+}
+
+const InternalErrorMessage = "服务内部错误，请带上 requestId 联系管理员" // #624：库层原文只进日志；server 的同类 500 共用这一句
+
+func logInternalError(w http.ResponseWriter, event string, err error) {
+	slog.Error("internal error",
+		"event", event,
+		"request_id", w.Header().Get(logging.RequestIDHeader),
+		"error", err.Error())
 }
 
 // writeJSON 写一个 JSON 响应。

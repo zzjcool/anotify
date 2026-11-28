@@ -37,6 +37,7 @@ services:
     # 想让局域网直连就设 ANOTIFY_DEV_BIND=0.0.0.0。
     ports:
       - "${ANOTIFY_DEV_BIND:-127.0.0.1}:${ANOTIFY_DEV_PORT:-8080}:8080"
+      - "127.0.0.1:${ANOTIFY_DEV_PPROF_PORT:-6060}:6060"
     env_file:
       - .env.dev # RP / 域名等（由 make dev-env 生成，已在 .gitignore）
     environment:
@@ -49,6 +50,7 @@ services:
       ANOTIFY_LOG_LEVEL: ${ANOTIFY_LOG_LEVEL:-debug}
       # 开发环境开 pprof：性能排查用（生产默认关闭）
       ANOTIFY_PPROF: ${ANOTIFY_PPROF:-1}
+      ANOTIFY_PPROF_ADDR: 0.0.0.0:6060
     volumes:
       - anotify-dev-data:/data
     healthcheck:

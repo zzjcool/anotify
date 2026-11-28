@@ -61,12 +61,16 @@ type Config struct {
 	LogLevel   string // 日志级别：debug/info/warn/error，默认 info
 	LogFormat  string // 日志格式：json/text，默认 json
 
-	// Pprof 打开 /debug/pprof/*（性能评估用，默认关闭）。
+	// Pprof 打开 pprof 的**独立监听**（性能评估用，默认关闭）：端点不在业务 mux 上，暴露面只由 PprofAddr 决定。
 	//
 	// 为什么要有开关而不是始终开：pprof 端点会泄露 goroutine 栈与堆分布，
 	// 生产环境不该默认暴露。评估/排障时用 ANOTIFY_PPROF=1 打开，
 	// 采样完就关（pprof 的 CPU 采样本身有 ~5% 开销）。
 	Pprof bool
+
+	PprofAddr string // ANOTIFY_PPROF_ADDR：独立监听地址；Pprof=false 时不使用
+
+	pprofInvalid string // 非空 = ANOTIFY_PPROF 写了解析不了的值；Validate 拒绝启动并回显原值
 
 	// BootID 是**本次进程启动**的标识，由 /health 回显。
 	//
@@ -547,7 +551,7 @@ func cacheTTLFromEnv(key string, def time.Duration) time.Duration {
 
 // FromEnv 从环境变量加载配置。
 func FromEnv() Config {
-	return Config{
+	cfg := Config{
 		Addr:      get("ANOTIFY_ADDR", ":8080"),
 		DBPath:    get("ANOTIFY_DB", "./anotify.db"),
 		CDNPrefix: get("ANOTIFY_CDN_PREFIX", ""),
@@ -561,7 +565,7 @@ func FromEnv() Config {
 		LogLevel:   get("ANOTIFY_LOG_LEVEL", "info"),
 		LogFormat:  get("ANOTIFY_LOG_FORMAT", "json"),
 		BootID:     bootIDFromEnv(),
-		Pprof:      get("ANOTIFY_PPROF", "") != "",
+		PprofAddr:  get("ANOTIFY_PPROF_ADDR", "127.0.0.1:6060"),
 
 		// hooks 入口双维度限流（issue #245）：每 token 600/min、每 IP 1200/min 为默认。
 		HookRatePerMin:      hookRateFromEnv("ANOTIFY_HOOK_RATE_PER_MIN", defaultHookRatePerMin),
@@ -602,6 +606,19 @@ func FromEnv() Config {
 		MaxHops:         positiveIntFromEnv("ANOTIFY_MAX_HOPS", defaultMaxHops),
 		TraceTaskBudget: positiveIntFromEnv("ANOTIFY_TRACE_TASK_BUDGET", defaultTraceTaskBudget),
 	}
+	cfg.Pprof, cfg.pprofInvalid = pprofFromEnv()
+	return cfg
+}
+
+func pprofFromEnv() (on bool, invalid string) {
+	raw := os.Getenv("ANOTIFY_PPROF")
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "0", "false", "no", "off":
+		return false, ""
+	case "1", "true", "yes", "on":
+		return true, ""
+	}
+	return false, raw
 }
 
 // positiveIntFromEnv 读一个**必须为正整数**的额度环境变量。
@@ -641,6 +658,9 @@ func bootIDFromEnv() string {
 
 // Validate 校验关键配置。
 func (c Config) Validate() error {
+	if c.pprofInvalid != "" {
+		return fmt.Errorf("ANOTIFY_PPROF 取值非法（当前 %q）：只接受 1/true/yes/on 或 0/false/no/off", c.pprofInvalid)
+	}
 	// 派发预算必须是正整数（契约 §2）：非法值**启动即失败**，不静默用默认。
 	// 报错带上 env 里的原值，否则运维只会看到「必须是正整数」却不知道自己配了什么。
 	for _, it := range []struct {

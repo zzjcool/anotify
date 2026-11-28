@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/zzjcool/anotify/internal/api"
 	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/logging"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -18,6 +20,22 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+const internalErrMsg = api.InternalErrorMessage // 一条定义：internal/api 与 server 的 500 错误体不能漂
+
+const requestIDHeader = logging.RequestIDHeader // 一条定义：accessLog 写、logInternal 读（#624）
+
+func logInternal(w http.ResponseWriter, err error) {
+	slog.Error("internal error",
+		"event", "server.internal_error",
+		"request_id", w.Header().Get(requestIDHeader), // 从响应头回读：writeAPIError 的调用点没有 *http.Request，accessLog 进 handler 前已写入
+		"error", err.Error())
+}
+
+func writeInternal(w http.ResponseWriter, err error) {
+	logInternal(w, err)
+	writeErr(w, http.StatusInternalServerError, internalErrMsg)
 }
 
 func readJSON(r *http.Request, v any) error {
@@ -109,7 +127,7 @@ func (h *keysHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	recs, err := h.db.ListAPIKeysByUserPage(r.Context(), uid, afterAt, afterID, limit+1)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	recs, cont := pageCut(recs, limit, binding, func(k *store.APIKey) []string {
@@ -154,7 +172,7 @@ func (h *keysHandler) revoke(w http.ResponseWriter, r *http.Request, id string) 
 	// **同步**让该 key 的验证缓存失效（#227）。直接调 db 会绕过失效 → 被吊销的 key
 	// 还能继续用最多一个缓存 TTL（60s），那是真正的安全回归。
 	if err := h.keys.RevokeKey(id); err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	slog.Info("key revoked",

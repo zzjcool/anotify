@@ -95,7 +95,7 @@ func (s *Service) LoginWithRecoveryCode(username, code, deviceName string) (sess
 		return "", fmt.Errorf("auth: 登录失败，请稍后重试: %w", err)
 	}
 	if user.Disabled {
-		return "", errors.New("auth: 账户已被禁用")
+		return "", ErrAccountDisabled
 	}
 	norm := normalizeRecoveryCode(code)
 	if len(norm) != recoveryCodeRawLen {

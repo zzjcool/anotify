@@ -255,9 +255,11 @@ func writeAPIError(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrNamespaceInputsChanged):
 		writeStatus(w, http.StatusConflict, reasonConflict, err.Error(), nil)
 	case errors.Is(err, store.ErrSourceEventReceiptMissing):
-		writeStatus(w, http.StatusInternalServerError, reasonInternal, err.Error(), nil)
+		logInternal(w, err)
+		writeStatus(w, http.StatusInternalServerError, reasonInternal, internalErrMsg, nil)
 	default:
-		writeStatus(w, http.StatusInternalServerError, reasonInternal, err.Error(), nil)
+		logInternal(w, err)
+		writeStatus(w, http.StatusInternalServerError, reasonInternal, internalErrMsg, nil)
 	}
 }
 

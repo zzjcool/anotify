@@ -12,7 +12,7 @@
 | 播种工具 | 无 | **有**（`build` 阶段产出 `/devseed`，不进运行镜像） |
 | 隧道 | 无 | **有**（cloudflared sidecar，可选 profile） |
 | 监听 | `0.0.0.0:8080` | **`127.0.0.1:8080`**（默认只回环，避免抢端口） |
-| pprof | 关 | **开**（`ANOTIFY_PPROF=1`） |
+| pprof | 关 | **开**（`ANOTIFY_PPROF=1`；独立监听容器内 `6060`，映射到宿主机 `127.0.0.1:6060`，换端口用 `ANOTIFY_DEV_PPROF_PORT`） |
 | 数据卷 | `anotify-data` | `anotify-dev-data`（互不影响） |
 
 > 本机已经有一个 dogfood 实例（容器 `anotify`，端口 **18080**）。开发环境用 8080 + 独立卷，两者不冲突。

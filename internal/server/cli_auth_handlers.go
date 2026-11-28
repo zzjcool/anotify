@@ -90,7 +90,7 @@ func (h *cliAuthHandler) create(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, err.Error())
 			return
 		}
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	scopes := created.Scopes
@@ -225,7 +225,7 @@ func (h *cliAuthHandler) poll(w http.ResponseWriter, r *http.Request, id string)
 			writeErr(w, 404, "授权会话不存在或已过期")
 			return
 		}
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	resp := pollResp{Status: res.Status}
@@ -356,7 +356,7 @@ func (h *cliAuthHandler) writeApproveErr(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, 409, map[string]string{"status": s.Status})
 		return
 	}
-	writeErr(w, 500, err.Error())
+	writeInternal(w, err)
 }
 
 // authURL 构造授权链接：<scheme>://<host>/cli-auth.html?s=<sessionId>

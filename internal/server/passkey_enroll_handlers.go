@@ -84,7 +84,7 @@ func (h *passkeyEnrollHandler) create(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, err.Error())
 			return
 		}
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	writeJSON(w, 200, enrollCreateResp{
@@ -220,7 +220,7 @@ func (h *passkeyEnrollHandler) poll(w http.ResponseWriter, r *http.Request, id s
 			writeErr(w, 404, "授权会话不存在或已过期")
 			return
 		}
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	resp := enrollPollResp{Status: res.Status}
@@ -337,7 +337,7 @@ func (h *passkeyEnrollHandler) cancel(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 	if err := h.mgr.Delete(id); err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	slog.Info("enroll session cancelled",
@@ -427,7 +427,7 @@ func (h *passkeyEnrollHandler) writeEnrollErr(w http.ResponseWriter, r *http.Req
 		writeJSON(w, 409, map[string]string{"status": s.Status})
 		return
 	}
-	writeErr(w, 500, err.Error())
+	writeInternal(w, err)
 }
 
 // enrollAuthURL 构造授权链接：<scheme>://<host>/passkey-enroll.html?s=<sessionId>

@@ -12,11 +12,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/zzjcool/anotify/internal/logging"
 	"github.com/zzjcool/anotify/internal/server"
@@ -38,6 +41,37 @@ func versionLine() string {
 		built = "unknown"
 	}
 	return fmt.Sprintf("anotify %s (%s)", version.String(), built)
+}
+
+func startPprof(cfg server.Config) (io.Closer, string) { // Pprof 关闭→(nil,"")；监听失败只记 ERROR（event 刻意不是 server.fatal：进程没挂）业务继续
+	if !cfg.Pprof {
+		return nil, ""
+	}
+	ln, err := net.Listen("tcp", cfg.PprofAddr) // 地址来自 ANOTIFY_PPROF_ADDR，默认 127.0.0.1:6060：只绑回环
+	if err != nil {
+		slog.Error("pprof 监听失败（业务服务继续运行）",
+			"event", "server.pprof.listen_failed",
+			"component", "pprof",
+			"addr", cfg.PprofAddr,
+			"error", err.Error(),
+		)
+		return nil, ""
+	}
+	srv := &http.Server{Handler: server.NewPprofMux(), ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		if serr := srv.Serve(ln); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
+			slog.Error("pprof 监听退出（业务服务继续运行）",
+				"event", "server.pprof.serve_failed",
+				"addr", ln.Addr().String(),
+				"error", serr.Error(),
+			)
+		}
+	}()
+	slog.Warn("pprof 已开启（性能评估用，独立监听）",
+		"event", "server.pprof.enabled",
+		"addr", ln.Addr().String(),
+	)
+	return srv, ln.Addr().String()
 }
 
 func main() {
@@ -66,6 +100,10 @@ func main() {
 	}
 
 	mux := server.NewMux(cfg)
+
+	if closer, _ := startPprof(cfg); closer != nil {
+		defer closer.Close()
+	}
 
 	slog.Info("server started",
 		"event", "server.start",

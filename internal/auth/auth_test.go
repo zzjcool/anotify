@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -426,6 +427,21 @@ func TestBeginLogin_UnknownUser(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "用户不存在") {
 		t.Errorf("未注册用户应提示「用户不存在」, got %q", err.Error())
+	}
+}
+
+func TestBeginLogin_NoPasskeyIsSentinel(t *testing.T) {
+	svc := newTestService(t)
+	user := &store.User{ID: store.NewUserID(), Username: "nopasskey", CreatedAt: store.Now()}
+	if err := svc.db.CreateUser(user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	opts, err := svc.BeginLogin("nopasskey")
+	if !errors.Is(err, ErrNoPasskey) {
+		t.Fatalf("没有 Passkey 的账号应回 ErrNoPasskey（handler 靠它回 400）, got %v（opts=%v）", err, opts)
+	}
+	if opts != nil {
+		t.Errorf("失败时不该返回 assertion options: %v", opts)
 	}
 }
 

@@ -158,29 +158,28 @@ func (m *SessionManager) Revoke(sessionID string) error {
 	return nil
 }
 
-// SetCookie 把会话 ID 写入 httpOnly Cookie。
-func (m *SessionManager) SetCookie(w http.ResponseWriter, sessionID string) {
-	http.SetCookie(w, &http.Cookie{
+func (m *SessionManager) sessionCookie(value string, expires time.Time) *http.Cookie {
+	return &http.Cookie{
 		Name:     SessionCookieName,
-		Value:    sessionID,
+		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   m.secure,
 		SameSite: http.SameSiteLaxMode,
-		Expires:  time.Now().Add(m.ttl),
-	})
+		Expires:  expires,
+	}
+}
+
+// SetCookie 把会话 ID 写入 httpOnly Cookie。
+func (m *SessionManager) SetCookie(w http.ResponseWriter, sessionID string) {
+	http.SetCookie(w, m.sessionCookie(sessionID, time.Now().Add(m.ttl)))
 }
 
 // ClearCookie 清除会话 Cookie。
 func (m *SessionManager) ClearCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     SessionCookieName,
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   m.secure,
-		MaxAge:   -1,
-	})
+	c := m.sessionCookie("", time.Now().Add(-time.Hour))
+	c.MaxAge = -1
+	http.SetCookie(w, c)
 }
 
 // Middleware 校验会话 Cookie，把 userID 注入 request context。

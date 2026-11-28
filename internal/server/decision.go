@@ -68,7 +68,10 @@ func (h *taskDecisionHandler) writeDecisionError(w http.ResponseWriter, taskID s
 	case errors.Is(err, store.ErrDecisionNotRouter), errors.Is(err, store.ErrDecisionInvalid):
 		writeStatus(w, http.StatusBadRequest, reasonBadRequest, err.Error(), nil)
 	default:
-		h.log.Warn("decision rejected", "task_id", taskID, "err", err)
-		writeStatus(w, http.StatusInternalServerError, reasonInternal, err.Error(), nil)
+		h.log.Warn("decision rejected",
+			"task_id", taskID,
+			"request_id", w.Header().Get(requestIDHeader),
+			"err", err.Error())
+		writeStatus(w, http.StatusInternalServerError, reasonInternal, internalErrMsg, nil)
 	}
 }

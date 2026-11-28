@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -144,8 +145,8 @@ func TestRecovery_DisabledUserCannotLogin(t *testing.T) {
 	}
 	if _, err := svc.LoginWithRecoveryCode("erin", codes[0], "UA"); err == nil {
 		t.Fatal("disabled user should fail")
-	} else if !strings.Contains(err.Error(), "禁用") {
-		t.Errorf("want disabled error, got %v", err)
+	} else if !errors.Is(err, ErrAccountDisabled) {
+		t.Errorf("want ErrAccountDisabled, got %v", err)
 	}
 }
 

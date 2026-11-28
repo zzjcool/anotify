@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,13 +69,49 @@ func NewMux(cfg Config) http.Handler {
 	return NewApp(context.Background(), cfg).Handler
 }
 
+// NewPprofMux 构造 pprof 的**独立**监听 handler（#624）：业务监听默认 `:8080` 全接口、pprof
+// 又无鉴权，所以这个 mux **不得**加到业务 mux 上。手动挂载而不是 `import _ "net/http/pprof"`：
+// 后者只注册到 DefaultServeMux，而本服务与 pprof 监听都用自建 mux。
+func NewPprofMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	return mux
+}
+
+func secureCookieFromOrigin(origin string) bool {
+	o := strings.ToLower(strings.TrimSpace(origin))
+	return strings.HasPrefix(o, "https://") && len(o) > len("https://")
+}
+
+func addrIsLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = strings.Trim(addr, "[]")
+	}
+	switch host {
+	case "":
+		return false
+	case "localhost":
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 // NewApp 装配完整应用（含后台派发 / cron / 租约三条循环）。
 //
 // v4 的装配顺序（本文件是唯一的 mux 写入者，别在别处再挂路由）：
 //
 //	store → auth → cli-auth / passkey-enroll → 保留域 handler →
 //	背压 → 会话中间件 → 限流 → route.Router / ws.Hub / source.Service / trigger / lease.Sweeper
-//	→ 资源域 register(mux) → 节点协议 → 健康检查 / pprof / 静态兜底
+//	→ 资源域 register(mux) → 节点协议 → 健康检查 → 静态兜底
+//	（pprof **不在**这条链上：#624 起它走独立监听，见 NewPprofMux）
 //
 // 刻意**不**再装配的东西（v4 退役，见 331 卡 D0.2 / D0.3）：旧中枢执行器包（连带
 // notify.phone 的接线）、`ws.NewNodeHandler`（hub 自己
@@ -131,7 +169,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		RPID:          cfg.RPID,
 		RPOrigins:     []string{cfg.RPOrigin},
 		SessionTTL:    7 * 24 * time.Hour,
-		SecureCookie:  cfg.RPOrigin != "" && len(cfg.RPOrigin) > 8 && cfg.RPOrigin[:5] == "https",
+		SecureCookie:  secureCookieFromOrigin(cfg.RPOrigin),
 		// 鉴权热路径缓存（#227 / #241）：额度由 env 决定，0=默认、负数=关闭。
 		// 两条缓存必须分开传入（失效策略不同，见各自构造器注释）。
 		SessionCacheTTL: cfg.SessionCacheTTL,
@@ -144,6 +182,14 @@ func NewApp(ctx context.Context, cfg Config) *App {
 			"error", err.Error(),
 		)
 		os.Exit(1)
+	}
+	if !secureCookieFromOrigin(cfg.RPOrigin) && !addrIsLoopback(cfg.Addr) {
+		slog.Warn("会话 Cookie 不带 Secure（RP_ORIGIN 非 https）",
+			"event", "server.cookie.insecure",
+			"rp_origin", cfg.RPOrigin,
+			"addr", cfg.Addr,
+			"hint", "反代终止 TLS 时请把 ANOTIFY_RP_ORIGIN 写成 https://…",
+		)
 	}
 	keyValidator := asKeyValidator(authSvc.Keys())
 
@@ -534,19 +580,6 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(healthBody)
 	})
-
-	// 性能评估（ANOTIFY_PPROF=1）：/debug/pprof/*
-	//
-	// 手动挂载而不是 `import _ "net/http/pprof"`：后者会注册到 DefaultServeMux，
-	// 而本服务的请求根本不走 DefaultServeMux —— 那样打开开关也采不到任何东西。
-	if cfg.Pprof {
-		mux.HandleFunc("/debug/pprof/", pprof.Index)
-		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
-		slog.Warn("pprof 已开启（性能评估用）", "event", "server.pprof.enabled")
-	}
 
 	// --- 静态资源（CDN 缓存分级）---
 	mux.Handle("/", resolveStatic(cfg))

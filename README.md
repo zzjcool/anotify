@@ -239,8 +239,10 @@ curl -X POST https://你的域名/v1/namespaces/{namespace}/events \
 | `ANOTIFY_DB` | `./anotify.db` | SQLite 路径 |
 | `ANOTIFY_STATIC` | 空(embed) | 本地静态目录（开发用 `./web`） |
 | `ANOTIFY_RP_ID` | `localhost` | WebAuthn RP 域名（=访问域名） |
-| `ANOTIFY_RP_ORIGIN` | `http://localhost:8080` | WebAuthn Origin（含协议） |
+| `ANOTIFY_RP_ORIGIN` | `http://localhost:8080` | WebAuthn Origin（含协议）。**只有显式 `https://…` 时会话 Cookie 才带 `Secure`**；反代终止 TLS 时请把它写成 `https://…`，否则 Cookie 无 Secure（启动日志会有一条 `server.cookie.insecure` WARN） |
 | `ANOTIFY_CDN_PREFIX` | 空 | CDN 前缀（生产静态加速） |
+| `ANOTIFY_PPROF` | 关 | 性能评估开关：只有 `1`/`true`/`yes`/`on` 打开，`0`/`false`/`no`/`off` 与未设置关闭，其它值**启动即报错**。pprof **独立监听**，不经业务端口 |
+| `ANOTIFY_PPROF_ADDR` | `127.0.0.1:6060` | pprof 独立监听地址（仅 `ANOTIFY_PPROF` 打开时生效；默认只绑回环） |
 
 ## 文件结构
 
