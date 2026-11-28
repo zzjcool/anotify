@@ -175,6 +175,9 @@ test-frontend: ## 前端单测（node:test）：消息流字段映射（#456）+
 	@# #649：指纹脚本的真磁盘 prune —— 残留消失、其它阶段产物保留、写盘集与 dist-stamp 的期望集相等。
 	node --test scripts/hash.test.mjs
 	node --test scripts/v4-causes.test.mjs
+	@# #587：错误文案统一走 Anotify.errorMessage（Status 的 message / 认证域扁平的 error）；
+	@# 只读 `.message` 曾把每一条 auth 业务原因吞成「HTTP 400」。
+	node --test scripts/error-message.test.mjs
 
 # 页面控制器的回归面（2026-11-25 清零基线红后接进 ci）。
 # 跑真实页面内联脚本（vm + 记录型 DOM + 真 mock）：命名空间 CAS/ABA、链路图底图语义、

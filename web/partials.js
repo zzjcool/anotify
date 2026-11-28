@@ -2284,6 +2284,19 @@
 		return err;
 	}
 
+	async function errorMessage(res) { // #587：Status 的 message / 认证域扁平的 error，读不到退回 HTTP <status>
+		const fallback = "HTTP " + ((res && res.status) || 0);
+		if (!res || typeof res.json !== "function") return fallback;
+		try {
+			const body = await res.json();
+			if (!body || typeof body !== "object") return fallback;
+			const msg = body.message || body.error;
+			return typeof msg === "string" && msg ? msg : fallback;
+		} catch (e) {
+			return fallback;
+		}
+	}
+
 	// responseRequestID 读响应头里的 request id（大小写两种写法都试）。
 	// 读失败一律当作“没有”：它只影响详情里的一行，不影响错误本身的语义。
 	function responseRequestID(res) {
@@ -4964,6 +4977,7 @@
 		// #378：错误分级 / 持久错误条 / 统一危险弹层 / 已删除·撤销
 		errorBar,
 		errorFacts,
+		errorMessage,
 		confirmDanger,
 		guardDirty,
 		guardUnload,

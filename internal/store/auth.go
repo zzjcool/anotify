@@ -41,7 +41,7 @@ type Passkey struct {
 
 // Session 是 sessions 表的一行。
 type Session struct {
-	ID         string `json:"id"`
+	ID         string `json:"id"` // 会话令牌本身（= Cookie 值，bearer 凭据；对外必须先换公开 id，#587）
 	UserID     string `json:"userId"`
 	DeviceName string `json:"deviceName"` // 登录设备名（UA 推断）
 	CreatedAt  int64  `json:"createdAt"`
@@ -402,35 +402,40 @@ func (d *DB) ListAPIKeysByUserPage(ctx context.Context, userID string, afterAt i
 	return out, rows.Err()
 }
 
+type SessionPageRow struct {
+	Session
+	RowID int64 // 只做 keyset 破平局键（#587：会话 id 是 Cookie 原文，不能进游标）
+}
+
 // ListSessionsByUserPage 是会话列表的 keyset 分页版（#377）：排序
-// (created_at DESC, id DESC)，**只含未过期会话**（与 admin.ListAllSessions 同一口径
+// (created_at DESC, rowid DESC)，**只含未过期会话**（与 admin.ListAllSessions 同一口径
 // `expires_at > now`）。
 //
 // 为什么过滤放在 SQL 而不是让前端按 expiresAt 自己判：分页之后「本页恰好全过期」
 // 会让客户端拿不到任何可用行却还有 continue，前端得写「跳过整页再拉」的循环；
-// 而且过期行本来就不该出现在「我的登录会话」里。
-func (d *DB) ListSessionsByUserPage(ctx context.Context, userID string, afterAt int64, afterID string, limit int) ([]*Session, error) {
-	query := `SELECT id, user_id, device_name, created_at, expires_at, last_seen
+// 而且过期行本来就不该出现在「我的登录会话」里。afterRowID = 上一页末行的 rowid（0 = 首页）。
+func (d *DB) ListSessionsByUserPage(ctx context.Context, userID string, afterAt int64, afterRowID int64, limit int) ([]SessionPageRow, error) {
+	query := `SELECT rowid, id, user_id, device_name, created_at, expires_at, last_seen
 		 FROM sessions WHERE user_id = ? AND expires_at > strftime('%s','now')`
 	args := []any{userID}
-	if afterID != "" {
-		query += ` AND (created_at < ? OR (created_at = ? AND id < ?))`
-		args = append(args, afterAt, afterAt, afterID)
+	if afterRowID != 0 {
+		query += ` AND (created_at < ? OR (created_at = ? AND rowid < ?))`
+		args = append(args, afterAt, afterAt, afterRowID)
 	}
-	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
+	query += ` ORDER BY created_at DESC, rowid DESC LIMIT ?`
 	args = append(args, normalizePageLimit(limit))
 	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions page: %w", err)
 	}
 	defer rows.Close()
-	out := []*Session{}
+	out := []SessionPageRow{}
 	for rows.Next() {
-		var s Session
-		if err := rows.Scan(&s.ID, &s.UserID, &s.DeviceName, &s.CreatedAt, &s.ExpiresAt, &s.LastSeen); err != nil {
+		var s SessionPageRow
+		if err := rows.Scan(&s.RowID, &s.ID, &s.UserID, &s.DeviceName, &s.CreatedAt, &s.ExpiresAt, &s.LastSeen); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
-		out = append(out, &s)
+		out = append(out, s)
 	}
 	return out, rows.Err()
 }

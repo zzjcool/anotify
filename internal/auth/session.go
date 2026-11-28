@@ -3,7 +3,9 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -126,7 +128,12 @@ func (m *SessionManager) Create(userID, deviceName string) (*store.Session, erro
 	return s, nil
 }
 
-// ListByUser 列出某用户的全部会话。
+// SessionPublicID 把会话 id（= Cookie 原文，bearer 凭据）投影成不可逆的公开 id（#587）。
+func SessionPublicID(sessionID string) string {
+	sum := sha256.Sum256([]byte(sessionID))
+	return hex.EncodeToString(sum[:8])
+}
+
 func (m *SessionManager) ListByUser(userID string) ([]*store.Session, error) {
 	return m.db.ListSessionsByUser(userID)
 }

@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -446,7 +447,7 @@ func TestAuthSessionsAndPasskeysPagingHTTP(t *testing.T) {
 		}
 		for _, s := range list {
 			id := fmt.Sprint(s.(map[string]any)["id"])
-			if id == expired.ID {
+			if id == auth.SessionPublicID(expired.ID) {
 				t.Fatal("过期会话不该出现在 /v1/auth/sessions")
 			}
 			got = append(got, id)
@@ -471,11 +472,11 @@ func TestAuthSessionsAndPasskeysPagingHTTP(t *testing.T) {
 	// 条数对不等于条对：liveIDs 是本用例自己建的那批会话，每一条都必须真的出现
 	// （否则「漏一条 live + 多一条别的」也能凑够 5 条）。登录会话本身同样必须在。
 	for _, id := range liveIDs {
-		if !seen[id] {
+		if !seen[auth.SessionPublicID(id)] {
 			t.Fatalf("会话翻页漏了未过期会话 %s，got %v", id, got)
 		}
 	}
-	if !seen[env.cookie.Value] {
+	if !seen[auth.SessionPublicID(env.cookie.Value)] {
 		t.Fatalf("会话翻页漏了登录会话本身 %s，got %v", env.cookie.Value, got)
 	}
 
