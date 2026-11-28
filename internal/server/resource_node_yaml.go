@@ -96,7 +96,6 @@ type nodeYAMLWrite struct {
 	Spec       nodeYAMLSpecPatch `json:"spec"`
 }
 
-// yamlGet 处理 GET /v1/nodes/{name}/yaml。
 func (a *nodeAPI) yamlGet(w http.ResponseWriter, r *http.Request) {
 	n, err := a.nodeByName(r.Context(), r.PathValue("name"))
 	if err != nil {
@@ -183,6 +182,7 @@ func (a *nodeAPI) yamlPut(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	a.notifyConfigChanged(r.Context(), n.ID)
 	// 回读一次：UpdateNode 只回节点行，文档要的是配置行（revision / 归一化后的
 	// namespaces 缺省值）。用入参拼响应会把「省略 = 不动」读成「写成了空」。
 	fresh, err := a.d.DB.GetNodeConfig(r.Context(), n.ID)

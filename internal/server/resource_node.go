@@ -76,6 +76,18 @@ type nodeAPI struct {
 
 func newNodeAPI(d *serverDeps) *nodeAPI { return &nodeAPI{d: d} }
 
+// notifyConfigChanged 推 config.changed（#569）：中枢只写库，节点要靠它才会 config.get → apply。
+// create 不调：新节点刚铸出 id，还没有任何会话，推了也是 no-op。
+func (a *nodeAPI) notifyConfigChanged(ctx context.Context, nodeID string) {
+	if a == nil || a.d == nil || a.d.Hub == nil || nodeID == "" {
+		return
+	}
+	if err := a.d.Hub.NotifyConfigChanged(context.WithoutCancel(ctx), nodeID); err != nil {
+		a.d.logger().Warn("node config changed notify failed",
+			"event", "api.nodes.config_notify_failed", "node_id", nodeID, "err", err)
+	}
+}
+
 // setUpgradeSource 注入升级源（装配层专用；不注入 = 功能未启用）。
 //
 // 用未导出方法而不是构造参数：newNodeAPI 的签名是冻结契约，装配层在构造之后补这一句
@@ -318,8 +330,6 @@ func (a *nodeAPI) list(w http.ResponseWriter, r *http.Request) {
 	writeList(w, http.StatusOK, kindNodeList, listMeta{Continue: cont}, items)
 }
 
-// get 处理 GET /v1/nodes/{name}。
-//
 // `?namespace=X` 时额外给 status.namespaceVars + status.effectiveVars 并标 context.namespace：
 // 有效值必须带 ns 上下文（config.md §2.3），因为 local > node > namespace 是**逐键**解析，
 // 同一台机器在不同 ns 下的结果可以不同。缺省不带 → 只给机器级事实。
@@ -437,6 +447,7 @@ func (a *nodeAPI) patch(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	a.notifyConfigChanged(r.Context(), n.ID)
 	env, err := a.readEnvelope(r.Context(), n, "")
 	if err != nil {
 		writeAPIError(w, err)
@@ -564,6 +575,7 @@ func (a *nodeAPI) configPut(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	a.notifyConfigChanged(r.Context(), n.ID)
 	// 回读一次拿 applied_*（节点回报的事实）：写入口只写中枢默认值，不碰 applied_*，
 	// 用入参拼响应会把 appliedRevision 谎报成 0。
 	fresh, err := a.d.DB.GetNodeConfig(r.Context(), n.ID)
@@ -642,6 +654,7 @@ func (a *nodeAPI) putOneConfig(ctx context.Context, upd nodeConfigBatchUpdate) (
 	if err := a.d.DB.PutNodeConfigByName(ctx, name, cfg, rv); err != nil {
 		return nil, err
 	}
+	a.notifyConfigChanged(ctx, n.ID)
 	wrapper := nodeConfigWrap(n, cfg)
 	return &wrapper, nil
 }

@@ -90,7 +90,6 @@ func (d *serverDeps) now() int64 {
 	return d.Now()
 }
 
-// logger 返回非 nil logger，避免 handler 里到处判空。
 func (d *serverDeps) logger() *slog.Logger {
 	if d == nil || d.Log == nil {
 		return slog.Default()

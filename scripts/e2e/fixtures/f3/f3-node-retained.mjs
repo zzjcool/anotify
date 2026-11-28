@@ -1,6 +1,7 @@
 // Attributed F2c2 actual node/config/retained actions. Explicit mock alone permits fixture identity/failure knobs.
 import assert from 'node:assert/strict';
 import { acceptDialog, acceptOpenDialog, dismissDialog } from './f3-dialogs.mjs';
+import { poll } from '../../lib/v4.mjs';
 /* B-1 的编辑面（方向变更 2026-11-19：YAML 是节点页的**唯一**写入口）。
    命名沿用同一组 id：编辑面 `#node-yaml-input`（textarea）+ 保存 `#node-yaml-save`；
    上一版把它收在 `<details id="node-yaml-edit">` 里，所以先把折叠块打开。
@@ -94,6 +95,13 @@ export async function nodeRetained(d,mode){
     check('Actual offline envelope POST → {} token action; once-only long identity, masked reads, confirmed rotation invalidates old identity, duplicate409 preserves input; one-liner bootstrap (curl -fsSL … | sh -s -- --name/--server/--token) + copy button + close clears plaintext; exact anode.yaml/install/serve/emit; no auto-registration or GET token');
   }
   if (mode === 'config') {
+    /* #569 审计：汇总只取在线节点的原因 —— anode-1 在线、anode-2 离线，没部署到在线节点的能力必须是 NotDeployed。 */
+    if (!d.mock) {
+      const na = (await d.api('/v1/namespaces/default/capabilities/analyze-pr')).body.status.conditions
+        .find((c) => c.type === 'NodesAvailable');
+      assert.equal(na.status, 'False');
+      assert.equal(na.reason, 'NotDeployed', '在线 + 离线混合时汇总必须报在线节点的原因，实际 ' + na.reason);
+    }
     /* B-1（方向变更 2026-11-19）：节点页的**唯一写入口是 YAML**。
        上一版把 YAML 卡降成只读、把写入口放在「配置表单（PUT …/config）」；现在反过来 ——
        同一份 spec 只能有一处能改，而且那一处就是 YAML。本段钉五件事，全部是「结构上有没有」
@@ -154,14 +162,26 @@ export async function nodeRetained(d,mode){
     assert.equal(yamlPut.httpStatus, 200, 'YAML 保存必须 200（实际 ' + yamlPut.httpStatus + ' ' + yamlPut.reason + '）');
     const saved = (await req(configPath)).body;
     assert.equal(saved.vars.NODE_ONLY, 'yaml-only-write', 'YAML 保存必须真的改到节点默认值');
-    assert.equal(saved.appliedRevision, config.appliedRevision, '保存只动配置，不动已应用版本');
     assert.notEqual(saved.configRevision, config.configRevision, '配置版本必须递增');
-    // 语义断言：保存后 appliedRevision 未变 → UI 必须透出「待应用」状态。
-    // 旧版靠英文协议字面量 ConfigPending，本轮该文案已本地化，改用语言中立的 data 钩子。
-    // （保存成功后页面自己会 loadFacts + loadConfig，所以这里只等 DOM 收敛，不再点刷新。）
-    await page.waitForFunction(() => (document.querySelector('#node-applied [data-apply-state]')?.getAttribute('data-apply-state') || '') === 'pending', null, { timeout: 15000 });
-    assert.equal(await page.locator('#node-applied [data-apply-state]').getAttribute('data-apply-state'), 'pending');
-    assert.equal(await page.locator('#node-applied [data-key="configRevision"] .nd-v').innerText(), String(saved.configRevision), '版本对里的 configRevision 必须等于服务端新版本');
+    /* 应用状态由中枢的 config.changed 决定（#569）：真节点（f3-node.mjs）收到就追平，mock 没有生产者。 */
+    if (d.mock) {
+      assert.equal(saved.appliedRevision, config.appliedRevision, '保存只动配置，不动已应用版本');
+      // 旧版靠英文协议字面量 ConfigPending，本轮该文案已本地化，改用语言中立的 data 钩子。
+      await page.waitForFunction(() => (document.querySelector('#node-applied [data-apply-state]')?.getAttribute('data-apply-state') || '') === 'pending', null, { timeout: 15000 });
+      assert.equal(await page.locator('#node-applied [data-apply-state]').getAttribute('data-apply-state'), 'pending');
+      assert.equal(await page.locator('#node-applied [data-key="configRevision"] .nd-v').innerText(), String(saved.configRevision), '版本对里的 configRevision 必须等于服务端新版本');
+    } else {
+      await poll('节点消费 config.changed 后 appliedRevision 追平', async () => {
+        const now = (await req(configPath)).body;
+        return now.appliedRevision === now.configRevision && now.configRevision === saved.configRevision;
+      }, { timeoutMs: 10000 });
+      await goto('node', 'en', '?id=anode-1');
+      await page.waitForFunction((rev) => {
+        const box = document.querySelector('#node-applied [data-apply-state]');
+        const shown = document.querySelector('#node-applied [data-key="configRevision"] .nd-v');
+        return !!box && box.getAttribute('data-apply-state') === 'applied' && (shown?.textContent || '').trim() === rev;
+      }, String(saved.configRevision), { timeout: 15000 });
+    }
 
     /* #454：YAML 编辑面必须保住 `tags`（P1 数据丢失）。`GET …/config` 是 W5 wrapper
        （namespaces/vars/limits + revision 三兄弟）——**不返回 tags**；页面只能从权威读面

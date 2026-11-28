@@ -28,7 +28,7 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const BASELINE = {
 	"schemaVersion": 2,
 	"measuredAt": "2026-11-28",
-	"commentLines": 42820,
+	"commentLines": 42819,
 	"codeLines": 300680,
 	"files": 796,
 	"dirs": {
@@ -94,7 +94,7 @@ export const BASELINE = {
 		"scripts/demo": 16,
 		"scripts/e2e": 632,
 		"scripts/e2e/fixtures": 0,
-		"scripts/e2e/fixtures/f3": 1461,
+		"scripts/e2e/fixtures/f3": 1460,
 		"scripts/e2e/lib": 766,
 		"scripts/e2e/suites": 2179,
 		"scripts/lib": 0,
@@ -135,7 +135,7 @@ export const BASELINE = {
 		"internal/protocol/hash.go": 30,
 		"internal/protocol/limits.go": 13,
 		"internal/protocol/ops_frames.go": 105,
-		"internal/server/api_deps.go": 38,
+		"internal/server/api_deps.go": 37,
 		"internal/server/artifact_download.go": 69,
 		"internal/server/artifact_support.go": 44,
 		"internal/server/backpressure.go": 155,

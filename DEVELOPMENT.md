@@ -83,6 +83,10 @@ Anotify 是「Agent 完成即通知」平台：Agent 任务结束后通过事件
 5. 能力 `requires.commands` 都在节点探测结果里 `found` → 否则 `CommandMissing`
 6. `requires.values` 的每个 vars 名字至少在 local / node / namespace 某一层有值（只匹配名字，值不下发）→ 否则 `ValueMissing`
 
+汇总（`store.NodeAvailabilityReason`，`internal/store/node.go:1602`）只取**在线节点**里最具体的那个原因；
+全部节点都离线才报 `NodeOffline`——它只对单台节点最具体，混进跨节点汇总会把「1 台离线 + 1 台在线待应用」
+说成「没有在线节点」，把用户引去查网络（#569 审计 u3-infra / u2-automation）。
+
 过了这六条还要过两道**派发闸**（不满足就不发帧，任务留 pending）：
 
 - **真实空闲槽**：`node_instances` 里 `alive = 1 AND busy_task IS NULL` 的实例数 > 0（`FreeSlotsByNode`，`internal/store/node.go:757`）；

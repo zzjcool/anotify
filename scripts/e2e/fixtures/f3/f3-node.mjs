@@ -107,6 +107,23 @@ export class FixtureNode {
       });
       return;
     }
+    if (frame.type === 'config.changed') {
+      // #569：真节点收到它就 config.get → welcome → config.applied（中枢只写库，不会自己应用）。
+      this._configGetPending = true;
+      this.conn.send({ type: 'config.get' });
+      return;
+    }
+    if (frame.type === 'welcome' && this._configGetPending) {
+      this._configGetPending = false;
+      this.configRevision = frame.configRevision;
+      this.conn.send({
+        type: 'config.applied',
+        revision: frame.configRevision,
+        hash: appliedHash(frame.nodeVars || {}, frame.nodeLimits || {}, this.localVars, this.localLimits),
+        instances: Array.from({ length: this.slots }, (_, slot) => ({ slot, busy: this.busySlots.has(slot) })),
+      });
+      return;
+    }
     if (frame.type === 'task.cancel') {
       if (Number.isInteger(frame.slot)) this.busySlots.delete(frame.slot);
       // 节点真的收掉了进程组才回 reaped=true：中枢据此把任务落成终态并释放槽。
@@ -302,6 +319,8 @@ export async function bringUpFixtureNode({ base, session, name, namespaces = ['d
   const welcome = await node.wait((f) => f.type === 'welcome', 8000);
   assert.ok(welcome, `节点 ${name} 没有收到 welcome`);
   node.configRevision = welcome.configRevision;
+  node.localVars = localVars;
+  node.localLimits = localLimits;
   conn.send({
     type: 'config.applied',
     revision: welcome.configRevision,
