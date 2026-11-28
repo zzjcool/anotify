@@ -68,7 +68,13 @@ func (h *taskDecisionHandler) writeDecisionError(w http.ResponseWriter, taskID s
 	case errors.Is(err, store.ErrDecisionNotRouter), errors.Is(err, store.ErrDecisionInvalid):
 		writeStatus(w, http.StatusBadRequest, reasonBadRequest, err.Error(), nil)
 	default:
-		h.log.Warn("decision rejected", "task_id", taskID, "err", err)
-		writeStatus(w, http.StatusInternalServerError, reasonInternal, err.Error(), nil)
+		// #624：原文只进日志（带 request id，可与访问日志对齐），响应只回固定文案。
+		// request id 从响应头回读：本函数签名没有 *http.Request（与 writeAPIError 同因），
+		// 而 accessLog 在进 handler 前已把它写进响应头。
+		h.log.Warn("decision rejected",
+			"task_id", taskID,
+			"request_id", w.Header().Get(requestIDHeader),
+			"err", err.Error())
+		writeStatus(w, http.StatusInternalServerError, reasonInternal, internalErrMsg, nil)
 	}
 }

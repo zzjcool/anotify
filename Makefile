@@ -45,7 +45,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-comment-density check-guard-selftest check-annotations check-doc-links check-doc-endpoints check-examples check-secrets check-config-writes check-yaml-doc check-affected-map check-e2e-lock hooks lint-go tools test-affected e2e-affected plan-affected test-frontend fe-clean
+.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-comment-density check-guard-selftest check-no-raw-errors check-annotations check-doc-links check-doc-endpoints check-examples check-secrets check-config-writes check-yaml-doc check-affected-map check-e2e-lock hooks lint-go tools test-affected e2e-affected plan-affected test-frontend fe-clean
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -121,6 +121,10 @@ check-test-discipline: ## 测试纪律棘轮：waitForTimeout/吞异常/t.Skip/t
 	node scripts/check-test-discipline.mjs --self-test
 	node scripts/check-test-discipline.mjs
 
+check-no-raw-errors: ## 错误响应脱敏：500/401 不回 err.Error()（#624：库层原文只进日志）
+	node scripts/check-no-raw-errors.mjs --self-test
+	node scripts/check-no-raw-errors.mjs
+
 check-comment-density: ## 注释/文档棘轮：目录与总量注释行冻结、单文件密度阈值、docs 面只许收缩（docs/lint-guards.md L12）
 	node scripts/check-comment-density.mjs --self-test
 	node scripts/check-comment-density.mjs
@@ -131,6 +135,7 @@ check-guard-selftest: ## 守卫自测：拦"守卫自己静默不查了"（恒�
 	node scripts/check-ui-copy.mjs --self-test
 	node scripts/check-config-writes.mjs --self-test
 	node scripts/check-yaml-doc.mjs --self-test
+	node scripts/check-no-raw-errors.mjs --self-test
 	node --test scripts/lib/direct-run.test.mjs
 
 check-annotations: ## 注解即外键：文档/注释里的 scripts、make、npm 引用与 @guard/@decision 锚点必须解析（docs/lint-guards.md §3）
@@ -373,6 +378,7 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	@# 文档层（#473）：前端只有一份 YAML 序列化，且它的字段顺序与服务端文档结构体对齐。
 	$(MAKE) check-yaml-doc
 	$(MAKE) check-test-discipline
+	$(MAKE) check-no-raw-errors
 	@# 注释密度棘轮（#495）：`check-annotations` 只管「注释不许说谎」，这里管「注释不该存在」——
 	@# 两者不打架：前者管极少数留下者的可追溯性，后者管总量只许降。
 	$(MAKE) check-comment-density

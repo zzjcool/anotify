@@ -20,6 +20,37 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
+// #624：500 的响应体只回固定文案，内部错误原文只进日志。
+//
+// 为什么必须脱敏：sqlite / database/sql 的错误文本里带表名、列名、文件路径
+// （`sql: database is closed`、`UNIQUE constraint failed: users.username`），
+// 回给调用方等于把库结构送给任何一个能触发 500 的人；而排障需要的原文已经在日志里。
+const internalErrMsg = "服务内部错误，请带上 requestId 联系管理员"
+
+// requestIDHeader 是 accessLog 给每个响应注入的 request id 头。
+// 前端已在读它（web/partials.js 的 responseRequestID），运维也用它把用户报障对上日志条目。
+const requestIDHeader = "X-Request-Id"
+
+// logInternal 记一条 500 的原始错误，并把 request id 一起写进这条记录。
+//
+// 为什么 request_id 从**响应头**回读，而不是从 r.Context() 取：writeAPIError 有
+// 344 个调用点、签名里没有 *http.Request（改签名要动 344 处），而 accessLog 在进
+// handler 之前就把 request id 写进了响应头（middleware.go 的 accessLog）。
+// 于是「响应头」是这条错误出口上唯一稳定可见的 request id，也让日志条目与用户
+// 在页面上看到的 requestId 是同一个值。
+func logInternal(w http.ResponseWriter, err error) {
+	slog.Error("internal error",
+		"event", "server.internal_error",
+		"request_id", w.Header().Get(requestIDHeader),
+		"error", err.Error())
+}
+
+// writeInternal 是 500 的唯一出口：原文进日志，响应体只回 internalErrMsg。
+func writeInternal(w http.ResponseWriter, err error) {
+	logInternal(w, err)
+	writeErr(w, http.StatusInternalServerError, internalErrMsg)
+}
+
 func readJSON(r *http.Request, v any) error {
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(v)
@@ -109,7 +140,7 @@ func (h *keysHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	recs, err := h.db.ListAPIKeysByUserPage(r.Context(), uid, afterAt, afterID, limit+1)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	recs, cont := pageCut(recs, limit, binding, func(k *store.APIKey) []string {
@@ -154,7 +185,7 @@ func (h *keysHandler) revoke(w http.ResponseWriter, r *http.Request, id string) 
 	// **同步**让该 key 的验证缓存失效（#227）。直接调 db 会绕过失效 → 被吊销的 key
 	// 还能继续用最多一个缓存 TTL（60s），那是真正的安全回归。
 	if err := h.keys.RevokeKey(id); err != nil {
-		writeErr(w, 500, err.Error())
+		writeInternal(w, err)
 		return
 	}
 	slog.Info("key revoked",

@@ -292,12 +292,29 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		writeAPIStatus(w, http.StatusConflict, reasonResourceVersionConflict, err.Error())
 	case errors.Is(err, store.ErrSourceEventReceiptMissing):
 		// 回执缺行是**服务端**的不变量破了（写事件与写回执同事务），必须 5xx。
-		slog.Error("source event receipt missing", "event", "events.ingress.receipt_missing", "err", err.Error())
-		writeAPIStatus(w, http.StatusInternalServerError, reasonInternal, err.Error())
+		logInternalError(w, "events.ingress.receipt_missing", err)
+		writeAPIStatus(w, http.StatusInternalServerError, reasonInternal, internalErrMsg)
 	default:
-		slog.Error("event ingress failed", "event", "events.ingress.failed", "err", err.Error())
-		writeAPIStatus(w, http.StatusInternalServerError, reasonInternal, err.Error())
+		logInternalError(w, "events.ingress.failed", err)
+		writeAPIStatus(w, http.StatusInternalServerError, reasonInternal, internalErrMsg)
 	}
+}
+
+// 下面两个常量与 internal/server 的同名常量是同一个线上契约（本包有自己的
+// statusDoc / writeAPIStatus 副本），改文案时两处一起改。
+const (
+	requestIDHeader = "X-Request-Id"
+	internalErrMsg  = "服务内部错误，请带上 requestId 联系管理员" // #624：库层原文只进日志
+)
+
+// logInternalError 记一条 500 的原始错误，带 request id（与 internal/server.logInternal 同形）。
+// request_id 从**响应头**回读：writeAPIError 的签名里没有 *http.Request，而 accessLog
+// 在进 handler 之前已把 request id 写进响应头（middleware.go）。
+func logInternalError(w http.ResponseWriter, event string, err error) {
+	slog.Error("internal error",
+		"event", event,
+		"request_id", w.Header().Get(requestIDHeader),
+		"error", err.Error())
 }
 
 // writeJSON 写一个 JSON 响应。
