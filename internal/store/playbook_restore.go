@@ -14,7 +14,7 @@ import (
 
 // 按快照重装（#561）：把一份**已卸载**实例照安装时快照（#551 的 pinned）装回去。与首次安装的差别只有两点：
 // 正文来源是 pinned 版本（能力取 `(name, pinned.version)` 那行——卸载只 SET deleted_at、正文还在）；
-// 源只能复用（源正文不在回执里，缺了就报错，不假装能重建）。单事务与回执形状逐字同首次安装。
+// 源缺失时按钉住的包版本 + 回执 values 重算重建（#632，判据见 restoreMissingSourcesOn）。
 var (
 	// ErrPlaybookAlreadyInstalled 表示这一组参数当前仍在生效（回执未卸载）→ 409 already_installed。
 	ErrPlaybookAlreadyInstalled = errors.New("store: playbook release values still installed")
@@ -22,7 +22,7 @@ var (
 	ErrPlaybookPinnedGone = errors.New("store: pinned capability version no longer exists")
 	// ErrPlaybookRestoreConflict 表示同名同版本的能力已存在且正文不同 → 409 restore_conflict。
 	ErrPlaybookRestoreConflict = errors.New("store: restore target exists with different content")
-	// ErrPlaybookPinMissingSource 表示某个 pinned 源在命名空间里不存在 → 409 pin_missing_source。
+	// ErrPlaybookPinMissingSource 表示某个 pinned 源不存在，且无法按钉住的包版本重算 → 409 pin_missing_source。
 	ErrPlaybookPinMissingSource = errors.New("store: pinned source is missing")
 )
 
@@ -35,8 +35,7 @@ const (
 	pinnedRefKindSource     = "source"
 )
 
-// PlaybookRestoreCause 是一条「哪个对象、为什么复原不了」：`reason` 与 409 的 reason 同字面，
-// `version` 只有能力有（源没有版本概念）。
+// PlaybookRestoreCause 是一条「哪个对象、为什么复原不了」：reason 与 409 同字面，version 只有能力有。
 type PlaybookRestoreCause struct {
 	Kind    string `json:"kind"`
 	Name    string `json:"name"`
@@ -85,13 +84,20 @@ type PlaybookInstallAuditEntry struct {
 	CreatedAt    int64
 }
 
-// restoreCandidates 是一次复原的判定结果：要重建的能力行、要复用的对象、以及阻断写的那批问题。
+// restoreCandidates 是一次复原的判定结果：要重建的能力行 / 源行、要复用的对象、以及阻断写的那批问题。
 type restoreCandidates struct {
-	createCaps []*CapabilityVersion
-	reused     playbook.Created
-	gone       []PlaybookRestoreCause
-	missing    []PlaybookRestoreCause
-	conflicts  []PlaybookRestoreCause
+	createCaps  []*CapabilityVersion
+	pendingSrcs []restorePendingSource
+	createSrcs  []playbook.PlannedSource
+	reused      playbook.Created
+	gone        []PlaybookRestoreCause
+	missing     []PlaybookRestoreCause
+	conflicts   []PlaybookRestoreCause
+}
+
+type restorePendingSource struct {
+	pin   playbook.PinnedRef
+	index int
 }
 
 // RestorePlaybookRelease 照 pinned 快照把一份已卸载实例装回去（单事务；冲突 / 缺失整包 0 写）。
@@ -140,6 +146,9 @@ func (d *DB) RestorePlaybookRelease(ctx context.Context, namespaceID, slug, rele
 	if err != nil {
 		return nil, err
 	}
+	if err := d.restoreMissingSourcesOn(ctx, ex, row, rel, source.receipt, cand); err != nil {
+		return nil, err
+	}
 	if err := cand.err(rel); err != nil {
 		return nil, err
 	}
@@ -155,6 +164,11 @@ func (d *DB) RestorePlaybookRelease(ctx context.Context, namespaceID, slug, rele
 		if err := insertInstalledCapabilityOn(ctx, ex, namespaceID, installID, playbook.PlannedCapability{
 			Action: playbook.ActionCreate, Artifact: &a,
 		}); err != nil {
+			return nil, fmt.Errorf("restore playbook %q: %w", slug, err)
+		}
+	}
+	for _, ps := range cand.createSrcs {
+		if err := d.createInstalledSourceOn(ctx, ex, namespaceID, installID, ps, now); err != nil {
 			return nil, fmt.Errorf("restore playbook %q: %w", slug, err)
 		}
 	}
@@ -270,6 +284,7 @@ func (d *DB) restoreCandidatesOn(ctx context.Context, ex queryExec, namespaceID 
 		}
 		return cand.createCaps[i].Version < cand.createCaps[j].Version
 	})
+	sortPlannedSourcesByName(cand.createSrcs)
 	sort.Strings(cand.reused.Capabilities)
 	sort.Strings(cand.reused.Sources)
 	return cand, nil
@@ -304,19 +319,101 @@ func (c *restoreCandidates) capabilityOn(ctx context.Context, ex queryExec, name
 	return nil
 }
 
-// sourceOn 判一个 pinned 源：同名存在 → 复用（不比对内容：源名是身份）；不存在 → pin_missing_source。
+// sourceOn 判一个 pinned 源：同名存在 → 复用（不比对内容：源名是身份）；不存在 → 记进 pendingSrcs 等重算。
 func (c *restoreCandidates) sourceOn(ctx context.Context, ex queryExec, namespaceID string, pin playbook.PinnedRef, index int) error {
 	_, err := getSourceByNameOn(ctx, ex, namespaceID, pin.Name)
 	switch {
 	case errors.Is(err, ErrSourceNotFound):
-		c.missing = append(c.missing, PlaybookRestoreCause{Kind: pin.Kind, Name: pin.Name, Index: index,
-			Reason: "pin_missing_source", Message: "kind=source name=" + pin.Name + "：源不存在，且源正文不在回执里（先建源再复原）"})
+		c.pendingSrcs = append(c.pendingSrcs, restorePendingSource{pin: pin, index: index})
 	case err != nil:
 		return err
 	default:
 		c.reused.Sources = append(c.reused.Sources, pin.Name)
 	}
 	return nil
+}
+
+func (c *restoreCandidates) pinMissingSource(p restorePendingSource, msg string) {
+	c.missing = append(c.missing, PlaybookRestoreCause{Kind: p.pin.Kind, Name: p.pin.Name, Index: p.index,
+		Reason: "pin_missing_source", Message: "kind=source name=" + p.pin.Name + "：" + msg + "（先建源再复原）"})
+}
+
+func (c *restoreCandidates) pinMissingSourceAll(msg string) {
+	for _, p := range c.pendingSrcs {
+		c.pinMissingSource(p, msg)
+	}
+}
+
+// restoreMissingSourcesOn 按钉住的包版本 + 回执 values 重算「缺口」的源（正文是确定的包体 × 确定的 values 渲染出来的）。
+func (d *DB) restoreMissingSourcesOn(ctx context.Context, ex queryExec, row *PlaybookRow, release string,
+	receipt playbook.Receipt, cand *restoreCandidates) error {
+	if len(cand.pendingSrcs) == 0 {
+		return nil
+	}
+	version := receipt.Playbook.Version
+	if version <= 0 {
+		cand.pinMissingSourceAll("回执没有记钉住的包版本，无法重算源正文")
+		return nil
+	}
+	verRef := "v" + itoa64(int64(version))
+	files, _, err := resolvePlaybookFilesOn(ctx, ex, row, version)
+	switch {
+	case errors.Is(err, ErrPlaybookVersionNotFound):
+		cand.pinMissingSourceAll("钉住的包版本 " + verRef + " 已不可用，无法重算源正文")
+		return nil
+	case err != nil:
+		return err
+	}
+	// 同一个版本号的正文可被覆盖：回执的 filesDigest 才是「当时那一份」的证明。
+	if receipt.Playbook.FilesDigest != "" && playbook.FilesDigest(files) != receipt.Playbook.FilesDigest {
+		cand.pinMissingSourceAll("钉住的包版本 " + verRef + " 的正文已被覆盖（digest 不一致），无法重算源正文")
+		return nil
+	}
+	pkg, err := playbook.Parse(files)
+	if err != nil {
+		cand.pinMissingSourceAll("包版本 " + verRef + " 解析失败（" + err.Error() + "），无法重算源正文")
+		return nil
+	}
+	rendered, err := playbook.RenderForRelease(pkg, receipt.Values, release)
+	if err != nil {
+		cand.pinMissingSourceAll("包版本 " + verRef + " 用回执 values 渲染失败（" + err.Error() + "），无法重算源正文")
+		return nil
+	}
+	byName := make(map[string]playbook.Source, len(rendered.Sources))
+	for _, src := range rendered.Sources {
+		byName[src.Name] = src
+	}
+	for _, p := range cand.pendingSrcs {
+		src, ok := byName[p.pin.Name]
+		if !ok {
+			cand.pinMissingSource(p, "包版本 "+verRef+" 用回执 values 渲染不出这个源名")
+			continue
+		}
+		if src.Spec.Kind != p.pin.KindOf {
+			cand.pinMissingSource(p, "渲染出的 kind 与快照不一致（快照 "+p.pin.KindOf+"，渲染 "+src.Spec.Kind+"）")
+			continue
+		}
+		if renderedSourceMasked(src) {
+			cand.pinMissingSource(p, "回执 values 里 writeOnly 字段已打码，无法重算源正文")
+			continue
+		}
+		cand.createSrcs = append(cand.createSrcs, playbook.PlannedSource{
+			Name: p.pin.Name, Spec: src.Spec, Action: playbook.ActionCreate,
+		})
+	}
+	sortPlannedSourcesByName(cand.createSrcs)
+	return nil
+}
+
+func renderedSourceMasked(src playbook.Source) bool {
+	if raw, err := json.Marshal(src); err == nil {
+		return strings.Contains(string(raw), playbook.MaskedValue)
+	}
+	return strings.Contains(string(src.Spec.Config), playbook.MaskedValue) || strings.Contains(src.Name, playbook.MaskedValue)
+}
+
+func sortPlannedSourcesByName(srcs []playbook.PlannedSource) {
+	sort.Slice(srcs, func(i, j int) bool { return srcs[i].Name < srcs[j].Name })
 }
 
 // err 把判定结果翻成一个 409：先报「数据没了」，再报「你得先建东西」，最后才是「内容对不上」。
@@ -371,6 +468,11 @@ func restoreReceiptOf(row *PlaybookRow, release, digest, installID string, now i
 		skipped.Pinned = append(skipped.Pinned, playbook.PinnedRef{Kind: pinnedRefKindCapability,
 			Name: name, Version: version, Digest: byRef[pinnedKey(pinnedRefKindCapability, name, version)].Digest})
 	}
+	for _, ps := range cand.createSrcs {
+		created.Sources = append(created.Sources, ps.Name)
+		created.Pinned = append(created.Pinned, playbook.PinnedRef{Kind: pinnedRefKindSource,
+			Name: ps.Name, KindOf: ps.Spec.Kind})
+	}
 	for _, name := range cand.reused.Sources {
 		skipped.Sources = append(skipped.Sources, name)
 		skipped.Pinned = append(skipped.Pinned, playbook.PinnedRef{Kind: pinnedRefKindSource, Name: name,
@@ -411,6 +513,9 @@ func restoreAuditDetail(cand *restoreCandidates, pins []playbook.PinnedRef, rest
 	}
 	for _, snap := range cand.createCaps {
 		detail.Recreated.Capabilities = append(detail.Recreated.Capabilities, FormatRef(snap.Name, snap.Version))
+	}
+	for _, ps := range cand.createSrcs {
+		detail.Recreated.Sources = append(detail.Recreated.Sources, ps.Name)
 	}
 	if detail.Reused.Capabilities == nil {
 		detail.Reused.Capabilities = []string{}

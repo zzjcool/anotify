@@ -1290,8 +1290,11 @@ paths:
            `(name, pinned.version)` 那一行的正文（卸载只打 `deleted_at` 标记，正文还在）。
            那一版已被物理回收（GC）→ `409` `pinned_gone`，`details.causes[]` 逐条列出
            `{kind,name,version}`；**绝不静默降级成最新版**。
-        2. 源只能**复用**：源没有版本，正文也不在回执里。同名源已存在 → 记进 `reused.sources`；
-           不存在 → `409` `pin_missing_source`（不假装能重建源，先把源建起来）。
+        2. 源可以**重建**：源没有版本，正文也不在回执里，但它是「确定的包体 × 确定的 values」
+           渲染出来的结果。同名源已存在 → 复用（记进 `skipped.sources`，不比对内容、不覆盖用户的源）；
+           不存在 → 按**钉住的包版本 + 该次安装回执的 `values`** 重新渲染重建（记进 `created.sources`，
+           回执同形给出 `pinned{kind:source,kindOf}`）。重算不可能（包版本不可用 / 同版本正文被覆盖 /
+           渲染不出该名 / 回执 values 里 writeOnly 已打码）→ `409` `pin_missing_source`，整包 0 写。
 
         `valuesDigest` 选「复原哪一组参数」：同一 release 用两套 values 装过是两组实例，
         复原只复原选中的那组（该组不存在与 release 不存在同一个落点：`404 release_not_found`）。
@@ -1299,7 +1302,7 @@ paths:
         `200` 的响应是**完整回执**（与首次安装同形），多一个 `restoredFrom`（被复原的那次 install id）：
         `created` 是本次重建的对象、`skipped` 是复用到的对象（两边都带 `pinned`），
         `install.id` 是新回执、`install.release` 与原回执相同，`values` / `valuesDigest` /
-        `playbook` 身份沿用原回执（复原不重新渲染，不存在第二份 values 真相）。
+        `playbook` 身份沿用原回执（复原不重新算 values，不存在第二份 values 真相）。
         每次成功复原另记一行审计 `install.restored`（`playbook_install_audit`），
         并出现在详情端点 `GET …/releases/{release}` 的 `restores[]` 里。
 
@@ -1308,7 +1311,7 @@ paths:
         - `already_installed`：该组参数当前仍在生效（回执未卸载）——那是「再装一遍」，用 install 端点；
         - `no_snapshot`：该组最新回执没有快照（迁移 8 之前装的），`details.causes[0].field = "release"`；
         - `pinned_gone`：某个 pinned 能力版本的正文已被回收；
-        - `pin_missing_source`：某个 pinned 源不存在；
+        - `pin_missing_source`：某个 pinned 源不存在，且无法按钉住的包版本重算出来（先建源再复原）；
         - `restore_conflict`：同名**同版本**的能力已存在且正文不同（可见行 digest ≠ 快照 digest）。
 
         `details.causes[]` 的 `field` 形如 `pinned.capabilities[0]` / `pinned.sources[1]`：

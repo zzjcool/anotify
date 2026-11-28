@@ -1498,6 +1498,19 @@ function capabilityRowOf(ctx, name, version) {
 	);
 }
 
+function sourceShapeOf(doc) {
+	const spec = doc?.spec || {};
+	const config = { ...(spec.config || {}) };
+	for (const key of ["token", "secret", "hookUrl"]) delete config[key];
+	return {
+		kind: spec.kind,
+		enabled: spec.enabled,
+		config,
+		targets: spec.targets,
+		displayName: doc?.metadata?.displayName ?? null,
+	};
+}
+
 // 版本号由 API 分配、脚本指定不了第几版，“同名同版本已存在”的两个面只能直插行来造。
 function insertManualCapabilityRow(ctx, { name, version, script }) {
 	const row = capabilityRowOf(ctx, name, version);
@@ -1745,13 +1758,16 @@ async function partRestore(ctx) {
 	const srcCap = "restore-src-review";
 	const srcName = "restore-src-push";
 	await createPackage(ctx, srcSlug, {
-		"playbook.yaml": entryDoc(srcSlug, ["capabilities/review.yaml"], ["sources/on-push.yaml"]),
+		"playbook.yaml": entryDoc(srcSlug, ["capabilities/review.yaml"], ["sources/on-push.yaml"], 1),
 		"capabilities/review.yaml": capabilityDoc(srcCap, []),
 		"sources/on-push.yaml": sourceDoc(srcName, [srcCap]),
 	});
 	const srcInst = await install(ctx, srcSlug, "nosrc");
 	V.expectStatus("⑥ 装 release nosrc → 200", srcInst, 200);
 	H.eq("⑥ 装出 1 个源", srcInst.json?.created?.sources, [srcName]);
+	const srcBefore = await H.req(ctx.base, V.P.source(NS, srcName), { session: ctx.session });
+	V.expectStatus("⑥ 卸载前读一次那个源 → 200", srcBefore, 200);
+	const srcBeforeShape = sourceShapeOf(srcBefore.json);
 	V.expectStatus("⑥ 卸载 release nosrc → 200", await uninstall(ctx, srcSlug, "nosrc"), 200);
 	V.expectReason(
 		"⑥ 卸载之后读那个源 → 404（确实是物理删，不是软删）",
@@ -1759,13 +1775,69 @@ async function partRestore(ctx) {
 		404,
 		"NotFound",
 	);
-	const noSrc = await expectZeroWrite(ctx, srcSlug, "nosrc", "⑥ 缺源复原", () => restoreRelease(ctx, srcSlug, "nosrc", srcInst.json?.valuesDigest));
-	V.expectReason("⑥ 缺源复原 → 409", noSrc, 409, "pin_missing_source");
-	const srcCause = noSrc.json?.details?.causes?.[0] || {};
+	const srcBack = await restoreRelease(ctx, srcSlug, "nosrc", srcInst.json?.valuesDigest);
+	V.expectStatus("⑥ 缺源复原 → 200（按钉住的包版本 + 回执 values 重算重建）", srcBack, 200);
+	const srcRe = srcBack.json || {};
+	H.eq("⑥ created.sources 里有那个源", srcRe.created?.sources, [srcName]);
+	H.eq("⑥ skipped.sources 为空（库里没有同名源可复用）", srcRe.skipped?.sources, []);
+	const srcPin = (srcRe.created?.pinned || []).find((p) => p?.kind === "source" && p?.name === srcName) || {};
+	H.eq("⑥ created.pinned 里的源那一项带 kindOf=webhook", srcPin.kindOf, "webhook");
+	H.check("⑥ 源那一项不带 version（源没有版本）", !("version" in srcPin), JSON.stringify(srcPin));
+	const srcAfter = await H.req(ctx.base, V.P.source(NS, srcName), { session: ctx.session });
+	V.expectStatus("⑥ 复原后再读那个源 → 200", srcAfter, 200);
+	H.eq(
+		"⑥ 复原出的源与卸载前逐字段一致（token 除外：服务端重新生成）",
+		sourceShapeOf(srcAfter.json),
+		srcBeforeShape,
+	);
+	const srcRow =
+		dbRows(
+			ctx,
+			`SELECT installed_from FROM sources
+			  WHERE namespace_id = (SELECT id FROM namespaces WHERE slug = ?) AND name = ?`,
+			[NS, srcName],
+		)[0] || {};
+	H.eq("⑥ 重建的源归属这次复原（installed_from = 新回执 install.id）", srcRow.installed_from, srcRe.install?.id);
+
+	const deadSlug = "pb-restore-src-dead";
+	const deadCap = "restore-src-dead-review";
+	const deadSrc = "restore-src-dead-push";
+	await createPackage(ctx, deadSlug, {
+		"playbook.yaml": entryDoc(deadSlug, ["capabilities/review.yaml"], ["sources/on-push.yaml"], 1),
+		"capabilities/review.yaml": capabilityDoc(deadCap, []),
+		"sources/on-push.yaml": sourceDoc(deadSrc, [deadCap]),
+	});
+	const deadInst = await install(ctx, deadSlug, "gone");
+	V.expectStatus("⑥ 对照：装 release gone → 200", deadInst, 200);
+	V.expectStatus("⑥ 对照：卸载 release gone → 200", await uninstall(ctx, deadSlug, "gone"), 200);
+	const wiped = V.withDB(ctx.dbPath, (db) => {
+		const del = db
+			.prepare(
+				`DELETE FROM playbook_versions
+				  WHERE playbook_id = (SELECT id FROM playbooks
+				                        WHERE namespace_id = (SELECT id FROM namespaces WHERE slug = ?) AND slug = ?)
+				    AND version = 1`,
+			)
+			.run(NS, deadSlug).changes;
+		const bump = db
+			.prepare(
+				`UPDATE playbooks SET version = 2
+				  WHERE namespace_id = (SELECT id FROM namespaces WHERE slug = ?) AND slug = ?`,
+			)
+			.run(NS, deadSlug).changes;
+		return { del: Number(del), bump: Number(bump) };
+	});
+	H.check("⑥ 删掉钉住的包版本那一行（模拟 GC）", wiped.del >= 1, JSON.stringify(wiped));
+	H.check("⑥ 把当前版本推走（否则还能拿当前 files 重算）", wiped.bump >= 1, JSON.stringify(wiped));
+	const deadBack = await expectZeroWrite(ctx, deadSlug, "gone", "⑥ 钉住的正文没了复原", () =>
+		restoreRelease(ctx, deadSlug, "gone", deadInst.json?.valuesDigest),
+	);
+	V.expectReason("⑥ 钉住的正文没了复原 → 409", deadBack, 409, "pin_missing_source");
+	const srcCause = deadBack.json?.details?.causes?.[0] || {};
 	H.eq("⑥ causes[0].field 指到 pinned.sources[0]", srcCause.field, "pinned.sources[0]");
 	H.check(
-		"⑥ causes[0].message 点名 kind=source / name",
-		["kind=source", `name=${srcName}`].every((s) => String(srcCause.message).includes(s)),
+		"⑥ causes[0].message 点名 kind=source / name 与钉住的版本",
+		["kind=source", `name=${deadSrc}`, "v1"].every((s) => String(srcCause.message).includes(s)),
 		String(srcCause.message),
 	);
 

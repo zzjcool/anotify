@@ -2640,12 +2640,12 @@ release:
   restore: スナップショットから復元
   restore_confirm_title: スナップショットからこのインスタンスを復元
   restore_confirm_body: "スナップショットから次のケイパビリティを作り直します：{caps}。関与するソースは {sources} 件です。"
-  restore_confirm_note: "ソースは作り直しません：1 つでも欠けていると復元は拒否されます（409）。"
+  restore_confirm_note: "ソースも作り直します：スナップショットのパッケージバージョンと今回のインストール時の値から再描画し、作り直せない場合にのみ拒否されます（409）。"
   restore_confirm_ok: スナップショットから復元
   restore_list_sep: 、
   restore_more: "…ほか計 {n} 件"
   restore_no_snapshot: このインストールにはスナップショットが残っていないため、スナップショットから復元できません。
   restore_already_installed: このインスタンスはまだ有効なため、復元は不要です。
   restore_pinned_gone: スナップショット内のケイパビリティのバージョンが削除済みのため、復元できません。
-  restore_pin_missing_source: スナップショット内のソースがこの名前空間に存在しません。先にソースを作成してから復元してください。
+  restore_pin_missing_source: スナップショット内のソースをパッケージのそのバージョンから作り直せません。先にこのソースを作成してから復元してください。
   restore_conflict: 同じ名前・バージョンのケイパビリティが別の内容で存在するため、復元できません。

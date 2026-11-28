@@ -1,23 +1,29 @@
 package store
 
-// 按快照重装（#561）的领域验收：版本不漂移、冲突整包 0 写（#535 的 6 表指纹）、源缺就报错、审计一行。
+// 按快照重装（#561）的领域验收：版本不漂移、冲突整包 0 写（#535 的 6 表指纹）、源缺按钉住包体重建（#632）、审计一行。
 
 import (
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/playbook"
+	"github.com/zzjcool/anotify/internal/sourcespec"
 )
 
 // restoreBundle 是「1 能力 + 1 源」的包；script 区分版本正文。能力名**静态**（两个 release 才能长出同名新版本），
 // 源名按 values 区分（同一个源不能属于两个 release）。
 func restoreBundle(slug, script string) map[string]string {
+	return restoreBundleV(slug, script, 1)
+}
+
+func restoreBundleV(slug, script string, version int) map[string]string {
 	return map[string]string{
-		"playbook.yaml":            pbEntry(slug, 1, []string{"capabilities/review.yaml"}, []string{"sources/on-push.yaml"}),
+		"playbook.yaml":            pbEntry(slug, version, []string{"capabilities/review.yaml"}, []string{"sources/on-push.yaml"}),
 		"capabilities/review.yaml": pbCapabilityDoc("demo-review", nil, script),
 		"sources/on-push.yaml":     pbSourceDoc("{{values.project}}-on-push", []string{"demo-review"}),
 	}
@@ -33,7 +39,7 @@ func restoreTwoCapBundle(slug string) map[string]string {
 	}
 }
 
-// restoreRecreateSource 把卸载时被物理删掉的源按名字补回来（源正文不在回执里：复原只复用、不重建）。
+// restoreRecreateSource 手工把卸载时被物理删掉的源补回来（供“同名源已存在 → 复用”这条分支的用例）。
 func restoreRecreateSource(t *testing.T, db *DB, nsID, name string) {
 	t.Helper()
 	if err := db.CreateSource(context.Background(), &Source{NamespaceID: nsID, Name: name, Kind: "webhook",
@@ -137,12 +143,15 @@ func TestRestoreUsesPinnedVersionNotLatest(t *testing.T) {
 		t.Fatalf("第一次安装的快照 = %+v, want demo-review@1", first.Created.Pinned)
 	}
 	if _, err := db.ReplacePlaybook(ctx, nsID, slug, pbVersionToken(t, db, nsID, slug),
-		restoreBundle(slug, "#!/bin/sh\necho v2\n"), ""); err != nil {
+		restoreBundleV(slug, "#!/bin/sh\necho v2\n", 2), ""); err != nil {
 		t.Fatalf("升级包体: %v", err)
 	}
 	second := installForRestore(t, db, nsID, slug, "beta", pbValues("beta"))
 	if second.Created.Pinned[0].Version != 2 {
 		t.Fatalf("第二次安装的快照 = %+v, want demo-review@2", second.Created.Pinned)
+	}
+	if second.Playbook.Version != 2 {
+		t.Fatalf("第二次安装钉住的包版本 = %d, want 2", second.Playbook.Version)
 	}
 	for _, rel := range []string{"alpha", "beta"} {
 		if _, err := db.UninstallPlaybookRelease(ctx, nsID, slug, rel, ""); err != nil {
@@ -158,7 +167,6 @@ func TestRestoreUsesPinnedVersionNotLatest(t *testing.T) {
 		t.Fatalf("卸载后应有 0 条可见能力行, got %d", live)
 	}
 
-	restoreRecreateSource(t, db, nsID, "alpha-on-push")
 	rcpt, err := db.RestorePlaybookRelease(ctx, nsID, slug, "alpha", first.ValuesDigest, "usr_actor")
 	if err != nil {
 		t.Fatalf("复原 alpha: %v", err)
@@ -169,6 +177,10 @@ func TestRestoreUsesPinnedVersionNotLatest(t *testing.T) {
 	if rcpt.Playbook.Version != first.Playbook.Version {
 		t.Fatalf("回执 playbook.version = %d, want 来源的 %d（包当前已是 %d）",
 			rcpt.Playbook.Version, first.Playbook.Version, 2)
+	}
+	if rcpt.Playbook.FilesDigest != first.Playbook.FilesDigest {
+		t.Fatalf("回执 playbook.filesDigest = %q, want 来源的 %q（钉住的是那一份正文）",
+			rcpt.Playbook.FilesDigest, first.Playbook.FilesDigest)
 	}
 	if got := rcpt.Created.Capabilities; len(got) != 1 || got[0] != "demo-review@1" {
 		t.Fatalf("created.capabilities = %v, want [demo-review@1]（按 pinned 版本，不是最新的 v2）", got)
@@ -191,8 +203,11 @@ func TestRestoreUsesPinnedVersionNotLatest(t *testing.T) {
 	if v2 != 0 {
 		t.Fatalf("复原 alpha 不该让 v2 复活（那是 beta 的快照）, got %d 行", v2)
 	}
-	if rcpt.Skipped.Sources == nil || len(rcpt.Skipped.Sources) != 1 || rcpt.Skipped.Sources[0] != "alpha-on-push" {
-		t.Fatalf("卸载会物理删源，复原必须按名字重建它；skipped.sources = %v", rcpt.Skipped.Sources)
+	if rcpt.Created.Sources == nil || len(rcpt.Created.Sources) != 1 || rcpt.Created.Sources[0] != "alpha-on-push" {
+		t.Fatalf("created.sources = %v, want [alpha-on-push]（重建，不是复用）", rcpt.Created.Sources)
+	}
+	if len(rcpt.Skipped.Sources) != 0 {
+		t.Fatalf("skipped.sources = %v, want 空（源是重建的）", rcpt.Skipped.Sources)
 	}
 }
 
@@ -401,7 +416,6 @@ func TestRestoreCauseIndexPointsAtPinnedSlot(t *testing.T) {
 	}
 }
 
-// 验收 6：pinned 的源不存在 → 409 pin_missing_source（不假装能重建源）+ 0 写。
 func TestRestoreMissingSource(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -412,18 +426,34 @@ func TestRestoreMissingSource(t *testing.T) {
 	if _, err := db.UninstallPlaybookRelease(ctx, nsID, slug, "alpha", ""); err != nil {
 		t.Fatalf("卸载: %v", err)
 	}
+	if _, err := db.ReplacePlaybook(ctx, nsID, slug, pbVersionToken(t, db, nsID, slug),
+		restoreBundleV(slug, "#!/bin/sh\necho v2\n", 2), ""); err != nil {
+		t.Fatalf("升级包体: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`DELETE FROM playbook_versions WHERE version = 1
+		   AND playbook_id IN (SELECT id FROM playbooks WHERE namespace_id = ? AND slug = ?)`, nsID, slug); err != nil {
+		t.Fatalf("硬删 v1 版本行: %v", err)
+	}
 
 	before := restoreFingerprint(t, db)
+	auditBefore := restoreAuditRows(t, db)
 	_, err := db.RestorePlaybookRelease(ctx, nsID, slug, "alpha", rcpt.ValuesDigest, "")
 	var restoreErr *PlaybookRestoreError
 	if !errors.As(err, &restoreErr) || !errors.Is(err, ErrPlaybookPinMissingSource) {
-		t.Fatalf("源被物理删后复原应 pin_missing_source, got %v", err)
+		t.Fatalf("钉住版本不可用后复原应 pin_missing_source, got %v", err)
 	}
 	if len(restoreErr.Causes) != 1 || restoreErr.Causes[0].Kind != "source" || restoreErr.Causes[0].Name != "demo-on-push" {
 		t.Fatalf("causes = %+v, want 点名源 demo-on-push", restoreErr.Causes)
 	}
+	if msg := restoreErr.Causes[0].Message; !strings.Contains(msg, "v1") || !strings.Contains(msg, "已不可用") {
+		t.Fatalf("cause.message = %q, want 点名钉住的包版本 v1 已不可用", msg)
+	}
 	if after := restoreFingerprint(t, db); after != before {
 		t.Fatalf("pin_missing_source 必须整包 0 写（指纹变了）")
+	}
+	if after := restoreAuditRows(t, db); after != auditBefore {
+		t.Fatalf("被拦下的复原不许写审计行: %d → %d", auditBefore, after)
 	}
 
 	// 用户先把源建起来（正文由人负责），复原就只剩能力要建。
@@ -433,6 +463,194 @@ func TestRestoreMissingSource(t *testing.T) {
 	}
 	if _, err := db.RestorePlaybookRelease(ctx, nsID, slug, "alpha", rcpt.ValuesDigest, ""); err != nil {
 		t.Fatalf("源补上后复原应 200: %v", err)
+	}
+}
+
+func TestRestoreRecreatesOwnSourceAfterUninstall(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	slug := "restore-recreate-source"
+	pbCreate(t, db, nsID, slug, restoreBundle(slug, "#!/bin/sh\necho v1\n"))
+	rcpt := installForRestore(t, db, nsID, slug, "alpha", pbValues("demo"))
+
+	before, err := db.GetSourceByName(ctx, nsID, "demo-on-push")
+	if err != nil {
+		t.Fatalf("读安装出来的源: %v", err)
+	}
+	if before.Kind != "webhook" || !before.Enabled || len(before.Targets) != 1 {
+		t.Fatalf("安装出来的源 = %+v, want webhook / 1 target", before)
+	}
+	beforeCfg := sourcespec.ParseConfig(before.Kind, before.Config)
+	if beforeCfg.Token == "" {
+		t.Fatalf("安装出来的源没有 token（服务端应生成一个）")
+	}
+
+	if _, err := db.UninstallPlaybookRelease(ctx, nsID, slug, "alpha", ""); err != nil {
+		t.Fatalf("卸载: %v", err)
+	}
+	if _, err := db.GetSourceByName(ctx, nsID, "demo-on-push"); !errors.Is(err, ErrSourceNotFound) {
+		t.Fatalf("卸载应物理删掉本实例建的源, got err=%v", err)
+	}
+
+	restored, err := db.RestorePlaybookRelease(ctx, nsID, slug, "alpha", rcpt.ValuesDigest, "usr_actor")
+	if err != nil {
+		t.Fatalf("源被卸载删掉后复原应按钉住包体重建，不是 409: %v", err)
+	}
+	if got := restored.Created.Sources; len(got) != 1 || got[0] != "demo-on-push" {
+		t.Fatalf("created.sources = %v, want [demo-on-push]（重建，不是复用）", got)
+	}
+	if len(restored.Skipped.Sources) != 0 {
+		t.Fatalf("skipped.sources = %v, want 空（源是重建的）", restored.Skipped.Sources)
+	}
+	var pinnedSource *playbook.PinnedRef
+	for i, pin := range restored.Created.Pinned {
+		if pin.Kind == pinnedRefKindSource && pin.Name == "demo-on-push" {
+			pinnedSource = &restored.Created.Pinned[i]
+		}
+	}
+	if pinnedSource == nil || pinnedSource.KindOf != "webhook" {
+		t.Fatalf("created.pinned = %+v, want 一项 {kind:source name:demo-on-push kindOf:webhook}", restored.Created.Pinned)
+	}
+
+	after, err := db.GetSourceByName(ctx, nsID, "demo-on-push")
+	if err != nil {
+		t.Fatalf("复原后读源: %v", err)
+	}
+	if after.Kind != before.Kind || after.Enabled != before.Enabled {
+		t.Fatalf("复原源的 kind/enabled = %q/%v, want %q/%v", after.Kind, after.Enabled, before.Kind, before.Enabled)
+	}
+	if !reflect.DeepEqual(after.Targets, before.Targets) {
+		t.Fatalf("复原源的 targets = %+v, want %+v", after.Targets, before.Targets)
+	}
+	afterCfg := sourcespec.ParseConfig(after.Kind, after.Config)
+	if afterCfg.Token == "" || afterCfg.Token == beforeCfg.Token {
+		t.Fatalf("复原源的 token = %q, want 服务端重新生成的另一个非空 token（原 %q）", afterCfg.Token, beforeCfg.Token)
+	}
+	beforeCfg.Token, afterCfg.Token = "", ""
+	if !reflect.DeepEqual(afterCfg, beforeCfg) {
+		t.Fatalf("复原源的 config（除 token）= %+v, want %+v", afterCfg, beforeCfg)
+	}
+	if after.InstalledFrom != restored.Install.ID {
+		t.Fatalf("installed_from = %q, want 本次复原的 install id %q", after.InstalledFrom, restored.Install.ID)
+	}
+
+	audit, err := db.ListPlaybookInstallAudit(ctx, nsID, slug, "alpha")
+	if err != nil {
+		t.Fatalf("读审计: %v", err)
+	}
+	if len(audit) != 1 {
+		t.Fatalf("审计行数 = %d, want 1", len(audit))
+	}
+	var detail PlaybookRestoreAuditDetail
+	if err := json.Unmarshal(audit[0].Detail, &detail); err != nil {
+		t.Fatalf("decode 审计 detail: %v", err)
+	}
+	if len(detail.Recreated.Sources) != 1 || detail.Recreated.Sources[0] != "demo-on-push" {
+		t.Fatalf("审计 recreated.sources = %v, want [demo-on-push]", detail.Recreated.Sources)
+	}
+	if len(detail.Reused.Sources) != 0 {
+		t.Fatalf("审计 reused.sources = %v, want 空", detail.Reused.Sources)
+	}
+}
+
+func TestRestoreRefusesOverwrittenPinnedBody(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	slug := "restore-overwritten"
+	pbCreate(t, db, nsID, slug, restoreBundle(slug, "#!/bin/sh\necho v1\n"))
+	rcpt := installForRestore(t, db, nsID, slug, "alpha", pbValues("demo"))
+	if _, err := db.UninstallPlaybookRelease(ctx, nsID, slug, "alpha", ""); err != nil {
+		t.Fatalf("卸载: %v", err)
+	}
+	if _, err := db.ReplacePlaybook(ctx, nsID, slug, pbVersionToken(t, db, nsID, slug),
+		restoreBundle(slug, "#!/bin/sh\necho v9\n"), ""); err != nil {
+		t.Fatalf("覆盖 v1 正文: %v", err)
+	}
+
+	before := restoreFingerprint(t, db)
+	_, err := db.RestorePlaybookRelease(ctx, nsID, slug, "alpha", rcpt.ValuesDigest, "")
+	var restoreErr *PlaybookRestoreError
+	if !errors.As(err, &restoreErr) || !errors.Is(err, ErrPlaybookPinMissingSource) {
+		t.Fatalf("钉住正文被覆盖后复原应 pin_missing_source, got %v", err)
+	}
+	if len(restoreErr.Causes) != 1 || restoreErr.Causes[0].Name != "demo-on-push" {
+		t.Fatalf("causes = %+v, want 点名源 demo-on-push", restoreErr.Causes)
+	}
+	if msg := restoreErr.Causes[0].Message; !strings.Contains(msg, "覆盖") {
+		t.Fatalf("cause.message = %q, want 说清“正文已被覆盖”", msg)
+	}
+	if after := restoreFingerprint(t, db); after != before {
+		t.Fatalf("pin_missing_source 必须整包 0 写（指纹变了）")
+	}
+	if _, err := db.GetSourceByName(ctx, nsID, "demo-on-push"); !errors.Is(err, ErrSourceNotFound) {
+		t.Fatalf("被拦下的复原不许留下源行, got err=%v", err)
+	}
+}
+
+func restoreMaskedBundle(slug string) map[string]string {
+	return map[string]string{
+		"playbook.yaml": `apiVersion: anotify/v1
+kind: Playbook
+metadata:
+  name: ` + slug + `
+  version: 1
+spec:
+  values:
+    type: object
+    required: [project, token]
+    properties:
+      project: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,20}$' }
+      token: { type: string, writeOnly: true }
+  capabilities: []
+  sources:
+    - sources/on-push.yaml
+`,
+		"sources/on-push.yaml": `metadata:
+  name: '{{values.project}}-on-push'
+spec:
+  kind: webhook
+  enabled: true
+  config:
+    token: '{{values.token}}'
+  targets: []
+`,
+	}
+}
+
+func TestRestoreRefusesMaskedSourceValues(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	slug := "restore-masked"
+	pbCreate(t, db, nsID, slug, restoreMaskedBundle(slug))
+	values := map[string]any{"project": "demo", "token": "tok-real"}
+	rcpt := installForRestore(t, db, nsID, slug, "alpha", values)
+	if rcpt.Values["token"] != playbook.MaskedValue {
+		t.Fatalf("回执 values.token = %v, want 打码值 %q", rcpt.Values["token"], playbook.MaskedValue)
+	}
+	if _, err := db.UninstallPlaybookRelease(ctx, nsID, slug, "alpha", ""); err != nil {
+		t.Fatalf("卸载: %v", err)
+	}
+
+	before := restoreFingerprint(t, db)
+	_, err := db.RestorePlaybookRelease(ctx, nsID, slug, "alpha", rcpt.ValuesDigest, "")
+	var restoreErr *PlaybookRestoreError
+	if !errors.As(err, &restoreErr) || !errors.Is(err, ErrPlaybookPinMissingSource) {
+		t.Fatalf("values 已打码时复原应 pin_missing_source, got %v", err)
+	}
+	if len(restoreErr.Causes) != 1 || restoreErr.Causes[0].Kind != "source" || restoreErr.Causes[0].Name != "demo-on-push" {
+		t.Fatalf("causes = %+v, want 点名源 demo-on-push", restoreErr.Causes)
+	}
+	if msg := restoreErr.Causes[0].Message; !strings.Contains(msg, "打码") {
+		t.Fatalf("cause.message = %q, want 说清“writeOnly 字段已打码”", msg)
+	}
+	if after := restoreFingerprint(t, db); after != before {
+		t.Fatalf("pin_missing_source 必须整包 0 写（指纹变了）")
+	}
+	if _, err := db.GetSourceByName(ctx, nsID, "demo-on-push"); !errors.Is(err, ErrSourceNotFound) {
+		t.Fatalf("打码值绝不许被当成源正文写进库, got err=%v", err)
 	}
 }
 
@@ -457,6 +675,12 @@ func TestRestoreAuditAndReceipt(t *testing.T) {
 	}
 	if restored.Values["project"] != "demo" {
 		t.Fatalf("回执 values = %v, want 沿用来源回执", restored.Values)
+	}
+	if got := restored.Skipped.Sources; len(got) != 1 || got[0] != "demo-on-push" {
+		t.Fatalf("skipped.sources = %v, want [demo-on-push]（已存在 → 复用）", got)
+	}
+	if len(restored.Created.Sources) != 0 {
+		t.Fatalf("created.sources = %v, want 空（源是复用的，不是重算的）", restored.Created.Sources)
 	}
 	if len(restored.Created.Pinned) != 1 || restored.Created.Pinned[0].Digest == "" {
 		t.Fatalf("created.pinned = %+v, want 一项带 digest", restored.Created.Pinned)

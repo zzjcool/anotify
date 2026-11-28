@@ -2645,12 +2645,12 @@ release:
   restore: 按快照重装
   restore_confirm_title: 按快照重装这个实例
   restore_confirm_body: "将按快照重建这些能力：{caps}。涉及的源 {sources} 个。"
-  restore_confirm_note: "源不会被重建：缺任何一个源，重装都会被拒绝（409）。"
+  restore_confirm_note: "源也会重建：按快照里的包版本和这次安装的值重新渲染，重建不出来时才会被拒绝（409）。"
   restore_confirm_ok: 按快照重装
   restore_list_sep: 、
   restore_more: "…等 {n} 个"
   restore_no_snapshot: 这次安装没有留下快照，无法按快照重装。
   restore_already_installed: 这个实例还在生效中，不需要重装。
   restore_pinned_gone: 快照里的能力版本已被删除，无法重装。
-  restore_pin_missing_source: 快照里的源在这个命名空间里不存在，请先建好源再重装。
+  restore_pin_missing_source: 这个源无法按快照里的包版本重建，请先建好这个源再重装。
   restore_conflict: 同名同版本的能力已存在，内容却与快照不同，无法重装。
