@@ -510,6 +510,8 @@ keys:
     last_used: 最終使用
     status: ステータス
     actions: 操作
+  caption:
+    my_keys: マイ API Keys
   security:
     title: Key のセキュリティベストプラクティス
     point1_prefix: Key 平文は
@@ -681,6 +683,10 @@ docs:
     method: メソッド
     path: パス
     desc: 説明
+  caption:
+    endpoints: エンドポイント一覧
+    ops: 操作の概要
+    params: パラメータの説明
   back_top: トップへ戻る
   toc:
     agent: Agent 連携
@@ -814,6 +820,7 @@ cliauth:
   entry:
     heading: 認証コードを入力
     sub: ターミナルでログインスクリプトを実行後、表示された 8 文字のコードを入力して承認してください
+    code_label: ターミナルに表示される 8 文字のコード
     placeholder: XXXX-XXXX
     hint: コードは 10 分間有効 · 大文字小文字は区別しません · 0/O・1/I などの紛らわしい文字は含まれません
     continue: 続ける
@@ -905,6 +912,7 @@ passkeyenroll:
   entry:
     heading: 追加コードを入力
     sub: ログイン済みデバイスの「安全とログイン」で追加を開始後、表示された 8 文字のコードを入力してください
+    code_label: ログイン済みデバイスに表示される 8 文字の追加コード
     continue: 続ける
     busy: セッションを検索中…
     not_found: このコードに対応するセッションが見つかりません。確認して再入力してください
@@ -980,6 +988,10 @@ admin:
     users: ユーザー
     messages: メッセージ
     sessions: セッション
+  caption:
+    users: ユーザー
+    messages: メッセージ
+    sessions: アクティブセッション
   users:
     user: ユーザー
     role: ロール
