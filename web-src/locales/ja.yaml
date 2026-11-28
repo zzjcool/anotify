@@ -529,7 +529,7 @@ keys:
     name_placeholder: 例：ローカル開発 / CI パイプライン / 本番 Agent
     scope_label: スコープ（複数選択可、最小権限）
     scope_send_label: 送信
-    scope_send_desc: Agent / CI が POST 通知に使用。プレフィックス ant_live_
+    scope_send_desc: Agent / CI が POST 通知に使用。プレフィックス ant_send_
     scope_hint: 最小権限：送信と受信は分離され、Key 漏洩時の影響は片側のみ。
     cancel: キャンセル
     generate: Key を生成
@@ -737,8 +737,7 @@ docs:
       source: イベントの発生元。起点能力名を兼ねます（github、cron、http）。
       type: イベント種別。その発生元にとって意味のある名前（例：pull_request.opened）。
       payload: イベントのペイロード。下流タスクの params としてそのまま渡されます。
-      idem: '重複排除キー。同じ source + idemKey の再送は 1 つのイベントだけを生みます。'
-      trace: trace を明示。省略すると新規作成されます。
+      id: '外部からの送信の重複排除キー。保持期間内は同じ id が 1 つのイベントとして扱われます（応答 duplicate: true、再ディスパッチなし）。内部の eventId とは別のフィールドです。idemKey は id の別名として受け付けます。'
     note: イベントを保存した時点で 200 を返します。派発に失敗しても 200 です — 下流の失敗でイベントが失われることはなく、後から再送できます。
     curl:
       title: curl の例
@@ -760,7 +759,7 @@ docs:
     intro: Anotify の中核シナリオ：<b class="doc-em">Agent がタスクを完了すると、通知がすべてのデバイスに自動的にプッシュされます</b>。連携は 2 ステップ — 上報用 Key を作成し、タスク終了時に POST リクエストを送るだけです。
     step1:
       title: 上報用 Key を作成
-      desc: <a href="keys.html" class="doc-link">API Keys</a> ページで <code class="doc-code">notify:send</code> 権限の Key を新規作成してください（プレフィックス <code class="doc-code">ant_live_</code>）。作成後すぐに保存してください。
+      desc: <a href="keys.html" class="doc-link">API Keys</a> ページで <code class="doc-code">notify:send</code> 権限の Key を新規作成してください（プレフィックス <code class="doc-code">ant_send_</code>）。作成後すぐに保存してください。
     step2:
       title: タスク終了時に上報
       desc: Agent の終了イベント（例：pi の <code class="doc-code">agent_settled</code>）またはスクリプトの末尾で、Key を添えて <code class="doc-code">POST /v1/namespaces/{namespace}/events</code> を送信します（namespace は自分の名前空間に置き換え）。

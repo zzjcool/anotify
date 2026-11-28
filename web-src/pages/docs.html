@@ -864,9 +864,9 @@
               </button>
             </div>
             <div class="code-body">
-              curl -X POST https://{{t "docs.your_domain"}}/v1/namespaces/{namespace}/events \ -H
+              curl -X POST <span data-docs-origin>https://{{t "docs.your_domain"}}</span>/v1/namespaces/<span data-docs-namespace>{namespace}</span>/events \ -H
               <span class="tk-str"
-                >"Authorization: Bearer ant_live_9f3a2c8e…"</span
+                >"Authorization: Bearer ant_send_9f3a2c8e…"</span
               >
               \ -H
               <span class="tk-str">"Content-Type: application/json"</span> \ -d
@@ -907,7 +907,7 @@
             <div class="card doc-kv">
               <div class="doc-kv-label">{{t "docs.api.base_url"}}</div>
               <code class="mono doc-kv-value"
-                >https://{{t "docs.your_domain"}}</code
+                ><span data-docs-origin>https://{{t "docs.your_domain"}}</span></code
               >
               <div class="doc-kv-hint">{{t "docs.api.base_url_desc"}}</div>
             </div>
@@ -1091,10 +1091,18 @@
                   <tr>
                     <td>
                       <span class="param-name">type</span
-                      ><span class="req">{{t "docs.events.required"}}</span>
+                      ><span class="opt">{{t "docs.events.optional"}}</span>
                       <div class="param-type mt-1">string</div>
                     </td>
                     <td class="param-desc">{{t "docs.events.params.type"}}</td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <span class="param-name">id</span
+                      ><span class="opt">{{t "docs.events.optional"}}</span>
+                      <div class="param-type mt-1">string</div>
+                    </td>
+                    <td class="param-desc">{{t "docs.events.params.id"}}</td>
                   </tr>
                   <tr>
                     <td>
@@ -1103,22 +1111,6 @@
                       <div class="param-type mt-1">object</div>
                     </td>
                     <td class="param-desc">{{t "docs.events.params.payload"}}</td>
-                  </tr>
-                  <tr>
-                    <td>
-                      <span class="param-name">idemKey</span
-                      ><span class="opt">{{t "docs.events.optional"}}</span>
-                      <div class="param-type mt-1">string</div>
-                    </td>
-                    <td class="param-desc">{{t "docs.events.params.idem"}}</td>
-                  </tr>
-                  <tr>
-                    <td>
-                      <span class="param-name">traceId</span
-                      ><span class="opt">{{t "docs.events.optional"}}</span>
-                      <div class="param-type mt-1">string</div>
-                    </td>
-                    <td class="param-desc">{{t "docs.events.params.trace"}}</td>
                   </tr>
                 </tbody>
               </table>
@@ -1139,16 +1131,16 @@
                   </button>
                 </div>
                 <div class="code-body">
-                  curl -X POST https://{{t "docs.your_domain"}}/v1/namespaces/{namespace}/events \ -H
+                  curl -X POST <span data-docs-origin>https://{{t "docs.your_domain"}}</span>/v1/namespaces/<span data-docs-namespace>{namespace}</span>/events \ -H
                   <span class="tk-str"
-                    >"Authorization: Bearer ant_live_9f3a2c8e…"</span
+                    >"Authorization: Bearer ant_send_9f3a2c8e…"</span
                   >
                   \ -H
                   <span class="tk-str">"Content-Type: application/json"</span> \
                   -d
                   <span class="tk-str"
                     >'{ "source": "github", "type": "pull_request.opened",
-                    "idemKey": "pr-1234-opened", "payload": { "pr": 1234, "repo":
+                    "id": "pr-1234-opened", "payload": { "pr": 1234, "repo":
                     "acme/api" } }'</span
                   >
                 </div>
@@ -1290,6 +1282,17 @@ GET /v1/system/config</pre>
     title: Anotify.t("docs.title", "接入文档"),
     subtitle: Anotify.t("docs.subtitle", "Agent 上报 · Web Push · WebSocket"),
   });
+
+  (function fillExamples() { // 示例里的 hub 地址与命名空间跟着部署与所选范围走（#593）
+    const scope = (Anotify.readScope && Anotify.readScope()) || {};
+    const namespace = scope.namespace || "default";
+    document.querySelectorAll("[data-docs-origin]").forEach((el) => {
+      el.textContent = location.origin;
+    });
+    document.querySelectorAll("[data-docs-namespace]").forEach((el) => {
+      el.textContent = namespace;
+    });
+  })();
 
   /* 代码块可横向滚动标记（DOC-1）：
      .code-body 的 overflow-x:auto 一直都在，问题是没有「右边还有」的信号。

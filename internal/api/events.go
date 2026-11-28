@@ -61,12 +61,13 @@ func NewEventHandler(sources *source.Service, keys authn.KeyValidator) *EventHan
 //
 //	source  必填：命名空间内的源名（不是 id、不是 token）
 //	type    可选：事件类型；空 → 回落源名（source.md §5，免得调用方必须重复一遍）
-//	id      可选：外部投递幂等键；保留窗口内同 id 只算一条事件
+//	id      可选：外部投递幂等键；保留窗口内同 id 只算一条事件（idemKey 是它的同义别名）
 //	payload 可选：原始 JSON；空 → 只用源配置的打底载荷
 type eventIngestRequest struct {
 	Source  string          `json:"source"`
 	Type    string          `json:"type"`
 	ID      string          `json:"id"`
+	IDemKey string          `json:"idemKey"`
 	Payload json.RawMessage `json:"payload"`
 }
 
@@ -135,6 +136,9 @@ func (h *EventHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// 不额外造一套上限语义。
 		writeAPIStatus(w, http.StatusBadRequest, reasonBadRequest, "invalid JSON body: "+err.Error())
 		return
+	}
+	if req.ID == "" { // 早期文档教的 idemKey（issue #593）；id 优先，别名只在 id 为空时补位
+		req.ID = req.IDemKey
 	}
 	sourceName := strings.TrimSpace(req.Source)
 	if sourceName == "" {

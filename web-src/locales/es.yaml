@@ -529,7 +529,7 @@ keys:
     name_placeholder: ej. Dev local / pipeline CI / Agent producción
     scope_label: Permisos (selección múltiple, mínimo privilegio)
     scope_send_label: Enviar
-    scope_send_desc: Para que Agents / CI hagan POST de notificaciones. Prefijo ant_live_
+    scope_send_desc: Para que Agents / CI hagan POST de notificaciones. Prefijo ant_send_
     scope_hint: 'Mínimo privilegio: enviar y recibir van separados, así una Key filtrada solo compromete un lado.'
     cancel: Cancelar
     generate: Generar Key
@@ -737,8 +737,7 @@ docs:
       source: Origen del evento. También es el nombre de la capacidad raíz (github, cron, http).
       type: Evento tipo, un nombre significativo para ese origen (p. ej. pull_request.opened).
       payload: Carga del evento, se pasa tal cual a los params de las tareas siguientes.
-      idem: 'Clave de deduplicación. El mismo source + idemKey produce un solo evento.'
-      trace: Trace explícito. Si se omite, se crea uno nuevo.
+      id: 'Clave de deduplicación de la entrega externa. Dentro de la ventana de retención el mismo id cuenta como un solo evento (recibo duplicate: true, sin reenvío); es un campo distinto del eventId interno. idemKey se acepta como sinónimo de id.'
     note: Devuelve 200 en cuanto el evento se guarda. Un fallo de despacho también devuelve 200 — los eventos no se pierden por un error posterior; puedes reenviarlos luego.
     curl:
       title: ejemplo curl
@@ -760,7 +759,7 @@ docs:
     intro: 'El escenario principal de Anotify: <b class="doc-em">cuando un Agent termina una tarea, la notificación se envía automáticamente a todos sus dispositivos</b>. La integración son dos pasos: cree una Key de reporte y luego envíe un POST cuando termine la tarea.'
     step1:
       title: Crear una Key de reporte
-      desc: Vaya a la página <a href="keys.html" class="doc-link">API Keys</a> y cree una Key con permiso <code class="doc-code">notify:send</code> (prefijo <code class="doc-code">ant_live_</code>). Guárdela inmediatamente.
+      desc: Vaya a la página <a href="keys.html" class="doc-link">API Keys</a> y cree una Key con permiso <code class="doc-code">notify:send</code> (prefijo <code class="doc-code">ant_send_</code>). Guárdela inmediatamente.
     step2:
       title: Reportar al terminar la tarea
       desc: En un evento de finalización del Agent (p. ej. <code class="doc-code">agent_settled</code> de pi) o al final del script, incluya la Key y haga <code class="doc-code">POST /v1/namespaces/{namespace}/events</code> (namespace = su espacio de nombres).

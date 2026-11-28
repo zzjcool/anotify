@@ -324,8 +324,39 @@ func TestEventIngressDuplicate(t *testing.T) {
 	}
 }
 
-// ---------- ③ source 必填 ----------
+func TestEventIngestIdemKeyAlias(t *testing.T) {
+	f := newEventIngressFixture(t)
+	body := map[string]any{
+		"source": "manual-1", "idemKey": "same-key-1", "payload": map[string]any{"env": "prod"},
+	}
 
+	code, raw := f.post(t, f.nsID, f.apiKey, body)
+	if code != http.StatusOK {
+		t.Fatalf("第一次投递 status = %d, want 200（body=%s）", code, raw)
+	}
+	first := decodeReceipt(t, raw)
+
+	code, raw = f.post(t, f.nsID, f.apiKey, body)
+	if code != http.StatusOK {
+		t.Fatalf("重传 status = %d, want 200（body=%s）", code, raw)
+	}
+	second := decodeReceipt(t, raw)
+	if !second.Duplicate || second.EventID != first.EventID {
+		t.Fatalf("同 idemKey 重传必须命中同一条事件：first=%s second=%+v", first.EventID, second)
+	}
+
+	code, raw = f.post(t, f.nsID, f.apiKey, map[string]any{
+		"source": "manual-1", "id": "explicit-id", "idemKey": "same-key-1", "payload": map[string]any{"env": "prod"},
+	}) // id 优先：同时给 id 与 idemKey 时只认 id（否则别名会偷偷改写幂等键）
+	if code != http.StatusOK {
+		t.Fatalf("带 id 的投递 status = %d, want 200（body=%s）", code, raw)
+	}
+	if third := decodeReceipt(t, raw); third.Duplicate || third.EventID == first.EventID {
+		t.Fatalf("id 与 idemKey 不同时必须按 id 建新事件：got %+v", third)
+	}
+}
+
+// ---------- ③ source 必填 ----------
 // TestEventIngressSourceRequired 缺 source → 400，且**不回退**默认源。
 func TestEventIngressSourceRequired(t *testing.T) {
 	f := newEventIngressFixture(t)
