@@ -1234,7 +1234,7 @@ components:
         httpStatus:
           type: integer
           description: |
-            这次结论在本地 emit 网关上的 HTTP 状态码：成功 200；错误 400/401/409/500。
+            这次结论在本地 emit 网关上的 HTTP 状态码：成功 200；错误 400/401/409/413/500。
             必须与 `error.error` 的映射一致。
         response:
           $ref: '#/components/schemas/EmitResponse'
@@ -1299,11 +1299,14 @@ components:
             - token_invalid
             - task_not_running
             - emit_id_conflict
+            - params_too_large
             - emit_unreachable
           description: |
             封闭码（`internal/protocol/emit_frames.go` 的 `emitErrorCodes`）。
             `emit_unreachable` = 结果未知（可能已派发）：CLI 退出码 5，不能据此推断 infra 失败
             并整任务重跑（要安全重发就带同一个 `id`）。
+            `params_too_large` = `data` 超过中枢 params 硬上限（120 KiB，HTTP 413）：**确定性**
+            拒绝，事务零写入、一个子任务都不会建，CLI 退出码 2（不要重试）。
         message:
           type: string
           description: 人话（可以变，不参与任何判断）

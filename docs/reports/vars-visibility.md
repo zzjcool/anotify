@@ -170,6 +170,9 @@ GUARD_EXIT=1
 
 ## 6. 发现的产品 bug（未在本 PR 修，按边界上报）
 
+> **已修复（#570）**：以下第 1 条记录的是当时的边界。写面现在把显式 `total: null` 当
+> 「本层没设这一项」接住，`GET …/yaml` → 原样 `PUT` 是 200；`0` / 负数 / 字符串仍 400。
+
 1. **`GET /v1/nodes/{name}/yaml` 的文本贴不回去（无 limits 的节点）**：服务端为表达
    「不压住下层」把 `total` 序列化成显式 `total: null`，但 `store.ValidateLimits` 要求
    `total` 是 ≥1 整数 → 原样 PUT 回 400 `value_invalid: limits.total 必须是 ≥1 的整数，实际 <nil>`。

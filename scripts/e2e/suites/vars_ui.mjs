@@ -593,7 +593,7 @@ async function main() {
 		await ctx.close();
 	}
 
-	console.log("--- 边界：total: null 的文档原样贴回 ---");
+	console.log("--- 边界：total: null 的文档原样贴回（issue #570） ---");
 	const BARE = "anode-vars-bare";
 	const bareCreated = await H.req(server.base, V.P.nodes(), {
 		session: s.session,
@@ -605,11 +605,15 @@ async function main() {
 	H.check("边界前提：没有 limits.total 的节点，读面写成显式 total: null",
 		bareBefore.includes("total: null"), bareBefore);
 	const barePut = await H.req(server.base, barePath, { session: s.session, method: "PUT", body: { yaml: bareBefore } });
-	H.eq("边界：把 total: null 的原文原样贴回 → 400", barePut.status, 400);
-	H.eq("边界：拒绝原因 = value_invalid", barePut.json?.reason, "value_invalid");
+	V.expectStatus("边界：把 total: null 的原文原样贴回 → 200", barePut, 200);
 	const bareAfter = (await H.req(server.base, barePath, { session: s.session })).json?.yaml || "";
-	H.check("边界：被拒的写没有落库（文档逐字未变）", bareAfter === bareBefore,
+	H.check("边界：回写后文档除 resourceVersion 外逐字不变",
+		yamlWithoutLine(bareAfter, "resourceVersion:") === yamlWithoutLine(bareBefore, "resourceVersion:"),
 		JSON.stringify({ before: bareBefore, after: bareAfter }));
+	H.check("边界：读面语义不变（仍写显式 total: null）", bareAfter.includes("total: null"), bareAfter);
+	const bareCfg = await H.req(server.base, V.P.nodeConfig(BARE), { session: s.session });
+	H.check("边界：显式 null 没有落成 limits.total 键（= 不压住下层）",
+		!("total" in (bareCfg.json?.limits || {})), JSON.stringify(bareCfg.json?.limits));
 
 	/* ================= #546：刷新不许静默吃掉未保存的编辑 ================= */
 	console.log("--- #546：后台刷新 / 手动刷新遇未保存改动 ---");

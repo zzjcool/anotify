@@ -379,6 +379,36 @@ func TestDisconnectKeepsBusyUntilExplicitFact(t *testing.T) {
 	}
 }
 
+func TestEmitParamsTooLargeAcksDeterministically(t *testing.T) {
+	e := newEnv(t)
+	producer := e.capability(t, "producer", "", false, []string{"consumer"})
+	e.capability(t, "consumer", `{"type":"object","properties":{"file":{"type":"string"}}}`, false, nil)
+	conn := e.dial(t)
+	task := e.pendingTask(t, producer)
+	leaseID, attemptToken := e.directGrant(t, task)
+
+	data := `{"file":"` + strings.Repeat("a", store.MaxTaskParamsBytes+8*1024) + `"}`
+	e.send(t, conn, &protocol.TaskEmitFrame{
+		Type: protocol.FrameTaskEmit, RequestID: "big-1",
+		TaskID: task.ID, Attempt: 1, LeaseID: leaseID, AttemptToken: attemptToken,
+		EmitRequest: protocol.EmitRequest{To: "consumer", Data: json.RawMessage(data)},
+	})
+	frame := e.read(t, conn) // 3s 上限：没 ack 就在这里红，不会变绿
+	ack, ok := frame.(*protocol.TaskEmitAckFrame)
+	if !ok {
+		t.Fatalf("应收到 task.emit.ack（#571：没有帧就是把确定性拒绝当成了「非可判别」），得到 %T", frame)
+	}
+	if ack.RequestID != "big-1" || ack.HTTPStatus != 413 || ack.Response != nil {
+		t.Fatalf("超限 emit 必须回 413 错误 ack: %+v", ack)
+	}
+	if ack.Error == nil || ack.Error.Error != protocol.ReasonParamsTooLarge {
+		t.Fatalf("错误码必须 params_too_large: %+v", ack.Error)
+	}
+	if ack.Error.Message == "" {
+		t.Fatal("拒绝必须带可诊断的人话（大小与上限）")
+	}
+}
+
 func TestEmitRoundTripAndErrors(t *testing.T) {
 	e := newEnv(t)
 	producer := e.capability(t, "producer", "", false, []string{"consumer"})

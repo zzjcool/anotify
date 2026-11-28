@@ -124,6 +124,10 @@ anode emit deploy-preview --data '{"repo":"acme/x"}'
 
 # 幂等键：同一次任务里重复 emit 用同一个 id
 anode emit --to deploy-preview --id apply-fix --data '{"ok":true}'
+
+# 大 payload 从文件或 stdin 读（argv 有 ARG_MAX：单个参数约 128 KiB 就 E2BIG）
+anode emit --to deploy-preview --data-file ./report.json
+anode emit --to deploy-preview --data-file - < ./report.json
 ```
 
 - 0 次 emit = 到此为止（合法）；失败**之前** emit 过就继续（路由只看出口，不看 status）。
@@ -131,12 +135,18 @@ anode emit --to deploy-preview --id apply-fix --data '{"ok":true}'
   不会静默成功。
 - `--data` 必须是 JSON **对象**（`{}`）：坏 JSON、数组、`null`、字符串都在本地预检就失败，
   回 `param_type`（与节点网关对同类错误的判据一致，不是 `target_not_declared`）。
+- `--data-file <path|->` 是 `--data` 的替代给法（**二选一**，都给是 `param_type`）：
+  `-` 读 stdin。argv 装不下的大 payload 只能走这里。
+- **params 硬上限是 120 KiB**（122880 字节）：中枢把整份 params 放进子进程环境变量（单个
+  env 串的硬上限 131072），超限不是「未知」——中枢立刻回 `params_too_large`（413，退出码 2），
+  一个子任务都不会建。要传更大的东西就传文件引用/摘要，别把整份内容塞进 params。
 
 失败时 stdout 只写一行 `{"error":"<码>","message":"…"}`，stderr 写一行人话，退出码如下：
 
 | `error` | 含义 | 退出码 |
 | --- | --- | --- |
-| `param_type` | `--data` 不是 JSON 对象（本地预检，请求未发出） | 2 |
+| `param_type` | `--data` 不是 JSON 对象 / 两个数据来源同时给了（本地预检，请求未发出） | 2 |
+| `params_too_large` | `data` 超过中枢 params 硬上限 120 KiB（413）；**确定没派发**，重试同样失败 | 2 |
 | `target_not_declared` | 目标不在本次 attempt 钉住的 `spec.next` 里 | 2 |
 | `missing_target` | 没给目标，或给了互相冲突的多个目标 | 2 |
 | `token_invalid` | 任务令牌缺失/无效/过期 | 3 |
