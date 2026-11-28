@@ -439,6 +439,8 @@ components:
           description: |
             外部投递幂等键。保留窗口内同 `id` 只算一条事件（回执 `duplicate: true`、
             不重复派发）；窗口外同 `id` 按新事件接收。它与内部 `eventId` 是两个字段。
+            早期文档把该字段写作 `idemKey`：服务端按同义别名接受（两者都给时 `id` 优先），
+            但字段表与示例只出现 `id`。
         payload:
           type: object
           additionalProperties: true

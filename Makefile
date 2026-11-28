@@ -45,7 +45,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-comment-density check-guard-selftest check-annotations check-doc-links check-doc-endpoints check-examples check-secrets check-config-writes check-yaml-doc check-affected-map check-e2e-lock hooks lint-go tools test-affected e2e-affected plan-affected test-frontend fe-clean
+.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-comment-density check-guard-selftest check-annotations check-doc-links check-doc-endpoints check-examples check-secrets check-config-writes check-yaml-doc check-doc-fields check-affected-map check-e2e-lock hooks lint-go tools test-affected e2e-affected plan-affected test-frontend fe-clean
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -131,6 +131,7 @@ check-guard-selftest: ## 守卫自测：拦"守卫自己静默不查了"（恒�
 	node scripts/check-ui-copy.mjs --self-test
 	node scripts/check-config-writes.mjs --self-test
 	node scripts/check-yaml-doc.mjs --self-test
+	node scripts/check-doc-fields.mjs --self-test
 	node --test scripts/lib/direct-run.test.mjs
 
 check-annotations: ## 注解即外键：文档/注释里的 scripts、make、npm 引用与 @guard/@decision 锚点必须解析（docs/lint-guards.md §3）
@@ -144,6 +145,11 @@ check-doc-links: ## 工作区引用：`.pi-orchestrator/` 已不入库，仓库�
 check-doc-endpoints: ## 文档端点检查：文档里的 /v1/<path> 必须存在于 api/*.yaml（#457：接入文档教已删除端点）
 	node scripts/check-doc-endpoints.mjs --self-test
 	node scripts/check-doc-endpoints.mjs
+
+# @guard scripts/check-doc-fields.mjs#doc-field-extra
+check-doc-fields: ## 文档字段表守卫：docs 的 #events 字段与必填标记取自 api/ingress.yaml 的 EventIngestRequest，Key 前缀取自 scopeLabel 的产出
+	node scripts/check-doc-fields.mjs --self-test
+	node scripts/check-doc-fields.mjs
 
 # 能力样例（#472）：examples/capabilities/*.yaml 是给用户抄的 run.workDir 实物，没有执行者复算
 # 就只能随时间变错。这里复用 internal/artifact 的 Parse（经 go test），并在临时副本上做三处
@@ -384,6 +390,7 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	@# 文档端点检查（#457）：文档里的 URL 没有执行者复算，接入文档曾教过已删除的
 	@# /v1/notify（真打必 404）。把「文档提到的端点」变成对 api/*.yaml 的外键。
 	$(MAKE) check-doc-endpoints
+	$(MAKE) check-doc-fields
 	@# 能力样例（#472）：删掉 workDir / requires.values / 被引用的 params.project 都必须失败，
 	@# 否则用户抄到的是写入期会被 400 拒绝的 YAML。
 	$(MAKE) check-examples

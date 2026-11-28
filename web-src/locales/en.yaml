@@ -529,7 +529,7 @@ keys:
     name_placeholder: e.g. Local dev / CI pipeline / Production Agent
     scope_label: Scopes (multi-select, least-privilege)
     scope_send_label: Send
-    scope_send_desc: For Agents / CI to POST notifications. Prefix ant_live_
+    scope_send_desc: For Agents / CI to POST notifications. Prefix ant_send_
     scope_hint: 'Least privilege: send and receive are separate, so a leaked Key only affects one side.'
     cancel: Cancel
     generate: Generate Key
@@ -737,8 +737,7 @@ docs:
       source: Event source. It doubles as the origin capability name (github, cron, http).
       type: Event type, a name meaningful to that source (e.g. pull_request.opened).
       payload: Event payload, passed through verbatim as the downstream task params.
-      idem: 'De-duplication key. The same source + idemKey produces one event only.'
-      trace: Explicit trace id. A new trace is created when omitted.
+      id: 'External delivery de-duplication key. Within the retention window the same id counts as one event (receipt duplicate: true, nothing is re-dispatched); it is a different field from the internal eventId. idemKey is accepted as a synonym of id.'
     note: A 200 is returned as soon as the event is stored. Dispatch failures still return 200 — events are never lost because a downstream step failed; you can replay later.
     curl:
       title: curl example
@@ -760,7 +759,7 @@ docs:
     intro: 'Anotify''s core scenario: <b class="doc-em">when an Agent finishes a task, the notification is automatically pushed to all your devices</b>. Setup is two steps — create a reporting Key, then send a POST request when the task ends.'
     step1:
       title: Create a reporting Key
-      desc: Go to the <a href="keys.html" class="doc-link">API Keys</a> page and create a Key with <code class="doc-code">notify:send</code> scope (prefix <code class="doc-code">ant_live_</code>). Save it immediately.
+      desc: Go to the <a href="keys.html" class="doc-link">API Keys</a> page and create a Key with <code class="doc-code">notify:send</code> scope (prefix <code class="doc-code">ant_send_</code>). Save it immediately.
     step2:
       title: Report when the task ends
       desc: On an Agent completion event (e.g. pi's <code class="doc-code">agent_settled</code>) or at the end of a script, include the Key and <code class="doc-code">POST /v1/namespaces/{namespace}/events</code> (namespace = your namespace).

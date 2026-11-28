@@ -529,7 +529,7 @@ keys:
     name_placeholder: 例如：本地开发 / CI 流水线 / 生产 Agent
     scope_label: 权限范围（可多选，最小化原则）
     scope_send_label: 上报
-    scope_send_desc: Agent / CI 用来 POST 通知。前缀 ant_live_
+    scope_send_desc: Agent / CI 用来 POST 通知。前缀 ant_send_
     scope_hint: 权限最小化：上报与接收分开，泄露一个 Key 不会波及另一头。
     cancel: 取消
     generate: 生成 Key
@@ -737,8 +737,7 @@ docs:
       source: 事件来源。它同时是起点能力的名字（如 github、cron、http）。
       type: 事件类型，对该来源有意义的名字（如 pull_request.opened）。
       payload: 事件载荷，原样传给下游任务的 params。
-      idem: '去重键。同一 source + idemKey 重复提交只产生一个事件。'
-      trace: 指定 trace。不填则新建一条。
+      id: '外部投递的去重键。保留窗口内同 id 重复提交只算一条事件（回执 duplicate: true，不重复派发）；与内部 eventId 是两个字段。idemKey 与 id 同义，仍会被接受。'
     note: 事件入库即返回 200。即使派发失败也是 200——事件不会因为下游出错而丢失，你可以稍后重放。
     curl:
       title: curl 示例
@@ -760,7 +759,7 @@ docs:
     intro: Anotify 的核心场景：<b class="doc-em">Agent 完成任务后，把通知自动送到你的所有设备</b>。接入只需两步——创建一个上报 Key，然后在任务结束时发一个 POST 请求。
     step1:
       title: 创建上报 Key
-      desc: 到 <a href="keys.html" class="doc-link">API Keys</a> 页新建一个 <code class="doc-code">notify:send</code> 权限的 Key（前缀 <code class="doc-code">ant_live_</code>），立即保存。
+      desc: 到 <a href="keys.html" class="doc-link">API Keys</a> 页新建一个 <code class="doc-code">notify:send</code> 权限的 Key（前缀 <code class="doc-code">ant_send_</code>），立即保存。
     step2:
       title: 任务结束时上报
       desc: 在 Agent 结束事件（如 pi 的 <code class="doc-code">agent_settled</code>）或脚本末尾，携带 Key 发 <code class="doc-code">POST /v1/namespaces/{namespace}/events</code>（namespace 换成你的命名空间）。
