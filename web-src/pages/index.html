@@ -241,12 +241,12 @@
   .ix-source {
     border-color: color-mix(in srgb, var(--accent) 30%, transparent);
     background: var(--accent-soft);
-    color: var(--accent);
+    color: var(--accent-strong);
   }
   .ix-warn {
     border-color: color-mix(in srgb, var(--warn) 32%, transparent);
     background: var(--warn-soft);
-    color: var(--warn);
+    color: var(--pill-warn-fg);
   }
   /* 「全部命名空间」模式下每行事件自己的 ns 徽标（.ix-chip 的第四个变体）。
      虚线边描 + faint 字：它是**行的范围标签**，不是状态，视觉上要比源/类型退一档。 */
@@ -482,7 +482,7 @@
   }
   .fe-step[data-state="done"] .fe-num {
     border-color: var(--success);
-    color: var(--success);
+    color: var(--pill-success-fg);
   }
   .fe-body {
     display: grid;
@@ -509,7 +509,7 @@
     color: var(--accent-strong);
   }
   .fe-step[data-state="done"] .fe-state {
-    color: var(--success);
+    color: var(--pill-success-fg);
   }
   .fe-done {
     display: flex;

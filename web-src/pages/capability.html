@@ -316,10 +316,10 @@
         border-bottom: 0;
       }
       .cap-missing {
-        color: var(--warn);
+        color: var(--pill-warn-fg);
       }
       .cap-unready {
-        color: var(--warn);
+        color: var(--pill-warn-fg);
       }
       .cap-terminal {
         display: flex;
@@ -466,14 +466,14 @@
         border: 1px solid color-mix(in srgb, var(--error) 35%, transparent);
         border-radius: var(--r-sm);
         background: var(--error-soft);
-        color: var(--error);
+        color: var(--pill-error-fg);
         font-size: 12px;
         line-height: 1.55;
       }
       .cap-banner.is-warn {
         border-color: color-mix(in srgb, var(--warn) 35%, transparent);
         background: var(--warn-soft);
-        color: var(--warn);
+        color: var(--pill-warn-fg);
       }
       .cap-banner-title {
         font-weight: 600;
@@ -619,7 +619,7 @@
           </div>
           <div class="field">
             <label class="field-label" for="cap-display-name">{{t "caps.form.display_name"}}</label>
-            <input id="cap-display-name" class="input" autocomplete="off" placeholder="{{t "caps.form.display_name_ph"}}" />
+            <input id="cap-display-name" class="input" autocomplete="off" data-autofocus placeholder="{{t "caps.form.display_name_ph"}}" />
             <p class="field-hint">{{t "caps.form.display_name_hint"}}</p>
           </div>
           <div class="field">
@@ -818,7 +818,7 @@
 
       <div class="field">
         <label class="field-label" for="test-version">{{t "caps.test.version"}}</label>
-        <input id="test-version" class="input mono" type="number" min="1" step="1" autocomplete="off" />
+        <input id="test-version" class="input mono" type="number" min="1" step="1" autocomplete="off" data-autofocus />
         <p id="test-version-hint" class="field-hint">{{t "caps.test.version_hint"}}</p>
       </div>
 
@@ -1992,7 +1992,6 @@
         renderEnv();
         $("cap-submit").textContent = t("caps.form.save", "保存");
         openModal($("cap-modal"));
-        $("cap-display-name").focus();
         if (CAP_GUARD) CAP_GUARD.markClean();
       }
 
@@ -2623,7 +2622,6 @@
         }
         renderTestNodes(m);
         openModal($("test-modal"));
-        $("test-version").focus();
       }
       function closeTest() {
         closeModal($("test-modal"));
